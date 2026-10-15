@@ -9,12 +9,18 @@ from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QT
 from PySide6.QtWidgets import QPlainTextEdit, QTextEdit
 
 from etl_tool.api import expressions
-from etl_tool.core.formula_preview import _KEYWORDS
+from etl_tool.core.formula_preview import _KEYWORDS, _may_be_column
 
 from . import theme
 
-# Words that read as SQL keywords besides the reserved ones (unless a column has that name).
-_MORE_KEYWORDS = {"interval", "over", "partition", "by", "rows", "range", "preceding", "following", "unbounded", "current", "nulls"}
+# Words that read as SQL keywords besides the reserved ones (unless they name a column): window
+# functions, types (CAST(x AS DATE), DATE '2024-01-01') and units (INTERVAL 3 DAY).
+_MORE_KEYWORDS = {
+    "interval", "over", "partition", "by", "rows", "range", "preceding", "following", "unbounded", "current", "nulls",
+    "date", "time", "timestamp", "integer", "int", "bigint", "double", "decimal", "varchar", "text", "boolean",
+    "year", "years", "quarter", "month", "months", "week", "weeks", "day", "days", "hour", "hours", "minute",
+    "minutes", "second", "seconds",
+}  # fmt: skip
 
 
 def _format(color: str, *, italic: bool = False, bold: bool = False) -> QTextCharFormat:
@@ -66,8 +72,8 @@ class FormulaHighlighter(QSyntaxHighlighter):
                 continue
             first = max(span_start, start)
             self.setFormat(first - start, min(span_end, end) - first, self._formats[kind])
-            if span_end > end - 1:  # goes on in the next line: that line must be coloured again
-                open_at_end = span_start
+            if span_end > end - 1:  # goes on in the next line: when it changes, that line is coloured again
+                open_at_end = hash((span_start, span_end, kind)) & 0x3FFFFFFF
         self.setCurrentBlockState(open_at_end)
 
     def _colour(self, formula: str) -> list[tuple[int, int, str]]:
@@ -93,7 +99,7 @@ def _kind(formula: str, tokens: list[expressions.Token], index: int, known: set[
         word = expressions._fold(formula[token.start : token.end])
         if expressions._is_call(tokens, index):
             return "function"
-        if known is not None and word in known:
+        if known is not None and word in known and _may_be_column(formula, tokens, index):
             return "column"
         if word in _KEYWORDS or word in _MORE_KEYWORDS:
             return "keyword"

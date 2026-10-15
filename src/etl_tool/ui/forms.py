@@ -269,11 +269,13 @@ class ExpressionEditor(Editor):
         self._expand.setToolTip("Formula window: a bigger editor with the columns, the functions and a preview (F2)")
         self._expand.clicked.connect(self.open_window)
         self._edit.expand.connect(self.open_window)
+        # A click on the buttons or the line under the formula must leave the focus in it: if it
+        # went to the panel, the formula would be applied half-typed. Qt gives the focus to the
+        # nearest widget that takes it on a click: this editor, which passes it to the formula.
         for button in (self._insert, self._functions, self._expand):
-            # A click must leave the focus in the formula: if it went to the panel, the formula
-            # would be applied half-typed (the keys F1, F2 and [ do the same as the buttons)
-            button.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-            button.setFocusProxy(self._edit)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # the keys [, F1 and F2 do the same
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.setFocusProxy(self._edit)
         self._columns: list[str] = []
         self._last = ""
         # In a list (Calculate columns): the (name, formula) of the rows above, and this row's name
@@ -283,10 +285,7 @@ class ExpressionEditor(Editor):
         self.window_open: FormulaWindow | None = None
         self.line = _CheckLine(self)
         self.line.hide()
-        # A click on the line gives the focus to the formula: if it went to the panel instead,
-        # the formula would be applied (as when leaving the field)
-        self.line.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.line.setFocusProxy(self._edit)
+        self.line.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.line.clicked.connect(self._show_mistake)
         self.line.linkActivated.connect(lambda _link: self._fix_mistake())
         self._check = checks().client(self._checked, self._check_failed)
@@ -373,6 +372,7 @@ class ExpressionEditor(Editor):
     def set_value(self, value: Any) -> None:
         self._last = "" if value is None else str(value)
         self._edit.setPlainText(self._last)
+        self._edit.moveCursor(QTextCursor.MoveOperation.End)  # e.g. the [ ] button adds at the end
 
     def refresh(self, ctx: FormContext, values: dict[str, Any]) -> None:
         super().refresh(ctx, values)
@@ -401,11 +401,7 @@ class ExpressionEditor(Editor):
             if (frame is None and ref is None) or (frame is not None and ref is not None and ref() is frame):
                 return
         self._checked_input = (weakref.ref(frame) if frame is not None else None, rest)
-        if not text.strip():
-            self._check.cancel()
-            self._checked(Preview(True, ""))
-            return
-        self._check.start(
+        self._check.start(  # also for an empty formula: the columns it can use come with the result
             lambda cancel: preview(
                 frame, text, earlier, condition=condition, name=name, creates=creates, cancel=cancel, no_data=no_data
             )
@@ -425,6 +421,7 @@ class ExpressionEditor(Editor):
 
     def _checked(self, result: Preview) -> None:
         self._result, self._result_text = result, self._checked_input[1][0] if self._checked_input else ""
+        self._completer.refresh()  # the columns with their types (and the rows above) are known now
         if result.columns:  # the columns the formula can use: other [names] turn red
             self._highlighter.set_columns(c.name for c in result.columns)
         elif self._checked_input is not None and self._checked_input[0] is None:
@@ -447,7 +444,7 @@ class ExpressionEditor(Editor):
 
     def _render(self) -> None:
         result = self._result
-        if result is None or (result.ok and result.values is None):  # nothing typed yet
+        if result is None or not self._result_text.strip() or (result.ok and result.values is None):  # nothing typed yet
             self.line.hide()
             self._underline(None)
             return
@@ -506,6 +503,9 @@ class ExpressionEditor(Editor):
         result = self._result
         if result is not None and result.columns:  # with their types, and the rows above
             return column_suggestions([(c.name, c.type, c.row) for c in result.columns])
+        frame = self.ctx.input_frame()  # before the first check: the input columns
+        if frame is not None:
+            return column_suggestions([(name, type_label(kind), None) for name, kind in frame.schema.items()])
         return column_suggestions([(name, "", None) for name in self._columns])
 
     def _open_columns(self) -> None:

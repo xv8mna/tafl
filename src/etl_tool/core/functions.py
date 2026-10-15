@@ -279,6 +279,7 @@ _HIDDEN = {
     "make_type", "replace_type", "cast_to_type", "remap_struct", "timetz_byte_comparable", "is_histogram_other_bin",
     "row", "get_current_time", "get_current_timestamp", "transaction_timestamp", "error", "finalize", "combine",
     "add_parquet_key", "parquet_file_metadata", "sql_auto_complete", "which_secret", "checkpoint",
+    "regexp_split_to_table", "get_block_size", "getvariable",
 }  # fmt: skip
 _HIDDEN_PREFIXES = ("union_", "enum_", "variant_", "st_", "icu_", "pg_", "__", "duckdb_", "has_", "json_", "parquet_")
 

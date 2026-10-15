@@ -84,3 +84,17 @@ def test_colouring_a_long_formula_is_quick(qapp):
     for _ in range(20):
         edit.textCursor().insertText("1")
     assert (time.perf_counter() - started) / 20 < 0.01
+
+
+def test_later_lines_follow_a_change_of_where_a_comment_ends(qapp):
+    edit = QPlainTextEdit()
+    highlighter = FormulaHighlighter(edit.document())
+    highlighter.set_columns(["Net", "Month"])
+    edit.setPlainText("/* note\n*/ [Net] * 2")
+    assert _colours(edit)[-2:] == [("[Net]", "column"), ("2", "number")]
+    cursor = edit.textCursor()
+    cursor.setPosition(7)  # the end of line 1: comments nest, so line 2 is inside the comment now
+    cursor.insertText(" /* x")
+    assert _colours(edit)[-1] == ("*/ [Net] * 2", "comment")
+    edit.setPlainText("[Month] + INTERVAL 1 MONTH")  # a unit, not the column of that name
+    assert _colours(edit)[-1] == ("MONTH", "keyword")

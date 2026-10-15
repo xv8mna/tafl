@@ -3,6 +3,7 @@ the formula window."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QFrame, QScrollArea
 
 from etl_tool.ui import theme
 
@@ -122,3 +123,73 @@ def test_the_formula_window_suggests_too(window, session, settle, demo, qtbot):
     qtbot.keyClick(formula.editor, Qt.Key.Key_Escape)  # closes the list, not the window
     assert formula.isVisible() and not formula._completer.visible
     formula.reject()
+
+
+def test_the_window_lists_columns_at_once_and_ctrl_enter_takes_the_suggestion(window, session, settle, demo, qtbot):
+    editor = _field(window, session, settle, demo)
+    editor._expand.click()
+    formula = editor.window_open
+    formula.editor.setPlainText("")
+    qtbot.keyClicks(formula.editor, "[")  # before the first preview has come in
+    assert formula._completer.visible and "City" in [s.name for s in formula._completer.shown]
+    qtbot.waitUntil(lambda: not formula.busy, timeout=10_000)
+    formula.activateWindow()
+    qtbot.waitUntil(lambda: QApplication.activeWindow() is formula, timeout=5_000)
+    qtbot.keyClicks(formula.editor, "cit")
+    qtbot.keyClick(formula.editor, Qt.Key.Key_Return, CTRL)  # takes the suggestion: nothing is applied
+    assert formula.isVisible() and formula.text() == "[City]"
+    qtbot.keyClick(formula.editor, Qt.Key.Key_Escape)
+    assert "Esc again" in formula.status.text()
+    formula._highlighter.set_columns(["x"])  # colouring the text again is no typing
+    qtbot.keyClick(formula.editor, Qt.Key.Key_Escape)
+    assert not formula.isVisible()
+
+
+def test_ctrl_enter_and_enter_after_a_unit_in_the_field(window, session, settle, demo, qtbot):
+    editor = _field(window, session, settle, demo)
+    _ready(editor, qtbot)
+    qtbot.keyClicks(editor._edit, "[ne")
+    qtbot.keyClick(editor._edit, Qt.Key.Key_Return, CTRL)  # the list is open: it takes the suggestion
+    assert editor.value() == "[Net]" and _formula(session) == "IIF([Net] >= 1000, 'large', 'normal')"
+    editor._edit.setPlainText("[Date] + INTERVAL 1 MONTH")
+    editor._edit.moveCursor(editor._edit.textCursor().MoveOperation.End)
+    qtbot.keyClicks(editor._edit, "H")  # MONTH typed to its end
+    qtbot.keyClick(editor._edit, Qt.Key.Key_Backspace)
+    assert not editor._completer.visible
+    qtbot.keyClick(editor._edit, Qt.Key.Key_Return)  # applies
+    assert _formula(session) == "[Date] + INTERVAL 1 MONTH"
+    session.undo()
+
+
+def test_the_list_goes_with_its_field(window, session, settle, demo, qtbot):
+    editor = _field(window, session, settle, demo)
+    _ready(editor, qtbot)
+    qtbot.keyClicks(editor._edit, "[ne")
+    popup = editor._completer._popup
+    assert popup.isVisible()
+    scroll = window.settings_panel.findChild(QScrollArea)
+    scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+    scroll.resize(scroll.width(), 120)  # the field is out of view now
+    editor._completer._place()
+    assert not editor._completer.visible
+    qtbot.keyClick(editor._edit, Qt.Key.Key_Space, CTRL)
+    editor._edit.setPlainText(editor._last)
+    destroyed = []
+    popup.destroyed.connect(lambda: destroyed.append(True))
+    session.select_step(session.table.steps[4].id)  # another step: the form and its fields go
+    qtbot.waitUntil(lambda: destroyed == [True], timeout=5_000)  # and so does the list
+    assert not [w for w in window.findChildren(QFrame, "Suggestions") if w.isVisible()]
+
+
+def test_the_buttons_never_show_a_focus_frame(window, session, settle, demo, qtbot):
+    editor = _field(window, session, settle, demo)
+    assert all(b.focusPolicy() == Qt.FocusPolicy.NoFocus for b in (editor._insert, editor._functions, editor._expand))
+    _ready(editor, qtbot)
+    QTest.mouseClick(editor._functions, Qt.MouseButton.LeftButton)  # opens the function list
+    assert _formula(session) == "IIF([Net] >= 1000, 'large', 'normal')"
+    QTest.mouseClick(editor.line, Qt.MouseButton.LeftButton)
+    assert _formula(session) == "IIF([Net] >= 1000, 'large', 'normal')"  # the line keeps the focus too
+    for window_ in QApplication.topLevelWidgets():
+        if type(window_).__name__ == "FunctionsWindow":
+            window_.close()
+    editor._edit.setPlainText(editor._last)

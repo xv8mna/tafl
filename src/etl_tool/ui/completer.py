@@ -9,7 +9,7 @@ from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QKeyEvent, QTextCursor
 from PySide6.QtWidgets import QFrame, QLabel, QPlainTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
-from etl_tool.core.completion import Context, Suggestion, context_at, insertion, suggestions
+from etl_tool.core.completion import Context, Suggestion, context_at, insertion, starts_with, suggestions
 
 from . import theme
 
@@ -112,6 +112,11 @@ class FormulaCompleter(QObject):
         self._forced = True
         self._update(opening=True)
 
+    def refresh(self) -> None:
+        """The columns may have changed (e.g. the first check of the formula came in)."""
+        if self.visible:
+            self._update(opening=False)
+
     def close(self) -> None:
         self._forced = False
         self._context = None
@@ -144,13 +149,17 @@ class FormulaCompleter(QObject):
         if watched is not self.edit:
             return False
         kind = event.type()
-        if kind == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
+        if kind == QEvent.Type.ShortcutOverride and isinstance(event, QKeyEvent) and self.visible:
+            if event.key() in _KEYS_ACCEPT and not event.modifiers() & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.AltModifier):
+                event.accept()  # Ctrl+Enter takes the suggestion, it doesn't apply a half-typed formula
+                return True
+        elif kind == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
             key, modifiers = event.key(), event.modifiers()
             if self.visible:
                 if key in _KEYS_MOVE:
                     self._popup.move_selection(key)
                     return True
-                if key in _KEYS_ACCEPT and not modifiers & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier):
+                if key in _KEYS_ACCEPT and not modifiers & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.AltModifier):
                     self.accept()
                     return True
                 if key == Qt.Key.Key_Escape:
@@ -160,6 +169,8 @@ class FormulaCompleter(QObject):
                 self.open()
                 return True
             self._typed = bool(event.text()) and event.text().isprintable()
+        elif kind == QEvent.Type.InputMethod and event.commitString():  # e.g. a character composed with an IME
+            self._typed = True
         elif kind in (QEvent.Type.FocusOut, QEvent.Type.Hide):
             self.close()
         return False
@@ -183,6 +194,8 @@ class FormulaCompleter(QObject):
         if context is not None and context.kind == "word" and items and items[0].key.casefold() == context.prefix.casefold():
             if items[0].kind == "keyword" and len([i for i in items if i.key.casefold() == context.prefix.casefold()]) == 1:
                 items = []  # the word is complete: Enter must apply the formula, not write it again
+        if not self.visible and not self._forced and not any(starts_with(context, item) for item in items):
+            items = []  # only names that contain the word somewhere: not worth opening the list for
         if not items or not (opening or self.visible):
             self.close()
             return
@@ -190,6 +203,7 @@ class FormulaCompleter(QObject):
         if self._popup is None or self._popup.parent() is not self.edit.window():
             self._popup = _Popup(self.edit.window())
             self._popup.list.itemClicked.connect(lambda _row, _column: self.accept())
+            self.edit.destroyed.connect(self._popup.deleteLater)  # e.g. the rows of a list are rebuilt
         self._popup.fill(items)
         self._place()
         self._popup.show()
@@ -198,8 +212,8 @@ class FormulaCompleter(QObject):
 
     def _place(self) -> None:
         popup, window = self._popup, self.edit.window()
-        if popup is None or not self.edit.isVisible():
-            self.close()
+        if popup is None or not self.edit.isVisible() or not self.edit.viewport().visibleRegion().contains(self.edit.cursorRect().center()):
+            self.close()  # e.g. the panel was scrolled: the list must not float elsewhere
             return
         rows = min(len(popup.items), _SHOWN_ROWS)
         height = rows * (popup.list.sizeHintForRow(0) or popup.fontMetrics().height() + 4) + 6

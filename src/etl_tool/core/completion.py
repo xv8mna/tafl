@@ -9,9 +9,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
 
+import duckdb
+
 from etl_tool.api import expressions
 
-from .functions import CURATED, CURSOR, more_functions
+from .functions import CURATED, CURSOR, Function, more_functions
 
 LIMIT = 60  # suggestions shown at most
 # Words of SQL that have no entry in the function list, with what is written in.
@@ -62,19 +64,23 @@ class Context:
 
 def context_at(formula: str, cursor: int, *, forced: bool = False) -> Context | None:
     """What is being typed at ``cursor``: a [column name], or a word (from 2 letters on, or any
-    length when ``forced``, e.g. Ctrl+Space). Nothing inside texts and comments."""
+    length when ``forced``, e.g. Ctrl+Space). Nothing inside texts and comments, and no word
+    where a type or a unit goes ([Date]::DATE, CAST(x AS INTEGER), INTERVAL 1 MONTH): Enter
+    must apply the formula there."""
     tokens = expressions.tokenize(formula)
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if not token.start < cursor <= token.end and not (token.kind == "column" and token.start < cursor and not token.closed):
             continue
         if token.kind == "column" and cursor > token.start:
             if token.closed and cursor == token.end:  # just after the ]
                 break
             end = token.end if token.closed else cursor
+            if "[" in formula[cursor : end - 1] or "\n" in formula[cursor:end]:
+                end = cursor  # a [ typed before other text: that text stays
             return Context("column", token.start, end, formula[token.start + 1 : cursor].replace("]]", "]"))
         if token.kind == "word":
             prefix = formula[token.start : cursor]
-            if len(prefix) >= 2 or forced:
+            if forced or (len(prefix) >= 2 and not _type_or_unit(formula, tokens, index)):
                 return Context("word", token.start, token.end, prefix)
             return None
         if token.kind in ("string", "comment", "quoted", "number"):
@@ -96,16 +102,42 @@ def suggestions(context: Context, columns: Sequence[Suggestion]) -> list[Suggest
     found: list[tuple[int, int, int, Suggestion]] = []
     for group, items in enumerate(groups):
         for order, item in enumerate(items):
-            name = item.key.casefold()
-            if not prefix or name.startswith(prefix):
-                rank = 0 if name == prefix else 1
-            elif prefix in name:
-                rank = 2
-            else:
-                continue
-            found.append((rank, group, order, item))
+            rank = _rank(item.key.casefold(), prefix)
+            if rank is not None:
+                found.append((rank, group, order, item))
     found.sort(key=lambda entry: entry[:3])
-    return [item for *_, item in found[:LIMIT]]
+    limit = None if context.kind == "column" else LIMIT  # every column: they are what the step has
+    return [item for *_, item in found[:limit]]
+
+
+def starts_with(context: Context, suggestion: Suggestion) -> bool:
+    """True if the suggestion's name starts with what is typed (not only contains it)."""
+    return suggestion.key.casefold().startswith(context.prefix.casefold())
+
+
+def _rank(name: str, prefix: str) -> int | None:
+    """0 the same name, 1 its first word (IS NULL for is), 2 starts with it, 3 contains it."""
+    if name == prefix:
+        return 0
+    if not prefix or name.startswith(prefix):
+        return 1 if name.split(" ")[0] == prefix else 2
+    return 3 if prefix in name else None
+
+
+def _type_or_unit(formula: str, tokens: list[expressions.Token], index: int) -> bool:
+    """A word after :: or AS (a type), or after INTERVAL and a number or text (a unit)."""
+    before = expressions._previous(tokens, index)
+    if before is None:
+        return False
+    text = formula[tokens[before].start : tokens[before].end]
+    if text == "::" or expressions._fold(text) == "as":
+        return True
+    two_before = expressions._previous(tokens, before)
+    return (
+        tokens[before].kind in ("number", "string")
+        and two_before is not None
+        and expressions._fold(formula[tokens[two_before].start : tokens[two_before].end]) == "interval"
+    )
 
 
 def insertion(context: Context, suggestion: Suggestion, formula: str) -> tuple[str, int]:
@@ -116,7 +148,7 @@ def insertion(context: Context, suggestion: Suggestion, formula: str) -> tuple[s
         text = suggestion.insert or suggestion.name
         if context.prefix and context.prefix == context.prefix.lower() and context.prefix.isalpha():
             text = text.lower()  # typed in lowercase: keep it that way
-        if CURSOR in text and formula[context.end : context.end + 1] == "(":  # the ( is there already
+        if CURSOR in text and formula[context.end :].lstrip(" ")[:1] == "(":  # the ( is there already
             text = text[: text.index("(")] if "(" in text else text
     cursor = text.find(CURSOR)
     text = text.replace(CURSOR, "")
@@ -154,13 +186,10 @@ def _functions() -> tuple[list[Suggestion], list[Suggestion], list[Suggestion]]:
         curated.append(Suggestion("function", function.name, function.syntax, function.summary, insert, key=key))
         for alias in function.aliases:
             curated.append(Suggestion("function", alias, function.syntax, function.summary, insert.replace(function.name, alias, 1)))
-        for other in function.instead_of:
-            help = f"{other} doesn't exist in formulas: {function.summary[:1].lower()}{function.summary[1:]}"
-            hints.append(Suggestion("function", other, f"→ {function.syntax}", help, insert))
+        hints += _hints(function, insert)
     for function in CURATED:
         if function.name == "+ INTERVAL":
-            for other in function.instead_of:
-                hints.append(Suggestion("function", other, f"→ {function.syntax}", function.summary, "+ INTERVAL " + CURSOR + " DAY"))
+            hints += _hints(function, "+ INTERVAL " + CURSOR + " DAY")
     curated += [Suggestion("keyword", name, detail, insert=insert) for name, insert, detail in _KEYWORDS]
     known = {s.key.casefold() for s in curated}
     more = [
@@ -168,7 +197,29 @@ def _functions() -> tuple[list[Suggestion], list[Suggestion], list[Suggestion]]:
         for f in more_functions()
         if f.name.casefold() not in known
     ]
-    return curated, hints, more
+    # A name DuckDB has (NOW, MAX, IF, ...) works: it is listed as itself, not as a hint
+    existing = known | _duckdb_names()
+    unique: dict[str, Suggestion] = {}
+    for hint in hints:
+        unique.setdefault(hint.name.casefold(), hint)
+    return curated, [h for name, h in unique.items() if name not in existing], more
+
+
+def _hints(function: Function, insert: str) -> list[Suggestion]:
+    """Names from SQL Server and spreadsheets (``instead_of``) that lead to ``function``."""
+    found = []
+    for other in function.instead_of:
+        about = function.note if other.casefold() in function.note.casefold() else function.summary
+        found.append(Suggestion("function", other, f"→ {function.syntax}", f"Instead of {other}: {about}", insert))
+    return found
+
+
+def _duckdb_names() -> set[str]:
+    con = duckdb.connect()
+    try:
+        return {row[0].casefold() for row in con.sql("SELECT DISTINCT function_name FROM duckdb_functions()").fetchall()}
+    finally:
+        con.close()
 
 
 def _first_word(name: str) -> str:

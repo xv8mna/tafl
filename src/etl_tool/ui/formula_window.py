@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from etl_tool.core.completion import column_suggestions
+from etl_tool.api.dtypes import type_label
+from etl_tool.core.completion import Suggestion, column_suggestions
 from etl_tool.core.formula_preview import NO_DATA, Column, Preview, preview
 
 from . import theme
@@ -63,6 +64,7 @@ class FormulaWindow(QDialog):
         self._frame, self._no_data, self._earlier = frame, no_data, earlier
         self._condition, self._name, self._creates = condition, name, creates
         self._original = text
+        self._shown_text = text  # the text of the last change (colouring changes nothing)
         self._discard_warned = False
         self._columns: list[Column] = []
         self._checked: tuple[object, str] | None = None  # the input of the last check
@@ -74,9 +76,7 @@ class FormulaWindow(QDialog):
         self.editor.textChanged.connect(self._text_changed)
         self.editor.setMinimumHeight(4 * self.editor.fontMetrics().lineSpacing())
         self._highlighter = FormulaHighlighter(self.editor.document())
-        self._completer = FormulaCompleter(
-            self.editor, lambda: column_suggestions([(c.name, c.type, c.row) for c in self._columns])
-        )
+        self._completer = FormulaCompleter(self.editor, self._column_suggestions)
         self.editor.cursorPositionChanged.connect(
             lambda: self.editor.setExtraSelections(bracket_selections(self.editor))
         )
@@ -212,6 +212,9 @@ class FormulaWindow(QDialog):
         super().done(result)
 
     def _text_changed(self) -> None:
+        if self.text() == self._shown_text:  # e.g. colouring the text again: nothing was typed
+            return
+        self._shown_text = self.text()
         self._discard_warned = False
         self._timer.start()
 
@@ -226,6 +229,7 @@ class FormulaWindow(QDialog):
             self._columns = result.columns
             self._fill_columns()
             self._highlighter.set_columns([c.name for c in result.columns] or None)
+            self._completer.refresh()
 
     def _failed(self, details: str) -> None:
         if not self._discard_warned:
@@ -235,6 +239,12 @@ class FormulaWindow(QDialog):
         color = theme.TEXT_DIM if ok else theme.STATUS_COLORS["error"]
         self.status.setStyleSheet(f"color: {color};")
         self.status.setText(text)
+
+    def _column_suggestions(self) -> list[Suggestion]:
+        if self._columns:  # with the rows above
+            return column_suggestions([(c.name, c.type, c.row) for c in self._columns])
+        frame = self._frame()  # before the first preview: the input columns
+        return column_suggestions([(n, type_label(t), None) for n, t in frame.schema.items()]) if frame is not None else []
 
     def _fill_columns(self) -> None:
         search = self.column_search.text().strip().lower()
