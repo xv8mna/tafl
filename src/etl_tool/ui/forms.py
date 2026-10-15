@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -38,9 +39,9 @@ from PySide6.QtWidgets import (
 )
 
 from etl_tool.api.params import List, Param, is_visible
-from etl_tool.core import functions
 
-from . import functions_window, theme
+from . import formula_window, functions_window, theme
+from .formula_window import FormulaWindow
 
 
 @dataclass
@@ -48,6 +49,8 @@ class FormContext:
     """What editors offer as choices."""
 
     columns: Callable[[str, dict[str, Any]], list[str] | None] = lambda source, values: None
+    input_frame: Callable[[], pl.DataFrame | None] = lambda: None  # the data going into the step
+    input_problem: Callable[[], str] = lambda: ""  # why there is none
     tables: list[tuple[str, str]] = field(default_factory=list)  # (id, name)
     connections: list[str] = field(default_factory=list)
     project_dir: Path | None = None
@@ -168,6 +171,7 @@ class _FormulaEdit(_PlainEdit):
     """Like Excel's formula bar: Enter applies, Shift+Enter or Alt+Enter starts a new line."""
 
     focused = Signal()
+    expand = Signal()  # F2: the formula window
 
     def focusInEvent(self, event: Any) -> None:
         super().focusInEvent(event)
@@ -175,13 +179,16 @@ class _FormulaEdit(_PlainEdit):
 
     def focusOutEvent(self, event: Any) -> None:
         if event.reason() == Qt.FocusReason.ActiveWindowFocusReason and isinstance(
-            QApplication.activeWindow(), functions_window.FunctionsWindow
-        ):  # looking something up while typing: the formula isn't finished yet
+            QApplication.activeWindow(), (functions_window.FunctionsWindow, formula_window.FormulaWindow)
+        ):  # looking something up or editing in the big window: the formula isn't finished yet
             QPlainTextEdit.focusOutEvent(self, event)
             return
         super().focusOutEvent(event)
 
     def keyPressEvent(self, event: Any) -> None:
+        if event.key() == Qt.Key.Key_F2:
+            self.expand.emit()
+            return
         plain_enter = event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
             event.modifiers() & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.AltModifier)
         )
@@ -218,13 +225,23 @@ class ExpressionEditor(Editor):
         self._functions.setText("ƒx")
         self._functions.setToolTip("Functions: what they do and how they are written (F1)")
         self._functions.clicked.connect(self._show_functions)
+        self._expand = QToolButton(self)
+        self._expand.setText("⤢")
+        self._expand.setToolTip("Formula window: a bigger editor with the columns, the functions and a preview (F2)")
+        self._expand.clicked.connect(self.open_window)
+        self._edit.expand.connect(self.open_window)
         self._columns: list[str] = []
         self._last = ""
+        # In a list (Calculate columns): the (name, formula) of the rows above, and this row's name
+        self.earlier: Callable[[], list[tuple[str, str]]] = list
+        self.creates_name: Callable[[], str] = str
+        self.window_open: FormulaWindow | None = None
         buttons = QVBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.setSpacing(2)
         buttons.addWidget(self._insert)
         buttons.addWidget(self._functions)
+        buttons.addWidget(self._expand)
         buttons.addStretch(1)
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -234,16 +251,41 @@ class ExpressionEditor(Editor):
         self.setLayout(layout)
 
     def insert_template(self, template: str) -> None:
-        """Insert a function at the cursor; typing goes on where the template marks it. Selected
-        text goes there too: with [Price] selected, ROUND gives ROUND([Price])."""
-        before, _, after = template.partition(functions.CURSOR)
-        cursor = self._edit.textCursor()
-        selected = cursor.selectedText().replace(" ", "\n")  # Qt's paragraph separator
-        cursor.insertText(before + selected + after)
-        cursor.setPosition(cursor.position() - len(after))
-        self._edit.setTextCursor(cursor)
+        """Insert a function at the cursor (see functions_window.insert_into)."""
+        functions_window.insert_into(self._edit, template)
         self._edit.window().activateWindow()
         self._edit.setFocus()
+
+    def open_window(self) -> None:
+        """Edit the formula in the formula window; Apply there applies it here."""
+        if self.window_open is not None:
+            self.window_open.raise_()
+            return
+        name = self.creates_name().strip()
+        title = f"{self.param.label} for [{name}]" if name else self.param.label
+        window = FormulaWindow(
+            self.window(),
+            self.value(),
+            title=title,
+            frame=lambda: self.ctx.input_frame(),
+            no_data=lambda: self.ctx.input_problem(),
+            earlier=self.earlier,
+            condition=bool(getattr(self.param, "condition", False)),
+            name=name,
+        )
+        window.applied.connect(self.apply_text)
+        window.finished.connect(self._window_closed)
+        self.window_open = window
+        window.open()
+
+    def apply_text(self, text: str) -> None:
+        self._edit.setPlainText(text)
+        self._commit()
+
+    def _window_closed(self) -> None:
+        self.window_open = None
+        self._edit.setFocus()
+        self._edit.moveCursor(self._edit.textCursor().MoveOperation.End)
 
     def apply(self) -> None:
         """Apply what is typed (as Enter does)."""
@@ -263,6 +305,8 @@ class ExpressionEditor(Editor):
     def refresh(self, ctx: FormContext, values: dict[str, Any]) -> None:
         super().refresh(ctx, values)
         self._columns = ctx.columns("input", values) or []
+        if self.window_open is not None:  # e.g. the data going into the step is calculated now
+            self.window_open.inputs_changed()
 
     def _fill_menu(self) -> None:
         self._menu.clear()
@@ -728,6 +772,11 @@ class ListEditor(Editor):
             editor.set_value(values.get(f.key, f.initial()))
             editor.changed.connect(self._child_changed)
             editors[f.key] = editor
+        for f in self._fields:  # a formula that creates a column: later rows can use it
+            creates, editor = getattr(f, "creates", ""), editors[f.key]
+            if creates in editors and isinstance(editor, ExpressionEditor):
+                editor.earlier = lambda n=number, f=f: [(r[f.creates].value(), r[f.key].value()) for r in self._rows[:n]]
+                editor.creates_name = editors[creates].value
         tools = QWidget(self)
         tools.setLayout(
             _row(

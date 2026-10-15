@@ -15,34 +15,14 @@ from typing import Any
 import polars as pl
 from PySide6.QtCore import QAbstractTableModel, QLocale, QModelIndex, QPersistentModelIndex, Qt
 
+from etl_tool.api.dtypes import type_label
+
 BLOCK = 256
 _MAX_BLOCKS = 64
 _MAX_TEXT = 500
 
 Index = QModelIndex | QPersistentModelIndex
 _ROOT = QModelIndex()
-
-
-def type_label(dtype: pl.DataType) -> str:
-    if dtype == pl.String:
-        return "text"
-    if dtype.is_integer():
-        return "integer"
-    if dtype.is_float() or isinstance(dtype, pl.Decimal):
-        return "number"
-    if dtype == pl.Date:
-        return "date"
-    if dtype == pl.Datetime:
-        return "date-time"
-    if dtype == pl.Time:
-        return "time"
-    if dtype == pl.Boolean:
-        return "true/false"
-    if dtype == pl.Duration:
-        return "duration"
-    if dtype == pl.Null:
-        return "empty"
-    return str(dtype).lower()
 
 
 class DisplayFormat:

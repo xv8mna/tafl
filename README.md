@@ -83,6 +83,12 @@ app). On the command line:
   ("month", "round"); names from SQL Server and spreadsheets find what to use instead (DATEADD,
   EOMONTH, NEWID, …). The window can stay open; Enter or a double-click inserts the function
   where the cursor was in the formula (around the selected text, if any), Esc closes it.
+- **Formula window** (F2 in a formula, or **⤢** next to it): a big editor with the step's columns
+  and their types (double-click or Enter inserts one), the function list, and a preview of the
+  result on the first 1,000 rows that updates while you type: the columns the formula uses next
+  to the result, its type, mistakes in plain words, and for a filter how many rows it keeps. In
+  *Calculate columns* the columns of the rows above are there too. Enter starts a new line,
+  Ctrl+Enter applies, Esc cancels (twice if you changed something).
 - **Run project** (F5) calculates all tables and executes the exports; **Run this table**
   (Shift+F5) runs only the selected table and the tables it uses. While you edit, exports never
   write anything. **Reload data** (Ctrl+R) reads files and databases again; a changed file is

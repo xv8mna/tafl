@@ -182,3 +182,13 @@ def test_results_a_column_cant_hold(people):
     assert expressions.evaluate(people, "NOW()").dtype == pl.Datetime("us")  # local time, without a time zone
     with pytest.raises(ActionError, match="there is no function PROPER: for a capital first letter"):
         expressions.evaluate(people, "PROPER([Name])")
+
+
+def test_columns_star_leaves_out_the_row_number():
+    """The hidden column that keeps the rows in order is not one of the columns of COLUMNS(*)."""
+    df = pl.DataFrame({"a1": [1, 2], "a2": [10, 20], "b": [100, 200]})
+    assert expressions.evaluate(df, "COALESCE(*COLUMNS(*))").to_list() == [1, 2]
+    assert expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*columns( * )))").to_list() == [111, 222]
+    assert expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*COLUMNS(* EXCLUDE (b))))").to_list() == [11, 22]
+    assert expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*COLUMNS(* EXCLUDE [b])))").to_list() == [11, 22]
+    assert expressions.evaluate(df, "COUNT(*) OVER ()").to_list() == [2, 2]

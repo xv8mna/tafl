@@ -1,6 +1,6 @@
 """The list of formula functions: search, categories, what each one does, how it is written, an
-example. It stays open next to the app (F1); Insert or a double-click puts the function into the
-formula field that was used last."""
+example. As a window it stays open next to the app (F1) and inserts into the formula field used
+last; the formula window (F2) shows the same list beside its editor."""
 
 from __future__ import annotations
 
@@ -8,15 +8,17 @@ import html
 import weakref
 from typing import Any, Protocol
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QPlainTextEdit,
     QPushButton,
     QSplitter,
     QTextBrowser,
@@ -27,11 +29,192 @@ from PySide6.QtWidgets import (
 )
 
 from etl_tool.core import functions
-from etl_tool.core.functions import CATEGORIES, MORE, Function
+from etl_tool.core.functions import CATEGORIES, CURSOR, MORE, Function
 
 from . import theme
 
 _ALL = "All"
+
+
+def insert_into(edit: QPlainTextEdit, template: str) -> None:
+    """Insert a function at the cursor; typing goes on where the template marks it. Selected text
+    goes there too: with [Price] selected, ROUND gives ROUND([Price])."""
+    before, _, after = template.partition(CURSOR)
+    cursor = edit.textCursor()
+    selected = cursor.selectedText().replace(" ", "\n")  # Qt's paragraph separator
+    cursor.insertText(before + selected + after)
+    cursor.setPosition(cursor.position() - len(after))
+    edit.setTextCursor(cursor)
+
+
+class FunctionsPanel(QWidget):
+    """Search, categories, the list and the details of one function. ``chosen`` is emitted for
+    Enter in the search or the list, and for a double-click."""
+
+    chosen = Signal(object)  # Function
+    current_changed = Signal()
+
+    def __init__(self, parent: QWidget | None = None, *, compact: bool = False) -> None:
+        super().__init__(parent)
+        self.search = QLineEdit(self)
+        self.search.setPlaceholderText("Search: name or what it does, e.g. round, month" if compact else
+                                       "Search by name or by what it does, e.g. round, month, similar")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._search_changed)
+        self.search.returnPressed.connect(self._choose)
+        self.search.installEventFilter(self)
+        self._searching = False
+
+        names = [(_ALL, len(functions.all_functions()))]
+        names += [(c, sum(f.category == c for f in functions.all_functions())) for c in CATEGORIES]
+        if compact:  # a narrow pane: categories in a drop-down
+            self.categories: QComboBox | QListWidget = QComboBox(self)
+            for name, count in names:
+                self.categories.addItem(f"{name}  ({count})", name)
+            self.categories.currentIndexChanged.connect(lambda _index: self._fill())
+        else:
+            self.categories = QListWidget(self)
+            for name, count in names:
+                item = QListWidgetItem(f"{name}  ({count})")
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                self.categories.addItem(item)
+            self.categories.setCurrentRow(0)
+            self.categories.currentRowChanged.connect(lambda _row: self._fill())
+            self.categories.setMinimumWidth(150)
+
+        self.list = QTreeWidget(self)
+        self.list.setColumnCount(2)
+        self.list.setHeaderLabels(["Function", "What it does"])
+        self.list.setRootIsDecorated(False)
+        self.list.setUniformRowHeights(True)
+        self.list.setColumnWidth(0, 150 if compact else 190)
+        self.list.currentItemChanged.connect(lambda current, _previous: self._show(current))
+        self.list.itemActivated.connect(lambda _item, _column: self._choose())  # Enter or double-click
+
+        self.details = QTextBrowser(self)
+        self.details.setOpenLinks(False)
+
+        listing = QSplitter(Qt.Orientation.Vertical, self)
+        listing.addWidget(self.list)
+        listing.addWidget(self.details)
+        listing.setSizes([340, 220])
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.search)
+        if compact:
+            layout.addWidget(self.categories)
+            layout.addWidget(listing, 1)
+        else:
+            body = QSplitter(Qt.Orientation.Horizontal, self)
+            body.addWidget(self.categories)
+            body.addWidget(listing)
+            body.setStretchFactor(1, 1)
+            body.setSizes([190, 770])
+            layout.addWidget(body, 1)
+        self._fill()
+
+    def current(self) -> Function | None:
+        item = self.list.currentItem()
+        return item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+
+    def category_index(self) -> int:
+        categories = self.categories
+        return categories.currentIndex() if isinstance(categories, QComboBox) else categories.currentRow()
+
+    def set_category_index(self, index: int) -> None:
+        if isinstance(self.categories, QComboBox):
+            self.categories.setCurrentIndex(index)
+        else:
+            self.categories.setCurrentRow(index)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Up and down in the search field move through the list, so typing and Enter is enough."""
+        steps = {Qt.Key.Key_Down: 1, Qt.Key.Key_Up: -1, Qt.Key.Key_PageDown: 10, Qt.Key.Key_PageUp: -10}
+        if watched is self.search and isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
+            step = steps.get(Qt.Key(event.key()))
+            if step is not None and self.list.topLevelItemCount():
+                row = self.list.indexOfTopLevelItem(self.list.currentItem()) if self.list.currentItem() else -1
+                row = min(max(row + step, 0), self.list.topLevelItemCount() - 1)
+                self.list.setCurrentItem(self.list.topLevelItem(row))
+                return True
+        return super().eventFilter(watched, event)
+
+    def _choose(self) -> None:
+        function = self.current()
+        if function is not None:
+            self.chosen.emit(function)
+
+    def _search_changed(self, text: str) -> None:
+        """A new search looks through all categories (a category picked afterwards narrows it)."""
+        if text.strip() and not self._searching:
+            self.categories.blockSignals(True)
+            self.set_category_index(0)
+            self.categories.blockSignals(False)
+        self._searching = bool(text.strip())
+        self._fill()
+
+    def _fill(self) -> None:
+        if isinstance(self.categories, QComboBox):
+            category = self.categories.currentData() or _ALL
+        else:
+            item = self.categories.currentItem()
+            category = item.data(Qt.ItemDataRole.UserRole) if item is not None else _ALL
+        found = functions.search(self.search.text(), None if category == _ALL else category)
+        self.list.clear()
+        rows = []
+        for function in found:
+            row = QTreeWidgetItem([function.name, function.summary])
+            row.setData(0, Qt.ItemDataRole.UserRole, function)
+            row.setToolTip(0, function.name)
+            row.setToolTip(1, function.summary)
+            if function.category == MORE:
+                row.setForeground(0, QColor(theme.TEXT_DIM))
+            rows.append(row)
+        self.list.addTopLevelItems(rows)
+        if rows:
+            self.list.setCurrentItem(rows[0])
+        else:
+            self._show(None)
+
+    def _show(self, item: QTreeWidgetItem | None) -> None:
+        function: Function | None = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+        self.current_changed.emit()
+        if function is None:
+            self.details.setHtml(f"<p style='color:{theme.TEXT_DIM}'>No function matches the search.</p>")
+            return
+        self.details.setHtml(details_html(function))
+
+
+def details_html(function: Function) -> str:
+    mono = f"font-family:'{theme.monospace_font().family()}'"  # inside style="..."
+    dim = f"color:{theme.TEXT_DIM}"
+    summary = function.summary if function.summary.endswith((".", "!", "?", "…")) else function.summary + "."
+    parts = [
+        f"<h3 style='margin:0'>{html.escape(function.name)}</h3>",
+        f'<p style="{mono}; color:{theme.ACCENT}">{html.escape(function.syntax)}</p>',
+        f"<p>{html.escape(summary)}</p>",
+    ]
+    if function.note:
+        parts += [f"<p>{html.escape(paragraph)}</p>" for paragraph in function.note.split("\n\n")]
+    if function.example:
+        parts.append(f'<p><b>Example</b><br><span style="{mono}">{html.escape(function.example)}</span></p>')
+    if function.sql_example:
+        caveat = " There [1, 2] is a list, not a column; columns are written without brackets." if "[" in function.sql_example else ""
+        parts.append(
+            f"<p><b>DuckDB's example</b> <span style='{dim}'>(plain SQL, not a formula.{caveat})</span><br>"
+            f'<span style="{mono}">{html.escape(function.sql_example)}</span></p>'
+        )
+    if function.aliases:
+        parts.append(f"<p>Also written: {html.escape(', '.join(function.aliases))}</p>")
+    if function.instead_of:
+        parts.append(f"<p>Use it instead of: {html.escape(', '.join(function.instead_of))} (from SQL Server or spreadsheets)</p>")
+    if function.helper:
+        parts.append(f"<p style='{dim}'>Added by Tafl for people who know SQL Server.</p>")
+    parts.append(f"<p style='{dim}'>{html.escape(function.category)}</p>")
+    return "".join(parts)
+
+
+# --- the window (F1) and the formula field it inserts into ------------------------------------
 
 
 class FormulaField(Protocol):
@@ -86,36 +269,12 @@ class FunctionsWindow(QWidget):
         FunctionsWindow._instances.add(self)
         self.setWindowTitle("Formula functions")
         self.resize(960, 600)
-
-        self.search = QLineEdit(self)
-        self.search.setPlaceholderText("Search by name or by what it does, e.g. round, month, similar")
-        self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(self._search_changed)
-        self.search.returnPressed.connect(self.insert)
-        self.search.installEventFilter(self)
-        self._searching = False
-
-        self.categories = QListWidget(self)
-        for name in (_ALL, *CATEGORIES):
-            count = len(functions.all_functions()) if name == _ALL else sum(f.category == name for f in functions.all_functions())
-            item = QListWidgetItem(f"{name}  ({count})")
-            item.setData(Qt.ItemDataRole.UserRole, name)
-            self.categories.addItem(item)
-        self.categories.setCurrentRow(0)
-        self.categories.currentRowChanged.connect(lambda _row: self._fill())
-        self.categories.setMinimumWidth(150)
-
-        self.list = QTreeWidget(self)
-        self.list.setColumnCount(2)
-        self.list.setHeaderLabels(["Function", "What it does"])
-        self.list.setRootIsDecorated(False)
-        self.list.setUniformRowHeights(True)
-        self.list.setColumnWidth(0, 190)
-        self.list.currentItemChanged.connect(lambda current, _previous: self._show(current))
-        self.list.itemActivated.connect(lambda _item, _column: self.insert())  # Enter or double-click
-
-        self.details = QTextBrowser(self)
-        self.details.setOpenLinks(False)
+        self.panel = FunctionsPanel(self)
+        self.panel.chosen.connect(lambda _function: self.insert())
+        self.panel.current_changed.connect(self.update_insert)
+        self.search, self.list, self.details, self.categories = (
+            self.panel.search, self.panel.list, self.panel.details, self.panel.categories,
+        )  # fmt: skip
 
         self.insert_button = QPushButton("Insert into the formula", self)
         self.insert_button.clicked.connect(self.insert)
@@ -123,25 +282,14 @@ class FunctionsWindow(QWidget):
         self.copy_button.clicked.connect(self.copy_example)
         self.hint = QLabel(self)
         self.hint.setObjectName("Dim")
-
-        right = QSplitter(Qt.Orientation.Vertical, self)
-        right.addWidget(self.list)
-        right.addWidget(self.details)
-        right.setSizes([340, 220])
-        body = QSplitter(Qt.Orientation.Horizontal, self)
-        body.addWidget(self.categories)
-        body.addWidget(right)
-        body.setStretchFactor(1, 1)
-        body.setSizes([190, 770])
         buttons = QHBoxLayout()
         buttons.addWidget(self.hint, 1)
         buttons.addWidget(self.copy_button)
         buttons.addWidget(self.insert_button)
         layout = QVBoxLayout(self)
-        layout.addWidget(self.search)
-        layout.addWidget(body, 1)
+        layout.addWidget(self.panel, 1)
         layout.addLayout(buttons)
-        self._fill()
+        self.update_insert()
 
     @classmethod
     def open_windows(cls) -> list[FunctionsWindow]:
@@ -155,8 +303,7 @@ class FunctionsWindow(QWidget):
         return found
 
     def current(self) -> Function | None:
-        item = self.list.currentItem()
-        return item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+        return self.panel.current()
 
     def insert(self) -> None:
         function, field = self.current(), target()
@@ -182,18 +329,6 @@ class FunctionsWindow(QWidget):
             self.hint.setText("Enter or a double-click inserts the function.")
         self.copy_button.setEnabled(function is not None and bool(function.example))
 
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Up and down in the search field move through the list, so typing and Enter is enough."""
-        steps = {Qt.Key.Key_Down: 1, Qt.Key.Key_Up: -1, Qt.Key.Key_PageDown: 10, Qt.Key.Key_PageUp: -10}
-        if watched is self.search and isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
-            step = steps.get(Qt.Key(event.key()))
-            if step is not None and self.list.topLevelItemCount():
-                row = self.list.indexOfTopLevelItem(self.list.currentItem()) if self.list.currentItem() else -1
-                row = min(max(row + step, 0), self.list.topLevelItemCount() - 1)
-                self.list.setCurrentItem(self.list.topLevelItem(row))
-                return True
-        return super().eventFilter(watched, event)
-
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.close()
@@ -204,65 +339,3 @@ class FunctionsWindow(QWidget):
         if event.type() == QEvent.Type.ActivationChange:
             self.update_insert()
         super().changeEvent(event)
-
-    def _search_changed(self, text: str) -> None:
-        """A new search looks through all categories (a category picked afterwards narrows it)."""
-        if text.strip() and not self._searching:
-            self.categories.blockSignals(True)
-            self.categories.setCurrentRow(0)
-            self.categories.blockSignals(False)
-        self._searching = bool(text.strip())
-        self._fill()
-
-    def _fill(self) -> None:
-        item = self.categories.currentItem()
-        category = item.data(Qt.ItemDataRole.UserRole) if item is not None else _ALL
-        found = functions.search(self.search.text(), None if category == _ALL else category)
-        self.list.clear()
-        rows = []
-        for function in found:
-            row = QTreeWidgetItem([function.name, function.summary])
-            row.setData(0, Qt.ItemDataRole.UserRole, function)
-            row.setToolTip(0, function.name)
-            row.setToolTip(1, function.summary)
-            if function.category == MORE:
-                row.setForeground(0, QColor(theme.TEXT_DIM))
-            rows.append(row)
-        self.list.addTopLevelItems(rows)
-        if rows:
-            self.list.setCurrentItem(rows[0])
-        else:
-            self._show(None)
-
-    def _show(self, item: QTreeWidgetItem | None) -> None:
-        function: Function | None = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
-        self.update_insert()
-        if function is None:
-            self.details.setHtml(f"<p style='color:{theme.TEXT_DIM}'>No function matches the search.</p>")
-            return
-        mono = f"font-family:'{theme.monospace_font().family()}'"  # inside style="..."
-        dim = f"color:{theme.TEXT_DIM}"
-        summary = function.summary if function.summary.endswith((".", "!", "?", "…")) else function.summary + "."
-        parts = [
-            f"<h3 style='margin:0'>{html.escape(function.name)}</h3>",
-            f'<p style="{mono}; color:{theme.ACCENT}">{html.escape(function.syntax)}</p>',
-            f"<p>{html.escape(summary)}</p>",
-        ]
-        if function.note:
-            parts += [f"<p>{html.escape(paragraph)}</p>" for paragraph in function.note.split("\n\n")]
-        if function.example:
-            parts.append(f'<p><b>Example</b><br><span style="{mono}">{html.escape(function.example)}</span></p>')
-        if function.sql_example:
-            caveat = " There [1, 2] is a list, not a column; columns are written without brackets." if "[" in function.sql_example else ""
-            parts.append(
-                f"<p><b>DuckDB's example</b> <span style='{dim}'>(plain SQL, not a formula.{caveat})</span><br>"
-                f'<span style="{mono}">{html.escape(function.sql_example)}</span></p>'
-            )
-        if function.aliases:
-            parts.append(f"<p>Also written: {html.escape(', '.join(function.aliases))}</p>")
-        if function.instead_of:
-            parts.append(f"<p>Use it instead of: {html.escape(', '.join(function.instead_of))} (from SQL Server or spreadsheets)</p>")
-        if function.helper:
-            parts.append(f"<p style='{dim}'>Added by Tafl for people who know SQL Server.</p>")
-        parts.append(f"<p style='{dim}'>{html.escape(function.category)}</p>")
-        self.details.setHtml("".join(parts))

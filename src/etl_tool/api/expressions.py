@@ -153,9 +153,12 @@ def translate(formula: str) -> str:
     problem = _unclosed(formula, tokens)
     if problem:
         raise ActionError(f"Formula error: {problem}\nFormula: {formula}")
+    around = _hide_row_number(formula, tokens)
     out: list[str] = []
     for index, token in enumerate(tokens):
         text = formula[token.start : token.end]
+        before, after = around.get(index, ("", ""))
+        out.append(before)
         if token.kind == "column":
             out.append('"' + _name(formula, token).replace('"', '""') + '"')
         elif token.kind == "comment":
@@ -164,7 +167,32 @@ def translate(formula: str) -> str:
             out.append(_REWRITES.get(text.lower(), text))
         else:
             out.append(text)
+        out.append(after)
     return "".join(out)
+
+
+def _hide_row_number(formula: str, tokens: list[Token]) -> dict[int, tuple[str, str]]:
+    """``COLUMNS(*)`` must not see the row number that keeps the rows in order: what to add
+    before and after tokens so that it becomes ``COLUMNS(* EXCLUDE (__etl_row__))``."""
+    around: dict[int, tuple[str, str]] = {}
+    for index, token in enumerate(tokens):
+        if token.kind != "word" or _fold(formula[token.start : token.end]) != "columns" or not _is_call(tokens, index):
+            continue
+        star = _next_index(tokens, _next_index(tokens, index))
+        if star is None or formula[tokens[star].start : tokens[star].end] != "*":
+            continue
+        exclude = _next_index(tokens, star)
+        if exclude is None or tokens[exclude].kind != "word" or _fold(formula[tokens[exclude].start : tokens[exclude].end]) != "exclude":
+            around[star] = ("", f" EXCLUDE ({_ROW})")
+            continue
+        names = _next_index(tokens, exclude)
+        if names is None:
+            continue
+        if tokens[names].kind == "open":  # EXCLUDE (a, b)
+            around[names] = ("", f"{_ROW}, ")
+        else:  # EXCLUDE a
+            around[names] = (f"({_ROW}, ", ")")
+    return around
 
 
 def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.Series:
@@ -289,9 +317,17 @@ def _name(formula: str, token: Token) -> str:
 
 def _next(tokens: list[Token], index: int) -> Token | None:
     """The next token after ``index`` that isn't a space or comment."""
+    following = _next_index(tokens, index)
+    return tokens[following] if following is not None else None
+
+
+def _next_index(tokens: list[Token], index: int | None) -> int | None:
+    """The index of the next token after ``index`` that isn't a space or comment."""
+    if index is None:
+        return None
     for j in range(index + 1, len(tokens)):
         if tokens[j].kind not in ("space", "comment"):
-            return tokens[j]
+            return j
     return None
 
 

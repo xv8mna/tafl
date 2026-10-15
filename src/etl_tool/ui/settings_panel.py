@@ -159,6 +159,8 @@ class SettingsPanel(QWidget):
 
         return FormContext(
             columns=columns,
+            input_frame=lambda: session.input_frame(step),
+            input_problem=lambda: session.input_problem(step),
             tables=[(t.id, t.name) for t in session.project.tables if t.id != session.table_id],
             connections=[c.name for c in session.project.connections],
             project_dir=session.project.directory,

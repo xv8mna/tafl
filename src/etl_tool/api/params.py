@@ -115,6 +115,7 @@ class Expression(Text):
     """A SQL-style formula (see ``etl_tool.api.expressions``)."""
 
     condition: bool = False  # True: the formula must be true/false for each row
+    creates: str = ""  # in a list: the field naming the column the formula creates (later rows can use it)
     kind: ClassVar[str] = "expression"
 
 

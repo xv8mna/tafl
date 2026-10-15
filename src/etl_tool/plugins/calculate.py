@@ -34,7 +34,7 @@ _FUNCTION_LABELS = dict(_FUNCTIONS)
             "New columns",
             fields=[
                 P.Text("name", "Column name", required=True),
-                P.Expression("formula", "Formula", required=True, placeholder="[Price] * [Quantity]"),
+                P.Expression("formula", "Formula", required=True, placeholder="[Price] * [Quantity]", creates="name"),
             ],
             min_items=1,
         ),

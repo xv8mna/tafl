@@ -1,0 +1,113 @@
+"""The preview of a formula on the first rows (formula window)."""
+
+import threading
+import time
+
+import polars as pl
+import pytest
+
+from etl_tool.api import Cancelled
+from etl_tool.core.cancel import CancelEvent
+from etl_tool.core.formula_preview import preview, used_columns
+
+DATA = pl.DataFrame({"Net": [10.0, 20.0, None], "Name": ["a", "b", "c"], "Amount": [1, 2, 3]})
+
+
+def test_result_and_used_columns():
+    result = preview(DATA, "ROUND([Net] * 1.19, 2)", name="Gross")
+    assert result.ok and result.message == "Result: number · no errors in all 3 rows"
+    assert result.rows.columns == ["Net", "Gross"] and result.rows["Gross"].to_list() == [11.9, 23.8, None]
+    assert [(c.name, c.type) for c in result.columns] == [("Net", "number"), ("Name", "text"), ("Amount", "integer")]
+    assert preview(DATA, "[Net] + 1", name="Net").rows.columns == ["Net", "Net (new)"]  # replaces the column
+    assert preview(DATA, "GETDATE()").rows.columns == ["Row", "Result"]  # no column used: numbered rows
+    assert preview(DATA, "42", name="Row").rows.columns == ["Row", "Row (new)"]
+    clash = pl.DataFrame({"Total": [1, 2], "Total (new)": [5, 6]})
+    assert preview(clash, "[Total] + [Total (new)]", name="Total").rows.columns == ["Total", "Total (new)", "Total (new) (new)"]
+
+
+def test_rows_above_come_first():
+    result = preview(DATA, "[Gross] * 2", [("Gross ", "[Net] * 2")])  # the step ignores spaces around names
+    assert result.ok and result.rows["Result"].to_list() == [40.0, 80.0, None]
+    assert (result.columns[-1].name, result.columns[-1].row) == ("Gross", 1)
+    replaced = preview(DATA, "[Net]", [("Net", "[Net] * 2")])  # replaced in place, as the step does
+    assert [c.name for c in replaced.columns] == ["Name", "Amount", "Net"] and replaced.rows["Result"][0] == 20.0
+
+
+def test_what_the_step_rejects_in_the_rows_above():
+    broken = preview(DATA, "[Net] + 1", [("G", "[Nett] * 2")])
+    assert not broken.ok and broken.message == "Row 1 ([G]) has an error: Column [Nett] not found (did you mean [Net]?)"
+    assert broken.rows is not None  # this formula is fine: its values are shown
+    assert preview(DATA, "[Gross] + 1", [("Gross", "")]).message == "Row 1 ([Gross]) has no formula yet."
+    assert preview(DATA, "[Net] + 1", [("", "[Net] * 2")]).message == "Row 1 has no column name yet: the step needs one."
+    assert preview(DATA, "[Net] + 1", [("", " ")]).message.startswith("Row 1 is still empty")
+    twice = "Two new columns are named “G” (rows 1 and 2): give each one its own name."
+    assert preview(DATA, "[G] + 1", [("G", "[Net] * 2"), ("G", "[Net] * 3")]).message == twice
+    assert preview(DATA, "[Net] + 1", [("G", "[Net] * 2")], name=" G").message == twice  # this row's name too
+    assert not preview(DATA, "", [("G", "")]).ok
+
+
+def test_conditions_errors_and_no_data():
+    counts = preview(DATA, "[Net] > 15", condition=True)
+    assert counts.message == "True for 1, false for 1, empty for 1 (counts as false) of all 3 rows"
+    assert not preview(DATA, "[Amount] + 1", condition=True).ok
+    error = preview(DATA, "[Amont] * 2")
+    assert not error.ok and error.message == "Column [Amont] not found (did you mean [Amount]?)"
+    assert not preview(None, "[Net]").ok
+    assert preview(None, "[Net]", no_data="The table is turned off.").message == "The table is turned off."
+    assert preview(DATA, "  ").ok and preview(DATA, "  ").rows is None
+    assert preview(DATA, "-- just a note").rows is None
+
+
+def test_names_that_differ_only_in_case_give_the_steps_error():
+    for formula in ("[NET] * 2", "net * 2"):
+        result = preview(pl.DataFrame({"Net": [1.0], "NET": [10.0], "x": [0]}), formula)
+        assert not result.ok and "differ only in upper and lower case" in result.message
+
+
+def test_star_and_columns_use_all_columns():
+    df = pl.DataFrame({"a1": [1, 2], "a2": [10, 20], "b": [100, 200]})
+    assert preview(df, "GREATEST(*COLUMNS(*))").rows["Result"].to_list() == [100, 200]
+    assert preview(df, "LIST_SUM(LIST_VALUE(*COLUMNS('a.*')))").rows["Result"].to_list() == [11, 22]
+    assert preview(df, "COUNT(*) OVER ()").rows["Result"].to_list() == [2, 2]
+
+
+def test_only_the_used_columns_are_evaluated():
+    """Registering hundreds of columns costs more than the formula: they are left out."""
+    wide = pl.DataFrame({f"c{i}": list(range(1500)) for i in range(300)})
+    result = preview(wide, "[c1] + C299 + LENGTH('x')")
+    assert result.message == "Result: integer · no errors in the first 1,000 rows"
+    assert result.rows.columns == ["c1", "c299", "Result"] and result.rows["Result"][2] == 2 + 2 + 1
+    assert used_columns("[Net] + amount + ROUND(x) + net", DATA.columns) == ["Net", "Amount"]
+    assert preview(DATA, "(SELECT 1) + [Amount]").ok  # falls back to all columns when needed
+    rows_above = [(f"n{i}", f"[c{i}] + 1") for i in range(10)]
+    started = time.perf_counter()
+    for _ in range(5):
+        assert preview(wide, "[n9] * 2", rows_above).ok
+    assert time.perf_counter() - started < 2  # the rows above are evaluated once, on their columns
+
+
+def test_used_columns_are_what_the_formula_reads():
+    columns = ["Date", "Day", "End", "Year", "x", 'x"y', 'x""y', "p]q", "p]]q"]
+    assert used_columns("CAST([x] AS DATE) + INTERVAL 3 DAY", columns) == ["x"]
+    assert used_columns("CASE WHEN [x] > '' THEN 1 END", columns) == ["x"]
+    assert used_columns("DATE '2020-01-01' + INTERVAL 1 YEAR + x::date", columns) == ["x"]
+    assert used_columns("Date + 1", columns) == ["Date"]
+    assert used_columns('[x""y] + "p]]q"', columns) == ['x""y', "p]]q"]  # each kind of name has its own escape
+
+
+def test_the_window_function_note():
+    big = pl.DataFrame({"Overtime": list(range(1500))})
+    assert "window functions" not in preview(big, "[Overtime] * 2").message
+    condition = preview(big, "[Overtime] > AVG([Overtime]) OVER ()", condition=True)
+    assert condition.message.endswith("(window functions see only these rows here)")
+
+
+def test_a_cancelled_preview_stops_its_query():
+    cancel = CancelEvent()
+    slow = "(SELECT SUM(range % 7) FROM range(5000000000)) + [Amount]"
+    threading.Timer(0.3, cancel.set).start()
+    started = time.perf_counter()
+    with pytest.raises(Cancelled):
+        preview(DATA, slow, cancel=cancel)
+    assert time.perf_counter() - started < 5
+    assert preview(DATA, "[Amount] + 1").ok  # the connection works on

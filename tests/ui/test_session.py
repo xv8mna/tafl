@@ -95,3 +95,29 @@ def test_renaming_a_connection_updates_its_steps(session, registry, tmp_path):
     session.open_project(tmp_path / "x.tafl")
     session.set_connections([Connection("main", "sqlite", {"file": "data.db"})], {"db": "main"})
     assert session.find_step(step.id)[1].params["connection"] == "main"
+
+
+def test_the_input_of_a_step_waits_for_new_results(qtbot, settle, session, demo):
+    """After a step is moved, the old results don't show what goes into the steps after it."""
+    session.open_project(demo)
+    session.select_table(session.project.table("Orders").id)
+    settle(session)
+    calculate, numbering = session.table.steps[5], session.table.steps[6]
+    assert "Gross" not in session.input_columns(calculate)
+    session.move_step(numbering.id, 5)  # now before Calculate columns
+    assert session.input_frame(calculate) is None  # not the old output of the numbering step
+    assert session.input_problem(calculate).startswith("The steps before this one are still being calculated")
+    settle(session)
+    assert session.input_columns(calculate)[-1] == "Order of customer" and "Gross" not in session.input_columns(calculate)
+
+
+def test_why_a_step_has_no_input(qtbot, settle, session, demo):
+    session.open_project(demo)
+    orders = session.project.table("Orders")
+    session.select_table(orders.id)
+    settle(session)
+    assert session.input_problem(orders.steps[0]).startswith("This is the first step")
+    session.set_table_enabled([orders.id], False)
+    settle(session)
+    assert session.input_frame(orders.steps[5]) is None
+    assert session.input_problem(orders.steps[5]) == "“Orders” is turned off, so it isn't calculated. Turn it on to see a preview."

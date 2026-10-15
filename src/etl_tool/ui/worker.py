@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from etl_tool.api import Cancelled
 from etl_tool.api.expressions import is_panic
+from etl_tool.core.cancel import CancelEvent
 
 
 class _Signals(QObject):
@@ -59,16 +60,18 @@ class Worker(QObject):
         self._signals.cancelled.connect(self._on_cancelled)
         self._latest = 0
         self._busy = False
-        self._cancel: threading.Event | None = None
+        self._cancel: CancelEvent | None = None
 
     @property
     def busy(self) -> bool:
         return self._busy
 
     def start(self, work: Callable[[threading.Event], Any]) -> None:
-        """Run ``work(cancel_event)`` in the background."""
+        """Run ``work(cancel_event)`` in the background. The event is a CancelEvent, so the work
+        can also have a callback run when it is cancelled."""
         self.cancel()
-        cancel = threading.Event()
+        self._pool.clear()  # jobs that are still waiting for a thread are outdated now
+        cancel = CancelEvent()
         self._cancel = cancel
         self._latest += 1
         self._pool.start(_Job(self._latest, lambda: work(cancel), self._signals))

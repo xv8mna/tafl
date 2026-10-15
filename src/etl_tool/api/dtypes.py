@@ -237,6 +237,29 @@ def midnight_to_date(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(updates)
 
 
+def type_label(dtype: pl.DataType) -> str:
+    """The word for a type that the app shows: text, integer, number, date, ..."""
+    if dtype == pl.String:
+        return "text"
+    if dtype.is_integer():
+        return "integer"
+    if dtype.is_float() or isinstance(dtype, pl.Decimal):
+        return "number"
+    if dtype == pl.Date:
+        return "date"
+    if dtype == pl.Datetime:
+        return "date-time"
+    if dtype == pl.Time:
+        return "time"
+    if dtype == pl.Boolean:
+        return "true/false"
+    if dtype == pl.Duration:
+        return "duration"
+    if dtype == pl.Null:
+        return "empty"
+    return str(dtype).lower()
+
+
 def normalize(s: pl.Series) -> pl.Series:
     """Map other types to the app's standard ones (Decimal -> Int64/Float64, Int32 -> Int64, ...)."""
     dtype = s.dtype

@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from etl_tool.api import Action, Mode
@@ -168,18 +169,43 @@ class Session(QObject):
             return None
         return next((r for r in result.steps if r.step_id == step.id), None)
 
-    def input_columns(self, step: Step | None) -> list[str] | None:
-        """Columns of the table going into ``step`` (the last good result before it)."""
+    def input_frame(self, step: Step | None) -> pl.DataFrame | None:
+        """The table going into ``step``: the result of the last step before it that has one.
+        None while the steps before it are not calculated as they are now (e.g. one was just
+        moved), or when one of them has an error."""
         table, result = self.table, self.result
         if step is None or table is None or result is None or step not in table.steps:
             return None
-        index = table.steps.index(step)
-        for previous in reversed(result.steps[:index]):
-            if previous.df is not None:
-                return previous.df.columns
-            if previous.status in (Status.ERROR, Status.BLOCKED):
+        before = table.steps[: table.steps.index(step)]
+        if [r.step_id for r in result.steps[: len(before)]] != [s.id for s in before]:
+            return None  # results of another order of steps: wait for the new ones
+        for outcome in reversed(result.steps[: len(before)]):
+            if outcome.status in (Status.ERROR, Status.BLOCKED):
                 return None
+            if outcome.df is not None:
+                return outcome.df
         return None
+
+    def input_problem(self, step: Step | None) -> str:
+        """Why ``input_frame(step)`` has no data, in a sentence (for the formula window)."""
+        table, result = self.table, self.result
+        if table is None or step is None or step not in table.steps:
+            return ""
+        index = table.steps.index(step)
+        if not table.enabled:
+            return f"“{table.name}” is turned off, so it isn't calculated. Turn it on to see a preview."
+        if result is not None and result.skipped:
+            return f"“{table.name}” is not calculated: it {result.skipped}."
+        if index == 0:
+            return "This is the first step of the table: there is no data going into it."
+        if result is not None and any(r.status in (Status.ERROR, Status.BLOCKED) for r in result.steps[:index]):
+            return "A step before this one has an error: fix it to see a preview here."
+        return "The steps before this one are still being calculated: the preview follows."
+
+    def input_columns(self, step: Step | None) -> list[str] | None:
+        """Columns of the table going into ``step`` (the last good result before it)."""
+        frame = self.input_frame(step)
+        return frame.columns if frame is not None else None
 
     def table_columns(self, table_id: str) -> list[str] | None:
         result = self.results.get(table_id)
