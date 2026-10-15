@@ -442,7 +442,8 @@ def _clean_error(error: Exception, formula: str, columns: Sequence[str] = ()) ->
             f"action, or a window function such as SUM([Amount]) OVER ().\nFormula: {formula}"
         )
     line = re.search(r"\nLINE (\d+):", text)
-    if "syntax error" in text and line and int(line.group(1)) > formula.count("\n") + 2:
+    closing = len(re.findall(r"\r\n|\r|\n", f"SELECT (\n{formula}\n")) + 1  # the line of the ) after the formula
+    if "syntax error" in text and line and int(line.group(1)) >= closing:
         return (
             "Formula error: the formula ends too early: something is missing at its end "
             f"(e.g. a value after + or AND, or END after CASE)\nFormula: {formula}"

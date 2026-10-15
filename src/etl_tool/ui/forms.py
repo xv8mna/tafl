@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from etl_tool.api.dtypes import type_label
+from etl_tool.api.expressions import is_panic
 from etl_tool.api.params import List, Param, is_visible
 from etl_tool.core.formula_preview import NO_DATA, Preview, preview
 
@@ -211,15 +212,15 @@ class _FormulaEdit(_PlainEdit):
 
 
 class _CheckLine(QLabel):
-    """The line under a formula: what it gives, or what is wrong with it. Clicking it shows
-    the mistake in the formula; it never takes the focus (that would apply the formula)."""
+    """The line under a formula: what it gives, or what is wrong with it (two lines at most,
+    all of it in the tooltip). Clicking it shows the mistake in the formula."""
 
     clicked = Signal()
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setWordWrap(True)
+        self.setMaximumHeight(2 * self.fontMetrics().lineSpacing() + 4)
         self.setTextFormat(Qt.TextFormat.RichText)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
 
@@ -264,12 +265,17 @@ class ExpressionEditor(Editor):
         # In a list (Calculate columns): the (name, formula) of the rows above, and this row's name
         self.earlier: Callable[[], list[tuple[str, str]]] = list
         self.creates_name: Callable[[], str] = str
+        self.creates = False  # the formula of a new column: the row needs a name
         self.window_open: FormulaWindow | None = None
         self.line = _CheckLine(self)
         self.line.hide()
+        # A click on the line gives the focus to the formula: if it went to the panel instead,
+        # the formula would be applied (as when leaving the field)
+        self.line.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.line.setFocusProxy(self._edit)
         self.line.clicked.connect(self._show_mistake)
         self.line.linkActivated.connect(lambda _link: self._fix_mistake())
-        self._check = checks().client(self._checked)
+        self._check = checks().client(self._checked, self._check_failed)
         self.destroyed.connect(self._check.close)
         self._check_timer = QTimer(self)
         self._check_timer.setSingleShot(True)
@@ -278,7 +284,8 @@ class ExpressionEditor(Editor):
         self._edit.textChanged.connect(self._typed)
         self._checked_input: tuple[object, tuple] | None = None  # (frame, the rest) of the last check
         self._result: Preview | None = None
-        self._result_text = ""
+        self._result_text = ""  # the formula the result is for
+        self._line: tuple[str, str] = ("", "")  # (rich text, colour) of the line for the result
         buttons = QVBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.setSpacing(2)
@@ -320,6 +327,7 @@ class ExpressionEditor(Editor):
             earlier=self.earlier,
             condition=self._condition,
             name=name,
+            creates=self.creates,
         )
         window.applied.connect(self.apply_text)
         window.finished.connect(self._window_closed)
@@ -370,7 +378,7 @@ class ExpressionEditor(Editor):
         text = self.value()
         frame = self.ctx.input_frame()
         no_data = (self.ctx.input_problem() or NO_DATA) if frame is None else ""
-        earlier, name, condition = list(self.earlier()), self.creates_name(), self._condition
+        earlier, name, condition, creates = list(self.earlier()), self.creates_name(), self._condition, self.creates
         rest = (text, tuple(earlier), name, no_data)
         if self._checked_input is not None and self._checked_input[0] is frame and self._checked_input[1] == rest:
             return
@@ -380,7 +388,9 @@ class ExpressionEditor(Editor):
             self._checked(Preview(True, ""))
             return
         self._check.start(
-            lambda cancel: preview(frame, text, earlier, condition=condition, name=name, cancel=cancel, no_data=no_data)
+            lambda cancel: preview(
+                frame, text, earlier, condition=condition, name=name, creates=creates, cancel=cancel, no_data=no_data
+            )
         )
 
     @property
@@ -391,37 +401,57 @@ class ExpressionEditor(Editor):
         super().showEvent(event)
         self.check()
 
+    def hideEvent(self, event: Any) -> None:
+        super().hideEvent(event)
+        self._check_timer.stop()
+        self._check.cancel()
+        self._checked_input = None  # checked again when shown: a hidden field must not keep its input alive
+
     def _typed(self) -> None:
-        self._edit.setExtraSelections([])  # the mistake shown may have moved
+        self._render()  # greyed while it belongs to another text, as it was if the text is back
         self._check_timer.start()
 
     def _checked(self, result: Preview) -> None:
         self._result, self._result_text = result, self._checked_input[1][0] if self._checked_input else ""
-        if result.ok and result.values is None:  # nothing typed yet
-            self.line.hide()
-            self._edit.setExtraSelections([])
-            return
-        if result.ok:
-            color, text = theme.TEXT_DIM, html.escape(self._summary(result), quote=False)
+        if result.ok and result.values is not None:
+            plain, color = self._summary(result), theme.TEXT_DIM
         elif self._checked_input is not None and self._checked_input[0] is None:  # no data to check with
-            color, text = theme.TEXT_DIM, html.escape(result.message, quote=False)
+            plain, color = result.message, theme.TEXT_DIM
         else:
-            color, text = theme.STATUS_COLORS["error"], html.escape(result.message, quote=False)
-            if result.fix and result.mistake:
-                text += f' · <a href="fix">Write {html.escape(result.fix, quote=False)}</a>'
-        self.line.setStyleSheet(f"color: {color};")
+            plain, color = result.message, theme.STATUS_COLORS["error"]
+        text = html.escape(plain, quote=False)
+        if not result.ok and result.fix and result.mistake:
+            text += f' · <a href="fix">Write {html.escape(result.fix, quote=False)}</a>'
+        self._line = (text, color)
+        self.line.setToolTip(plain + ("\n\nClick to show the mistake in the formula." if result.mistake else ""))
+        self._render()
+
+    def _check_failed(self, details: str) -> None:
+        self._checked(Preview(False, "The check failed: " + details.strip().splitlines()[-1]))
+
+    def _render(self) -> None:
+        result = self._result
+        if result is None or (result.ok and result.values is None):  # nothing typed yet
+            self.line.hide()
+            self._underline(None)
+            return
+        current = self.value() == self._result_text
+        text, color = self._line
+        self.line.setStyleSheet(f"color: {color if current else theme.TEXT_DISABLED};")
         self.line.setText(text)
-        self.line.setToolTip("Click to show the mistake in the formula" if result.mistake else "")
         self.line.show()
-        self._underline(result.mistake if result.mistake and self.value() == self._result_text else None)
+        self._underline(result.mistake if current else None)
 
     def _summary(self, result: Preview) -> str:
         """One line: what the formula gives, e.g. "→ number: 23.79, 119, 5.95, … · no errors in
         all 156 rows"."""
         values = result.values
         if self._condition:
-            line = "→ " + result.message[:1].lower() + result.message[1:]
-        else:
+            return "→ " + result.message[:1].lower() + result.message[1:]
+        kind = type_label(values.dtype)
+        if values.len() == 0:
+            return f"→ {kind} · no rows to check"
+        try:
             show = DisplayFormat().formatter(values.dtype)
             shown = []
             for value in values.head(3).to_list():
@@ -431,11 +461,15 @@ class ExpressionEditor(Editor):
                     shown.append("'" + (value if len(value) <= 24 else value[:24] + "…") + "'")
                 else:
                     shown.append(show(value))
-            more = ", …" if values.len() > 3 else ""
-            line = f"→ {type_label(values.dtype)}: {', '.join(shown)}{more} · no errors in {result.scope}"
-            if result.note:
-                line += f" ({result.note})"
-        return line
+            first = ", ".join(shown) + (", …" if values.len() > 3 else "")
+        except Exception:  # e.g. a date after the year 9999
+            first = "(values out of range)"
+        except BaseException as e:  # Polars panics on infinite dates
+            if not is_panic(e):
+                raise
+            first = "(values out of range)"
+        line = f"→ {kind}: {first} · no errors in {result.scope}"
+        return line + (f" ({result.note})" if result.note else "")
 
     def _underline(self, mistake: tuple[int, int] | None) -> None:
         if mistake is None:
@@ -941,6 +975,7 @@ class ListEditor(Editor):
             if creates in editors and isinstance(editor, ExpressionEditor):
                 editor.earlier = lambda n=number, f=f: [(r[f.creates].value(), r[f.key].value()) for r in self._rows[:n]]
                 editor.creates_name = editors[creates].value
+                editor.creates = True
         tools = QWidget(self)
         tools.setLayout(
             _row(

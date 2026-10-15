@@ -195,8 +195,9 @@ def test_columns_star_leaves_out_the_row_number():
 
 
 def test_a_formula_that_ends_too_early(people):
-    for formula in ("[Age] +", "CASE WHEN [Age] > 1 THEN 1", "[Age] > 1 AND\n-- a comment"):
+    for formula in ("[Age] +", "CASE WHEN [Age] > 1 THEN 1", "[Age] > 1 AND\n-- a comment", "[Age] +\r"):
         with pytest.raises(ActionError, match="the formula ends too early"):
             expressions.evaluate(people, formula)
-    with pytest.raises(ActionError, match='syntax error at or near "2"'):
-        expressions.evaluate(people, "ROUND([Age] 2)")
+    for formula in ("ROUND([Age] 2)", "[Age] +\r 2 2"):  # a mistake inside, also after a lone \r
+        with pytest.raises(ActionError, match='syntax error at or near "2"'):
+            expressions.evaluate(people, formula)

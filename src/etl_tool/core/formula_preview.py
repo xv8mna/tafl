@@ -75,20 +75,27 @@ def preview(
     *,
     condition: bool = False,
     name: str = "",
+    creates: bool = False,
     rows: int = SAMPLE_ROWS,
     cancel: threading.Event | None = None,
     no_data: str = "",
 ) -> Preview:
-    """Evaluate ``formula`` on the first ``rows`` rows of ``frame``. ``earlier`` are the (name,
-    formula) rows above it in Calculate columns, ``name`` is this row's name: the rows above are
-    added first and checked as the step does. Setting ``cancel`` stops the work (Cancelled)."""
+    """Evaluate ``formula`` on the first ``rows`` rows of ``frame``. In Calculate columns
+    (``creates``), ``earlier`` are the (name, formula) rows above and ``name`` is this row's
+    name: the rows above are added first, and the names are checked as the step does. Setting
+    ``cancel`` stops the work (Cancelled)."""
     if frame is None:
+        _forget()
         return Preview(False, no_data or NO_DATA)
     with _interrupted_by(cancel):
         sample = _prepare(frame, tuple(earlier), rows, cancel)
         problem = sample.problem or _same_name(earlier, name)
-        if _empty(formula):
+        if creates and not name.strip():
+            problem = problem or "This row has no column name yet: the step needs one."
+        if not formula.strip():
             return Preview(problem is None, problem or "Type a formula: double-click a column or a function to insert it.", columns=sample.columns)
+        if _empty(formula):
+            return Preview(False, problem or "The formula is empty: it has only comments.", columns=sample.columns)
         used = used_columns(formula, sample.data.columns)
         try:
             values = _evaluate(sample.data, used, formula, condition, cancel)
@@ -172,6 +179,14 @@ def _prepare(frame: pl.DataFrame, earlier: tuple[tuple[str, str], ...], rows: in
         sample = _Sample(frame, earlier[:number], rows, data, columns, problem)
         _remember(sample)
     return sample
+
+
+def _forget() -> None:
+    """Drop the kept samples: the input they were made from must not stay in memory for them."""
+    global _cache_frame
+    with _cache_lock:
+        _cache.clear()
+        _cache_frame = None
 
 
 def _cached(frame: pl.DataFrame, earlier: tuple[tuple[str, str], ...], rows: int) -> _Sample | None:

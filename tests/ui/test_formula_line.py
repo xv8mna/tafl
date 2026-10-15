@@ -1,6 +1,10 @@
 """The line under a formula field: what the formula gives on the first rows, or what is wrong."""
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
+
+from etl_tool.ui import theme
+from etl_tool.ui.checks import checks
 
 
 def _calculate(window, session, settle, demo):
@@ -36,8 +40,9 @@ def test_a_mistake_is_shown_and_can_be_fixed_without_applying(window, session, s
     assert "Column [Nett] not found (did you mean [Net]?)" in gross.line.text() and "Write [Net]" in gross.line.text()
     (underline,) = gross._edit.extraSelections()
     assert underline.cursor.selectedText() == "[Nett]"
-    gross.line.clicked.emit()  # clicking the line selects the mistake
+    QTest.mouseClick(gross.line, Qt.MouseButton.LeftButton)  # clicking the line selects the mistake
     assert gross._edit.textCursor().selectedText() == "[Nett]"
+    assert session.table.steps[5].params["columns"][0]["formula"] == "ROUND([Net] * 1.19, 2)"  # nothing applied
     gross.line.linkActivated.emit("fix")
     assert gross.value() == "ROUND([Net] * 1.19, 2)"
     qtbot.waitUntil(lambda: not gross.checking and gross.line.text().startswith("→ number"), timeout=10_000)
@@ -79,3 +84,52 @@ def test_an_empty_formula_shows_no_line(window, session, settle, demo, qtbot):
     size._edit.setPlainText("")
     qtbot.waitUntil(lambda: not size.checking and not size.line.isVisible(), timeout=10_000)
     size._edit.setPlainText(size._last)
+
+
+def test_while_typing_the_line_is_greyed_until_it_is_checked(window, session, settle, demo, qtbot):
+    gross = _calculate(window, session, settle, demo)[0]
+    gross._edit.setPlainText("[Nett] * 2")
+    qtbot.waitUntil(lambda: not gross.checking and "not found" in gross.line.text(), timeout=10_000)
+    gross._edit.textCursor().insertText("x")
+    assert theme.TEXT_DISABLED in gross.line.styleSheet() and gross._edit.extraSelections() == []
+    gross._edit.textCursor().deletePreviousChar()  # the same text again: the result fits again
+    assert theme.STATUS_COLORS["error"] in gross.line.styleSheet() and len(gross._edit.extraSelections()) == 1
+    gross._edit.setPlainText(gross._last)
+
+
+def test_unusual_results_and_formulas(window, session, settle, demo, qtbot):
+    gross = _calculate(window, session, settle, demo)[0]
+    gross._edit.setPlainText("'infinity'::DATE")
+    qtbot.waitUntil(lambda: not gross.checking and "date" in gross.line.text(), timeout=10_000)
+    assert gross.line.text() == "→ date: (values out of range) · no errors in all 156 rows"
+    gross._edit.setPlainText("-- later")
+    qtbot.waitUntil(lambda: not gross.checking and "empty" in gross.line.text(), timeout=10_000)
+    assert gross.line.text() == "The formula is empty: it has only comments."
+    gross._edit.setPlainText(gross._last)
+
+
+def test_a_new_row_without_a_name(window, session, settle, demo, qtbot):
+    _calculate(window, session, settle, demo)
+    rows = window.settings_panel.form.editor("columns")
+    rows._add_clicked()
+    settle(session)
+    formula = window.settings_panel.form.editor("columns")._rows[-1]["formula"]
+    qtbot.waitUntil(formula.isVisible)
+    formula._edit.setPlainText("[Net] * 2")
+    qtbot.waitUntil(lambda: not formula.checking and "name" in formula.line.text(), timeout=10_000)
+    assert formula.line.text() == "This row has no column name yet: the step needs one."
+    formula._edit.setPlainText(formula._last)
+
+
+def test_slow_checks_dont_hold_up_the_others(qtbot):
+    service = checks()
+    slow = [service.client(lambda _result: None) for _ in range(3)]
+    for client in slow:
+        client.start(lambda cancel: cancel.wait(30))
+    got = []
+    fast = service.client(got.append)
+    fast.start(lambda _cancel: 42)
+    qtbot.waitUntil(lambda: got == [42], timeout=3_000)
+    for client in [*slow, fast]:
+        client.close()
+    qtbot.waitUntil(lambda: not service.busy, timeout=3_000)

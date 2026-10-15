@@ -50,6 +50,7 @@ class FormulaWindow(QDialog):
         earlier: Callable[[], Sequence[tuple[str, str]]] = lambda: (),
         condition: bool = False,
         name: str = "",
+        creates: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -57,7 +58,7 @@ class FormulaWindow(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.resize(1100, 700)
         self._frame, self._no_data, self._earlier = frame, no_data, earlier
-        self._condition, self._name = condition, name
+        self._condition, self._name, self._creates = condition, name, creates
         self._original = text
         self._discard_warned = False
         self._columns: list[Column] = []
@@ -160,9 +161,11 @@ class FormulaWindow(QDialog):
         frame, earlier, text = self._frame(), list(self._earlier()), self.text()
         no_data = (self._no_data() or NO_DATA) if frame is None else ""
         self._checked = (frame, no_data)
-        condition, name = self._condition, self._name
+        condition, name, creates = self._condition, self._name, self._creates
         self._check.start(
-            lambda cancel: preview(frame, text, earlier, condition=condition, name=name, cancel=cancel, no_data=no_data)
+            lambda cancel: preview(
+                frame, text, earlier, condition=condition, name=name, creates=creates, cancel=cancel, no_data=no_data
+            )
         )
 
     def inputs_changed(self) -> None:

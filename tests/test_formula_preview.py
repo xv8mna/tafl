@@ -148,3 +148,22 @@ def test_calculate_rows_build_on_each_other():
     finally:
         expressions.evaluate = original
     assert len(calls) == 2  # the last row above and this formula: the other rows were kept
+
+
+def test_a_new_column_needs_a_name_and_a_formula_more_than_comments():
+    nameless = preview(DATA, "[Net] * 2", creates=True)
+    assert not nameless.ok and nameless.message == "This row has no column name yet: the step needs one."
+    assert nameless.values is not None  # the values are shown all the same
+    assert preview(DATA, "[Net] * 2", name="Double", creates=True).ok
+    assert preview(DATA, "[Net] * 2").ok  # not a new column (e.g. a condition): no name needed
+    assert preview(DATA, "-- later").message == "The formula is empty: it has only comments."
+
+
+def test_the_kept_sample_lets_go_of_its_input():
+    from etl_tool.core import formula_preview
+
+    frame = pl.DataFrame({"x": [1, 2]})
+    preview(frame, "[x]")
+    assert formula_preview._cache_frame is frame
+    preview(None, "[x]")  # the input is gone (e.g. an earlier step fails)
+    assert formula_preview._cache_frame is None and not formula_preview._cache

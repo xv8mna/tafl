@@ -54,9 +54,15 @@ class Client:
         self.busy = False
 
     def close(self) -> None:
-        """Stop for good: nothing is reported any more."""
+        """Stop for good: nothing is reported any more, and the field is let go."""
         self.cancel()
         self.alive = False
+        self.done = self.failed = _ignore
+        self._service._forget(self)
+
+
+def _ignore(*_args: Any) -> None:
+    pass
 
 
 class _Signals(QObject):
@@ -93,13 +99,14 @@ class Checks(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._pool = QThreadPool(self)
-        self._pool.setMaxThreadCount(2)
+        self._pool.setMaxThreadCount(4)
         self._signals = _Signals(self)
         self._signals.done.connect(self._done)
         self._signals.failed.connect(self._failed)
         self._signals.cancelled.connect(self._cancelled)
         self._clients: list[Client] = []
         self._running = 0  # jobs that haven't reported yet
+        self._started = 0  # newer checks start first: slow old ones never hold up the field being typed in
 
     @property
     def busy(self) -> bool:
@@ -107,7 +114,7 @@ class Checks(QObject):
 
     def client(self, done: Callable[[Any], None], failed: Callable[[str], None] = lambda _details: None) -> Client:
         client = Client(self, done, failed)
-        self._clients = [c for c in self._clients if c.alive] + [client]
+        self._clients.append(client)
         return client
 
     def stop_all(self) -> None:
@@ -121,7 +128,12 @@ class Checks(QObject):
 
     def _run(self, client: Client, version: int, work: Callable[[CancelEvent], Any], cancel: CancelEvent) -> None:
         self._running += 1
-        self._pool.start(_Job(client, version, work, cancel, self._signals))
+        self._started += 1
+        self._pool.start(_Job(client, version, work, cancel, self._signals), self._started)
+
+    def _forget(self, client: Client) -> None:
+        if client in self._clients:
+            self._clients.remove(client)
 
     def _done(self, client: Client, version: int, result: object) -> None:
         self._running -= 1
