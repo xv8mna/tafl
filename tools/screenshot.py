@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from etl_tool import APP_NAME
 from etl_tool.core import Registry
 from etl_tool.ui import theme
+from etl_tool.ui.checks import checks
 from etl_tool.ui.main_window import MainWindow
 from etl_tool.ui.session import Session
 
@@ -28,6 +29,12 @@ def wait(app: QApplication, session: Session, seconds: float = 20) -> None:
     while time.monotonic() < deadline:
         app.processEvents()
         if not session.busy and not session.running and not session._timer.isActive():
+            break
+        time.sleep(0.02)
+    end = time.monotonic() + 1  # then the lines under the formula fields (checked a moment after a change)
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if not checks().busy and time.monotonic() > end:
             app.processEvents()
             return
         time.sleep(0.02)

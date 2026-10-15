@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Iterator, Sequence
@@ -42,6 +43,11 @@ class Preview:
     message: str  # one line for the status
     rows: pl.DataFrame | None = None  # the columns the formula uses, then the result
     columns: list[Column] = field(default_factory=list)  # what the formula can use
+    values: pl.Series | None = None  # the result on the sample
+    scope: str = ""  # "all 156 rows", "the first 1,000 rows"
+    note: str = ""  # e.g. that window functions see only the sample
+    mistake: tuple[int, int] | None = None  # where the error is: formula[start:end]
+    fix: str | None = None  # what to write there instead ("did you mean")
 
 
 @dataclass
@@ -56,7 +62,10 @@ class _Sample:
     problem: str | None  # the first thing the step would reject in the rows above
 
 
-_last: _Sample | None = None
+_CACHE_SIZE = 100
+_cache: dict[tuple[int, tuple[tuple[str, str], ...]], _Sample] = {}
+_cache_frame: pl.DataFrame | None = None
+_cache_lock = threading.Lock()
 
 
 def preview(
@@ -85,7 +94,10 @@ def preview(
             values = _evaluate(sample.data, used, formula, condition, cancel)
         except ActionError as e:
             _stop_if(cancel)
-            return Preview(False, problem or _message(str(e)), columns=sample.columns)
+            if problem:
+                return Preview(False, problem, columns=sample.columns)
+            message = _message(str(e))
+            return Preview(False, message, columns=sample.columns, **_locate(formula, message))
     data = sample.data
     if used:
         base = data.select(used).head(SHOWN_ROWS)
@@ -101,9 +113,10 @@ def preview(
         message = f"True for {true:,}, false for {false:,}" + (f", empty for {empty:,} (counts as false)" if empty else "") + f" of {scope}"
     else:
         message = f"Result: {type_label(values.dtype)} · no errors in {scope}"
-    if frame.height > rows and _has_word(formula, "over"):
-        message += " (window functions see only these rows here)"
-    return Preview(problem is None, problem or message, shown, sample.columns)
+    note = "window functions see only these rows here" if frame.height > rows and _has_word(formula, "over") else ""
+    if note:
+        message += f" ({note})"
+    return Preview(problem is None, problem or message, shown, sample.columns, values, scope, note)
 
 
 def used_columns(formula: str, columns: Sequence[str]) -> list[str]:
@@ -125,38 +138,123 @@ def used_columns(formula: str, columns: Sequence[str]) -> list[str]:
 
 
 def _prepare(frame: pl.DataFrame, earlier: tuple[tuple[str, str], ...], rows: int, cancel: threading.Event | None) -> _Sample:
-    """The sample with the rows above added, as Calculate columns does. The rows above can't
-    change while the formula window is open, so this is kept for the next check."""
-    global _last
-    last = _last
-    if last is not None and last.frame is frame and last.earlier == earlier and last.rows == rows:
-        return last
-    data = frame.head(rows)
-    columns = [Column(c, type_label(t)) for c, t in data.schema.items()]
-    problem: str | None = None
+    """The sample with the rows above added, as Calculate columns does. Samples are kept for
+    the next check, and each row builds on the sample of the row above it."""
+    sample = _cached(frame, earlier, rows)
+    if sample is not None and len(sample.earlier) == len(earlier):
+        return sample
+    if sample is None:
+        data = frame.head(rows)
+        sample = _Sample(frame, (), rows, data, [Column(c, type_label(t)) for c, t in data.schema.items()], None)
+        _remember(sample)
     names = [new.strip() for new, _ in earlier]
-    for number, (new, (_, text)) in enumerate(zip(names, earlier, strict=True), start=1):
+    for number in range(len(sample.earlier) + 1, len(earlier) + 1):
         _stop_if(cancel)
-        first = names.index(new) + 1
+        new, text = names[number - 1], earlier[number - 1][1]
+        data, columns, problem = sample.data, sample.columns, sample.problem
         if not new and _empty(text):
             problem = problem or f"Row {number} is still empty: the step needs a name and a formula in every row."
         elif not new:
             problem = problem or f"Row {number} has no column name yet: the step needs one."
         elif _empty(text):
             problem = problem or f"Row {number} ([{new}]) has no formula yet."
-        elif first != number:
-            problem = problem or _two_names(new, first, number)
+        elif names.index(new) + 1 != number:
+            problem = problem or _two_names(new, names.index(new) + 1, number)
         else:
             try:
                 values = _evaluate(data, used_columns(text, data.columns), text, False, cancel)
             except ActionError as e:
                 _stop_if(cancel)
                 problem = problem or f"Row {number} ([{new}]) has an error: {_message(str(e))}"
-                continue
-            data = data.with_columns(values.alias(new))  # replaces a column of the same name in place
-            columns = [c for c in columns if c.name != new] + [Column(new, type_label(data.schema[new]), number)]
-    _last = _Sample(frame, earlier, rows, data, columns, problem)
-    return _last
+            else:
+                data = data.with_columns(values.alias(new))  # replaces a column of the same name in place
+                columns = [c for c in columns if c.name != new] + [Column(new, type_label(data.schema[new]), number)]
+        sample = _Sample(frame, earlier[:number], rows, data, columns, problem)
+        _remember(sample)
+    return sample
+
+
+def _cached(frame: pl.DataFrame, earlier: tuple[tuple[str, str], ...], rows: int) -> _Sample | None:
+    """The kept sample with the most of these rows above (only for the latest input: a big
+    input must not be kept alive by its sample)."""
+    global _cache_frame
+    with _cache_lock:
+        if _cache_frame is not frame:
+            _cache.clear()
+            _cache_frame = frame
+        for size in range(len(earlier), -1, -1):
+            found = _cache.get((rows, earlier[:size]))
+            if found is not None:
+                return found
+    return None
+
+
+def _remember(sample: _Sample) -> None:
+    with _cache_lock:
+        if _cache_frame is sample.frame:
+            _cache[(sample.rows, sample.earlier)] = sample
+            while len(_cache) > _CACHE_SIZE:
+                del _cache[next(iter(_cache))]
+
+
+def _locate(formula: str, message: str) -> dict:
+    """Where the mistake of an error message is in the formula (``mistake``), and what to write
+    there instead (``fix``), if the message tells."""
+    tokens = expressions.tokenize(formula)
+    suggestion = re.search(r"\(did you mean (.+)\?\)$", message)
+    fix = suggestion.group(1) if suggestion else None
+    found: expressions.Token | None = None
+    if column := re.match(r"Column \[(.+?)\] not found", message):
+        name = _fold(column.group(1))
+        found = next((t for i, t in enumerate(tokens) if _token_name(formula, tokens, i) == name), None)
+        if fix is not None:
+            fix = "[" + fix[1:-1].replace("]", "]]") + "]"
+    elif function := re.match(r"There is no function (\w+)", message):
+        name = _fold(function.group(1))
+        found = next((t for i, t in enumerate(tokens) if _word(formula, t) == name and expressions._is_call(tokens, i)), None)
+    elif part := re.match(r"(\w+) is not a column: write the date part in quotes, \w+\('(\w+)'", message):
+        found = next((t for t in tokens if _word(formula, t) == _fold(part.group(1))), None)
+        fix = f"'{part.group(2)}'"
+    elif call := re.match(r"(\w+) is a function: write (\w+\(\))", message):
+        found = next((t for i, t in enumerate(tokens) if _word(formula, t) == _fold(call.group(1)) and not expressions._is_call(tokens, i)), None)
+        fix = call.group(2)
+    elif message.startswith(("A ] is missing", "A */ is missing", "A closing ")):
+        found = next((t for t in tokens if not t.closed), None)
+        fix = None
+    elif message.startswith(("A ) is missing", "There is one ) too many")):
+        found = _unmatched_parenthesis(tokens)
+        fix = None
+    elif near := re.match(r'Syntax error at or near "(.+)"$', message):  # only when that text is there once
+        same = [t for t in tokens if formula[t.start : t.end] == near.group(1)]
+        found = same[0] if len(same) == 1 else None
+    elif message.startswith(("Syntax error at end of input", "The formula ends too early")):
+        found = next((t for t in reversed(tokens) if t.kind not in ("space", "comment")), None)
+    if found is None:
+        return {}
+    return {"mistake": (found.start, found.end), "fix": fix}
+
+
+def _token_name(formula: str, tokens: list[expressions.Token], index: int) -> str | None:
+    """The folded column name a token stands for, if it can be one."""
+    token = tokens[index]
+    if token.kind in ("column", "quoted") and token.closed:
+        return _fold(expressions._name(formula, token))
+    if token.kind == "word" and not expressions._is_call(tokens, index):
+        return _fold(formula[token.start : token.end])
+    return None
+
+
+def _unmatched_parenthesis(tokens: list[expressions.Token]) -> expressions.Token | None:
+    """The ( that is never closed, or the ) that closes nothing."""
+    opened: list[expressions.Token] = []
+    for token in tokens:
+        if token.kind == "open":
+            opened.append(token)
+        elif token.kind == "close":
+            if not opened:
+                return token
+            opened.pop()
+    return opened[-1] if opened else None
 
 
 def _same_name(earlier: Sequence[tuple[str, str]], name: str) -> str | None:

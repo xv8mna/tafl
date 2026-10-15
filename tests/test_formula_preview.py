@@ -6,7 +6,7 @@ import time
 import polars as pl
 import pytest
 
-from etl_tool.api import Cancelled
+from etl_tool.api import Cancelled, expressions
 from etl_tool.core.cancel import CancelEvent
 from etl_tool.core.formula_preview import preview, used_columns
 
@@ -111,3 +111,40 @@ def test_a_cancelled_preview_stops_its_query():
         preview(DATA, slow, cancel=cancel)
     assert time.perf_counter() - started < 5
     assert preview(DATA, "[Amount] + 1").ok  # the connection works on
+
+
+def test_where_the_mistake_is_and_what_to_write_instead():
+    def mistake(formula):
+        result = preview(DATA, formula)
+        return formula[slice(*result.mistake)] if result.mistake else None, result.fix
+
+    assert mistake("[Amont] * 2") == ("[Amont]", "[Amount]")
+    assert mistake("amont * 2") == ("amont", "[Amount]")
+    assert mistake("UPPPER([Name])") == ("UPPPER", "UPPER")
+    assert mistake("DATEDIFF(day, [Net], [Net])") == ("day", "'day'")
+    assert mistake("today + 1") == ("today", "TODAY()")
+    assert mistake("[Net") == ("[Net", None)
+    assert mistake("'abc") == ("'abc", None)
+    assert mistake("(([Net] + 1)") == ("(", None)
+    assert mistake("[Net] + 1)") == (")", None)
+    assert mistake("ROUND([Net] 2)") == ("2", None)
+    assert mistake("[Net] > 1 AND") == ("AND", None)
+    assert mistake("[Net] + [Amount]") == (None, None)
+    result = preview(DATA, "[Net] * 2")
+    assert result.values.to_list() == [20.0, 40.0, None] and result.scope == "all 3 rows"
+
+
+def test_calculate_rows_build_on_each_other():
+    """Each row starts from the sample of the row above: ten rows cost ten evaluations, not 55."""
+    frame = pl.DataFrame({"x": list(range(1500))})
+    rows = [(f"n{i}", f"[{'x' if i == 0 else f'n{i - 1}'}] + 1") for i in range(10)]
+    for number in range(10):
+        assert preview(frame, "[x]", rows[:number]).ok
+    calls = []
+    original = expressions.evaluate
+    try:
+        expressions.evaluate = lambda *args, **kwargs: calls.append(1) or original(*args, **kwargs)
+        assert preview(frame, "[n9] * 2", rows).rows["Result"][0] == 20
+    finally:
+        expressions.evaluate = original
+    assert len(calls) == 2  # the last row above and this formula: the other rows were kept

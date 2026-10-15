@@ -31,6 +31,7 @@ from etl_tool.core import EXTENSION, OLD_EXTENSIONS, ProjectError
 from etl_tool.core.registry import default_plugin_folders
 
 from . import functions_window, theme
+from .checks import checks
 from .connections_dialog import ConnectionsDialog
 from .data_panel import DataPanel
 from .map import MapView
@@ -466,6 +467,7 @@ class MainWindow(QMainWindow):
         for key, splitter in self._splitters().items():
             self.settings.setValue(key, splitter.saveState())
         self.session.cancel_run()
+        checks().stop_all()  # the checks of formula fields: nothing waits for them
         self.session.wait(5000)
         event.accept()
 

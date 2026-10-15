@@ -6,7 +6,8 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QApplication
 
-from etl_tool.ui import forms, formula_window
+from etl_tool.ui import forms
+from etl_tool.ui.checks import checks
 
 
 def _calculate(window, session, settle, demo, row=2):
@@ -161,8 +162,7 @@ def test_closing_never_waits_for_a_slow_preview(window, session, settle, demo, q
     started = time.perf_counter()
     formula.reject()
     assert time.perf_counter() - started < 1
-    worker = formula_window._preview_worker()
-    qtbot.waitUntil(lambda: not worker.busy, timeout=5_000)  # the query was stopped
+    qtbot.waitUntil(lambda: not checks().busy, timeout=5_000)  # the query was stopped
 
 
 def test_the_preview_follows_new_results(window, session, settle, demo, qtbot):

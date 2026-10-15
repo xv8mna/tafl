@@ -6,6 +6,7 @@ Every parameter kind has an editor widget. Editors report a change once a value 
 
 from __future__ import annotations
 
+import html
 import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -13,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -33,15 +35,22 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from etl_tool.api.dtypes import type_label
 from etl_tool.api.params import List, Param, is_visible
+from etl_tool.core.formula_preview import NO_DATA, Preview, preview
 
 from . import formula_window, functions_window, theme
+from .checks import checks
 from .formula_window import FormulaWindow
+from .frame_model import DisplayFormat
+
+_CHECK_DELAY_MS = 300  # a formula is checked this long after the last key
 
 
 @dataclass
@@ -201,9 +210,29 @@ class _FormulaEdit(_PlainEdit):
         super().keyPressEvent(event)
 
 
+class _CheckLine(QLabel):
+    """The line under a formula: what it gives, or what is wrong with it. Clicking it shows
+    the mistake in the formula; it never takes the focus (that would apply the formula)."""
+
+    clicked = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setWordWrap(True)
+        self.setTextFormat(Qt.TextFormat.RichText)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
+
+    def mousePressEvent(self, event: Any) -> None:
+        super().mousePressEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+
+
 class ExpressionEditor(Editor):
     """A formula (up to three visible lines), with buttons that insert [Column] names and open
-    the list of functions."""
+    the list of functions. The line under it shows what the formula gives on the first rows,
+    or what is wrong, while typing."""
 
     def __init__(self, param: Param, ctx: FormContext, parent: QWidget | None = None) -> None:
         super().__init__(param, ctx, parent)
@@ -236,6 +265,20 @@ class ExpressionEditor(Editor):
         self.earlier: Callable[[], list[tuple[str, str]]] = list
         self.creates_name: Callable[[], str] = str
         self.window_open: FormulaWindow | None = None
+        self.line = _CheckLine(self)
+        self.line.hide()
+        self.line.clicked.connect(self._show_mistake)
+        self.line.linkActivated.connect(lambda _link: self._fix_mistake())
+        self._check = checks().client(self._checked)
+        self.destroyed.connect(self._check.close)
+        self._check_timer = QTimer(self)
+        self._check_timer.setSingleShot(True)
+        self._check_timer.setInterval(_CHECK_DELAY_MS)
+        self._check_timer.timeout.connect(self.check)
+        self._edit.textChanged.connect(self._typed)
+        self._checked_input: tuple[object, tuple] | None = None  # (frame, the rest) of the last check
+        self._result: Preview | None = None
+        self._result_text = ""
         buttons = QVBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.setSpacing(2)
@@ -243,11 +286,16 @@ class ExpressionEditor(Editor):
         buttons.addWidget(self._functions)
         buttons.addWidget(self._expand)
         buttons.addStretch(1)
-        layout = QHBoxLayout()
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(self._edit, 1)
+        row.addLayout(buttons)
+        layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        layout.addWidget(self._edit, 1)
-        layout.addLayout(buttons)
+        layout.setSpacing(2)
+        layout.addLayout(row)
+        layout.addWidget(self.line)
         self.setLayout(layout)
 
     def insert_template(self, template: str) -> None:
@@ -270,7 +318,7 @@ class ExpressionEditor(Editor):
             frame=lambda: self.ctx.input_frame(),
             no_data=lambda: self.ctx.input_problem(),
             earlier=self.earlier,
-            condition=bool(getattr(self.param, "condition", False)),
+            condition=self._condition,
             name=name,
         )
         window.applied.connect(self.apply_text)
@@ -307,6 +355,122 @@ class ExpressionEditor(Editor):
         self._columns = ctx.columns("input", values) or []
         if self.window_open is not None:  # e.g. the data going into the step is calculated now
             self.window_open.inputs_changed()
+        self.check()
+
+    @property
+    def checking(self) -> bool:
+        return self._check_timer.isActive() or self._check.busy
+
+    def check(self) -> None:
+        """Check the formula on the first rows of the data going into the step, in the
+        background; nothing happens if that was done already for the same formula and data."""
+        self._check_timer.stop()
+        if not self.isVisible():  # e.g. the settings on the map while the table view is shown
+            return
+        text = self.value()
+        frame = self.ctx.input_frame()
+        no_data = (self.ctx.input_problem() or NO_DATA) if frame is None else ""
+        earlier, name, condition = list(self.earlier()), self.creates_name(), self._condition
+        rest = (text, tuple(earlier), name, no_data)
+        if self._checked_input is not None and self._checked_input[0] is frame and self._checked_input[1] == rest:
+            return
+        self._checked_input = (frame, rest)
+        if not text.strip():
+            self._check.cancel()
+            self._checked(Preview(True, ""))
+            return
+        self._check.start(
+            lambda cancel: preview(frame, text, earlier, condition=condition, name=name, cancel=cancel, no_data=no_data)
+        )
+
+    @property
+    def _condition(self) -> bool:
+        return bool(getattr(self.param, "condition", False))
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        self.check()
+
+    def _typed(self) -> None:
+        self._edit.setExtraSelections([])  # the mistake shown may have moved
+        self._check_timer.start()
+
+    def _checked(self, result: Preview) -> None:
+        self._result, self._result_text = result, self._checked_input[1][0] if self._checked_input else ""
+        if result.ok and result.values is None:  # nothing typed yet
+            self.line.hide()
+            self._edit.setExtraSelections([])
+            return
+        if result.ok:
+            color, text = theme.TEXT_DIM, html.escape(self._summary(result), quote=False)
+        elif self._checked_input is not None and self._checked_input[0] is None:  # no data to check with
+            color, text = theme.TEXT_DIM, html.escape(result.message, quote=False)
+        else:
+            color, text = theme.STATUS_COLORS["error"], html.escape(result.message, quote=False)
+            if result.fix and result.mistake:
+                text += f' · <a href="fix">Write {html.escape(result.fix, quote=False)}</a>'
+        self.line.setStyleSheet(f"color: {color};")
+        self.line.setText(text)
+        self.line.setToolTip("Click to show the mistake in the formula" if result.mistake else "")
+        self.line.show()
+        self._underline(result.mistake if result.mistake and self.value() == self._result_text else None)
+
+    def _summary(self, result: Preview) -> str:
+        """One line: what the formula gives, e.g. "→ number: 23.79, 119, 5.95, … · no errors in
+        all 156 rows"."""
+        values = result.values
+        if self._condition:
+            line = "→ " + result.message[:1].lower() + result.message[1:]
+        else:
+            show = DisplayFormat().formatter(values.dtype)
+            shown = []
+            for value in values.head(3).to_list():
+                if value is None:
+                    shown.append("empty")
+                elif values.dtype == pl.String:
+                    shown.append("'" + (value if len(value) <= 24 else value[:24] + "…") + "'")
+                else:
+                    shown.append(show(value))
+            more = ", …" if values.len() > 3 else ""
+            line = f"→ {type_label(values.dtype)}: {', '.join(shown)}{more} · no errors in {result.scope}"
+            if result.note:
+                line += f" ({result.note})"
+        return line
+
+    def _underline(self, mistake: tuple[int, int] | None) -> None:
+        if mistake is None:
+            self._edit.setExtraSelections([])
+            return
+        selection = QTextEdit.ExtraSelection()
+        selection.format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline)
+        selection.format.setUnderlineColor(QColor(theme.STATUS_COLORS["error"]))
+        selection.cursor = self._cursor(mistake)
+        self._edit.setExtraSelections([selection])
+
+    def _cursor(self, mistake: tuple[int, int]) -> QTextCursor:
+        """A cursor that selects ``text[start:end]`` (Qt counts in UTF-16 units)."""
+        text = self._result_text
+        cursor = QTextCursor(self._edit.document())
+        cursor.setPosition(_utf16(text, mistake[0]))
+        cursor.setPosition(_utf16(text, mistake[1]), QTextCursor.MoveMode.KeepAnchor)
+        return cursor
+
+    def _show_mistake(self) -> None:
+        result = self._result
+        if result is None or result.mistake is None or self.value() != self._result_text:
+            return
+        self._edit.setTextCursor(self._cursor(result.mistake))
+        self._edit.setFocus()
+
+    def _fix_mistake(self) -> None:
+        """Write the suggested name there instead; like typing, this doesn't apply the formula."""
+        result = self._result
+        if result is None or result.mistake is None or result.fix is None or self.value() != self._result_text:
+            return
+        cursor = self._cursor(result.mistake)
+        cursor.insertText(result.fix)
+        self._edit.setTextCursor(cursor)
+        self._edit.setFocus()
 
     def _fill_menu(self) -> None:
         self._menu.clear()
@@ -943,3 +1107,8 @@ class ParamForm(QWidget):
             for widget in (label, editor, hint):
                 if widget is not None:
                     widget.setVisible(visible)
+
+
+def _utf16(text: str, index: int) -> int:
+    """The position of ``text[index]`` for Qt, which counts characters outside the BMP twice."""
+    return len(text[:index].encode("utf-16-le")) // 2

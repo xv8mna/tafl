@@ -206,10 +206,11 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     con.register(_VIEW, df.with_row_index(_ROW))
     try:
         try:
-            relation = con.sql(f"SELECT ({body}) AS value FROM {_VIEW} ORDER BY {_ROW}")
+            # On lines of its own: an error on the line after the formula means it ends too early
+            relation = con.sql(f"SELECT (\n{body}\n) AS value FROM {_VIEW} ORDER BY {_ROW}")
             result_type = str(relation.types[0])
             if result_type.startswith("TIMESTAMP WITH TIME ZONE"):  # local time: the grid shows no zones
-                relation = con.sql(f"SELECT CAST(({body}) AS TIMESTAMP) AS value FROM {_VIEW} ORDER BY {_ROW}")
+                relation = con.sql(f"SELECT CAST((\n{body}\n) AS TIMESTAMP) AS value FROM {_VIEW} ORDER BY {_ROW}")
                 result_type = "TIMESTAMP"
         except duckdb.Error as e:
             raise ActionError(_clean_error(e, formula, df.columns)) from None
@@ -439,6 +440,12 @@ def _clean_error(error: Exception, formula: str, columns: Sequence[str] = ()) ->
         return (
             "Formula error: the formula must give one value per row. For totals use the Aggregate "
             f"action, or a window function such as SUM([Amount]) OVER ().\nFormula: {formula}"
+        )
+    line = re.search(r"\nLINE (\d+):", text)
+    if "syntax error" in text and line and int(line.group(1)) > formula.count("\n") + 2:
+        return (
+            "Formula error: the formula ends too early: something is missing at its end "
+            f"(e.g. a value after + or AND, or END after CASE)\nFormula: {formula}"
         )
     text = re.split(r"\n\s*\nLINE \d+:|\nLINE \d+:", text)[0]
     text = text.split("Candidate functions:")[0]  # DuckDB lists dozens of variants of the function

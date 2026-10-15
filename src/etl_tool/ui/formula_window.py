@@ -6,11 +6,9 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 import polars as pl
-import shiboken6
 from PySide6.QtCore import QByteArray, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -29,21 +27,11 @@ from PySide6.QtWidgets import (
 from etl_tool.core.formula_preview import NO_DATA, Column, Preview, preview
 
 from . import theme
+from .checks import checks
 from .frame_model import FrameModel
 from .functions_window import FunctionsPanel, insert_into
-from .worker import Worker
 
 _DELAY_MS = 300  # check this long after the last key
-_worker: Worker | None = None
-
-
-def _preview_worker() -> Worker:
-    """One worker for all formula windows. It is not a child of a window: closing the window
-    must never wait for a preview that is still running (that preview is stopped instead)."""
-    global _worker
-    if _worker is None or not shiboken6.isValid(_worker):
-        _worker = Worker(QApplication.instance())
-    return _worker
 
 
 class FormulaWindow(QDialog):
@@ -151,9 +139,7 @@ class FormulaWindow(QDialog):
         self._timer.setSingleShot(True)
         self._timer.setInterval(_DELAY_MS)
         self._timer.timeout.connect(self.check)
-        self._worker: Worker | None = _preview_worker()  # None once closed
-        self._worker.finished.connect(self._show)
-        self._worker.failed.connect(self._failed)
+        self._check = checks().client(self._show, self._failed)  # closing never waits for it
         self._restore()
         self.editor.setFocus()
         self.editor.moveCursor(self.editor.textCursor().MoveOperation.End)
@@ -161,7 +147,7 @@ class FormulaWindow(QDialog):
 
     @property
     def busy(self) -> bool:
-        return self._timer.isActive() or (self._worker is not None and self._worker.busy)
+        return self._timer.isActive() or self._check.busy
 
     def text(self) -> str:
         return self.editor.toPlainText()
@@ -169,13 +155,13 @@ class FormulaWindow(QDialog):
     def check(self) -> None:
         """Evaluate the formula on the first rows (in the background)."""
         self._timer.stop()
-        if self._worker is None:  # closed
+        if not self._check.alive:  # closed
             return
         frame, earlier, text = self._frame(), list(self._earlier()), self.text()
         no_data = (self._no_data() or NO_DATA) if frame is None else ""
         self._checked = (frame, no_data)
         condition, name = self._condition, self._name
-        self._worker.start(
+        self._check.start(
             lambda cancel: preview(frame, text, earlier, condition=condition, name=name, cancel=cancel, no_data=no_data)
         )
 
@@ -207,11 +193,8 @@ class FormulaWindow(QDialog):
 
     def done(self, result: int) -> None:
         self._timer.stop()
-        if self._worker is not None:
-            self._worker.finished.disconnect(self._show)
-            self._worker.failed.disconnect(self._failed)
-            self._worker.cancel()  # stops the preview that is still running, without waiting for it
-            self._worker = None
+        if self._check.alive:
+            self._check.close()  # stops the preview that is still running, without waiting for it
             self._save()
         super().done(result)
 

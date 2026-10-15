@@ -192,3 +192,11 @@ def test_columns_star_leaves_out_the_row_number():
     assert expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*COLUMNS(* EXCLUDE (b))))").to_list() == [11, 22]
     assert expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*COLUMNS(* EXCLUDE [b])))").to_list() == [11, 22]
     assert expressions.evaluate(df, "COUNT(*) OVER ()").to_list() == [2, 2]
+
+
+def test_a_formula_that_ends_too_early(people):
+    for formula in ("[Age] +", "CASE WHEN [Age] > 1 THEN 1", "[Age] > 1 AND\n-- a comment"):
+        with pytest.raises(ActionError, match="the formula ends too early"):
+            expressions.evaluate(people, formula)
+    with pytest.raises(ActionError, match='syntax error at or near "2"'):
+        expressions.evaluate(people, "ROUND([Age] 2)")
