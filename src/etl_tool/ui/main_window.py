@@ -12,6 +12,7 @@ from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDockWidget,
     QFileDialog,
@@ -29,7 +30,7 @@ from etl_tool import APP_NAME, PROJECT_URL, __version__
 from etl_tool.core import EXTENSION, OLD_EXTENSIONS, ProjectError
 from etl_tool.core.registry import default_plugin_folders
 
-from . import theme
+from . import functions_window, theme
 from .connections_dialog import ConnectionsDialog
 from .data_panel import DataPanel
 from .map import MapView
@@ -122,7 +123,7 @@ class MainWindow(QMainWindow):
         self.undo_action = self._action("&Undo", self.session.undo, QKeySequence.StandardKey.Undo)
         self.redo_action = self._action("&Redo", self.session.redo, QKeySequence("Ctrl+Y"))
         self.run_action = self._action(
-            "▶  Run project", lambda: self.session.run_project(), QKeySequence("F5"),
+            "▶  Run project", self.run_project, QKeySequence("F5"),
             "Calculate all tables and execute exports (F5)",
         )
         self.run_table_action = self._action(
@@ -135,6 +136,10 @@ class MainWindow(QMainWindow):
             "Read files and databases again (Ctrl+R)",
         )
         self.connections_action = self._action("Connections…", self.edit_connections, tip="Database connections of this project")
+        self.functions_action = self._action(
+            "Formula functions", lambda: functions_window.show_functions(self), QKeySequence("F1"),
+            "What the functions in formulas do and how they are written (F1)",
+        )
         self.plugins_action = self._action("Plugins…", self.show_plugins)
         self.about_action = self._action(f"About {APP_NAME}", self.show_about)
         self.log_action = self._action(
@@ -181,6 +186,7 @@ class MainWindow(QMainWindow):
         view.addSeparator()
         view.addAction(self.results_action)
         help_menu = bar.addMenu("&Help")
+        help_menu.addAction(self.functions_action)
         help_menu.addAction(self.plugins_action)
         help_menu.addAction(self.log_action)
         help_menu.addSeparator()
@@ -269,6 +275,7 @@ class MainWindow(QMainWindow):
         return self._save_to(Path(path))
 
     def _save_to(self, path: Path) -> bool:
+        self.apply_typing()
         try:
             saved = self.session.save_project(path)
         except OSError as e:
@@ -281,6 +288,7 @@ class MainWindow(QMainWindow):
 
     def maybe_save(self, reason: str) -> bool:
         """Offer to save unsaved changes ``reason`` ("before closing"). False if cancelled."""
+        self.apply_typing()
         if not self.session.dirty:
             return True
         answer = self.ask_save(reason)
@@ -333,9 +341,25 @@ class MainWindow(QMainWindow):
                 path, lambda p=path: self.maybe_save("before opening another project") and self.open_path(p)
             )
 
+    def apply_typing(self) -> None:
+        """Apply what is typed in a field but not applied yet (Enter or leaving the field applies),
+        e.g. before saving or running: a shortcut doesn't leave the field."""
+        widget = QApplication.focusWidget()
+        if widget is not None and self.isAncestorOf(widget):
+            widget.clearFocus()  # leaving the field applies what is typed
+            widget.setFocus()
+        field = functions_window.target()  # typing, then looking up a function
+        if field is not None:
+            field.apply()
+
     # --- running -----------------------------------------------------------------------------
 
+    def run_project(self) -> None:
+        self.apply_typing()
+        self.session.run_project()
+
     def run_current_table(self) -> None:
+        self.apply_typing()
         if self.session.table_id:
             self.session.run_project([self.session.table_id])
 

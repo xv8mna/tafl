@@ -78,6 +78,11 @@ app). On the command line:
 - **Settings** (right): the selected step's settings. Changes apply when you press Enter or leave
   the field (in SQL fields: Ctrl+Enter); the data updates in the background. Formula fields:
   Enter applies, Shift+Enter starts a new line, the **[ ]** button inserts a column name.
+- **Formula functions** (F1, or **ƒx** next to a formula): every function with what it does, how
+  it is written and an example, with a search and categories. Search by name or by what it does
+  ("month", "round"); names from SQL Server and spreadsheets find what to use instead (DATEADD,
+  EOMONTH, NEWID, …). The window can stay open; Enter or a double-click inserts the function
+  where the cursor was in the formula (around the selected text, if any), Esc closes it.
 - **Run project** (F5) calculates all tables and executes the exports; **Run this table**
   (Shift+F5) runs only the selected table and the tables it uses. While you edit, exports never
   write anything. **Reload data** (Ctrl+R) reads files and databases again; a changed file is
@@ -245,7 +250,8 @@ date-times with a time zone are written in that zone's local time. If the file e
 
 ## Formulas
 
-Calculated columns and *Filter rows by formula* use SQL expressions (DuckDB dialect):
+Calculated columns and *Filter rows by formula* use SQL expressions (DuckDB dialect). All
+functions, with what they do and an example, are in **Help → Formula functions** (F1):
 
 | Formula | What it does |
 |---|---|

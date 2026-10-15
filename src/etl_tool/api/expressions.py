@@ -48,6 +48,8 @@ _TSQL_HINTS = {
     "getutcdate": "use NOW() AT TIME ZONE 'UTC'",
     "replicate": "use REPEAT(text, count)",
     "newid": "use GEN_RANDOM_UUID()",
+    "proper": "for a capital first letter write UPPER(LEFT([Name], 1)) || LOWER(SUBSTRING([Name], 2))",
+    "initcap": "for a capital first letter write UPPER(LEFT([Name], 1)) || LOWER(SUBSTRING([Name], 2))",
 }
 # Functions without arguments that are easily written without their parentheses.
 _NO_ARGUMENTS = {"today", "now", "getdate", "random", "pi", "gen_random_uuid"}
@@ -170,22 +172,22 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     ``condition``, the result must be true or false."""
     if not formula or all(t.kind in ("space", "comment") for t in tokenize(formula)):
         raise ActionError("The formula is empty")
-    sql = f"SELECT ({translate(formula)}) AS value FROM {_VIEW} ORDER BY {_ROW}"
+    body = translate(formula)
     _check_names(formula, df.columns)
     con = _connection()
     con.register(_VIEW, df.with_row_index(_ROW))
     try:
         try:
-            relation = con.sql(sql)
+            relation = con.sql(f"SELECT ({body}) AS value FROM {_VIEW} ORDER BY {_ROW}")
             result_type = str(relation.types[0])
+            if result_type.startswith("TIMESTAMP WITH TIME ZONE"):  # local time: the grid shows no zones
+                relation = con.sql(f"SELECT CAST(({body}) AS TIMESTAMP) AS value FROM {_VIEW} ORDER BY {_ROW}")
+                result_type = "TIMESTAMP"
         except duckdb.Error as e:
             raise ActionError(_clean_error(e, formula, df.columns)) from None
-        if "INTERVAL" in result_type:  # Polars can't take DuckDB's time spans
-            raise ActionError(
-                "Formula error: the result is a time span. For the days between two dates or date-times use "
-                "DATE_DIFF('day', [From], [To]) (or 'hour', 'minute', ...); to move a date, add an interval: "
-                f"[Date] + INTERVAL 3 DAY.\nFormula: {formula}"
-            )
+        problem = _unusable_result(result_type)
+        if problem:
+            raise ActionError(f"Formula error: {problem}\nFormula: {formula}")
         if condition and result_type != "BOOLEAN":
             raise ActionError(_not_a_condition(_type_word(result_type)))
         try:
@@ -349,6 +351,24 @@ def _check_names(formula: str, columns: Sequence[str]) -> None:
                 f"Formula error: the columns {listed} differ only in upper and lower case, so a formula "
                 f"can't tell them apart. Rename one of them first.\nFormula: {formula}"
             )
+
+
+def _unusable_result(result_type: str) -> str | None:
+    """Results a column of a table can't hold (they would break the grid and exports)."""
+    if "INTERVAL" in result_type:  # Polars can't take DuckDB's time spans
+        return (
+            "the result is a time span. For the days between two dates or date-times use "
+            "DATE_DIFF('day', [From], [To]) (or 'hour', 'minute', ...); to move a date, add an interval: "
+            "[Date] + INTERVAL 3 DAY."
+        )
+    if re.search(r"\[\d*\]$", result_type):
+        return (
+            "the result is a list of values. Take one of them with LIST_EXTRACT(list, 1), "
+            "or join them with ARRAY_TO_STRING(list, ', ')."
+        )
+    if result_type.startswith(("STRUCT", "MAP", "UNION")):
+        return "the result is a structure of several values. Take one of them, e.g. STRUCT_EXTRACT(value, 'name')."
+    return None
 
 
 def _not_a_condition(gives: str) -> str:

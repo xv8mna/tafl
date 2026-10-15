@@ -15,6 +15,7 @@ from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -37,8 +38,9 @@ from PySide6.QtWidgets import (
 )
 
 from etl_tool.api.params import List, Param, is_visible
+from etl_tool.core import functions
 
-from . import theme
+from . import functions_window, theme
 
 
 @dataclass
@@ -165,6 +167,20 @@ class CodeEditor(Editor):
 class _FormulaEdit(_PlainEdit):
     """Like Excel's formula bar: Enter applies, Shift+Enter or Alt+Enter starts a new line."""
 
+    focused = Signal()
+
+    def focusInEvent(self, event: Any) -> None:
+        super().focusInEvent(event)
+        self.focused.emit()
+
+    def focusOutEvent(self, event: Any) -> None:
+        if event.reason() == Qt.FocusReason.ActiveWindowFocusReason and isinstance(
+            QApplication.activeWindow(), functions_window.FunctionsWindow
+        ):  # looking something up while typing: the formula isn't finished yet
+            QPlainTextEdit.focusOutEvent(self, event)
+            return
+        super().focusOutEvent(event)
+
     def keyPressEvent(self, event: Any) -> None:
         plain_enter = event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
             event.modifiers() & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.AltModifier)
@@ -179,7 +195,8 @@ class _FormulaEdit(_PlainEdit):
 
 
 class ExpressionEditor(Editor):
-    """A formula (up to three visible lines), with a button that inserts [Column] names."""
+    """A formula (up to three visible lines), with buttons that insert [Column] names and open
+    the list of functions."""
 
     def __init__(self, param: Param, ctx: FormContext, parent: QWidget | None = None) -> None:
         super().__init__(param, ctx, parent)
@@ -189,6 +206,7 @@ class ExpressionEditor(Editor):
         self._edit.setTabChangesFocus(True)
         self._edit.setPlaceholderText(getattr(param, "placeholder", "") or "[Column] * 2")
         self._edit.committed.connect(self._commit)
+        self._edit.focused.connect(lambda: functions_window.remember(self))
         self._insert = QToolButton(self)
         self._insert.setText("[ ]")
         self._insert.setToolTip("Insert a column name")
@@ -196,11 +214,44 @@ class ExpressionEditor(Editor):
         self._menu = QMenu(self._insert)
         self._menu.aboutToShow.connect(self._fill_menu)
         self._insert.setMenu(self._menu)
+        self._functions = QToolButton(self)
+        self._functions.setText("ƒx")
+        self._functions.setToolTip("Functions: what they do and how they are written (F1)")
+        self._functions.clicked.connect(self._show_functions)
         self._columns: list[str] = []
         self._last = ""
-        layout = _row(self._edit, self._insert)
-        layout.setAlignment(self._insert, Qt.AlignmentFlag.AlignTop)
+        buttons = QVBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(2)
+        buttons.addWidget(self._insert)
+        buttons.addWidget(self._functions)
+        buttons.addStretch(1)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self._edit, 1)
+        layout.addLayout(buttons)
         self.setLayout(layout)
+
+    def insert_template(self, template: str) -> None:
+        """Insert a function at the cursor; typing goes on where the template marks it. Selected
+        text goes there too: with [Price] selected, ROUND gives ROUND([Price])."""
+        before, _, after = template.partition(functions.CURSOR)
+        cursor = self._edit.textCursor()
+        selected = cursor.selectedText().replace(" ", "\n")  # Qt's paragraph separator
+        cursor.insertText(before + selected + after)
+        cursor.setPosition(cursor.position() - len(after))
+        self._edit.setTextCursor(cursor)
+        self._edit.window().activateWindow()
+        self._edit.setFocus()
+
+    def apply(self) -> None:
+        """Apply what is typed (as Enter does)."""
+        self._commit()
+
+    def _show_functions(self) -> None:
+        functions_window.remember(self)
+        functions_window.show_functions(self)
 
     def value(self) -> str:
         return self._edit.toPlainText()

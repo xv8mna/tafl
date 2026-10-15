@@ -172,3 +172,13 @@ def test_a_condition_must_be_true_or_false(people):
         expressions.filter_rows(people, "[Age] + 1")
     with pytest.raises(ActionError, match="this formula gives text"):
         expressions.filter_rows(people, "[Name]")
+
+
+def test_results_a_column_cant_hold(people):
+    with pytest.raises(ActionError, match="the result is a list of values"):
+        expressions.evaluate(people, "STRING_SPLIT([City], 'r')")
+    with pytest.raises(ActionError, match="structure of several values"):
+        expressions.evaluate(people, "STRUCT_PACK(a := 1)")
+    assert expressions.evaluate(people, "NOW()").dtype == pl.Datetime("us")  # local time, without a time zone
+    with pytest.raises(ActionError, match="there is no function PROPER: for a capital first letter"):
+        expressions.evaluate(people, "PROPER([Name])")
