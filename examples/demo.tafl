@@ -1,0 +1,305 @@
+{
+  "format": "tafl-project",
+  "format_version": 1,
+  "name": "Demo",
+  "connections": [],
+  "tables": [
+    {
+      "id": "t1",
+      "name": "Customers",
+      "steps": [
+        {
+          "id": "s1",
+          "action": "excel.import",
+          "version": 2,
+          "params": {
+            "file": "data/customers.xlsx",
+            "sheet": "Kunden",
+            "header_row": 3
+          }
+        },
+        {
+          "id": "s2",
+          "action": "columns.rename",
+          "version": 1,
+          "params": {
+            "columns": [
+              {
+                "column": "Kundennr",
+                "new_name": "CustomerNo"
+              },
+              {
+                "column": "Ort",
+                "new_name": "City"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s3",
+          "action": "text.clean",
+          "version": 1,
+          "params": {
+            "columns": [
+              "Name"
+            ],
+            "collapse_spaces": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "name": "Orders",
+      "steps": [
+        {
+          "id": "s4",
+          "action": "csv.import",
+          "version": 2,
+          "params": {
+            "file": "data/orders.csv"
+          }
+        },
+        {
+          "id": "s5",
+          "action": "columns.rename",
+          "version": 1,
+          "params": {
+            "columns": [
+              {
+                "column": "Bestellnr",
+                "new_name": "OrderNo"
+              },
+              {
+                "column": "Kundennr",
+                "new_name": "CustomerNo"
+              },
+              {
+                "column": "Datum",
+                "new_name": "Date"
+              },
+              {
+                "column": "Netto",
+                "new_name": "Net"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s6",
+          "action": "rows.filter",
+          "version": 1,
+          "params": {
+            "conditions": [
+              {
+                "column": "Status",
+                "operator": "!=",
+                "value": "storniert"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s7",
+          "action": "table.merge",
+          "version": 2,
+          "params": {
+            "other": "t1",
+            "match": [
+              {
+                "column": "CustomerNo",
+                "other_column": "CustomerNo"
+              }
+            ],
+            "columns": [
+              "Name",
+              "City"
+            ]
+          }
+        },
+        {
+          "id": "s8",
+          "action": "text.replace",
+          "version": 1,
+          "params": {
+            "columns": [
+              "Name"
+            ],
+            "replacements": [
+              {
+                "find": "",
+                "replace": "(unknown customer)"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s9",
+          "action": "calc.columns",
+          "version": 1,
+          "params": {
+            "columns": [
+              {
+                "name": "Gross",
+                "formula": "ROUND([Net] * 1.19, 2)"
+              },
+              {
+                "name": "Month",
+                "formula": "STRFTIME([Date], '%Y-%m')"
+              },
+              {
+                "name": "Size",
+                "formula": "IIF([Net] >= 1000, 'large', 'normal')"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s10",
+          "action": "calc.enumerate",
+          "version": 1,
+          "params": {
+            "name": "Order of customer",
+            "group_by": [
+              "CustomerNo"
+            ],
+            "order_by": [
+              {
+                "column": "Date"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s11",
+          "action": "rows.sort",
+          "version": 1,
+          "params": {
+            "by": [
+              {
+                "column": "Name"
+              },
+              {
+                "column": "Date"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s12",
+          "action": "excel.export",
+          "version": 2,
+          "params": {
+            "file": "output/orders.xlsx",
+            "sheet": "Orders",
+            "table_style": "Table Style Medium 2",
+            "column_formats": [
+              {
+                "column": "Gross",
+                "format": "#,##0.00 €"
+              },
+              {
+                "column": "Net",
+                "format": "#,##0.00 €"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s13",
+          "action": "csv.export",
+          "version": 1,
+          "params": {
+            "file": "output/orders.csv"
+          }
+        }
+      ]
+    },
+    {
+      "id": "t3",
+      "name": "Revenue by customer",
+      "steps": [
+        {
+          "id": "s14",
+          "action": "table.derive",
+          "version": 1,
+          "params": {
+            "table": "t2"
+          }
+        },
+        {
+          "id": "s15",
+          "action": "calc.aggregate",
+          "version": 1,
+          "params": {
+            "group_by": [
+              "Name",
+              "City"
+            ],
+            "calculations": [
+              {
+                "function": "sum",
+                "column": "Gross",
+                "name": "Revenue"
+              },
+              {
+                "function": "count_rows",
+                "name": "Orders"
+              },
+              {
+                "function": "max",
+                "column": "Date",
+                "name": "Last order"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s16",
+          "action": "calc.columns",
+          "version": 1,
+          "params": {
+            "columns": [
+              {
+                "name": "Share",
+                "formula": "[Revenue] / SUM([Revenue]) OVER ()"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s17",
+          "action": "rows.sort",
+          "version": 1,
+          "params": {
+            "by": [
+              {
+                "column": "Revenue",
+                "order": "desc"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s18",
+          "action": "excel.export",
+          "version": 2,
+          "params": {
+            "file": "output/revenue.xlsx",
+            "sheet": "Revenue",
+            "column_formats": [
+              {
+                "column": "Revenue",
+                "format": "#,##0.00 €"
+              },
+              {
+                "column": "Share",
+                "format": "0.0%"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

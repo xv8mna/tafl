@@ -1,0 +1,9 @@
+# Text files use LF everywhere (in the repository and in the working folder).
+* text=auto eol=lf
+# Data files are kept byte for byte (e.g. Windows line endings in CSV exports).
+*.csv -text
+*.xlsx binary
+*.ico binary
+*.png binary
+*.xlsm binary
+*.parquet binary

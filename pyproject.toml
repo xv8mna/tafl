@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tafl"
+dynamic = ["version"]
+description = "Desktop data preparation tool: build tables step by step and see the data after every step"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "xv8mna" }]
+requires-python = ">=3.12"
+keywords = ["etl", "data-preparation", "polars", "duckdb", "pyside6", "excel", "csv", "sql-server"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Office/Business",
+]
+dependencies = [
+    "polars>=2.0",
+    "duckdb>=1.5",
+    "pyarrow>=20",
+    "fastexcel>=0.21",
+    "xlsxwriter>=3.2",
+    "lxml>=5",
+    "pyodbc>=5.3",
+    "PySide6-Essentials>=6.12",
+    "send2trash>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9", "pytest-qt>=4.4", "openpyxl>=3.1", "ruff==0.17.0"]
+
+[project.urls]
+Homepage = "https://github.com/xv8mna/tafl"
+Issues = "https://github.com/xv8mna/tafl/issues"
+
+[project.scripts]
+tafl = "etl_tool.cli:main"
+
+[project.gui-scripts]
+tafl-app = "etl_tool.ui.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "etl_tool.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "I"]
+ignore = ["E501", "B905"]
