@@ -256,6 +256,11 @@ Calculated columns and *Filter rows by formula* use SQL expressions (DuckDB dial
 | `CASE WHEN [Country] = 'DE' THEN 'Germany' ELSE 'Other' END` | conditions |
 | `YEAR([Date])`, `[Date] + 30`, `STRFTIME([Date], '%Y-%m')` | dates (`+ 30` adds 30 days) |
 | `[Revenue] / SUM([Revenue]) OVER ()` | window functions (share of total, running sums, …) |
+| `[Net] * 1.19 -- with VAT`, `/* note */` | comments |
+
+A mistake shows a plain message that names the column of the step, e.g. *Formula error in [Gross]:
+column [Amont] not found (did you mean [Amount]?)*. SQL Server functions that DuckDB doesn't have
+(DATEADD, EOMONTH, CONVERT, …) get a hint what to write instead.
 
 ## Formats
 

@@ -26,6 +26,7 @@ from enum import StrEnum
 import polars as pl
 
 from etl_tool.api import Action, ActionError, Cancelled, Context, Database, Kind, Mode, Params, ValidationContext
+from etl_tool.api.expressions import is_panic
 
 from .project import Project, Step, Table
 from .registry import Registry
@@ -403,6 +404,10 @@ class _Evaluation:
         except ActionError as e:
             return _error(step, str(e), messages=ctx.messages)
         except Exception as e:
+            return _error(step, _friendly(e), traceback.format_exc(), ctx.messages)
+        except BaseException as e:  # a crash inside Polars (Rust) is not an Exception
+            if not is_panic(e):
+                raise
             return _error(step, _friendly(e), traceback.format_exc(), ctx.messages)
         seconds = time.perf_counter() - started
 

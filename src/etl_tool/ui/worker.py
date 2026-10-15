@@ -10,6 +10,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from etl_tool.api import Cancelled
+from etl_tool.api.expressions import is_panic
 
 
 class _Signals(QObject):
@@ -31,6 +32,10 @@ class _Job(QRunnable):
         except Cancelled:
             self.signals.cancelled.emit(self.job_id)
         except Exception:
+            self.signals.failed.emit(self.job_id, traceback.format_exc())
+        except BaseException as e:  # a crash inside Polars (Rust): report it instead of going silent
+            if not is_panic(e):
+                raise
             self.signals.failed.emit(self.job_id, traceback.format_exc())
         else:
             self.signals.done.emit(self.job_id, result)

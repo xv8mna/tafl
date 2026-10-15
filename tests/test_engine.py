@@ -267,3 +267,32 @@ def test_a_table_that_is_off_is_skipped_with_the_tables_using_it(project, regist
     project.tables[0].enabled = True
     results = Engine(project, registry).run()
     assert all(r.ok for r in results.values()) and (tmp_path / "out" / "report.csv").exists()
+
+
+def test_a_time_span_on_an_empty_table_is_a_step_error(project, registry):
+    """It used to crash inside Polars and stop the calculation."""
+    project.tables[0].steps[1].params["condition"] = "[Amount] > 1000"  # keeps no rows
+    project.tables[0].steps[2].params["columns"] = [{"name": "Age", "formula": "GETDATE() - [Date]"}]
+    result = Engine(project, registry).evaluate("Orders")
+    assert result.steps[2].status == Status.ERROR and "time span" in result.steps[2].error
+
+
+def test_a_crash_inside_polars_becomes_a_step_error(project):
+    """Polars reports crashes as PanicException, which is not an Exception."""
+
+    class PanicException(BaseException):  # recognized by its name, like the one from Polars
+        pass
+
+    module = types.ModuleType("crashing")
+
+    @action("demo.crash", "Crash")
+    def crash(df, p, ctx):
+        raise PanicException("called `Result::unwrap()` on an `Err` value")
+
+    module.crash = crash
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    project.add_step("Orders", "demo.crash", {})
+    result = Engine(project, registry).evaluate("Orders")
+    assert result.steps[-1].status == Status.ERROR and "PanicException" in result.steps[-1].error

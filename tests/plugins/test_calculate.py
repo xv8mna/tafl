@@ -85,3 +85,8 @@ def test_aggregate_totals_and_name_clashes(act, people):
     assert total.to_dicts() == [{"Average of Age": 35.8}]
     with pytest.raises(ActionError, match="used twice"):
         act("calc.aggregate", people, {"group_by": ["City"], "calculations": [{"function": "min", "column": "Age", "name": "City"}]})
+
+
+def test_errors_name_the_new_column(act, people):
+    with pytest.raises(ActionError, match=r"Formula error in \[Gross\]: column \[Agee\] not found"):
+        act("calc.columns", people, {"columns": [{"name": "Double", "formula": "[Age] * 2"}, {"name": "Gross", "formula": "[Agee] * 2"}]})
