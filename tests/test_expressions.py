@@ -1,3 +1,5 @@
+import datetime as dt
+
 import duckdb
 import polars as pl
 import pytest
@@ -236,3 +238,12 @@ def test_functions_of_extensions_and_unknown_types(people):
     assert "INSTALL" not in str(error.value)
     with pytest.raises(ActionError, match="there is no type INTEGR"):
         expressions.evaluate(people, "CAST([Age] AS INTEGR)")
+
+
+def test_time_zones_collations_and_json_work_without_loading_extensions():
+    """Formulas can't load extensions: these must be part of DuckDB itself (as in 1.5)."""
+    df = pl.DataFrame({"d": [dt.datetime(2026, 3, 29, 0, 30)], "s": ['{"a": 1}'], "t": ["Äpfel"]})
+    assert expressions.evaluate(df, "NOW() AT TIME ZONE 'UTC'").dtype == pl.Datetime("us")  # the GETUTCDATE hint
+    assert expressions.evaluate(df, "timezone('Europe/Berlin', [d]::TIMESTAMPTZ)").len() == 1
+    assert expressions.evaluate(df, "[t] COLLATE de < 'Birnen'").to_list() == [True]
+    assert expressions.evaluate(df, "json_extract_string([s], '$.a')").to_list() == ["1"]
