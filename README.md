@@ -380,6 +380,8 @@ folder**). A small project with data that shows the problem helps most. Check fi
 attach them: a `.tafl` file contains file paths, server and database names and the values picked
 in the filter pane, and the log can contain paths and values from error messages.
 
+Please report security problems privately instead: [Security](https://github.com/xv8mna/tafl/security) tab → **Report a vulnerability**.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Tafl uses Polars, DuckDB, PySide6 (Qt for Python, LGPL) and other
