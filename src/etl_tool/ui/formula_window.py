@@ -24,10 +24,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from etl_tool.core.completion import column_suggestions
 from etl_tool.core.formula_preview import NO_DATA, Column, Preview, preview
 
 from . import theme
 from .checks import checks
+from .completer import FormulaCompleter
+from .formula_style import FormulaHighlighter, bracket_selections
 from .frame_model import FrameModel
 from .functions_window import FunctionsPanel, insert_into
 
@@ -70,6 +73,13 @@ class FormulaWindow(QDialog):
         self.editor.setPlaceholderText("[Price] * [Quantity]")
         self.editor.textChanged.connect(self._text_changed)
         self.editor.setMinimumHeight(4 * self.editor.fontMetrics().lineSpacing())
+        self._highlighter = FormulaHighlighter(self.editor.document())
+        self._completer = FormulaCompleter(
+            self.editor, lambda: column_suggestions([(c.name, c.type, c.row) for c in self._columns])
+        )
+        self.editor.cursorPositionChanged.connect(
+            lambda: self.editor.setExtraSelections(bracket_selections(self.editor))
+        )
         self.status = QLabel(self)
         self.status.setWordWrap(True)
         self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -215,6 +225,7 @@ class FormulaWindow(QDialog):
         if [(c.name, c.type, c.row) for c in result.columns] != [(c.name, c.type, c.row) for c in self._columns]:
             self._columns = result.columns
             self._fill_columns()
+            self._highlighter.set_columns([c.name for c in result.columns] or None)
 
     def _failed(self, details: str) -> None:
         if not self._discard_warned:

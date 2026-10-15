@@ -36,6 +36,18 @@ GROUP_COLORS = {
     "grey": "#8c8f93",
 }
 
+# Formulas (on BASE)
+FORMULA_COLORS = {
+    "column": "#7cc3f0",
+    "unknown": "#e06c6c",  # a [column] the step doesn't have
+    "function": "#e5c07b",
+    "keyword": "#c69ce6",
+    "text": "#9fcf8a",
+    "number": "#d7a77a",
+    "comment": "#7f848e",
+    "bracket": "#4a5a6a",  # behind the matching ( )
+}
+
 STATUS_COLORS = {
     "ok": "#6aab73",
     "error": "#e06c6c",

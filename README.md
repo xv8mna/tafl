@@ -77,10 +77,15 @@ app). On the command line:
   right-click to turn a step off or duplicate it.
 - **Settings** (right): the selected step's settings. Changes apply when you press Enter or leave
   the field (in SQL fields: Ctrl+Enter); the data updates in the background. Formula fields:
-  Enter applies, Shift+Enter starts a new line, the **[ ]** button inserts a column name. While
-  you type, the line under a formula shows what it gives on the first 1,000 rows (type and first
-  values, or for a filter how many rows it keeps) or what is wrong: the mistake is underlined,
-  clicking the line selects it, and a suggested name can be written in with one click.
+  Enter applies, Shift+Enter starts a new line. Typing **[** (or the **[ ]** button) lists the
+  columns with their types; after two letters of a word the list offers functions, keywords and
+  columns (Ctrl+Space opens it at any time). Enter, Tab or a click writes the selected one in,
+  Esc closes the list. Columns, functions, texts, numbers and comments have their own colours, a
+  [column] the step doesn't have is red, and the bracket matching the one at the cursor is
+  marked. While you type, the line under a formula shows what it gives on the first 1,000 rows
+  (type and first values, or for a filter how many rows it keeps) or what is wrong: the mistake
+  is underlined, clicking the line selects it, and a suggested name can be written in with one
+  click.
 - **Formula functions** (F1, or **ƒx** next to a formula): every function with what it does, how
   it is written and an example, with a search and categories. Search by name or by what it does
   ("month", "round"); names from SQL Server and spreadsheets find what to use instead (DATEADD,

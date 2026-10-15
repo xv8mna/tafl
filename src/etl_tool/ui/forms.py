@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import os
+import weakref
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMenu,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -44,10 +44,13 @@ from PySide6.QtWidgets import (
 from etl_tool.api.dtypes import type_label
 from etl_tool.api.expressions import is_panic
 from etl_tool.api.params import List, Param, is_visible
+from etl_tool.core.completion import Suggestion, column_suggestions, warm_up
 from etl_tool.core.formula_preview import NO_DATA, Preview, preview
 
 from . import formula_window, functions_window, theme
 from .checks import checks
+from .completer import FormulaCompleter
+from .formula_style import FormulaHighlighter, bracket_selections
 from .formula_window import FormulaWindow
 from .frame_model import DisplayFormat
 
@@ -181,6 +184,7 @@ class _FormulaEdit(_PlainEdit):
     """Like Excel's formula bar: Enter applies, Shift+Enter or Alt+Enter starts a new line."""
 
     focused = Signal()
+    left = Signal()  # the focus went elsewhere
     expand = Signal()  # F2: the formula window
 
     def focusInEvent(self, event: Any) -> None:
@@ -192,8 +196,9 @@ class _FormulaEdit(_PlainEdit):
             QApplication.activeWindow(), (functions_window.FunctionsWindow, formula_window.FormulaWindow)
         ):  # looking something up or editing in the big window: the formula isn't finished yet
             QPlainTextEdit.focusOutEvent(self, event)
-            return
-        super().focusOutEvent(event)
+        else:
+            super().focusOutEvent(event)
+        self.left.emit()
 
     def keyPressEvent(self, event: Any) -> None:
         if event.key() == Qt.Key.Key_F2:
@@ -231,9 +236,9 @@ class _CheckLine(QLabel):
 
 
 class ExpressionEditor(Editor):
-    """A formula (up to three visible lines), with buttons that insert [Column] names and open
-    the list of functions. The line under it shows what the formula gives on the first rows,
-    or what is wrong, while typing."""
+    """A formula (up to three visible lines) in colours, with suggestions while typing ([ and
+    two letters of a word), and buttons for the column list, the functions and the formula
+    window. The line under it shows what the formula gives on the first rows, or what is wrong."""
 
     def __init__(self, param: Param, ctx: FormContext, parent: QWidget | None = None) -> None:
         super().__init__(param, ctx, parent)
@@ -246,11 +251,15 @@ class ExpressionEditor(Editor):
         self._edit.focused.connect(lambda: functions_window.remember(self))
         self._insert = QToolButton(self)
         self._insert.setText("[ ]")
-        self._insert.setToolTip("Insert a column name")
-        self._insert.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self._menu = QMenu(self._insert)
-        self._menu.aboutToShow.connect(self._fill_menu)
-        self._insert.setMenu(self._menu)
+        self._insert.setToolTip("Insert a column name: the list opens (as when typing [)")
+        self._insert.clicked.connect(self._open_columns)
+        self._highlighter = FormulaHighlighter(self._edit.document())
+        self._completer = FormulaCompleter(self._edit, self._column_suggestions)
+        self._mistake: list[QTextEdit.ExtraSelection] = []  # the wavy underline
+        self._edit.cursorPositionChanged.connect(self._update_selections)
+        self._edit.focused.connect(self._update_selections)
+        self._edit.left.connect(self._update_selections)
+        self._edit.focused.connect(warm_up)
         self._functions = QToolButton(self)
         self._functions.setText("ƒx")
         self._functions.setToolTip("Functions: what they do and how they are written (F1)")
@@ -260,6 +269,11 @@ class ExpressionEditor(Editor):
         self._expand.setToolTip("Formula window: a bigger editor with the columns, the functions and a preview (F2)")
         self._expand.clicked.connect(self.open_window)
         self._edit.expand.connect(self.open_window)
+        for button in (self._insert, self._functions, self._expand):
+            # A click must leave the focus in the formula: if it went to the panel, the formula
+            # would be applied half-typed (the keys F1, F2 and [ do the same as the buttons)
+            button.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+            button.setFocusProxy(self._edit)
         self._columns: list[str] = []
         self._last = ""
         # In a list (Calculate columns): the (name, formula) of the rows above, and this row's name
@@ -282,7 +296,9 @@ class ExpressionEditor(Editor):
         self._check_timer.setInterval(_CHECK_DELAY_MS)
         self._check_timer.timeout.connect(self.check)
         self._edit.textChanged.connect(self._typed)
-        self._checked_input: tuple[object, tuple] | None = None  # (frame, the rest) of the last check
+        # The input of the last check: a weak reference to the frame (a field must not keep its
+        # input data alive) or None for no data, and the rest
+        self._checked_input: tuple[weakref.ref | None, tuple] | None = None
         self._result: Preview | None = None
         self._result_text = ""  # the formula the result is for
         self._line: tuple[str, str] = ("", "")  # (rich text, colour) of the line for the result
@@ -380,9 +396,11 @@ class ExpressionEditor(Editor):
         no_data = (self.ctx.input_problem() or NO_DATA) if frame is None else ""
         earlier, name, condition, creates = list(self.earlier()), self.creates_name(), self._condition, self.creates
         rest = (text, tuple(earlier), name, no_data)
-        if self._checked_input is not None and self._checked_input[0] is frame and self._checked_input[1] == rest:
-            return
-        self._checked_input = (frame, rest)
+        if self._checked_input is not None and self._checked_input[1] == rest:
+            ref = self._checked_input[0]
+            if (frame is None and ref is None) or (frame is not None and ref is not None and ref() is frame):
+                return
+        self._checked_input = (weakref.ref(frame) if frame is not None else None, rest)
         if not text.strip():
             self._check.cancel()
             self._checked(Preview(True, ""))
@@ -401,18 +419,16 @@ class ExpressionEditor(Editor):
         super().showEvent(event)
         self.check()
 
-    def hideEvent(self, event: Any) -> None:
-        super().hideEvent(event)
-        self._check_timer.stop()
-        self._check.cancel()
-        self._checked_input = None  # checked again when shown: a hidden field must not keep its input alive
-
     def _typed(self) -> None:
         self._render()  # greyed while it belongs to another text, as it was if the text is back
         self._check_timer.start()
 
     def _checked(self, result: Preview) -> None:
         self._result, self._result_text = result, self._checked_input[1][0] if self._checked_input else ""
+        if result.columns:  # the columns the formula can use: other [names] turn red
+            self._highlighter.set_columns(c.name for c in result.columns)
+        elif self._checked_input is not None and self._checked_input[0] is None:
+            self._highlighter.set_columns(None)
         if result.ok and result.values is not None:
             plain, color = self._summary(result), theme.TEXT_DIM
         elif self._checked_input is not None and self._checked_input[0] is None:  # no data to check with
@@ -472,14 +488,31 @@ class ExpressionEditor(Editor):
         return line + (f" ({result.note})" if result.note else "")
 
     def _underline(self, mistake: tuple[int, int] | None) -> None:
-        if mistake is None:
-            self._edit.setExtraSelections([])
-            return
-        selection = QTextEdit.ExtraSelection()
-        selection.format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline)
-        selection.format.setUnderlineColor(QColor(theme.STATUS_COLORS["error"]))
-        selection.cursor = self._cursor(mistake)
-        self._edit.setExtraSelections([selection])
+        self._mistake = []
+        if mistake is not None:
+            selection = QTextEdit.ExtraSelection()
+            selection.format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline)
+            selection.format.setUnderlineColor(QColor(theme.STATUS_COLORS["error"]))
+            selection.cursor = self._cursor(mistake)
+            self._mistake = [selection]
+        self._update_selections()
+
+    def _update_selections(self) -> None:
+        """The underlined mistake, and while typing the bracket matching the one at the cursor."""
+        brackets = bracket_selections(self._edit) if self._edit.hasFocus() else []
+        self._edit.setExtraSelections(self._mistake + brackets)
+
+    def _column_suggestions(self) -> list[Suggestion]:
+        result = self._result
+        if result is not None and result.columns:  # with their types, and the rows above
+            return column_suggestions([(c.name, c.type, c.row) for c in result.columns])
+        return column_suggestions([(name, "", None) for name in self._columns])
+
+    def _open_columns(self) -> None:
+        """The [ ] button: as when typing [ at the cursor."""
+        self._edit.setFocus()
+        self._edit.insertPlainText("[")
+        self._completer.open()
 
     def _cursor(self, mistake: tuple[int, int]) -> QTextCursor:
         """A cursor that selects ``text[start:end]`` (Qt counts in UTF-16 units)."""
@@ -505,18 +538,6 @@ class ExpressionEditor(Editor):
         cursor.insertText(result.fix)
         self._edit.setTextCursor(cursor)
         self._edit.setFocus()
-
-    def _fill_menu(self) -> None:
-        self._menu.clear()
-        if not self._columns:
-            self._menu.addAction("(no columns yet)").setEnabled(False)
-        for name in self._columns:
-            self._menu.addAction(name, lambda n=name: self._insert_column(n))
-
-    def _insert_column(self, name: str) -> None:
-        self._edit.insertPlainText("[" + name.replace("]", "]]") + "]")
-        self._edit.setFocus()
-        self._commit()
 
     def _commit(self) -> None:
         if self.value() != self._last:
