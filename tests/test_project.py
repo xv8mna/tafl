@@ -77,13 +77,10 @@ def test_invalid_files_are_rejected(tmp_path):
         Project.load(newer)
 
 
-def test_files_saved_under_the_old_name_still_open(tmp_path):
-    """The app was called "ETL Tool" and saved *.etlproj files."""
-    old = tmp_path / "sales.etlproj"
+def test_a_file_of_another_format_is_refused(tmp_path):
+    other = tmp_path / "other.tafl"
     data = sample_project().to_dict()
-    data["format"] = "etl-tool-project"
-    old.write_text(json.dumps(data), encoding="utf-8")
-    project = Project.load(old)
-    assert [t.name for t in project.tables] == ["Orders", "Summary"]
-    project.save()  # same file, new format name inside
-    assert json.loads(old.read_text(encoding="utf-8"))["format"] == "tafl-project"
+    data["format"] = "something-else"
+    other.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ProjectError):
+        Project.load(other)

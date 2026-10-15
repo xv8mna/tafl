@@ -16,8 +16,6 @@ from etl_tool.api import Action
 FORMAT = "tafl-project"
 FORMAT_VERSION = 1
 EXTENSION = ".tafl"
-OLD_FORMATS: tuple[str, ...] = ("etl-tool-project",)  # files saved under an earlier name of the app still open
-OLD_EXTENSIONS: tuple[str, ...] = (".etlproj",)
 
 
 class ProjectError(Exception):
@@ -256,7 +254,7 @@ class Project:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], path: Path | None = None) -> Project:
-        if data.get("format") not in (FORMAT, *OLD_FORMATS):
+        if data.get("format") != FORMAT:
             raise ProjectError(f"This is not a project file of {APP_NAME} (they end with {EXTENSION})")
         version = int(data.get("format_version", 1))
         if version > FORMAT_VERSION:

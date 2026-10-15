@@ -21,11 +21,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import ModuleType
 
-from etl_tool import APP_FOLDER, OLD_APP_FOLDERS
+from etl_tool import APP_FOLDER
 from etl_tool.api import API_VERSION, Action, Connector
 
 ENV_VAR = "TAFL_PLUGINS"
-OLD_ENV_VARS = ("ETL_TOOL_PLUGINS",)  # read too: the variable under the app's earlier name
 
 
 @dataclass
@@ -144,11 +143,9 @@ class Registry:
 
 
 def default_plugin_folders() -> list[Path]:
-    paths = os.pathsep.join(os.environ.get(name, "") for name in (ENV_VAR, *OLD_ENV_VARS))
-    folders = [Path(p) for p in paths.split(os.pathsep) if p.strip()]
+    folders = [Path(p) for p in os.environ.get(ENV_VAR, "").split(os.pathsep) if p.strip()]
     if appdata := os.environ.get("APPDATA"):
         folders.append(Path(appdata) / APP_FOLDER / "plugins")
-        folders += [p for old in OLD_APP_FOLDERS if (p := Path(appdata) / old / "plugins").is_dir()]
     return folders
 
 

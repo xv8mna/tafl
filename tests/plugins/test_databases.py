@@ -43,6 +43,18 @@ def test_import_table_and_query(project, registry):
     assert query.df.to_dicts() == [{"customer": "A", "big": 10}, {"customer": "B", "big": 20}]
 
 
+def test_an_import_never_changes_the_database(project, registry, tmp_path):
+    """Imports run while editing (e.g. when someone else's project is opened): a query that
+    changes data must not change it."""
+    deleted = import_table(project, registry, mode="query", query="DELETE FROM orders RETURNING id")
+    assert deleted.df["id"].to_list() == [1, 2]
+    con = sqlite3.connect(tmp_path / "data.db")
+    try:
+        assert con.execute("SELECT COUNT(*) FROM orders").fetchone() == (2,)
+    finally:
+        con.close()
+
+
 def test_detect_types_turns_iso_text_into_dates(project, registry):
     result = import_table(project, registry, table="main.orders", detect_types=True)
     assert result.df["day"].to_list() == [dt.date(2025, 1, 1), dt.date(2025, 1, 2)]
@@ -86,3 +98,8 @@ def test_sqlserver(registry, tmp_path):
     }
     project.tables[0].steps[0].params["query"] = "SELECT * FROM dbo.does_not_exist"
     assert Engine(project, registry).evaluate(table.id).first_error == "Invalid object name 'dbo.does_not_exist'."
+    batch = "CREATE TABLE #t (n INT); INSERT INTO #t VALUES (1), (2); SELECT n * 10 AS ten FROM #t"
+    project.tables[0].steps[0].params["query"] = batch  # without SET NOCOUNT ON: row counts come first
+    assert Engine(project, registry).evaluate(table.id).df["ten"].to_list() == [10, 20]
+    project.tables[0].steps[0].params["query"] = "SELECT 1 AS a INTO #u; SELECT CAST('x' AS int) AS b"
+    assert "Conversion failed" in Engine(project, registry).evaluate(table.id).first_error  # not an empty table

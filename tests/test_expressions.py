@@ -1,3 +1,4 @@
+import duckdb
 import polars as pl
 import pytest
 
@@ -201,3 +202,37 @@ def test_a_formula_that_ends_too_early(people):
     for formula in ("ROUND([Age] 2)", "[Age] +\r 2 2"):  # a mistake inside, also after a lone \r
         with pytest.raises(ActionError, match='syntax error at or near "2"'):
             expressions.evaluate(people, formula)
+
+
+def test_a_formula_uses_only_the_data_of_the_step(people, tmp_path):
+    """Formulas are calculated as soon as a project opens, also one from someone else."""
+    secret = tmp_path / "secret.csv"
+    secret.write_text("a\n1\n", encoding="utf-8")
+    path = secret.as_posix()
+    for formula in (f"(SELECT COUNT(*) FROM read_csv('{path}'))", f"(SELECT content FROM read_text('{path}'))"):
+        with pytest.raises(ActionError, match="a formula can only use the data of the step"):
+            expressions.evaluate(people, formula)
+    with pytest.raises(duckdb.Error, match="Cannot change configuration"):  # and it can't be switched back on
+        expressions._connection().execute("SET enable_external_access = true")
+    assert expressions.evaluate(people, "[Age] + 1").to_list() == [35, 28, 42, 20, 59]  # the data still works
+
+
+def test_a_formula_cant_read_settings_or_its_temp_folder(people, tmp_path, monkeypatch):
+    """DuckDB's settings show paths of this computer, and its temp folder would be readable."""
+    for formula in ("current_setting('temp_directory')", "\"current_setting\"('threads')", "[current_setting]('threads')",
+                    "(SELECT COUNT(*) FROM duckdb_settings())", "pragma_version()"):  # fmt: skip
+        with pytest.raises(ActionError, match="a formula can only use the data of the step"):
+            expressions.evaluate(people, formula)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".tmp").mkdir()
+    (tmp_path / ".tmp" / "inside.csv").write_text("a\n1\n", encoding="utf-8")
+    with pytest.raises(ActionError, match="a formula can only use the data of the step"):
+        expressions.evaluate(people, "(SELECT COUNT(*) FROM read_csv('.tmp/inside.csv'))")
+
+
+def test_functions_of_extensions_and_unknown_types(people):
+    with pytest.raises(ActionError, match=r"there is no function TEXT: for a date use STRFTIME") as error:
+        expressions.evaluate(people, "TEXT([Age], '0')")
+    assert "INSTALL" not in str(error.value)
+    with pytest.raises(ActionError, match="there is no type INTEGR"):
+        expressions.evaluate(people, "CAST([Age] AS INTEGR)")

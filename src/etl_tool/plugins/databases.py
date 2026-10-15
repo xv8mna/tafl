@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import decimal
 import re
@@ -231,9 +232,15 @@ class SQLite(Connector):
 )
 def import_database(df, p, ctx):
     """Reads a whole table or view, or the result of a SQL query written in the database's own
-    SQL dialect (T-SQL for SQL Server)."""
+    SQL dialect (T-SQL for SQL Server). What the query changes is rolled back, because imports
+    also run while editing, e.g. when a project is opened (a SQL Server query that commits by
+    itself keeps its changes)."""
     with ctx.database(p.connection) as db:
-        out = db.read_table(p.table) if p.mode == "table" else db.read(p.query)
+        try:
+            out = db.read_table(p.table) if p.mode == "table" else db.read(p.query)
+        finally:
+            with contextlib.suppress(Exception):  # e.g. a driver in autocommit mode: nothing to roll back
+                db.rollback()
     if p.detect_types:
         out = dtypes.infer_types(out, decimal=".")
     return out

@@ -1,12 +1,11 @@
 """The core: project files, plugin loading, and the engine that calculates tables."""
 
 from .engine import Engine, Link, ResultCache, Status, StepResult, TableResult
-from .project import EXTENSION, OLD_EXTENSIONS, Connection, Group, Project, ProjectError, Step, Table
+from .project import EXTENSION, Connection, Group, Project, ProjectError, Step, Table
 from .registry import PluginInfo, Registry
 
 __all__ = [
     "EXTENSION",
-    "OLD_EXTENSIONS",
     "Connection",
     "Engine",
     "Group",

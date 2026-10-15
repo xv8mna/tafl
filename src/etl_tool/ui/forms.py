@@ -236,7 +236,7 @@ class _CheckLine(QLabel):
 
 
 class ExpressionEditor(Editor):
-    """A formula (up to three visible lines) in colours, with suggestions while typing ([ and
+    """A formula (up to three visible lines) in colors, with suggestions while typing ([ and
     two letters of a word), and buttons for the column list, the functions and the formula
     window. The line under it shows what the formula gives on the first rows, or what is wrong."""
 
@@ -300,7 +300,7 @@ class ExpressionEditor(Editor):
         self._checked_input: tuple[weakref.ref | None, tuple] | None = None
         self._result: Preview | None = None
         self._result_text = ""  # the formula the result is for
-        self._line: tuple[str, str] = ("", "")  # (rich text, colour) of the line for the result
+        self._line: tuple[str, str] = ("", "")  # (rich text, color) of the line for the result
         buttons = QVBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.setSpacing(2)

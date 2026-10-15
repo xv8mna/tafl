@@ -1,4 +1,4 @@
-"""Colours in a formula: [columns], functions, keywords, 'texts', numbers and comments, an
+"""Colors in a formula: [columns], functions, keywords, 'texts', numbers and comments, an
 unknown [column] in red, and the bracket that matches the one at the cursor."""
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def _format(color: str, *, italic: bool = False, bold: bool = False) -> QTextCha
 
 
 class FormulaHighlighter(QSyntaxHighlighter):
-    """Colours the whole formula from its tokens (a /* comment */ or a text may span lines).
+    """Colors the whole formula from its tokens (a /* comment */ or a text may span lines).
     ``set_columns`` gives the names a formula can use: other [names] turn red."""
 
     def __init__(self, document: QTextDocument) -> None:
@@ -63,7 +63,7 @@ class FormulaHighlighter(QSyntaxHighlighter):
     def highlightBlock(self, text: str) -> None:
         formula = self.document().toPlainText()
         if formula != self._text:
-            self._text, self._spans = formula, self._colour(formula)
+            self._text, self._spans = formula, self._color(formula)
         start = self.currentBlock().position()
         end = start + self.currentBlock().length()
         open_at_end = -1
@@ -72,11 +72,11 @@ class FormulaHighlighter(QSyntaxHighlighter):
                 continue
             first = max(span_start, start)
             self.setFormat(first - start, min(span_end, end) - first, self._formats[kind])
-            if span_end > end - 1:  # goes on in the next line: when it changes, that line is coloured again
+            if span_end > end - 1:  # goes on in the next line: when it changes, that line is colored again
                 open_at_end = hash((span_start, span_end, kind)) & 0x3FFFFFFF
         self.setCurrentBlockState(open_at_end)
 
-    def _colour(self, formula: str) -> list[tuple[int, int, str]]:
+    def _color(self, formula: str) -> list[tuple[int, int, str]]:
         tokens = expressions.tokenize(formula)
         spans = []
         position = _Positions(formula)

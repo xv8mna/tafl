@@ -9,10 +9,9 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
-from etl_tool import APP_FOLDER, APP_NAME, COMMAND, OLD_APP_NAMES
+from etl_tool import APP_FOLDER, APP_NAME, COMMAND
 from etl_tool.core import Registry
 
 from . import theme
@@ -29,7 +28,6 @@ def main(argv: list[str] | None = None) -> int:
     _set_windows_app_id()
     QApplication.setOrganizationName(APP_NAME)
     QApplication.setApplicationName(APP_NAME)
-    _adopt_old_settings()
     app = QApplication.instance() or QApplication(argv)
     theme.apply(app)
     app.setWindowIcon(theme.app_icon())
@@ -61,19 +59,6 @@ def _setup_logging() -> Path | None:
     logging.getLogger().addHandler(handler)
     logging.getLogger().setLevel(logging.INFO)
     return folder / f"{COMMAND}.log"
-
-
-def _adopt_old_settings() -> None:
-    """Window layout and recent files saved under an earlier name of the app."""
-    settings = QSettings()
-    if settings.allKeys():
-        return
-    for old in OLD_APP_NAMES:
-        previous = QSettings(old, old)
-        if keys := previous.allKeys():
-            for key in keys:
-                settings.setValue(key, previous.value(key))
-            return
 
 
 def _excepthook(window: QWidget):

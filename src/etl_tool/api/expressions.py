@@ -15,12 +15,16 @@ Examples: ``[Price] * [Quantity]``, ``UPPER(TRIM([Name]))``,
 
 from __future__ import annotations
 
+import atexit
 import difflib
 import re
+import shutil
 import string
+import tempfile
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import duckdb
 import polars as pl
@@ -48,6 +52,7 @@ _TSQL_HINTS = {
     "getutcdate": "use NOW() AT TIME ZONE 'UTC'",
     "replicate": "use REPEAT(text, count)",
     "newid": "use GEN_RANDOM_UUID()",
+    "text": "for a date use STRFTIME([Date], '%d.%m.%Y'), for a number FORMAT('{:,.2f}', [Amount])",
     "proper": "for a capital first letter write UPPER(LEFT([Name], 1)) || LOWER(SUBSTRING([Name], 2))",
     "initcap": "for a capital first letter write UPPER(LEFT([Name], 1)) || LOWER(SUBSTRING([Name], 2))",
 }
@@ -72,6 +77,16 @@ _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
 _VIEW = "__input"
 _ROW = "__etl_row__"
+_SAFE = {"enable_external_access": False, "autoinstall_known_extensions": False, "autoload_known_extensions": False}
+# DuckDB's settings and catalog: no use in a formula, and they show paths of this computer.
+_BLOCKED = {"current_setting", "getvariable", "which_secret", "query", "query_table"}
+_BLOCKED_PREFIXES = ("duckdb_", "pragma_")
+_SANDBOX = (
+    "a formula can only use the data of the step: no files, network, extensions or settings "
+    "(use an import step for files)"
+)
+_temp: Path | None = None
+_temp_lock = threading.Lock()
 _local = threading.local()
 
 
@@ -201,6 +216,7 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     if not formula or all(t.kind in ("space", "comment") for t in tokenize(formula)):
         raise ActionError("The formula is empty")
     body = translate(formula)
+    _check_calls(formula)
     _check_names(formula, df.columns)
     con = _connection()
     con.register(_VIEW, df.with_row_index(_ROW))
@@ -275,11 +291,39 @@ def is_panic(error: BaseException) -> bool:
 def _connection() -> duckdb.DuckDBPyConnection:
     con = getattr(_local, "con", None)
     if con is None:
-        con = duckdb.connect(":memory:")
+        # A formula is calculated as soon as its project opens, also a project from someone else:
+        # it may use the table, but no files, network, extensions or settings.
+        con = duckdb.connect(":memory:", config={**_SAFE, "temp_directory": _temp_folder()})
         for macro in _MACROS:
             con.execute(macro)
+        con.execute("SET lock_configuration = true")
         _local.con = con
     return con
+
+
+def _temp_folder() -> str:
+    """A folder of its own for each connection, for data that doesn't fit in memory. DuckDB lets
+    a formula read its temp folder, which would otherwise be ".tmp" in the working directory."""
+    global _temp
+    with _temp_lock:
+        if _temp is None:
+            _temp = Path(tempfile.mkdtemp(prefix="tafl-formulas-"))
+            atexit.register(shutil.rmtree, _temp, ignore_errors=True)
+        return tempfile.mkdtemp(dir=_temp)
+
+
+def _check_calls(formula: str) -> None:
+    """Refuse calls of DuckDB's settings and catalog functions, also written as "name"(...)."""
+    tokens = tokenize(formula)
+    for index, token in enumerate(tokens):
+        if token.kind == "word":
+            name = _fold(formula[token.start : token.end])
+        elif token.kind in ("quoted", "column") and token.closed:
+            name = _fold(_name(formula, token))
+        else:
+            continue
+        if _is_call(tokens, index) and (name in _BLOCKED or name.startswith(_BLOCKED_PREFIXES)):
+            raise ActionError(f"Formula error: {_SANDBOX}\nFormula: {formula}")
 
 
 def _closing(text: str, start: int, close: str) -> tuple[int, bool]:
@@ -448,6 +492,8 @@ def _clean_error(error: Exception, formula: str, columns: Sequence[str] = ()) ->
             "Formula error: the formula ends too early: something is missing at its end "
             f"(e.g. a value after + or AND, or END after CASE)\nFormula: {formula}"
         )
+    if isinstance(error, duckdb.PermissionException):
+        return f"Formula error: {_SANDBOX}\nFormula: {formula}"
     text = re.split(r"\n\s*\nLINE \d+:|\nLINE \d+:", text)[0]
     text = text.split("Candidate functions:")[0]  # DuckDB lists dozens of variants of the function
     text = text.replace(f'"{_VIEW}".', "").replace(f"{_VIEW}.", "")
@@ -461,6 +507,12 @@ def _clean_error(error: Exception, formula: str, columns: Sequence[str] = ()) ->
     function = re.search(r'(?:\w+ )?Function with name "?(\w+)"? does not exist!(?: Did you mean "(\w+)"\?)?', text)
     if function:
         return f"Formula error: {_missing_function(function.group(1), function.group(2), formula)}\nFormula: {formula}"
+    extension = re.search(r'(?:\w+ )?Function with name "?(\w+)"? is not in the catalog', text)
+    if extension:  # it exists in an extension of DuckDB, which formulas can't load
+        return f"Formula error: {_missing_function(extension.group(1), None, formula)}\nFormula: {formula}"
+    kind = re.search(r'Type with name "?([\w.]+)"? (?:does not exist|is not in the catalog)', text)
+    if kind:
+        return f"Formula error: there is no type {kind.group(1)} (e.g. VARCHAR, BIGINT, DOUBLE, DATE, TIMESTAMP)\nFormula: {formula}"
     if "+(" in text and "VARCHAR" in text:
         text += " — to join text use || or CONCAT()"
     return f"Formula error: {text}\nFormula: {formula}"

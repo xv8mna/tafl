@@ -11,5 +11,3 @@ APP_FOLDER = "Tafl"  # in %APPDATA% (plugins) and %LOCALAPPDATA% (log file)
 COMMAND = "tafl"  # the command line program
 APP_COMMAND = "tafl-app"  # the program that opens the window (what the desktop shortcut starts)
 PROJECT_URL = "https://github.com/xv8mna/tafl"
-OLD_APP_NAMES: tuple[str, ...] = ("ETL Tool",)  # earlier names: their settings and plugin folders are still used
-OLD_APP_FOLDERS: tuple[str, ...] = ("ETL-Tool",)

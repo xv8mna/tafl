@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from etl_tool import APP_NAME, PROJECT_URL, __version__
-from etl_tool.core import EXTENSION, OLD_EXTENSIONS, ProjectError
+from etl_tool.core import EXTENSION, ProjectError
 from etl_tool.core.registry import default_plugin_folders
 
 from . import functions_window, theme
@@ -43,7 +43,7 @@ from .tables_panel import TablesPanel
 
 log = logging.getLogger("etl_tool")
 
-_FILTER = f"{APP_NAME} projects ({' '.join('*' + e for e in (EXTENSION, *OLD_EXTENSIONS))});;All files (*.*)"
+_FILTER = f"{APP_NAME} projects (*{EXTENSION});;All files (*.*)"
 _MAX_RECENT = 8
 
 
@@ -125,11 +125,11 @@ class MainWindow(QMainWindow):
         self.redo_action = self._action("&Redo", self.session.redo, QKeySequence("Ctrl+Y"))
         self.run_action = self._action(
             "▶  Run project", self.run_project, QKeySequence("F5"),
-            "Calculate all tables and execute exports (F5)",
+            "Calculate all tables and execute their exports and commands (F5)",
         )
         self.run_table_action = self._action(
             "Run this table", self.run_current_table, QKeySequence("Shift+F5"),
-            "Calculate the selected table (and the tables it uses) and execute its exports",
+            "Calculate the selected table and the tables it uses, and execute their exports and commands (Shift+F5)",
         )
         self.stop_action = self._action("■  Stop", self.session.cancel_run, tip="Stop the running project")
         self.reload_action = self._action(

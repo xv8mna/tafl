@@ -64,7 +64,7 @@ class FormulaWindow(QDialog):
         self._frame, self._no_data, self._earlier = frame, no_data, earlier
         self._condition, self._name, self._creates = condition, name, creates
         self._original = text
-        self._shown_text = text  # the text of the last change (colouring changes nothing)
+        self._shown_text = text  # the text of the last change (coloring changes nothing)
         self._discard_warned = False
         self._columns: list[Column] = []
         self._checked: tuple[object, str] | None = None  # the input of the last check
@@ -212,7 +212,7 @@ class FormulaWindow(QDialog):
         super().done(result)
 
     def _text_changed(self) -> None:
-        if self.text() == self._shown_text:  # e.g. colouring the text again: nothing was typed
+        if self.text() == self._shown_text:  # e.g. coloring the text again: nothing was typed
             return
         self._shown_text = self.text()
         self._discard_warned = False

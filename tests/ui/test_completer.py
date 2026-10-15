@@ -1,4 +1,4 @@
-"""Suggestions while typing a formula, colours and the matching bracket, in the settings and in
+"""Suggestions while typing a formula, colors and the matching bracket, in the settings and in
 the formula window."""
 
 from PySide6.QtCore import Qt
@@ -92,14 +92,14 @@ def test_the_button_ctrl_space_and_a_click(window, session, settle, demo, qtbot)
     editor._edit.setPlainText(editor._last)
 
 
-def test_colours_and_the_matching_bracket(window, session, settle, demo, qtbot):
+def test_colors_and_the_matching_bracket(window, session, settle, demo, qtbot):
     editor = _field(window, session, settle, demo)
     _ready(editor, qtbot)
     editor._edit.setPlainText("ROUND([Nett], 2)")
     qtbot.waitUntil(lambda: not editor.checking and "not found" in editor.line.text(), timeout=10_000)
     block = editor._edit.document().firstBlock()
-    colours = {block.text()[r.start : r.start + r.length]: r.format.foreground().color().name() for r in block.layout().formats()}
-    assert colours["ROUND"] == theme.FORMULA_COLORS["function"] and colours["[Nett]"] == theme.FORMULA_COLORS["unknown"]
+    colors = {block.text()[r.start : r.start + r.length]: r.format.foreground().color().name() for r in block.layout().formats()}
+    assert colors["ROUND"] == theme.FORMULA_COLORS["function"] and colors["[Nett]"] == theme.FORMULA_COLORS["unknown"]
     cursor = editor._edit.textCursor()
     cursor.setPosition(6)  # just after ROUND(
     editor._edit.setTextCursor(cursor)
@@ -140,7 +140,7 @@ def test_the_window_lists_columns_at_once_and_ctrl_enter_takes_the_suggestion(wi
     assert formula.isVisible() and formula.text() == "[City]"
     qtbot.keyClick(formula.editor, Qt.Key.Key_Escape)
     assert "Esc again" in formula.status.text()
-    formula._highlighter.set_columns(["x"])  # colouring the text again is no typing
+    formula._highlighter.set_columns(["x"])  # coloring the text again is no typing
     qtbot.keyClick(formula.editor, Qt.Key.Key_Escape)
     assert not formula.isVisible()
 

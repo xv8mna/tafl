@@ -19,8 +19,9 @@ for "table".
 - **Plugins**: every action is a plugin; your own actions are a Python file away.
 
 Built with Python, [Polars](https://pola.rs), [DuckDB](https://duckdb.org) and
-[PySide6](https://doc.qt.io/qtforpython-6/) (Qt). Status: an early version (0.1), developed and
-tested on Windows.
+[PySide6](https://doc.qt.io/qtforpython-6/) (Qt), and developed with the help of
+[Claude](https://www.anthropic.com/claude) (Anthropic). Status: an early version (0.1), developed
+and tested on Windows.
 
 ## Install
 
@@ -36,9 +37,10 @@ py -m venv .venv
 .venv\Scripts\tafl-app
 ```
 
-`tafl-app` opens the window (optionally with a project file as argument). `tafl` is the command
-line program. `.venv\Scripts\python tools\create_shortcut.py` puts a **Tafl** shortcut on the
-desktop.
+`py -m venv` uses your default Python; with several versions installed, choose one, e.g.
+`py -3.13 -m venv .venv`. `tafl-app` opens the window (optionally with a project file as
+argument). `tafl` is the command line program. `.venv\Scripts\python tools\create_shortcut.py`
+puts a **Tafl** shortcut on the desktop.
 
 **Other systems.** Tafl is plain Python and Qt, so it may work on Linux or macOS, but this is
 untested. Windows-specific parts: SQL Server connections (Windows sign-in), the plugin folder in
@@ -55,10 +57,11 @@ app). On the command line:
 .venv\Scripts\tafl show examples\demo.tafl --table Orders --step 4
 ```
 
-- `run` calculates all tables and executes the exports (the demo writes to `examples\output`).
+- `run` calculates all tables and executes the exports and commands (the demo writes to
+  `examples\output`).
   With `--preview` it only calculates and writes nothing; `--table NAME` runs only that table and
-  the tables it uses. It exits with 0 when everything worked, 1 when a step failed and 2 when the
-  project can't be opened.
+  the tables it uses (with their exports and commands). It exits with 0 when everything worked,
+  1 when a step failed and 2 when the project can't be opened or has no such table.
 - `show` prints the steps of a table and the data after one step.
 - `plugins` lists all actions and shows plugins that failed to load.
 - `.venv\Scripts\python examples\make_examples.py` recreates the demo data and project.
@@ -80,7 +83,7 @@ app). On the command line:
   Enter applies, Shift+Enter starts a new line. Typing **[** (or the **[ ]** button) lists the
   columns with their types; after two letters of a word the list offers functions, keywords and
   columns (Ctrl+Space opens it at any time). Enter, Tab or a click writes the selected one in,
-  Esc closes the list. Columns, functions, texts, numbers and comments have their own colours, a
+  Esc closes the list. Columns, functions, texts, numbers and comments have their own colors, a
   [column] the step doesn't have is red, and the bracket matching the one at the cursor is
   marked. While you type, the line under a formula shows what it gives on the first 1,000 rows
   (type and first values, or for a filter how many rows it keeps) or what is wrong: the mistake
@@ -97,10 +100,11 @@ app). On the command line:
   to the result, its type, mistakes in plain words, and for a filter how many rows it keeps. In
   *Calculate columns* the columns of the rows above are there too. Enter starts a new line,
   Ctrl+Enter applies, Esc cancels (twice if you changed something).
-- **Run project** (F5) calculates all tables and executes the exports; **Run this table**
-  (Shift+F5) runs only the selected table and the tables it uses. While you edit, exports never
-  write anything. **Reload data** (Ctrl+R) reads files and databases again; a changed file is
-  also read again by itself the next time the data is calculated, e.g. when you select a step.
+- **Run project** (F5) calculates all tables and executes the exports and commands; **Run this
+  table** (Shift+F5) does the same for the selected table and the tables it uses. While you edit,
+  exports and commands never run. **Reload data** (Ctrl+R) reads files and databases again; a
+  changed file is also read again by itself the next time the data is calculated, e.g. when you
+  select a step.
 - **Map** (Ctrl+2): the project map, a full workspace: the selected table's steps and settings
   are on the right, its data below the map. **Tables** (Ctrl+1) switches back.
   - Every table is a box; arrows run from a table to the step that uses it (merge, append, start
@@ -207,7 +211,8 @@ read, after the exports. Keep the move in the importing table: a separate table 
 the import and move the files away first.
 
 Before you run a project you got from someone else, look at its exports and commands: *Delete
-files* can delete for good, and *Run SQL command* runs any SQL.
+files* can delete for good, and *Run SQL command* runs any SQL (see also
+[Project files from other people](#project-files-from-other-people)).
 
 ## Exporting to a database
 
@@ -280,19 +285,35 @@ functions, with what they do and an example, are in **Help → Formula functions
 
 A mistake shows a plain message that names the column of the step, e.g. *Formula error in [Gross]:
 column [Amont] not found (did you mean [Amount]?)*. SQL Server functions that DuckDB doesn't have
-(DATEADD, EOMONTH, CONVERT, …) get a hint what to write instead.
+(DATEADD, EOMONTH, CONVERT, …) get a hint about what to write instead. A formula can only use
+the data of its step: no files, network or database access.
 
 ## Formats
 
 Formats use Excel's codes everywhere: dates `dd.mm.yyyy`, `dd.mm.yyyy hh:mm`; numbers `0`,
 `0.00`, `#,##0.00`, `00000` (pads with zeros); in Excel exports also `0%` or `#,##0.00 €`.
 
+## Project files from other people
+
+Tafl calculates a table as soon as you look at it, with your rights: when a project opens, its
+first table and the tables that one uses; then every table you select, and all of them while
+the map is shown. Its imports read the files and databases the project names, and the SQL
+queries of database imports run on those databases. Exports and commands only run when you run
+the project.
+
+Tafl rolls back what an import's query changed, and formulas can only use the data of their
+step. This is no protection against a project made to do harm, though: a query can read
+whatever your Windows login can read, and on SQL Server it can commit by itself or call
+procedures with lasting effects. Open project files only from people you trust. If in doubt,
+open the `.tafl` file in a text editor first: it is JSON, and its connections, SQL queries and
+file paths can be read there.
+
 ## Writing a plugin
 
 Every action (import, step, export, command) is a plugin. Put a `.py` file into
 `%APPDATA%\Tafl\plugins` (create the folder if needed), or into a folder listed in the
-`TAFL_PLUGINS` environment variable (several separated by `;`), and restart Tafl;
-**Help → Plugins…** shows what was loaded and any errors. For a command line run,
+`TAFL_PLUGINS` environment variable (several separated by `;`, or `:` on Linux and macOS), and
+restart Tafl; **Help → Plugins…** shows what was loaded and any errors. For a command line run,
 `tafl --plugins FOLDER run PROJECT` adds a folder (the option goes before `run`). Built-in
 plugins live in `src\etl_tool\plugins`; the Python package is called `etl_tool`.
 
@@ -343,17 +364,21 @@ you trust.
 - The SQL Server tests run only when the environment variable `TAFL_TEST_SQLSERVER` names a
   server you can reach with your Windows login (e.g. `.\SQLEXPRESS`). They read `master` and
   create and drop a table in `tempdb`.
-- `tools\screenshot.py` renders the window into a PNG without showing it (the pictures above
-  were made with it).
+- `tools\screenshot.py` renders the window into a PNG without showing it. The pictures above
+  were made with it:
+
+  ```
+  .venv\Scripts\python tools\screenshot.py docs\table-view.png --project examples\demo.tafl --table Orders --step 4
+  .venv\Scripts\python tools\screenshot.py docs\project-map.png --project examples\demo.tafl --table Customers --step 3 --map
+  ```
 
 ## Reporting problems
 
 Open an [issue](https://github.com/xv8mna/tafl/issues) with what you did, what you expected and
 what happened, plus the version (**Help → About Tafl**) and the log file (**Help → Open log
-folder**). A small
-project with data that shows the problem helps most. Check files before you attach them: a
-`.tafl` file contains file paths, server and database names and the values picked in the filter
-pane, and the log can contain paths and values from error messages.
+folder**). A small project with data that shows the problem helps most. Check files before you
+attach them: a `.tafl` file contains file paths, server and database names and the values picked
+in the filter pane, and the log can contain paths and values from error messages.
 
 ## License
 

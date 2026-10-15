@@ -6,6 +6,7 @@ It also writes the icon file src/etl_tool/ui/app.ico, drawn by the app's theme.
 
 from __future__ import annotations
 
+import base64
 import os
 import struct
 import subprocess
@@ -17,7 +18,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QBuffer, QIODevice  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 
-from etl_tool import APP_COMMAND, APP_NAME, OLD_APP_NAMES  # noqa: E402
+from etl_tool import APP_COMMAND, APP_NAME  # noqa: E402
 from etl_tool.ui import theme  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,21 +44,27 @@ def write_icon(path: Path, sizes: tuple[int, ...] = (16, 24, 32, 48, 64, 128, 25
 
 
 def create_shortcut(target: Path, icon: Path, working_dir: Path) -> Path:
+    # The values go in as environment variables: no character of a folder name can break the script
+    values = {"TAFL_SHORTCUT_NAME": f"{APP_NAME}.lnk", "TAFL_SHORTCUT_TARGET": str(target),
+              "TAFL_SHORTCUT_FOLDER": str(working_dir), "TAFL_SHORTCUT_ICON": f"{icon},0"}  # fmt: skip
     script = (
-        "$desktop = [Environment]::GetFolderPath('Desktop'); "
-        f"$link = Join-Path $desktop '{APP_NAME}.lnk'; "
+        "$link = Join-Path ([Environment]::GetFolderPath('Desktop')) $env:TAFL_SHORTCUT_NAME; "
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($link); "
-        f"$s.TargetPath = '{target}'; "
-        f"$s.WorkingDirectory = '{working_dir}'; "
-        f"$s.IconLocation = '{icon},0'; "
+        "$s.TargetPath = $env:TAFL_SHORTCUT_TARGET; "
+        "$s.WorkingDirectory = $env:TAFL_SHORTCUT_FOLDER; "
+        "$s.IconLocation = $env:TAFL_SHORTCUT_ICON; "
         f"$s.Description = '{APP_NAME}'; "
         "$s.Save(); "
-        "Write-Output $link"
+        "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($link))"  # e.g. a Desktop path with ü
     )
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, check=True
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, **values},
     )
-    return Path(result.stdout.strip())
+    return Path(base64.b64decode(result.stdout.strip()).decode("utf-8"))
 
 
 def main() -> None:
@@ -69,9 +76,6 @@ def main() -> None:
     write_icon(ICON)
     link = create_shortcut(LAUNCHER, ICON, ROOT)
     print(f"Icon:     {ICON}\nShortcut: {link}\nStarts:   {LAUNCHER}")
-    for old in OLD_APP_NAMES:
-        if (stale := link.with_name(f"{old}.lnk")).exists():
-            print(f"The shortcut {stale} (the app's old name) no longer works: you can delete it.")
 
 
 if __name__ == "__main__":

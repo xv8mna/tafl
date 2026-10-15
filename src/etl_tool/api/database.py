@@ -157,9 +157,13 @@ class Database:
         self.raw = raw
 
     def read(self, sql: str, params: Sequence[Any] = ()) -> pl.DataFrame:
+        """The rows of the first result that has columns: a SQL Server batch reports the row
+        counts of its INSERTs into temporary tables first (unless it says SET NOCOUNT ON)."""
         cursor = self.raw.cursor()
         try:
             self._execute(cursor, sql, params)
+            while cursor.description is None and self._next_result(cursor):
+                pass
             return frame_from_cursor(cursor, self.connector.dtype_for)
         finally:
             cursor.close()
@@ -175,6 +179,19 @@ class Database:
             return cursor.rowcount
         finally:
             cursor.close()
+
+    def _next_result(self, cursor: Any) -> bool:
+        """Move to the next result of a batch (DB-API ``nextset``, which not every driver has).
+        An error in a later statement of the batch shows up here."""
+        nextset = getattr(cursor, "nextset", None)
+        if nextset is None:
+            return False
+        try:
+            return bool(nextset())
+        except Exception as e:
+            if type(e).__name__ == "NotSupportedError":
+                return False
+            raise ActionError(self.connector.error_message(e)) from e
 
     def _execute(self, cursor: Any, sql: str, params: Sequence[Any]) -> None:
         try:
