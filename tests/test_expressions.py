@@ -1,4 +1,5 @@
 import datetime as dt
+import re
 
 import duckdb
 import polars as pl
@@ -236,6 +237,8 @@ def test_functions_of_extensions_and_unknown_types(people):
     with pytest.raises(ActionError, match=r"there is no function TEXT: for a date use STRFTIME") as error:
         expressions.evaluate(people, "TEXT([Age], '0')")
     assert "INSTALL" not in str(error.value)
+    suggested = re.search(r"for a number (FORMAT\(.+\))$", str(error.value).split("\nFormula")[0]).group(1)
+    assert expressions.evaluate(people, suggested.replace("[Amount]", "[Age]")).to_list()[0] == "34.00"  # also for whole numbers
     with pytest.raises(ActionError, match="there is no type INTEGR"):
         expressions.evaluate(people, "CAST([Age] AS INTEGR)")
 

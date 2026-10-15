@@ -100,6 +100,7 @@ class Checks(QObject):
         super().__init__(parent)
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
+        self._pool.setExpiryTimeout(-1)  # the threads stay: each keeps its DuckDB connection for formulas
         self._signals = _Signals(self)
         self._signals.done.connect(self._done)
         self._signals.failed.connect(self._failed)

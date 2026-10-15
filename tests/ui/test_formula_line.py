@@ -133,3 +133,24 @@ def test_slow_checks_dont_hold_up_the_others(qtbot):
     for client in [*slow, fast]:
         client.close()
     qtbot.waitUntil(lambda: not service.busy, timeout=3_000)
+
+
+def test_checks_reuse_the_connection_of_their_thread(qtbot):
+    """A Qt pool thread gets new thread-local data for every job: the connection must not."""
+    import threading
+
+    import polars as pl
+
+    from etl_tool.api import expressions
+
+    def job(_cancel):
+        expressions.evaluate(pl.DataFrame({"a": [1]}), "[a] + 1")
+        return threading.get_ident(), id(expressions._connection())
+
+    seen = []
+    client = checks().client(seen.append)
+    for number in range(1, 9):
+        client.start(job)
+        qtbot.waitUntil(lambda number=number: len(seen) == number, timeout=5_000)
+    assert len({con for _, con in seen}) == len({ident for ident, _ in seen})  # one per thread, not per job
+    client.close()

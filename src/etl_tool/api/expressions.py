@@ -52,7 +52,7 @@ _TSQL_HINTS = {
     "getutcdate": "use NOW() AT TIME ZONE 'UTC'",
     "replicate": "use REPEAT(text, count)",
     "newid": "use GEN_RANDOM_UUID()",
-    "text": "for a date use STRFTIME([Date], '%d.%m.%Y'), for a number FORMAT('{:,.2f}', [Amount])",
+    "text": "for a date use STRFTIME([Date], '%d.%m.%Y'), for a number FORMAT('{:,.2f}', [Amount]::DOUBLE)",
     "proper": "for a capital first letter write UPPER(LEFT([Name], 1)) || LOWER(SUBSTRING([Name], 2))",
     "initcap": "for a capital first letter write UPPER(LEFT([Name], 1)) || LOWER(SUBSTRING([Name], 2))",
 }
@@ -87,7 +87,8 @@ _SANDBOX = (
 )
 _temp: Path | None = None
 _temp_lock = threading.Lock()
-_local = threading.local()
+_connections: dict[int, duckdb.DuckDBPyConnection] = {}  # one per thread, by its id
+_connections_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -289,7 +290,11 @@ def is_panic(error: BaseException) -> bool:
 
 
 def _connection() -> duckdb.DuckDBPyConnection:
-    con = getattr(_local, "con", None)
+    """This thread's connection. It is kept by the thread's id, not in threading.local: a thread
+    of a Qt thread pool gets new thread-local data for every job, which would make a new
+    connection (and temp folder) for every formula check."""
+    ident = threading.get_ident()
+    con = _connections.get(ident)
     if con is None:
         # A formula is calculated as soon as its project opens, also a project from someone else:
         # it may use the table, but no files, network, extensions or settings.
@@ -297,7 +302,8 @@ def _connection() -> duckdb.DuckDBPyConnection:
         for macro in _MACROS:
             con.execute(macro)
         con.execute("SET lock_configuration = true")
-        _local.con = con
+        with _connections_lock:
+            _connections[ident] = con
     return con
 
 
