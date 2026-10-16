@@ -1,0 +1,35 @@
+name: newest versions
+
+# Once a week the tests run with the newest versions of the libraries that pyproject.toml allows,
+# so a new release that breaks something shows up before the lock files take it.
+
+on:
+  schedule:
+    - cron: "23 4 * * 1"  # Mondays
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the newest allowed versions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade -e ".[dev]"
+          python -m pip list
+      - name: Test
+        run: python -m pytest -ra

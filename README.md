@@ -33,12 +33,14 @@ account, so no passwords are stored. There are no prebuilt downloads yet, so ins
 git clone https://github.com/xv8mna/tafl.git
 cd tafl
 py -m venv .venv
-.venv\Scripts\python -m pip install -e .
+.venv\Scripts\python -m pip install -r requirements.lock
+.venv\Scripts\python -m pip install --no-deps -e .
 .venv\Scripts\tafl-app
 ```
 
 `py -m venv` uses your default Python; with several versions installed, choose one, e.g.
-`py -3.13 -m venv .venv`. `tafl-app` opens the window (optionally with a project file as
+`py -3.13 -m venv .venv`. `requirements.lock` holds the exact versions of the libraries that
+Tafl is tested with (with their checksums). `tafl-app` opens the window (optionally with a project file as
 argument). `tafl` is the command line program. `.venv\Scripts\python tools\create_shortcut.py`
 puts a **Tafl** shortcut on the desktop.
 
@@ -361,12 +363,16 @@ you trust.
 ## Development
 
 ```
-.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\python -m pip install -r requirements-dev.lock
+.venv\Scripts\python -m pip install --no-deps -e .
 .venv\Scripts\python -m pytest
 .venv\Scripts\python -m ruff check src tests examples tools
 ```
 
 - The UI tests run offscreen with pytest-qt; no window opens.
+- The lock files (`requirements.lock`, and `requirements-dev.lock` with the test tools) are
+  written by `tools\lock.py` (it needs `pip install uv`); `--upgrade` takes the newest versions
+  that `pyproject.toml` allows. Once a week, CI also tests with the newest versions.
 - The SQL Server tests run only when the environment variable `TAFL_TEST_SQLSERVER` names a
   server you can reach with your Windows login (e.g. `.\SQLEXPRESS`). They read `master` and
   create and drop a table in `tempdb`.
