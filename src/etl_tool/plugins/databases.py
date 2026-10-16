@@ -85,11 +85,19 @@ class SqlServer(Connector):
 
     def error_message(self, error):
         # pyodbc: ('42S02', "[42S02] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]Invalid object
-        # name 'x'. (208) (SQLExecDirectW)") -> "Invalid object name 'x'."
-        text = str(error.args[1]) if len(error.args) > 1 else str(error)
+        # name 'x'. (208) (SQLExecDirectW)") -> "Invalid object name 'x'." With fast_executemany the
+        # message comes first: ('String data, right truncation: length 24 buffer 20', 'HY000').
+        parts = [str(arg) for arg in error.args]
+        text = next((part for part in parts if not re.fullmatch(r"[0-9A-Z]{5}", part)), str(error))
         text = re.sub(r"\[[^\]]*\]", "", text)
         text = re.sub(r"\s*\(\d+\)\s*(\(SQL\w+\))?", " ", text)
-        return re.sub(r"\s+", " ", text).strip(" ;") or str(error)
+        text = re.sub(r"\s+", " ", text).strip(" ;") or str(error)
+        if "right truncation" in text:  # the driver's words for a value that doesn't fit its column
+            text = f"A value doesn't fit its column in the database: a text that is too long, or text in a number or date column ({text})"
+        return text
+
+    def missing_table(self, error):
+        return bool(error.args) and error.args[0] == "42S02"  # base table or view not found
 
     def sql_type(self, series, temporary=False):
         dtype = series.dtype
@@ -166,6 +174,9 @@ class SQLite(Connector):
             "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name"
         )
         return [name for (name,) in rows]
+
+    def missing_table(self, error):
+        return "no such table" in str(error)
 
     def sql_type(self, series, temporary=False):
         dtype = series.dtype
@@ -335,6 +346,8 @@ def export_database(df, p, ctx):
 
         added = deleted = updated = 0
         if p.mode == "replace":
+            # Not TRUNCATE: it would reset IDENTITY numbering, needs more rights and fails with
+            # foreign keys. Deleting 1M rows takes about 1 s; adding them again about 9 s.
             deleted = db.execute(f"DELETE FROM {table}")
         elif p.mode == "replace_where":
             deleted = db.execute(f"DELETE FROM {table} WHERE {p.condition}")

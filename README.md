@@ -258,8 +258,13 @@ date-times with a time zone are written in that zone's local time. If the file e
     the table in formulas (`=SUM(Sales[Net])`) and as the source of pivot tables: it always has
     all the rows.
   - Charts, named ranges and pivot tables that covered the old rows (from row 1 or 2 down to the
-    old last row) are set to the new rows. Formulas with fixed ranges such as
-    `=SUM(Data!C2:C500)` stay as they are: use the table or whole columns (`Data!C:C`).
+    old last row; on a sheet with only its header row, down to row 2) are set to the new rows.
+    Formulas with fixed ranges such as `=SUM(Data!C2:C500)` stay as they are: use the table or
+    whole columns (`Data!C:C`).
+  - What the replaced sheet itself holds goes with it: its own charts, pictures, shapes,
+    comments, conditional formats and data validation (the step warns when there were any).
+    A sheet with pivot tables, slicers or timelines of its own is not replaced at all, because
+    Excel ties them to other parts of the workbook: move them to another sheet first.
   - Excel calculates the formulas when it opens the file, and refreshes the pivot tables built on
     the sheet (their option "Refresh data when opening the file" gets switched on). Other
     programs show the old results until the file has been saved in Excel.

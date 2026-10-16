@@ -235,7 +235,7 @@ def export_excel(df, p, ctx):
         )
     data = _excel_values(df)
     if into_sheet:
-        replaced = xlsx.replace_sheet(path, sheet, lambda book: _write(data, book, sheet, p))
+        replaced = xlsx.replace_sheet(path, sheet, lambda book: _write(data, book, sheet, p), ctx.warn)
         what = "replaced" if replaced else "added"
         ctx.log(f"Wrote {df.height:,} rows to sheet '{sheet}' of {path} (sheet {what}, the other sheets are kept)")
         return

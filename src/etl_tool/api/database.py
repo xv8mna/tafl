@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import decimal
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,13 @@ if TYPE_CHECKING:
     from .context import Context
 
 DtypeFor = Callable[[Sequence[Any]], "pl.DataType | None"]
+
+# "No such table" in the words of SQLite, SQL Server, PostgreSQL, MySQL, Oracle, DuckDB, ...
+_MISSING_TABLE = re.compile(
+    r"no such table|invalid object name|table or view does not exist|(table|relation|view)\b.*\b(does not|doesn't) exist"
+    r"|unknown table|table .* not found",
+    re.IGNORECASE,
+)
 
 
 class Connector:
@@ -50,6 +58,11 @@ class Connector:
     def error_message(self, error: Exception) -> str:
         """Readable text for a driver error."""
         return str(error)
+
+    def missing_table(self, error: Exception) -> bool:
+        """True if ``error`` (from reading a table) means that the table doesn't exist, rather than
+        e.g. a missing permission. The default knows the messages of the common databases."""
+        return bool(_MISSING_TABLE.search(str(error)))
 
     # --- writing (used by exports; override what your database does differently) ---------------
 
@@ -237,13 +250,16 @@ class Database:
         return len(rows)
 
     def columns(self, table: str) -> list[str] | None:
-        """The column names of a table, or None if there is no such table."""
+        """The column names of a table, or None if there is no such table. Other errors (e.g. no
+        permission to read it) are reported as they are."""
         cursor = self.raw.cursor()
         try:
             cursor.execute(f"SELECT * FROM {self.qualified(table)} WHERE 1 = 0")
             return [str(d[0]) for d in cursor.description or ()]
-        except Exception:
-            return None
+        except Exception as e:
+            if self.connector.missing_table(e):
+                return None
+            raise ActionError(self.connector.error_message(e)) from e
         finally:
             cursor.close()
 

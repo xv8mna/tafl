@@ -77,9 +77,15 @@ _BEFORE_CALC = (
 )  # fmt: skip
 
 
-def replace_sheet(target: Path, sheet: str, write: Callable[[Workbook], object]) -> bool:
+def replace_sheet(
+    target: Path, sheet: str, write: Callable[[Workbook], object], warn: Callable[[str], None] | None = None
+) -> bool:
     """Writes a sheet into the existing workbook ``target`` (see the module's description).
     True if it replaced a sheet, False if it added one.
+
+    The old sheet's own charts, pictures, comments, conditional formats and data validation go
+    with it: ``warn`` is told so. A sheet with pivot tables, slicers or timelines of its own is
+    not replaced (an ActionError): Excel connects them with other parts of the workbook.
 
     ``write`` gets an empty xlsxwriter workbook (with the target's date system; text that
     starts with = stays text) and adds one sheet to it, e.g. with
@@ -114,6 +120,11 @@ def replace_sheet(target: Path, sheet: str, write: Callable[[Workbook], object])
             raise ActionError(f"Can't write {target.name}. Is it open in Excel?") from None
     finally:
         temporary.unlink(missing_ok=True)
+    if replacement.lost and warn is not None:
+        warn(
+            f"The old sheet '{replacement.name}' had {_listed(replacement.lost)} of its own: they are gone "
+            "with it (the other sheets keep theirs). To keep such things, put them on another sheet."
+        )
     return replacement.replaced
 
 
@@ -146,6 +157,7 @@ class _Replacement:
         self.old_last: int | None = None  # the old sheet's last row of data
         self.old_tables: list[tuple[str, str, str]] = []  # part, id and name of the old sheet's tables
         self.table_names: set[str] = set()
+        self.lost: list[str] = []  # what the old sheet had of its own and the new one doesn't
         if self.replaced:
             self._read_old_sheet()
 
@@ -168,6 +180,34 @@ class _Replacement:
         tables = [(part, self.book.xml(part)) for _, part in self.book.related(self.part, "table")]
         self.old_tables = [(part, t.get("id", ""), t.get("displayName") or t.get("name", "")) for part, t in tables]
         self.old_last = _last_row(tables[0][1].get("ref") if tables else used)
+        self._check_own_objects()
+
+    def _check_own_objects(self) -> None:
+        """Pivot tables, slicers and timelines on the old sheet are refused; its charts, pictures,
+        comments, conditional formats and data validation are listed in ``lost``."""
+        kinds = {_kind(relation) for relation in self.book.relations(self.part)}
+        refused = [word for kind, word in (("pivotTable", "pivot tables"), ("slicer", "slicers"), ("timeline", "timelines")) if kind in kinds]
+        if refused:
+            raise ActionError(
+                f"The sheet '{self.name}' has {_listed(refused)} of its own, and they can't be kept when the sheet "
+                "is replaced. Move them to another sheet in Excel (cut and paste), or choose 'Replace the whole file'."
+            )
+        drawn: set[str] = set()
+        for _, drawing in self.book.related(self.part, "drawing"):
+            drawn |= {_kind(relation) for relation in self.book.relations(drawing)}
+            if re.search(rb"<(\w+:)?(sp|cxnSp)[\s>]", self.book.read(drawing)):
+                drawn.add("shape")
+        found = {
+            "charts": "chart" in drawn,
+            "pictures": "image" in drawn,
+            "shapes": "shape" in drawn,
+            "comments": bool(kinds & {"comments", "threadedComment"}),
+            "form controls": "ctrlProp" in kinds,
+        }
+        with self.book.open(self.part) as stream:
+            rules = _search(stream, (rb"<(\w+:)?conditionalFormatting[\s>]", rb"<(\w+:)?dataValidations?[\s>]"))
+        found["conditional formats"], found["data validation"] = rules
+        self.lost = [what for what, there in found.items() if there]
 
     def run(self, new: _Package) -> None:
         new_book = new.related("", "officeDocument")[0][1]
@@ -273,7 +313,10 @@ class _Replacement:
         for relation in self.rels.findall(f"{{{_PACKAGE}}}Relationship"):
             if _kind(relation) == "calcChain":  # Excel's list of the formula cells; it makes a new one
                 self.rels.remove(relation)
-        old, follow = self.old_last, self.old_last is not None and new_last is not None and self.old_last not in (1, new_last)
+        # A sheet with only its header row: ranges down to row 2 (the empty row a template leaves
+        # for the data) follow the data; a range of row 1 alone may be the header, it stays.
+        old = 2 if self.old_last == 1 else self.old_last
+        follow = old is not None and new_last is not None and old != new_last
         on_sheet = set(self.table_names)  # tables and named ranges that pivot tables can use
         position = str(self.sheets.findall(_m("sheet")).index(self.entry))
         names = self.workbook.find(_m("definedNames"))
@@ -619,6 +662,23 @@ def _insert(parent: etree._Element, element: etree._Element, after: tuple[str, .
         if isinstance(child.tag, str) and etree.QName(child).localname in after:
             position = index + 1
     parent.insert(position, element)
+
+
+def _search(stream: IO[bytes], patterns: tuple[bytes, ...]) -> list[bool]:
+    """Whether each pattern occurs in the stream, read in pieces (sheets can be large)."""
+    found = [False] * len(patterns)
+    compiled = [re.compile(pattern) for pattern in patterns]
+    rest = b""
+    while chunk := stream.read(1 << 20):
+        text = rest + chunk
+        for index, pattern in enumerate(compiled):
+            found[index] = found[index] or bool(pattern.search(text))
+        rest = text[-256:]  # a tag that is cut in two is found in the next piece
+    return found
+
+
+def _listed(words: list[str]) -> str:
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
 
 
 def _kind(relation: etree._Element) -> str:

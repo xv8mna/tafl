@@ -130,6 +130,30 @@ def test_a_failed_export_creates_no_table(db):
     assert db.rows("SELECT name FROM sqlite_master WHERE name = 'orders'") == []
 
 
+def test_no_permission_is_not_a_missing_table():
+    """Only "no such table" means the export creates the table; other errors are shown."""
+    from etl_tool.api.database import Connector, Database
+
+    class Cursor:
+        def __init__(self, error):
+            self.error = error
+
+        def execute(self, sql):
+            raise self.error
+
+        def close(self):
+            pass
+
+    def columns(error):
+        raw = type("Raw", (), {"cursor": lambda self: Cursor(error)})()
+        return Database(Connector(), raw).columns("orders")
+
+    assert columns(Exception("no such table: orders")) is None
+    assert columns(Exception('relation "orders" does not exist')) is None
+    with pytest.raises(ActionError, match="permission was denied"):
+        columns(Exception("The SELECT permission was denied on the object 'orders'"))
+
+
 def test_a_failed_command_changes_nothing(db):
     db.export(DATA)
     with pytest.raises(ActionError, match="no such table"):
@@ -180,6 +204,7 @@ def test_sqlserver_export(registry):
     settings = {"server": os.environ["TAFL_TEST_SQLSERVER"], "database": "tempdb"}
     ctx = StubContext(mode="run", connections={"server": (connector, settings)})
     name = f"dbo.tafl_test_{uuid.uuid4().hex[:8]}"
+    new = f"dbo.tafl_test_{uuid.uuid4().hex[:8]}"  # for a first export that fails
     long_text = "x" * 5000
     data = DATA.with_columns(
         pl.Series("Stamp", [dt.datetime(2025, 1, 1, 8, 30, 15, 123456)] * 3),
@@ -188,7 +213,7 @@ def test_sqlserver_export(registry):
     )
 
     def export(df, **params):
-        registry.actions["db.export"](df, {"connection": "server", "table": name, **params}, ctx)
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
 
     def read(sql):
         with ctx.database("server") as db:
@@ -218,6 +243,18 @@ def test_sqlserver_export(registry):
         registry.actions["db.command"](data, {"connection": "server", "sql": f"UPDATE {name} SET Net = 0\nGO\nDELETE FROM {name} WHERE OrderNo = 10"}, ctx)
         assert read(f"SELECT SUM(Net) AS s, COUNT(*) AS n FROM {name}").rows() == [(0.0, 2)]
         assert ctx.messages[-1] == ("info", "Done: 4 rows changed")
+
+        # A failed export changes nothing: all rows are deleted, then a value doesn't fit its column
+        with pytest.raises(ActionError, match="doesn't fit its column"):
+            export(pl.DataFrame({"OrderNo": ["not a number"]}), mode="replace")
+        with pytest.raises(ActionError):
+            export(data, mode="replace_where", condition="no_such_column = 1")
+        assert read(f"SELECT SUM(Net) AS s, COUNT(*) AS n FROM {name}").rows() == [(0.0, 2)]
+        # A failed first export leaves no table behind (SQL Server's CREATE TABLE is rolled back too)
+        with pytest.raises(ActionError):
+            export(data, table=new, mode="replace_where", condition="no_such_column = 1")
+        assert read(f"SELECT OBJECT_ID('{new}') AS id").rows() == [(None,)]
     finally:
         with ctx.database("server") as db:
-            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+            for table in (name, new):
+                db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")

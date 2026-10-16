@@ -15,6 +15,7 @@ import xlsxwriter
 from lxml import etree
 
 from etl_tool.api import ActionError
+from etl_tool.api.testing import StubContext
 from etl_tool.api.xlsx import _follow
 
 DATA = pl.DataFrame(
@@ -216,6 +217,73 @@ def test_ranges_that_follow_the_data():
     assert _follow(formula, "my data", 5, 9) == (
         "SUM('My data'!$B$2:$B$9,Other!B2:B5,'My data'!B3:B5,[1]Data!B2:B5,'My data'!A1:D9)"
     )
+
+
+def test_a_template_with_only_the_header_row(act, tmp_path):
+    """Ranges down to row 2, the empty row left for the data, follow the data; row 1 alone stays."""
+    path = tmp_path / "template.xlsx"
+    book = xlsxwriter.Workbook(path)
+    book.add_worksheet("Data").write_row("A1", ["Customer", "Day", "Net", "Orders"])
+    chart = book.add_chart({"type": "column"})
+    chart.add_series({"values": "=Data!$C$2:$C$2"})
+    book.add_worksheet("Report").insert_chart("A1", chart)
+    book.define_name("Nets", "=Data!$C$2:$C$2")
+    book.define_name("Header", "=Data!$A$1:$D$1")
+    book.close()
+    act("excel.export", DATA, {"file": str(path), "sheet": "Data", "existing": "sheet"})
+    names = {n: v.attr_text for n, v in openpyxl.load_workbook(path).defined_names.items()}
+    assert names == {"Nets": "Data!$C$2:$C$4", "Header": "Data!$A$1:$D$1"}
+    assert b"Data!$C$2:$C$4" in _parts(path)["xl/charts/chart1.xml"]
+
+
+def test_what_the_replaced_sheet_had_of_its_own_is_named(act, tmp_path):
+    path = tmp_path / "data.xlsx"
+    book = xlsxwriter.Workbook(path)
+    data = book.add_worksheet("Data")
+    data.write_column("A1", ["Net", 1, 2])
+    chart = book.add_chart({"type": "line"})
+    chart.add_series({"values": "=Data!$A$2:$A$3"})
+    data.insert_chart("C2", chart)
+    data.insert_image("C20", "dot.png", {"image_data": io.BytesIO(PNG)})
+    data.insert_textbox("H2", "a shape")
+    data.write_comment("A1", "a note")
+    data.conditional_format("A2:A3", {"type": "cell", "criteria": ">", "value": 1, "format": book.add_format({"bold": True})})
+    data.data_validation("B2:B3", {"validate": "integer", "criteria": ">", "value": 0})
+    book.close()
+    ctx = StubContext()
+    act("excel.export", DATA, {"file": str(path), "sheet": "Data", "existing": "sheet"}, ctx=ctx)
+    assert ctx.messages[-2] == (
+        "warning",
+        "The old sheet 'Data' had charts, pictures, shapes, comments, conditional formats and data validation of "
+        "its own: they are gone with it (the other sheets keep theirs). To keep such things, put them on another sheet.",
+    )
+    _check_package(path)
+    assert openpyxl.load_workbook(path)["Data"]["A2"].value == "Huber"
+
+
+@pytest.mark.parametrize("kind", ["pivotTable", "slicer"])
+def test_a_sheet_with_its_own_pivot_tables_or_slicers_is_not_replaced(act, tmp_path, kind):
+    """Excel connects them with caches elsewhere in the workbook: Tafl leaves such a sheet alone."""
+    path = tmp_path / "pivot.xlsx"
+    book = xlsxwriter.Workbook(path)
+    book.add_worksheet("Data").write_column("A1", ["Net", 1, 2])
+    book.close()
+    contents = _parts(path)
+    contents[f"xl/{kind}s/{kind}1.xml"] = b"<x/>"
+    folder = "http://schemas.microsoft.com/office/2007/relationships/" if kind == "slicer" else RELATIONSHIP
+    contents["xl/worksheets/_rels/sheet1.xml.rels"] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'<Relationship Id="rId1" Type="{folder}{kind}" Target="../{kind}s/{kind}1.xml"/></Relationships>'
+    ).encode()
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in contents.items():
+            archive.writestr(name, content)
+    before = path.read_bytes()
+    word = "pivot tables" if kind == "pivotTable" else "slicers"
+    with pytest.raises(ActionError, match=f"has {word} of its own.*Move them to another sheet"):
+        act("excel.export", DATA, {"file": str(path), "sheet": "Data", "existing": "sheet"})
+    assert path.read_bytes() == before
 
 
 def _parts(path) -> dict[str, bytes]:
