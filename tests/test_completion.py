@@ -4,7 +4,7 @@ import datetime as dt
 
 import pytest
 
-from etl_tool.core.completion import Context, Suggestion, column_suggestions, context_at, insertion, suggestions
+from tafl.core.completion import Context, Suggestion, column_suggestions, context_at, insertion, suggestions
 
 COLUMNS = column_suggestions([("Net", "number", None), ("Customer Name", "text", None), ("Netto]x", "number", None), ("Gross", "number", 1)])
 
@@ -101,8 +101,8 @@ def test_every_column_is_listed():
 
 
 def test_parameters_after_a_brace():
-    from etl_tool.api.parameters import Failed
-    from etl_tool.core.completion import parameter_suggestions
+    from tafl.api.parameters import Failed
+    from tafl.core.completion import parameter_suggestions
 
     found = parameter_suggestions({"Day": dt.date(2026, 10, 15), "Run Date": "x" * 50, "Bad": Failed("oops")})
     assert [(s.name, s.detail) for s in found] == [("Day", "date: 2026-10-15"), ("Run Date", "text: " + "x" * 40 + "…"), ("Bad", "error")]

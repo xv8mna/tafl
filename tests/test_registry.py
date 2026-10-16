@@ -1,10 +1,10 @@
 import textwrap
 
-from etl_tool.core import Registry
+from tafl.core import Registry
 
 GOOD = '''
 import polars as pl
-from etl_tool.api import P, action
+from tafl.api import P, action
 
 @action("demo.upper", "Upper case", category="Text", params=[P.Column("column", "Column")])
 def upper(df, p, ctx):
@@ -13,7 +13,7 @@ def upper(df, p, ctx):
 '''
 
 DUPLICATE = '''
-from etl_tool.api import action
+from tafl.api import action
 
 @action("rows.sort", "My own sort")
 def sort(df, p, ctx):
@@ -22,7 +22,7 @@ def sort(df, p, ctx):
 
 TOO_NEW = '''
 REQUIRES_API = 99
-from etl_tool.api import action
+from tafl.api import action
 
 @action("demo.future", "Future")
 def future(df, p, ctx):

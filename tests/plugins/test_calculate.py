@@ -1,7 +1,7 @@
 import polars as pl
 import pytest
 
-from etl_tool.api import ActionError
+from tafl.api import ActionError
 
 
 def test_calculate_columns(act, people):

@@ -1,7 +1,7 @@
 import pytest
 
-from etl_tool.api import P, ValidationContext, action
-from etl_tool.api.params import check, is_visible, resolve, table_refs
+from tafl.api import P, ValidationContext, action
+from tafl.api.params import check, is_visible, resolve, table_refs
 
 SPEC = [
     P.Choice("mode", "Mode", [("table", "Table"), ("query", "Query")]),

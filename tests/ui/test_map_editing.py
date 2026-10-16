@@ -1,7 +1,7 @@
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtTest import QTest
 
-from etl_tool.ui.map import HEADER, NODE_WIDTH
+from tafl.ui.map import HEADER, NODE_WIDTH
 
 
 def open_map(window, session, demo, settle):

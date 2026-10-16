@@ -6,9 +6,9 @@ import time
 import polars as pl
 import pytest
 
-from etl_tool.api import Cancelled, expressions
-from etl_tool.core.cancel import CancelEvent
-from etl_tool.core.formula_preview import preview, used_columns
+from tafl.api import Cancelled, expressions
+from tafl.core.cancel import CancelEvent
+from tafl.core.formula_preview import preview, used_columns
 
 DATA = pl.DataFrame({"Net": [10.0, 20.0, None], "Name": ["a", "b", "c"], "Amount": [1, 2, 3]})
 
@@ -160,7 +160,7 @@ def test_a_new_column_needs_a_name_and_a_formula_more_than_comments():
 
 
 def test_the_kept_sample_lets_go_of_its_input():
-    from etl_tool.core import formula_preview
+    from tafl.core import formula_preview
 
     frame = pl.DataFrame({"x": [1, 2]})
     preview(frame, "[x]")
@@ -170,7 +170,7 @@ def test_the_kept_sample_lets_go_of_its_input():
 
 
 def test_parameters_are_filled_in_first():
-    from etl_tool.api.parameters import Failed
+    from tafl.api.parameters import Failed
 
     values = {"Rate": 1.5, "Bad": Failed("oops")}
     result = preview(DATA, "[Amount] * {rate}", parameters=values)
@@ -190,8 +190,8 @@ def test_parameters_are_filled_in_first():
 def test_parameters_in_the_names_of_new_columns(tmp_path, registry):
     """Calculate columns fills {Name} into the names of the new columns and into the formulas
     ([Sales {Year}]): the preview does the same, so it agrees with the calculation."""
-    from etl_tool.api.parameters import Failed
-    from etl_tool.core import Engine, Parameter, Project
+    from tafl.api.parameters import Failed
+    from tafl.core import Engine, Parameter, Project
 
     (tmp_path / "data.csv").write_text("Amount\n1\n2\n3\n", encoding="utf-8")
     project = Project(name="Test", parameters=[Parameter("Year", "2026")])

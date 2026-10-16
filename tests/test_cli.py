@@ -6,8 +6,8 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from etl_tool.cli import main
-from etl_tool.core import Parameter, Project
+from tafl.cli import main
+from tafl.core import Parameter, Project
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "make_examples.py"
 

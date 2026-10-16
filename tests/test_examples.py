@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from etl_tool.api import Mode
-from etl_tool.core import Engine, Project
+from tafl.api import Mode
+from tafl.core import Engine, Project
 
 ROOT = Path(__file__).resolve().parents[1]
 

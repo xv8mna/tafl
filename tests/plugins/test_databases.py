@@ -5,9 +5,9 @@ import sqlite3
 import polars as pl
 import pytest
 
-from etl_tool.api import ActionError, Context
-from etl_tool.api.parameters import Fixed
-from etl_tool.core import Engine, Parameter, Project
+from tafl.api import ActionError, Context
+from tafl.api.parameters import Fixed
+from tafl.core import Engine, Parameter, Project
 
 
 @pytest.fixture

@@ -2,8 +2,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QAbstractItemView
 
-from etl_tool.core import Engine, Project
-from etl_tool.ui.map import GROUP_TITLE, NODE_WIDTH, Arc, Unit, auto_layout
+from tafl.core import Engine, Project
+from tafl.ui.map import GROUP_TITLE, NODE_WIDTH, Arc, Unit, auto_layout
 
 
 def test_groups_are_saved_with_the_project(tmp_path):

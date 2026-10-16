@@ -3,7 +3,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from etl_tool.api import dtypes
+from tafl.api import dtypes
 
 
 @pytest.mark.parametrize(

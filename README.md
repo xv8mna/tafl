@@ -408,11 +408,11 @@ Every action (import, step, export, command) is a plugin. Put a `.py` file into
 `TAFL_PLUGINS` environment variable (several separated by `;`, or `:` on Linux and macOS), and
 restart Tafl; **Help → Plugins…** shows what was loaded and any errors. For a command line run,
 `tafl --plugins FOLDER run PROJECT` adds a folder (the option goes before `run`). Built-in
-plugins live in `src\etl_tool\plugins`; the Python package is called `etl_tool`.
+plugins live in `src\tafl\plugins`; the Python package is called `tafl`.
 
 ```python
 import polars as pl
-from etl_tool.api import P, action
+from tafl.api import P, action
 
 
 @action(
@@ -434,14 +434,14 @@ def add_prefix(df, p, ctx):
 
 The settings form is built from `params`. Rules for plugins:
 
-- Import only from `etl_tool.api` (and third-party libraries), never from other plugins. The
+- Import only from `tafl.api` (and third-party libraries), never from other plugins. The
   Windows download includes only the libraries Tafl itself uses (Polars, DuckDB, …).
 - When parameters change, raise `version=` and add `migrate=`: a function
   `(params, old_version) -> params` that converts settings saved by older versions, so old
   projects keep working.
 - Exports and commands (`kind="export"` / `"command"`) only run when a project is run, never in
   preview.
-- Test actions with `etl_tool.api.testing.StubContext` (see `tests/plugins`).
+- Test actions with `tafl.api.testing.StubContext` (see `tests/plugins`).
 
 Plugins are ordinary Python code that runs with your rights when Tafl starts: only add plugins
 you trust.

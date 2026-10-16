@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFrame, QScrollArea
 
-from etl_tool.ui import theme
+from tafl.ui import theme
 
 CTRL = Qt.KeyboardModifier.ControlModifier
 

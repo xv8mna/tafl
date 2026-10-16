@@ -8,8 +8,8 @@ import pytest  # noqa: E402
 from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QDialog, QMessageBox  # noqa: E402
 
-from etl_tool.ui.main_window import MainWindow  # noqa: E402
-from etl_tool.ui.session import Session  # noqa: E402
+from tafl.ui.main_window import MainWindow  # noqa: E402
+from tafl.ui.session import Session  # noqa: E402
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "make_examples.py"
 

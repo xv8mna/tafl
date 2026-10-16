@@ -2,7 +2,7 @@
 
 import multiprocessing
 
-from etl_tool.ui.app import main
+from tafl.ui.app import main
 
 multiprocessing.freeze_support()  # a plugin's worker processes start this program again
 raise SystemExit(main())

@@ -6,7 +6,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from etl_tool.core import Project
+from tafl.core import Project
 
 WINTER, SUMMER = dt.datetime(2026, 1, 15, 12), dt.datetime(2026, 7, 15, 12)  # in UTC
 MOMENTS = [t.replace(tzinfo=dt.UTC) for t in (WINTER, SUMMER, WINTER)]

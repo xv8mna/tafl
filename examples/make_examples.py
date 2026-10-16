@@ -12,7 +12,7 @@ from pathlib import Path
 
 import xlsxwriter
 
-from etl_tool.core import EXTENSION, Project, Registry
+from tafl.core import EXTENSION, Project, Registry
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"

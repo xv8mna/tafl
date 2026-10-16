@@ -8,11 +8,11 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
 
-from etl_tool.api.testing import StubContext
-from etl_tool.core import Project
-from etl_tool.ui import app
-from etl_tool.ui.filter_pane import FilterPane
-from etl_tool.ui.filters import (
+from tafl.api.testing import StubContext
+from tafl.core import Project
+from tafl.ui import app
+from tafl.ui.filter_pane import FilterPane
+from tafl.ui.filters import (
     Filter,
     apply,
     facet,

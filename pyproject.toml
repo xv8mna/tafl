@@ -51,13 +51,13 @@ Homepage = "https://github.com/xv8mna/tafl"
 Issues = "https://github.com/xv8mna/tafl/issues"
 
 [project.scripts]
-tafl = "etl_tool.cli:main"
+tafl = "tafl.cli:main"
 
 [project.gui-scripts]
-tafl-app = "etl_tool.ui.app:main"
+tafl-app = "tafl.ui.app:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "etl_tool.__version__" }
+version = { attr = "tafl.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

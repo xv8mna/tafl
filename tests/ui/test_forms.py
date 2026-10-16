@@ -1,5 +1,5 @@
-from etl_tool.ui.forms import FormContext, ParamForm
-from etl_tool.ui.session import json_ready
+from tafl.ui.forms import FormContext, ParamForm
+from tafl.ui.session import json_ready
 
 
 def test_every_action_form_shows_its_settings(qapp, registry):

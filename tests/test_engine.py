@@ -5,8 +5,8 @@ import types
 import polars as pl
 import pytest
 
-from etl_tool.api import Cancelled, P, action
-from etl_tool.core import Engine, Project, Registry, Status
+from tafl.api import Cancelled, P, action
+from tafl.core import Engine, Project, Registry, Status
 
 CSV = "Id;Customer;Amount;Date\n1;A;10,5;01.01.2025\n2;B;20;02.01.2025\n3;A;5;03.01.2025\n"
 

@@ -5,9 +5,9 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from etl_tool.api import expressions
-from etl_tool.core import functions
-from etl_tool.core.functions import CURATED, CURSOR, MORE
+from tafl.api import expressions
+from tafl.core import functions
+from tafl.core.functions import CURATED, CURSOR, MORE
 
 SAMPLE = pl.DataFrame(
     {

@@ -1,5 +1,5 @@
 """Create a desktop shortcut that starts the app without a console window (Windows only).
-It also writes the icon file src/etl_tool/ui/app.ico, drawn by the app's theme.
+It also writes the icon file src/tafl/ui/app.ico, drawn by the app's theme.
 
     .venv\\Scripts\\python tools\\create_shortcut.py
 """
@@ -18,11 +18,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QBuffer, QIODevice  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 
-from etl_tool import APP_COMMAND, APP_NAME  # noqa: E402
-from etl_tool.ui import theme  # noqa: E402
+from tafl import APP_COMMAND, APP_NAME  # noqa: E402
+from tafl.ui import theme  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-ICON = ROOT / "src" / "etl_tool" / "ui" / "app.ico"
+ICON = ROOT / "src" / "tafl" / "ui" / "app.ico"
 LAUNCHER = Path(sys.executable).with_name(f"{APP_COMMAND}.exe")
 
 

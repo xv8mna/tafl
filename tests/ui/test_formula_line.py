@@ -3,8 +3,8 @@
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 
-from etl_tool.ui import theme
-from etl_tool.ui.checks import checks
+from tafl.ui import theme
+from tafl.ui.checks import checks
 
 
 def _calculate(window, session, settle, demo):
@@ -141,7 +141,7 @@ def test_checks_reuse_the_connection_of_their_thread(qtbot):
 
     import polars as pl
 
-    from etl_tool.api import expressions
+    from tafl.api import expressions
 
     def job(_cancel):
         expressions.evaluate(pl.DataFrame({"a": [1]}), "[a] + 1")

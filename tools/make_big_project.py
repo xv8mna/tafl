@@ -11,7 +11,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from etl_tool.core import EXTENSION, Project, Registry
+from tafl.core import EXTENSION, Project, Registry
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 

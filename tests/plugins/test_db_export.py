@@ -9,9 +9,9 @@ import uuid
 import polars as pl
 import pytest
 
-from etl_tool.api import ActionError
-from etl_tool.api.testing import StubContext
-from etl_tool.core import Engine, Project
+from tafl.api import ActionError
+from tafl.api.testing import StubContext
+from tafl.core import Engine, Project
 
 DATA = pl.DataFrame(
     {
@@ -132,7 +132,7 @@ def test_a_failed_export_creates_no_table(db):
 
 def test_no_permission_is_not_a_missing_table():
     """Only "no such table" means the export creates the table; other errors are shown."""
-    from etl_tool.api.database import Connector, Database
+    from tafl.api.database import Connector, Database
 
     class Cursor:
         def __init__(self, error):
@@ -163,7 +163,7 @@ def test_a_view_whose_table_is_gone_is_not_a_missing_table(db):
 
 
 def test_names_with_doubled_quotes():
-    from etl_tool.api import split_name
+    from tafl.api import split_name
 
     assert split_name('"my ""big"" table"') == ['my "big" table']
     assert split_name("[dbo].[a]]b]") == ["dbo", "a]b"]
@@ -178,7 +178,7 @@ def test_a_temporary_sqlite_table_is_refused(db):
 def test_messages_of_the_sql_server_driver():
     """The ODBC driver finds some bad values before the server; its own (localized) text names no
     column or value."""
-    from etl_tool.core import Registry
+    from tafl.core import Registry
 
     connector = Registry.default().connectors["sqlserver"]
     driver = "[22018] [Microsoft][ODBC Driver 17 for SQL Server]Ung�ltiger Zeichenwert (0) (SQLExecute)"

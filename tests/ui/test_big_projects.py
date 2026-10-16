@@ -5,8 +5,8 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QInputDialog
 
-from etl_tool.api import Mode
-from etl_tool.ui.map import NODE_WIDTH
+from tafl.api import Mode
+from tafl.ui.map import NODE_WIDTH
 
 
 def open_map(window, session, demo, settle):

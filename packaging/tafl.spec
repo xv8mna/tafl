@@ -45,8 +45,8 @@ def needed(entry):
     )
 
 
-hidden = collect_submodules("etl_tool.plugins")  # found by listing their package when Tafl starts
-hidden += collect_submodules("etl_tool.api")  # all of the plugin API, also its testing helpers
+hidden = collect_submodules("tafl.plugins")  # found by listing their package when Tafl starts
+hidden += collect_submodules("tafl.api")  # all of the plugin API, also its testing helpers
 for name in sorted(sys.stdlib_module_names - LEFT_OUT):
     spec = importlib.util.find_spec(name)
     if spec is not None:
@@ -62,7 +62,7 @@ programs = Analysis(["tafl_app.py", "tafl_cli.py"], pathex=["../src"], hiddenimp
 programs.binaries = [entry for entry in programs.binaries if needed(entry)]
 programs.datas = [entry for entry in programs.datas if needed(entry)]
 modules = PYZ(programs.pure)
-icon = "../src/etl_tool/ui/app.ico"
+icon = "../src/tafl/ui/app.ico"
 
 
 def program(script, **options):

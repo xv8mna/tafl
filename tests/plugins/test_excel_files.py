@@ -5,7 +5,7 @@ import polars as pl
 import pytest
 import xlsxwriter
 
-from etl_tool.api import ActionError
+from tafl.api import ActionError
 
 
 @pytest.fixture

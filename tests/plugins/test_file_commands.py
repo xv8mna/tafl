@@ -4,9 +4,9 @@ import polars as pl
 import pytest
 import send2trash
 
-from etl_tool.api import ActionError
-from etl_tool.api.testing import StubContext
-from etl_tool.core import Engine, Project
+from tafl.api import ActionError
+from tafl.api.testing import StubContext
+from tafl.core import Engine, Project
 
 
 @pytest.fixture

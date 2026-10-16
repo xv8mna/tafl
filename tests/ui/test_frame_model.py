@@ -3,7 +3,7 @@ import datetime as dt
 import polars as pl
 from PySide6.QtCore import QLocale, Qt
 
-from etl_tool.ui.frame_model import DisplayFormat, FrameModel
+from tafl.ui.frame_model import DisplayFormat, FrameModel
 
 DF = pl.DataFrame(
     {

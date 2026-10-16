@@ -15,12 +15,12 @@ import time
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from etl_tool import APP_NAME
-from etl_tool.core import Registry
-from etl_tool.ui import theme
-from etl_tool.ui.checks import checks
-from etl_tool.ui.main_window import MainWindow
-from etl_tool.ui.session import Session
+from tafl import APP_NAME
+from tafl.core import Registry
+from tafl.ui import theme
+from tafl.ui.checks import checks
+from tafl.ui.main_window import MainWindow
+from tafl.ui.session import Session
 
 
 def wait(app: QApplication, session: Session, seconds: float = 20) -> None:

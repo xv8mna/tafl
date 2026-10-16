@@ -6,9 +6,9 @@ import time
 from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import QPlainTextEdit
 
-from etl_tool.api.parameters import Failed
-from etl_tool.ui import theme
-from etl_tool.ui.formula_style import FormulaHighlighter, bracket_selections
+from tafl.api.parameters import Failed
+from tafl.ui import theme
+from tafl.ui.formula_style import FormulaHighlighter, bracket_selections
 
 
 def _colors(edit):

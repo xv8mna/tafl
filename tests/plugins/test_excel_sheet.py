@@ -14,9 +14,9 @@ import pytest
 import xlsxwriter
 from lxml import etree
 
-from etl_tool.api import ActionError
-from etl_tool.api.testing import StubContext
-from etl_tool.api.xlsx import _follow
+from tafl.api import ActionError
+from tafl.api.testing import StubContext
+from tafl.api.xlsx import _follow
 
 DATA = pl.DataFrame(
     {
@@ -332,7 +332,7 @@ def test_lost_objects_that_are_easy_to_mistake(act, tmp_path):
 
 
 def test_a_tag_cut_in_two_by_a_piece_is_found():
-    from etl_tool.api.xlsx import _SHEET_OWN, _search
+    from tafl.api.xlsx import _SHEET_OWN, _search
 
     for offset in (-20, -5, 0, 5):  # around the end of the first 1 MiB piece
         text = b"x" * ((1 << 20) + offset) + b"<conditionalFormatting sqref='A1'>"

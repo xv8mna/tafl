@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from etl_tool.core import Project, ProjectError
+from tafl.core import Project, ProjectError
 
 
 def sample_project() -> Project:

@@ -5,11 +5,11 @@ import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from etl_tool import APP_FOLDER, APP_NAME, COMMAND
-from etl_tool.core import Engine
-from etl_tool.ui import app as app_module
-from etl_tool.ui.main_window import MainWindow
-from etl_tool.ui.session import Session
+from tafl import APP_FOLDER, APP_NAME, COMMAND
+from tafl.core import Engine
+from tafl.ui import app as app_module
+from tafl.ui.main_window import MainWindow
+from tafl.ui.session import Session
 
 BROKEN, PROBLEM = '{"format": "tafl-project", "tables": 5}', '"tables" is 5 instead of a list'
 
@@ -47,7 +47,7 @@ def test_app_starts_and_opens_a_project(start, tmp_path, demo):
 
 
 def test_open_dialogs_offer_project_files():
-    from etl_tool.ui.main_window import _FILTER
+    from tafl.ui.main_window import _FILTER
 
     assert _FILTER == f"{APP_NAME} projects (*.tafl);;All files (*.*)"
 

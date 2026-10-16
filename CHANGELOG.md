@@ -1,6 +1,10 @@
 # Changes
 
-## Unreleased
+## 0.2.0 – 2026-10-16
+
+The first version with a Windows download: a folder with `tafl-app.exe` (the window) and
+`tafl.exe` (the command line), no Python needed. Unzip it, start `tafl-app.exe`, and open
+`examples\demo.tafl` to try it. New: parameters, values that the whole project uses.
 
 ### Parameters
 
@@ -38,26 +42,6 @@
 - Renaming a parameter renames it in the steps, in the other parameters and in the
   connections.
 
-### Fixes
-
-- Changing a connection's settings reads the data of its imports again (before, only
-  **Reload data** did).
-- SQL Server: a GO line inside a text or a comment of a SQL command no longer splits it into
-  batches.
-- SQL Server: when the ODBC driver can't read the SQL, the message says that it takes `{…}` for
-  an ODBC escape (before, only "syntax error" in the language of Windows).
-- On Windows, a file or folder name with a `:` (e.g. a time, `08:30`) is an error; before, an
-  export wrote the data into a hidden part of a file. So is a drive without a `\` after it
-  (`C:data.csv`, a file in the current folder of drive C).
-- Checking formulas while typing: a check that was stopped at an unlucky moment could make later
-  checks fail.
-
-## 0.2.0 – 2026-10-16
-
-The first version with a Windows download: a folder with `tafl-app.exe` (the window) and
-`tafl.exe` (the command line), no Python needed. Unzip it, start `tafl-app.exe`, and open
-`examples\demo.tafl` to try it.
-
 ### Formulas
 
 - **Formula functions** (F1): every function with what it does, how it is written and an
@@ -86,6 +70,12 @@ from other people" in the README.
 - Readable messages for values that don't fit their column, and for tables that can't be read
   (e.g. no permission).
 - A query that fills a `#temp` table without `SET NOCOUNT ON` imports its result.
+- SQL Server: a GO line inside a text or a comment of a SQL command no longer splits it into
+  batches.
+- SQL Server: when the ODBC driver can't read the SQL, the message says that it takes `{…}` for
+  an ODBC escape (before, only "syntax error" in the language of Windows).
+- Changing a connection's settings reads the data of its imports again (before, only
+  **Reload data** did).
 
 ### Excel, "Replace only this sheet"
 
@@ -95,6 +85,12 @@ from other people" in the README.
 
 ### Other
 
+- On Windows, a file or folder name with a `:` (e.g. a time, `08:30`) is an error; before, an
+  export wrote the data into a hidden part of a file. So is a drive without a `\` after it
+  (`C:data.csv`, a file in the current folder of drive C).
+- Checking formulas while typing: a check that was stopped at an unlucky moment could make later
+  checks fail.
+- The Python package is called `tafl` now, like the app: plugins import from `tafl.api`.
 - A damaged project file shows a message that says what is wrong. Before, it gave an unexpected
   error, or closed the app when the app was started with it.
 - A step setting of the wrong kind in a project file (e.g. a number where a table belongs) is an

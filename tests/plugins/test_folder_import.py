@@ -6,9 +6,9 @@ import polars as pl
 import pytest
 import xlsxwriter
 
-from etl_tool.api import ActionError, find_files, sources_fingerprint
-from etl_tool.api.params import resolve
-from etl_tool.api.testing import StubContext
+from tafl.api import ActionError, find_files, sources_fingerprint
+from tafl.api.params import resolve
+from tafl.api.testing import StubContext
 
 
 @pytest.fixture

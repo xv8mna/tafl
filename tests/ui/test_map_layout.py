@@ -2,7 +2,7 @@
 
 from PySide6.QtCore import QPointF, QRectF
 
-from etl_tool.ui.map import GAP_Y, NODE_WIDTH, Unit, frame_rect, free_spot, place, push_down, tidy
+from tafl.ui.map import GAP_Y, NODE_WIDTH, Unit, frame_rect, free_spot, place, push_down, tidy
 
 
 def box(point: QPointF, height: float) -> QRectF:

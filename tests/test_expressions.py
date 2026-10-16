@@ -7,7 +7,7 @@ import duckdb
 import polars as pl
 import pytest
 
-from etl_tool.api import ActionError, expressions
+from tafl.api import ActionError, expressions
 
 
 def test_translate_brackets_strings_and_isnull():

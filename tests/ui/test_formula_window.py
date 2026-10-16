@@ -6,8 +6,8 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QApplication
 
-from etl_tool.ui import forms
-from etl_tool.ui.checks import checks
+from tafl.ui import forms
+from tafl.ui.checks import checks
 
 
 def _calculate(window, session, settle, demo, row=2):

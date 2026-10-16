@@ -11,8 +11,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from etl_tool.api import ActionError, Context, P, expressions
-from etl_tool.api.parameters import (
+from tafl.api import ActionError, Context, P, expressions
+from tafl.api.parameters import (
     Failed,
     Fixed,
     as_text,
@@ -29,7 +29,7 @@ from etl_tool.api.parameters import (
     typed,
     unknown,
 )
-from etl_tool.core import Connection, Engine, Parameter, Project, Status, parameters
+from tafl.core import Connection, Engine, Parameter, Project, Status, parameters
 
 DAY = dt.date(2026, 10, 15)
 BERLIN_SUMMER = dt.datetime(2026, 10, 15, 8, 30, tzinfo=dt.timezone(dt.timedelta(hours=2)))

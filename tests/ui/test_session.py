@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from etl_tool.core import Connection, Parameter, Project, Status
+from tafl.core import Connection, Parameter, Project, Status
 
 
 def test_open_select_and_calculate(qtbot, settle, session, demo):

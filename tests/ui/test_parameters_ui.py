@@ -6,10 +6,10 @@ import time
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialogButtonBox
 
-from etl_tool.api.parameters import Fixed
-from etl_tool.core import Connection, Parameter, parameters
-from etl_tool.ui.connections_dialog import ConnectionsDialog
-from etl_tool.ui.parameters_dialog import ParametersDialog
+from tafl.api.parameters import Fixed
+from tafl.core import Connection, Parameter, parameters
+from tafl.ui.connections_dialog import ConnectionsDialog
+from tafl.ui.parameters_dialog import ParametersDialog
 
 
 def _cell(dialog, row, column):

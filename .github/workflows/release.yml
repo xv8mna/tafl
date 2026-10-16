@@ -39,9 +39,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: python
         run: |
-          import etl_tool, os
+          import tafl, os
           tag = os.environ["GITHUB_REF_NAME"]
-          assert tag == f"v{etl_tool.__version__}", f"tag {tag}, but the version is {etl_tool.__version__}"
+          assert tag == f"v{tafl.__version__}", f"tag {tag}, but the version is {tafl.__version__}"
       - name: Build and check
         run: python tools/build.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2

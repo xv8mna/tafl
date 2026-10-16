@@ -56,7 +56,7 @@ import datetime as dt
 import zoneinfo
 
 import polars as pl
-from etl_tool.api.testing import StubContext  # the plugin API, with its helpers for tests
+from tafl.api.testing import StubContext  # the plugin API, with its helpers for tests
 
 zoneinfo.ZoneInfo("Europe/Berlin")  # from the tzdata package: Windows has no time zone files
 moments = pl.Series([dt.datetime(2026, 1, 15, 12), dt.datetime(2026, 7, 15, 12)]).dt.replace_time_zone("UTC")
@@ -71,7 +71,7 @@ def main() -> None:
     parser.add_argument("--dirty", action="store_true", help="build with changes that are not committed (to try things out)")
     if not parser.parse_args().dirty:
         _committed()
-    from etl_tool import __version__
+    from tafl import __version__
 
     versions = _versions()
     _check_python_notices()

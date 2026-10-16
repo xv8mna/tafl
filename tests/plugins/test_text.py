@@ -1,8 +1,8 @@
 import polars as pl
 import pytest
 
-from etl_tool.api import ActionError
-from etl_tool.api.testing import StubContext
+from tafl.api import ActionError
+from tafl.api.testing import StubContext
 
 
 def replace(act, df, columns, pairs, ctx=None, **options):

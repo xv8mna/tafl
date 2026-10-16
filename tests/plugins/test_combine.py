@@ -1,7 +1,7 @@
 import polars as pl
 import pytest
 
-from etl_tool.api.testing import StubContext
+from tafl.api.testing import StubContext
 
 CUSTOMERS = pl.DataFrame(
     {

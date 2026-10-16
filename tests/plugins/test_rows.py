@@ -3,7 +3,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from etl_tool.api import ActionError
+from tafl.api import ActionError
 
 
 def names(df):

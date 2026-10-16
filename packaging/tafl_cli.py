@@ -4,7 +4,7 @@ import multiprocessing
 import os
 import sys
 
-from etl_tool.cli import main
+from tafl.cli import main
 
 
 def use_python_io_variables() -> None:

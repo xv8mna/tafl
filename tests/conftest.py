@@ -3,9 +3,9 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from etl_tool.api import Action
-from etl_tool.api.testing import StubContext
-from etl_tool.core import Registry
+from tafl.api import Action
+from tafl.api.testing import StubContext
+from tafl.core import Registry
 
 
 @pytest.fixture(scope="session")

@@ -4,9 +4,9 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QApplication
 
-from etl_tool.core.functions import CURSOR
-from etl_tool.ui import forms, functions_window
-from etl_tool.ui.functions_window import FunctionsWindow
+from tafl.core.functions import CURSOR
+from tafl.ui import forms, functions_window
+from tafl.ui.functions_window import FunctionsWindow
 
 
 def _formula(window, session, settle, demo):
