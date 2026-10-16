@@ -17,3 +17,4 @@ examples/output/
 .coverage
 htmlcov/
 examples/big500.tafl
+.venv-build/

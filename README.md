@@ -25,9 +25,17 @@ and tested on Windows.
 
 ## Install
 
-You need Windows 10 or 11, Python 3.12 or newer, and Git. For SQL Server connections you also
-need Microsoft's "ODBC Driver 18 for SQL Server" (17 works too); Tafl signs in with your Windows
-account, so no passwords are stored. There are no prebuilt downloads yet, so install from source:
+Tafl runs on Windows 10 and 11. For SQL Server connections you also need Microsoft's "ODBC
+Driver 18 for SQL Server" (17 works too); Tafl signs in with your Windows account, so no
+passwords are stored.
+
+**Download** (no Python needed): get `Tafl-<version>-windows.zip` from the
+[latest release](https://github.com/xv8mna/tafl/releases/latest), unzip it into a folder of
+yours (e.g. `C:\Tools\Tafl`), and start `tafl-app.exe` (the window) or `tafl.exe` (the command
+line). The programs are not signed: if Windows says "Windows protected your PC", click "More
+info", then "Run anyway". The `README.txt` in the folder has the rest.
+
+**From source** (Python 3.12 or newer, and Git):
 
 ```
 git clone https://github.com/xv8mna/tafl.git
@@ -273,7 +281,8 @@ date-times with a time zone are written in that zone's local time. If the file e
     programs show the old results until the file has been saved in Excel.
   - The workbook must not be open in Excel while the project runs.
   - So far this has been tested with LibreOffice only, not with Excel itself. If Excel offers to
-    repair a workbook written this way, please open an issue.
+    repair a workbook written this way, please open an issue. [docs/excel-check.md](docs/excel-check.md)
+    is a ten-minute check in Excel, with a project for it in `examples`.
 
 ## Formulas
 
@@ -373,6 +382,9 @@ you trust.
 - The lock files (`requirements.lock`, and `requirements-dev.lock` with the test tools) are
   written by `tools\lock.py` (it needs `pip install uv`); `--upgrade` takes the newest versions
   that `pyproject.toml` allows. Once a week, CI also tests with the newest versions.
+- `tools\build.py` builds the Windows download into `dist\` and checks it (see its description
+  for the build environment). A tag like `v0.2.0` makes CI build it and publish the release, with
+  that version's part of [CHANGELOG.md](CHANGELOG.md) as the notes.
 - The SQL Server tests run only when the environment variable `TAFL_TEST_SQLSERVER` names a
   server you can reach with your Windows login (e.g. `.\SQLEXPRESS`). They read `master` and
   create and drop a table in `tempdb`.

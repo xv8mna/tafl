@@ -9,6 +9,7 @@ import sys
 import traceback
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from etl_tool import APP_FOLDER, APP_NAME, COMMAND
@@ -43,6 +44,15 @@ def main(argv: list[str] | None = None) -> int:
         window.open_path(argv[1])
     if registry.errors:
         window.statusBar().showMessage(f"{len(registry.errors)} plugin problem(s): see Help → Plugins", 15000)
+    if os.environ.get("TAFL_STARTUP_CHECK"):  # tools\build.py: the built app starts, opens a project and calculates
+
+        def finish() -> None:
+            if session.busy or session._timer.isActive():
+                QTimer.singleShot(100, finish)
+                return
+            app.exit(0 if session.result is not None and session.result.ok and not registry.errors else 3)
+
+        QTimer.singleShot(0, finish)
     return app.exec()
 
 

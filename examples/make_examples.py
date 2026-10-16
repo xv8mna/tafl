@@ -125,9 +125,34 @@ def build_project() -> Project:
     return project
 
 
+def build_excel_check() -> Project:
+    """For checking "Replace only this sheet" in Excel (docs/excel-check.md): the orders above a
+    limit go into sheet Data of a workbook that Excel can build a report on."""
+    registry = Registry()
+    registry.load_builtin()
+    project = Project(name="Excel check")
+    data = project.add_table("Data")
+    for action_id, params in (
+        ("csv.import", {"file": "data/orders.csv"}),
+        ("columns.rename", {"columns": [
+            {"column": "Bestellnr", "new_name": "OrderNo"},
+            {"column": "Kundennr", "new_name": "CustomerNo"},
+            {"column": "Datum", "new_name": "Date"},
+            {"column": "Netto", "new_name": "Net"},
+        ]}),
+        ("rows.filter", {"conditions": [{"column": "Net", "operator": ">", "value": "500"}]}),
+        ("excel.export", {"file": "output/excel-check.xlsx", "sheet": "Data", "existing": "sheet",
+                          "table_style": "Table Style Medium 2"}),
+    ):  # fmt: skip
+        project.add_step(data, registry.actions[action_id], params)
+    return project
+
+
 if __name__ == "__main__":
     DATA.mkdir(exist_ok=True)
     write_customers(DATA / "customers.xlsx")
     write_orders(DATA / "orders.csv")
     path = build_project().save(HERE / f"demo{EXTENSION}")
+    print(f"Created {path}")
+    path = build_excel_check().save(HERE / f"excel-check{EXTENSION}")
     print(f"Created {path}")

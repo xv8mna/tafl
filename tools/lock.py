@@ -5,8 +5,9 @@ Windows download is built from. Run it after changing the dependencies in pyproj
     .venv\\Scripts\\python -m pip install uv
     .venv\\Scripts\\python tools\\lock.py [--upgrade]
 
-requirements.lock has what Tafl needs to run; requirements-dev.lock adds the tools for the tests.
-Both work for every Python version Tafl supports (3.12 and newer).
+requirements.lock has what Tafl needs to run; requirements-dev.lock adds the tools for the tests,
+requirements-build.lock the tools for the Windows download (tools/build.py).
+All of them work for every Python version Tafl supports (3.12 and newer).
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCKS = {"requirements.lock": [], "requirements-dev.lock": ["--extra", "dev"]}
+LOCKS = {"requirements.lock": [], "requirements-dev.lock": ["--extra", "dev"], "requirements-build.lock": ["--extra", "build"]}
 
 
 def main() -> None:

@@ -1,0 +1,72 @@
+{
+  "format": "tafl-project",
+  "format_version": 1,
+  "name": "Excel check",
+  "connections": [],
+  "tables": [
+    {
+      "id": "t1",
+      "name": "Data",
+      "steps": [
+        {
+          "id": "s1",
+          "action": "csv.import",
+          "version": 2,
+          "params": {
+            "file": "data/orders.csv"
+          }
+        },
+        {
+          "id": "s2",
+          "action": "columns.rename",
+          "version": 1,
+          "params": {
+            "columns": [
+              {
+                "column": "Bestellnr",
+                "new_name": "OrderNo"
+              },
+              {
+                "column": "Kundennr",
+                "new_name": "CustomerNo"
+              },
+              {
+                "column": "Datum",
+                "new_name": "Date"
+              },
+              {
+                "column": "Netto",
+                "new_name": "Net"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s3",
+          "action": "rows.filter",
+          "version": 1,
+          "params": {
+            "conditions": [
+              {
+                "column": "Net",
+                "operator": ">",
+                "value": "500"
+              }
+            ]
+          }
+        },
+        {
+          "id": "s4",
+          "action": "excel.export",
+          "version": 2,
+          "params": {
+            "file": "output/excel-check.xlsx",
+            "sheet": "Data",
+            "existing": "sheet",
+            "table_style": "Table Style Medium 2"
+          }
+        }
+      ]
+    }
+  ]
+}
