@@ -33,24 +33,45 @@ def main(argv: list[str] | None = None) -> int:
     theme.apply(app)
     app.setWindowIcon(theme.app_icon())
 
+    # tools\build.py: the built app starts, opens a project and calculates, and nobody is there to
+    # click a message away. Exit code 3: no result or plugin errors, 4: an unexpected error.
+    check = bool(os.environ.get("TAFL_STARTUP_CHECK"))
     registry = Registry.default()
     for name, error in registry.errors:
         log.warning("Plugin %s failed to load: %s", name, error)
     session = Session(registry)
     window = MainWindow(session, log_file)
-    sys.excepthook = _excepthook(window)
+    hook = _excepthook(window, dialogs=not check)
+    sys.excepthook = hook
+    if check:  # an error in a background task (e.g. while calculating) as well: logged and counted
+
+        def background_error(text: str) -> None:
+            log.error("Unexpected error in a background task:\n%s", text)
+            hook.errors += 1
+
+        session.error.disconnect(window._show_error)
+        session.error.connect(background_error)
     window.show()
     if len(argv) > 1:
-        window.open_path(argv[1])
+        try:
+            if check:
+                session.open_project(argv[1])  # an error goes to the log instead of a message box
+            else:
+                window.open_path(argv[1])
+        except Exception:
+            hook(*sys.exc_info())
     if registry.errors:
         window.statusBar().showMessage(f"{len(registry.errors)} plugin problem(s): see Help → Plugins", 15000)
-    if os.environ.get("TAFL_STARTUP_CHECK"):  # tools\build.py: the built app starts, opens a project and calculates
+    if check:
 
         def finish() -> None:
             if session.busy or session._timer.isActive():
                 QTimer.singleShot(100, finish)
                 return
-            app.exit(0 if session.result is not None and session.result.ok and not registry.errors else 3)
+            if hook.errors:
+                app.exit(4)
+            else:
+                app.exit(0 if session.result is not None and session.result.ok and not registry.errors else 3)
 
         QTimer.singleShot(0, finish)
     return app.exec()
@@ -71,22 +92,24 @@ def _setup_logging() -> Path | None:
     return folder / f"{COMMAND}.log"
 
 
-def _excepthook(window: QWidget):
+def _excepthook(window: QWidget, dialogs: bool = True):
     """Unexpected errors go to the log file and a dialog instead of disappearing (no console).
 
     One dialog at a time, and an error from the same place only once: an error while drawing
     would otherwise come back with every repaint, dialog after dialog. The log gets them all.
+    ``hook.errors`` counts them; without ``dialogs`` they only go to the log.
     """
     seen: set[tuple[str, str, int | None]] = set()
     showing = False
 
     def hook(kind, value, tb) -> None:
         nonlocal showing
+        hook.errors += 1
         text = "".join(traceback.format_exception(kind, value, tb))
         log.error("Unexpected error:\n%s", text)
         frames = traceback.extract_tb(tb)
         place = (kind.__name__, frames[-1].filename, frames[-1].lineno) if frames else (kind.__name__, "", None)
-        if showing or place in seen:
+        if not dialogs or showing or place in seen:
             return
         seen.add(place)
         showing = True
@@ -100,6 +123,7 @@ def _excepthook(window: QWidget):
         finally:
             showing = False
 
+    hook.errors = 0
     return hook
 
 

@@ -688,8 +688,9 @@ class Session(QObject):
             for step in table.steps:
                 action = self.registry.actions.get(step.action)
                 for param in action.params if action else ():
-                    if param.kind == "connection" and step.params.get(param.key) in renames:
-                        step.params[param.key] = renames[step.params[param.key]]
+                    value = step.params.get(param.key)
+                    if param.kind == "connection" and isinstance(value, str) and value in renames:
+                        step.params[param.key] = renames[value]
         self._edited(structure=True)
 
     def set_parameters(self, new: list[Parameter], renames: dict[str, str] | None = None) -> None:

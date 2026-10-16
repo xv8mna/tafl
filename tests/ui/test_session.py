@@ -134,6 +134,9 @@ def test_renaming_a_connection_updates_its_steps(session, registry, tmp_path):
     session.open_project(tmp_path / "x.tafl")
     session.set_connections([Connection("main", "sqlite", {"file": "data.db"})], {"db": "main"})
     assert session.find_step(step.id)[1].params["connection"] == "main"
+    session.find_step(step.id)[1].params["connection"] = ["main"]  # a file written by hand
+    session.set_connections([Connection("db", "sqlite", {"file": "data.db"})], {"main": "db"})
+    assert session.find_step(step.id)[1].params["connection"] == ["main"] and session.dirty
 
 
 def test_the_input_of_a_step_waits_for_new_results(qtbot, settle, session, demo):

@@ -7,7 +7,7 @@ Windows download is built from. Run it after changing the dependencies in pyproj
 
 requirements.lock has what Tafl needs to run; requirements-dev.lock adds the tools for the tests,
 requirements-build.lock the tools for the Windows download (tools/build.py).
-All of them work for every Python version Tafl supports (3.12 and newer).
+All of them work for every Python version Tafl supports (3.12 to 3.14).
 """
 
 from __future__ import annotations

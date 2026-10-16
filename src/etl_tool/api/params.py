@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import difflib
+import json
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass
 from typing import Any, ClassVar
@@ -45,7 +46,7 @@ class ValidationContext:
         if source == "input":
             return self.columns
         table_id = params.get(source)
-        return self.table_columns(table_id) if table_id else None
+        return self.table_columns(table_id) if table_id and isinstance(table_id, str) else None
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class Param:
     visible_if: Mapping[str, Any] | None = None
 
     kind: ClassVar[str] = "param"
+    expected: ClassVar[str] = ""  # what a value must be, for the message when it isn't (see accepts)
 
     def __post_init__(self) -> None:
         if not self.label:
@@ -76,11 +78,19 @@ class Param:
         """Turn a stored value into the form the action receives."""
         return self.initial() if value is None else value
 
+    def accepts(self, value: Any) -> bool:
+        """Whether a normalized value is of the right kind, e.g. a text and not a number. A value
+        of the wrong kind (from a project file written by hand) stays as it is, and ``check``
+        reports it."""
+        return True
+
     def is_empty(self, value: Any) -> bool:
         return value is None or value == "" or value == []
 
     def check(self, value: Any, vc: ValidationContext, params: Mapping[str, Any]) -> list[str]:
         """Problems with ``value``; ``params`` are all values of the step (for cross-references)."""
+        if not self.accepts(value):
+            return [f"{self.label}: {_show(value)} is not {self.expected}"]
         if self.required and self.is_empty(value):
             return [f"{self.label}: required"]
         return []
@@ -131,7 +141,7 @@ class Int(Param):
             return self.initial()
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):  # OverflowError: an infinite number
             return value  # check() reports it
 
     def check(self, value: Any, vc: ValidationContext, params: Mapping[str, Any]) -> list[str]:
@@ -227,6 +237,7 @@ class Columns(Param):
     default: Any = ()
     source: str = "input"
     kind: ClassVar[str] = "columns"
+    expected: ClassVar[str] = "a list of columns"
 
     def initial(self) -> Any:
         return list(self.default or ())
@@ -236,7 +247,10 @@ class Columns(Param):
             return self.initial()
         if isinstance(value, str):
             return [value] if value else []
-        return [str(v) for v in value]
+        return _texts(value)
+
+    def accepts(self, value: Any) -> bool:
+        return _is_texts(value)
 
     def check(self, value: Any, vc: ValidationContext, params: Mapping[str, Any]) -> list[str]:
         if problems := super().check(value, vc, params):
@@ -260,6 +274,10 @@ class File(Param):
     mode: str = "open"
     filter: str = "All files (*.*)"
     kind: ClassVar[str] = "file"
+    expected: ClassVar[str] = "a file name"
+
+    def accepts(self, value: Any) -> bool:
+        return isinstance(value, str)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -267,6 +285,10 @@ class Folder(Param):
     default: Any = ""
     required: bool = True
     kind: ClassVar[str] = "folder"
+    expected: ClassVar[str] = "a folder name"
+
+    def accepts(self, value: Any) -> bool:
+        return isinstance(value, str)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -276,6 +298,10 @@ class TableRef(Param):
     default: Any = ""
     required: bool = True
     kind: ClassVar[str] = "table"
+    expected: ClassVar[str] = "a table"
+
+    def accepts(self, value: Any) -> bool:
+        return isinstance(value, str)
 
     def check(self, value: Any, vc: ValidationContext, params: Mapping[str, Any]) -> list[str]:
         if problems := super().check(value, vc, params):
@@ -285,7 +311,7 @@ class TableRef(Param):
         return []
 
     def table_refs(self, value: Any) -> list[str]:
-        return [value] if value else []
+        return [value] if value and self.accepts(value) else []
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -295,12 +321,16 @@ class TableRefs(Param):
     default: Any = ()
     required: bool = True
     kind: ClassVar[str] = "tables"
+    expected: ClassVar[str] = "a list of tables"
 
     def initial(self) -> Any:
         return list(self.default or ())
 
     def normalize(self, value: Any) -> Any:
-        return self.initial() if value is None else [str(v) for v in value]
+        return self.initial() if value is None else _texts(value)
+
+    def accepts(self, value: Any) -> bool:
+        return _is_texts(value)
 
     def check(self, value: Any, vc: ValidationContext, params: Mapping[str, Any]) -> list[str]:
         if problems := super().check(value, vc, params):
@@ -310,7 +340,7 @@ class TableRefs(Param):
         return [f"{self.label}: table '{v}' does not exist" for v in value if v not in vc.tables]
 
     def table_refs(self, value: Any) -> list[str]:
-        return [v for v in value if v]
+        return [v for v in value if v] if self.accepts(value) else []
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -321,6 +351,10 @@ class ConnectionRef(Param):
     required: bool = True
     types: tuple[str, ...] = ()  # allowed connector ids; empty = any
     kind: ClassVar[str] = "connection"
+    expected: ClassVar[str] = "a connection"
+
+    def accepts(self, value: Any) -> bool:
+        return isinstance(value, str)
 
     def check(self, value: Any, vc: ValidationContext, params: Mapping[str, Any]) -> list[str]:
         if problems := super().check(value, vc, params):
@@ -339,6 +373,7 @@ class List(Param):
     default: Any = ()
     min_items: int = 0
     kind: ClassVar[str] = "list"
+    expected: ClassVar[str] = "a list"
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -353,9 +388,16 @@ class List(Param):
     def normalize(self, value: Any) -> Any:
         if value is None:
             return self.initial()
+        if not isinstance(value, (list, tuple)):
+            return value
         return [self.new_row(row if isinstance(row, Mapping) else {}) for row in value]
 
+    def accepts(self, value: Any) -> bool:
+        return isinstance(value, list)
+
     def check(self, value: Any, vc: ValidationContext, params: Mapping[str, Any]) -> list[str]:
+        if not self.accepts(value):
+            return super().check(value, vc, params)  # says what is wrong with it
         if len(value) < self.min_items:
             return [f"{self.label}: add at least {self.min_items} row{'s' if self.min_items > 1 else ''}"]
         problems = []
@@ -368,7 +410,7 @@ class List(Param):
 
     def table_refs(self, value: Any) -> list[str]:
         refs = []
-        for row in value:
+        for row in value if self.accepts(value) else ():
             for f in self.fields:
                 refs += f.table_refs(row.get(f.key))
         return refs
@@ -413,6 +455,23 @@ def table_refs(spec: Sequence[Param], params: Mapping[str, Any]) -> list[str]:
         if is_visible(param, params):
             refs += param.table_refs(params.get(param.key))
     return list(dict.fromkeys(refs))
+
+
+def _texts(value: Any) -> Any:
+    """A stored list of names as texts; anything else stays as it is (check reports it)."""
+    if isinstance(value, (list, tuple)) and all(isinstance(v, (str, int, float)) for v in value):
+        return [str(v) for v in value]
+    return value
+
+
+def _is_texts(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
+def _show(value: Any) -> str:
+    """A stored value as the project file writes it, shortened."""
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    return text if len(text) <= 40 else text[:39] + "…"
 
 
 def _check_range(label: str, value: float, low: float | None, high: float | None) -> list[str]:

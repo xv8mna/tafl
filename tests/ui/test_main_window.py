@@ -1,3 +1,9 @@
+import sys
+
+from PySide6.QtCore import qVersion
+from PySide6.QtWidgets import QMessageBox
+
+
 def test_window_shows_the_demo(window, settle, session, demo):
     assert window.open_path(demo)
     settle(session)
@@ -45,3 +51,14 @@ def test_typing_is_not_overwritten_but_undo_updates_the_form(window, settle, ses
     session.undo()
     formula = window.settings_panel.form.editor("columns")._rows[0]["formula"]
     assert formula.value() == "ROUND([Net] * 1.19, 2)"
+
+
+def test_about_names_the_licenses_of_qt_and_pyside(window, monkeypatch, tmp_path):
+    shown = []
+    monkeypatch.setattr(QMessageBox, "about", lambda parent, title, text: shown.append(text))
+    window.show_about()
+    assert f"Qt {qVersion()} and PySide6 are under the LGPL-3.0.<br>" in shown[0]
+    monkeypatch.setattr(sys, "frozen", True, raising=False)  # the download
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "tafl-app.exe"))
+    window.show_about()
+    assert f"LGPL-3.0; the licenses of all parts are in {tmp_path / 'licenses'}.<br>" in shown[1]

@@ -308,6 +308,8 @@ class Engine:
         shown = Params(params)
         for param in action.params:
             value = params.get(param.key)
+            if not param.accepts(value):  # e.g. a number from a project file written by hand
+                continue
             if param.kind == "table" and value:
                 shown[param.key] = self.table_name(value)
             elif param.kind == "tables" and value:

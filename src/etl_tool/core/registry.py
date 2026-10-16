@@ -1,10 +1,9 @@
 """Finding and loading plugins.
 
 Built-in plugins live in ``etl_tool.plugins``. More plugins are loaded from the folders listed in
-the ``TAFL_PLUGINS`` environment variable and from ``%APPDATA%\\Tafl\\plugins`` (the variable and
-folder of the app's earlier name are read too): every ``*.py`` file, and every folder with an
-``__init__.py``. A plugin that fails to load is recorded with its error; everything else keeps
-working.
+the ``TAFL_PLUGINS`` environment variable and from ``%APPDATA%\\Tafl\\plugins``: every ``*.py``
+file, and every folder with an ``__init__.py``. A plugin that fails to load is recorded with its
+error; everything else keeps working.
 """
 
 from __future__ import annotations

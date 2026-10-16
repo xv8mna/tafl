@@ -10,7 +10,8 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "xv8mna" }]
-requires-python = ">=3.12"
+# Not 3.15 yet: DuckDB and pyodbc have no wheels for it, and building them from source fails.
+requires-python = ">=3.12,<3.15"
 keywords = ["etl", "data-preparation", "polars", "duckdb", "pyside6", "excel", "csv", "sql-server"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -36,11 +37,14 @@ dependencies = [
     "pyodbc>=5.3,<6",
     "PySide6-Essentials>=6.12,<7",
     "send2trash>=2.0,<3",
+    "tzdata; sys_platform == 'win32'",  # time zones: Python on Windows reads them from it
 ]
 
+# setuptools is the build backend: with it in the lock files, Tafl installs from them alone
+# (pip install --no-deps --no-build-isolation).
 [project.optional-dependencies]
-dev = ["pytest>=9,<10", "pytest-qt>=4.4,<5", "openpyxl>=3.1,<4", "ruff==0.17.0"]
-build = ["pyinstaller>=6.22,<7"]  # the Windows download (tools/build.py)
+dev = ["pytest>=9,<10", "pytest-qt>=4.4,<5", "openpyxl>=3.1,<4", "ruff==0.17.0", "setuptools>=77"]
+build = ["pyinstaller>=6.22,<7", "setuptools>=77"]  # the Windows download (tools/build.py)
 
 [project.urls]
 Homepage = "https://github.com/xv8mna/tafl"

@@ -95,6 +95,15 @@ from other people" in the README.
 
 ### Other
 
+- A damaged project file shows a message that says what is wrong. Before, it gave an unexpected
+  error, or closed the app when the app was started with it.
+- A step setting of the wrong kind in a project file (e.g. a number where a table belongs) is an
+  error of that step, with a message. Before, it gave unexpected errors.
+- Project files that an editor saved with a byte order mark (BOM) open.
+- Date-times with a time zone show in the grid and the filter pane on Windows: the time zones
+  come from the tzdata package now.
+- Tafl runs on Python 3.12 to 3.14. 3.15 doesn't work yet: DuckDB and pyodbc have no builds for
+  it.
 - The libraries' versions are pinned in `requirements.lock`; a weekly test runs the newest ones.
 - The support for files and settings of an earlier name of the app was removed.
 

@@ -313,10 +313,20 @@ class Project:
     def load(cls, path: str | Path) -> Project:
         file = Path(path).resolve()
         try:
-            data = json.loads(file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            raise ProjectError(f"The project file is damaged: {e}") from e
-        return cls.from_dict(data, path=file)
+            text = file.read_text(encoding="utf-8-sig")  # also with the BOM some editors write
+        except UnicodeDecodeError as e:
+            raise ProjectError(f"The project file {file.name} can't be read: it is not UTF-8 text") from e
+        try:
+            data = json.loads(text)
+        except (ValueError, RecursionError) as e:  # ValueError includes json.JSONDecodeError
+            raise ProjectError(f"The project file {file.name} is damaged: {e}") from e
+        try:
+            return cls.from_dict(data, path=file)
+        except ProjectError:
+            raise
+        except Exception as e:  # valid JSON, but parts are missing or of the wrong kind
+            problem = _content_problem(data) or f"{type(e).__name__}: {e}"
+            raise ProjectError(f"The project file {file.name} is damaged: {problem}") from e
 
     def _repair_ids(self) -> None:
         """Give tables/steps/groups that lack an id (or share one) a fresh one; forget group
@@ -338,3 +348,63 @@ class Project:
             for step in table.steps:
                 if not step.id:
                     step.id = self._new_id("s")
+
+
+def _content_problem(data: Any) -> str | None:
+    """What makes the content of a project file unreadable, in words (None if nothing is found).
+    It checks what ``Project.from_dict`` needs, for the message when that failed."""
+    if not isinstance(data, dict):
+        return f"it holds {_show(data)} instead of a project"
+    problems: list[str] = []
+    if not _converts(int, data.get("format_version", 1)):
+        problems.append(f'"format_version" is {_show(data["format_version"])} instead of a whole number')
+    for table, where in _parts(data, "tables", "table", ("name",), "", problems):
+        if not _converts(iter, table.get("filters") or []):
+            problems.append(f'the "filters" of {where} are {_show(table["filters"])} instead of a list')
+        for step, at in _parts(table, "steps", "step", ("action",), f" of {where}", problems):
+            if not _converts(dict, step.get("params") or {}):
+                problems.append(f'the "params" of {at} are {_show(step["params"])} instead of an object')
+            if not _converts(int, step.get("version", 1)):
+                problems.append(f'the "version" of {at} is {_show(step["version"])} instead of a whole number')
+    for connection, where in _parts(data, "connections", "connection", ("name", "type"), "", problems):
+        if not _converts(dict, connection.get("settings") or {}):
+            problems.append(f'the "settings" of {where} are {_show(connection["settings"])} instead of an object')
+    _parts(data, "groups", "group", (), "", problems)
+    _parts(data, "parameters", "parameter", ("name",), "", problems)
+    return problems[0] if problems else None
+
+
+def _parts(
+    data: dict[str, Any], key: str, kind: str, required: tuple[str, ...], owner: str, problems: list[str]
+) -> list[tuple[dict[str, Any], str]]:
+    """The usable objects of a list in a project file, each with words for where it is (e.g.
+    'table "Orders"'). What is wrong with the list or the others goes to ``problems``."""
+    items = data.get(key) or []
+    if not isinstance(items, list):
+        problems.append(f'"{key}"{owner} is {_show(items)} instead of a list')
+        return []
+    usable = []
+    for number, item in enumerate(items, start=1):
+        name = item.get("name") if isinstance(item, dict) else None
+        where = (f'{kind} "{name}"' if isinstance(name, str) and name else f"{kind} {number}") + owner
+        if not isinstance(item, dict):
+            problems.append(f"{where} is {_show(item)} instead of an object")
+        elif missing := [k for k in required if k not in item]:
+            problems.append(f'{where} has no "{missing[0]}"')
+        else:
+            usable.append((item, where))
+    return usable
+
+
+def _converts(convert: Any, value: Any) -> bool:
+    try:
+        convert(value)
+    except Exception:
+        return False
+    return True
+
+
+def _show(value: Any) -> str:
+    """A value of a project file as it is written there, shortened."""
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= 40 else text[:39] + "…"
