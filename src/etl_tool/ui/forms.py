@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 from etl_tool.api.dtypes import type_label
 from etl_tool.api.expressions import is_panic
 from etl_tool.api.params import List, Param, is_visible
-from etl_tool.core.completion import Suggestion, column_suggestions, warm_up
+from etl_tool.core.completion import Suggestion, column_suggestions, parameter_suggestions, warm_up
 from etl_tool.core.formula_preview import NO_DATA, Preview, preview
 
 from . import formula_window, functions_window, theme
@@ -68,6 +68,7 @@ class FormContext:
     connections: list[str] = field(default_factory=list)
     project_dir: Path | None = None
     edit_connections: Callable[[], None] | None = None
+    parameters: Callable[[], dict[str, Any]] = dict  # name -> value of the project's parameters
 
 
 class Editor(QWidget):
@@ -254,7 +255,7 @@ class ExpressionEditor(Editor):
         self._insert.setToolTip("Insert a column name: the list opens (as when typing [)")
         self._insert.clicked.connect(self._open_columns)
         self._highlighter = FormulaHighlighter(self._edit.document())
-        self._completer = FormulaCompleter(self._edit, self._column_suggestions)
+        self._completer = FormulaCompleter(self._edit, self._column_suggestions, lambda: parameter_suggestions(self.ctx.parameters()))
         self._mistake: list[QTextEdit.ExtraSelection] = []  # the wavy underline
         self._edit.cursorPositionChanged.connect(self._update_selections)
         self._edit.focused.connect(self._update_selections)
@@ -343,6 +344,7 @@ class ExpressionEditor(Editor):
             condition=self._condition,
             name=name,
             creates=self.creates,
+            parameters=lambda: self.ctx.parameters(),
         )
         window.applied.connect(self.apply_text)
         window.finished.connect(self._window_closed)
@@ -395,7 +397,9 @@ class ExpressionEditor(Editor):
         frame = self.ctx.input_frame()
         no_data = (self.ctx.input_problem() or NO_DATA) if frame is None else ""
         earlier, name, condition, creates = list(self.earlier()), self.creates_name(), self._condition, self.creates
-        rest = (text, tuple(earlier), name, no_data)
+        parameters = self.ctx.parameters()
+        self._highlighter.set_parameters(parameters)
+        rest = (text, tuple(earlier), name, no_data, tuple(parameters.items()))
         if self._checked_input is not None and self._checked_input[1] == rest:
             ref = self._checked_input[0]
             if (frame is None and ref is None) or (frame is not None and ref is not None and ref() is frame):
@@ -403,8 +407,9 @@ class ExpressionEditor(Editor):
         self._checked_input = (weakref.ref(frame) if frame is not None else None, rest)
         self._check.start(  # also for an empty formula: the columns it can use come with the result
             lambda cancel: preview(
-                frame, text, earlier, condition=condition, name=name, creates=creates, cancel=cancel, no_data=no_data
-            )
+                frame, text, earlier, condition=condition, name=name, creates=creates, cancel=cancel, no_data=no_data,
+                parameters=parameters,
+            )  # fmt: skip
         )
 
     @property

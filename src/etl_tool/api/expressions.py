@@ -216,6 +216,10 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     ``condition``, the result must be true or false."""
     if not formula or all(t.kind in ("space", "comment") for t in tokenize(formula)):
         raise ActionError("The formula is empty")
+    from .parameters import left_in_formula
+
+    if (name := left_in_formula(formula)) is not None:
+        raise ActionError(f"Formula error: there is no parameter {{{name}}} (Project → Parameters lists them)\nFormula: {formula}")
     body = translate(formula)
     _check_calls(formula)
     _check_names(formula, df.columns)

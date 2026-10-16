@@ -5,7 +5,7 @@ import sqlite3
 import polars as pl
 import pytest
 
-from etl_tool.core import Engine, Project
+from etl_tool.core import Engine, Parameter, Project
 
 
 @pytest.fixture
@@ -103,3 +103,37 @@ def test_sqlserver(registry, tmp_path):
     assert Engine(project, registry).evaluate(table.id).df["ten"].to_list() == [10, 20]
     project.tables[0].steps[0].params["query"] = "SELECT 1 AS a INTO #u; SELECT CAST('x' AS int) AS b"
     assert "Conversion failed" in Engine(project, registry).evaluate(table.id).first_error  # not an empty table
+
+
+def test_sqlserver_writes_parameters_as_its_own_literals(registry):
+    literal = registry.connectors["sqlserver"].literal
+    assert literal(dt.date(2026, 10, 15)) == "CAST('2026-10-15' AS date)"  # whatever the server's language
+    assert literal(dt.datetime(2026, 10, 15, 8, 30)) == "CAST('2026-10-15T08:30:00.000000' AS datetime2)"
+    assert literal("Weiß O'Brien") == "N'Weiß O''Brien'"
+    assert [literal(v) for v in (5, 2.5, True, None)] == ["5", "2.5", "1", "NULL"]
+    assert registry.connectors["sqlite"].literal(dt.date(2026, 10, 15)) == "'2026-10-15'"
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_reads_parameters_back(registry):
+    project = Project(name="SqlServer", parameters=[
+        Parameter("Day", "2026-10-15"),
+        Parameter("Stamp", "2026-10-15 08:30:15.123456"),
+        Parameter("Name", "Weiß O'Brien ✓"),
+        Parameter("Count", "3000000000"),
+        Parameter("Rate", "2.5"),
+    ])  # fmt: skip
+    project.add_connection("server", "sqlserver", server=os.environ["TAFL_TEST_SQLSERVER"], database="tempdb")
+    table = project.add_table("Values")
+    query = "SELECT {Day} AS d, {Stamp} AS s, {Name} AS n, {Count} AS c, {Rate} AS r, '{Name}' AS t"
+    project.add_step(table, "db.import", {"connection": "server", "mode": "query", "query": query})
+    result = Engine(project, registry).evaluate(table.id)
+    assert result.ok, result.first_error
+    assert result.df.to_dicts() == [{
+        "d": dt.date(2026, 10, 15),
+        "s": dt.datetime(2026, 10, 15, 8, 30, 15, 123456),
+        "n": "Weiß O'Brien ✓",
+        "c": 3_000_000_000,
+        "r": 2.5,
+        "t": "Weiß O'Brien ?",  # inside '...' the text is written as it is: not an N'' text
+    }]  # fmt: skip

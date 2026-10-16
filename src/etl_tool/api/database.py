@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from .errors import ActionError
+from .parameters import sql_literal
 from .params import Param, Params, resolve
 
 if TYPE_CHECKING:
@@ -60,6 +61,11 @@ class Connector:
     def error_message(self, error: Exception) -> str:
         """Readable text for a driver error."""
         return str(error)
+
+    def literal(self, value: Any) -> str:
+        """``value`` written into SQL (for parameters: ``WHERE Day = {Day}``). The default suits
+        most databases: texts in single quotes, dates as '2026-10-01'."""
+        return sql_literal(value)
 
     def missing_table(self, error: Exception, table: str) -> bool:
         """True if ``error``, from reading ``table``, means that the table doesn't exist, rather

@@ -15,7 +15,8 @@ import polars as pl
 
 from etl_tool import APP_NAME, COMMAND, __version__
 from etl_tool.api import Mode
-from etl_tool.core import Engine, Project, ProjectError, Registry, Status, StepResult
+from etl_tool.api.parameters import Failed, as_text
+from etl_tool.core import Engine, Project, ProjectError, Registry, Status, StepResult, parameters
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,12 +29,16 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("project")
     run.add_argument("--table", action="append", metavar="NAME", help="only this table (and the tables it uses)")
     run.add_argument("--preview", action="store_true", help="calculate only; skip exports and commands")
+    run.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", dest="values",
+                     help="a value for the project's parameter NAME (a fixed value, or =formula)")  # fmt: skip
 
     show = commands.add_parser("show", help="show the steps of a table and its data")
     show.add_argument("project")
     show.add_argument("--table", required=True, metavar="NAME")
     show.add_argument("--step", type=int, metavar="N", help="show the data after step N (default: the last step)")
     show.add_argument("--rows", type=int, default=20, metavar="N", help="rows to show (default 20)")
+    show.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", dest="values",
+                      help="a value for the project's parameter NAME (a fixed value, or =formula)")  # fmt: skip
 
     commands.add_parser("plugins", help="list plugins, their actions and load errors")
 
@@ -46,12 +51,38 @@ def main(argv: list[str] | None = None) -> int:
         engine = Engine(Project.load(args.project), registry)
         for name, error in registry.errors:
             console.warn(f"Plugin '{name}' failed to load: {error.splitlines()[-1]}")
+        if (code := _parameters(engine, args.values, console)) is not None:
+            return code
         if args.command == "run":
             return _run(engine, args, console)
         return _show(engine, args, console)
     except (ProjectError, OSError) as e:
         console.error(str(e))
         return 2
+
+
+def _parameters(engine: Engine, given: list[str], console: Console) -> int | None:
+    """Takes the --set values; lists the parameters with the values the run uses. 2 if a value
+    is given for no parameter, or a name can't be used."""
+    overrides = {}
+    for item in given:
+        name, sign, value = item.partition("=")
+        if not sign or not name.strip():
+            console.error(f"--set needs NAME=VALUE, not '{item}'")
+            return 2
+        overrides[name.strip()] = value
+    found = parameters.problems(engine.project, overrides)
+    for problem in found:
+        console.error(problem)
+    if found:
+        return 2
+    engine.parameter_overrides = overrides
+    if engine.project.parameters:
+        console.print("Parameters")
+        for name, value in parameters.values(engine.project, overrides).items():
+            shown = f"error: {value.message}" if isinstance(value, Failed) else as_text(value)
+            console.print(f"  {{{name}}} = {shown}")
+    return None
 
 
 def _run(engine: Engine, args: argparse.Namespace, console: Console) -> int:

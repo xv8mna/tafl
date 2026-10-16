@@ -70,8 +70,10 @@ app). On the command line:
 - `run` calculates all tables and executes the exports and commands (the demo writes to
   `examples\output`).
   With `--preview` it only calculates and writes nothing; `--table NAME` runs only that table and
-  the tables it uses (with their exports and commands). It exits with 0 when everything worked,
-  1 when a step failed and 2 when the project can't be opened or has no such table.
+  the tables it uses (with their exports and commands); `--set Day=2026-10-01` gives a
+  [parameter](#parameters) another value for this run. It exits with 0 when everything worked,
+  1 when a step failed and 2 when the project can't be opened or has no such table or
+  parameter.
 - `show` prints the steps of a table and the data after one step.
 - `plugins` lists all actions and shows plugins that failed to load.
 - `.venv\Scripts\python examples\make_examples.py` recreates the demo data and project.
@@ -304,6 +306,38 @@ A mistake shows a plain message that names the column of the step, e.g. *Formula
 column [Amont] not found (did you mean [Amount]?)*. SQL Server functions that DuckDB doesn't have
 (DATEADD, EOMONTH, CONVERT, …) get a hint about what to write instead. A formula can only use
 the data of its step: no files, network or database access.
+
+## Parameters
+
+A parameter is a value the whole project uses, such as the day a daily report is for. Define
+them with **Parameters** in the toolbar (or **Project → Parameters…**) and write `{Name}` in any
+setting: file names, texts, formulas, SQL, connection settings.
+
+| Name | Value | Gives |
+|---|---|---|
+| `Day` | `=TODAY() - 1` | yesterday, worked out each time the project is calculated |
+| `Month` | `=STRFTIME({Day}, '%Y-%m')` | `2026-10`: a formula can use the parameters above it |
+| `Folder` | `D:\Reports` | a fixed text |
+| `Limit` | `500` | a fixed number (also: dates `2026-10-01`, date-times `2026-10-01 08:30`) |
+
+How `{Name}` is filled in depends on where it is written:
+
+- **File names, folders, texts**: the value as text, e.g. `{Folder}\sales_{Month}.xlsx`.
+- **Formulas**: a value of its type, so `[Date] = {Day}` compares dates and `[Net] > {Limit}`
+  numbers. Inside quotes the text: `'Report ' || '{Month}'`.
+- **SQL**: a value written for that database, e.g. `WHERE OrderDate = {Day}` becomes
+  `WHERE OrderDate = CAST('2026-10-15' AS date)` on SQL Server. Quotes in a text need no care,
+  and a value can never change the SQL itself (so `{Name}` can't stand for a table name).
+  Inside '…' the text: `LIKE '%{Month}%'`.
+
+Only names of parameters are filled in: other braces, e.g. `\d{3}` in a pattern, stay as they
+are. In formulas, `{` lists the parameters with their values, and the line under the formula
+uses them. A parameter whose formula has an error stops the steps that use it. Renaming a
+parameter in the dialog renames it in all steps.
+
+For one run with other values: `tafl run daily.tafl --set Day=2026-10-01` (several `--set`
+for several parameters; a value can be a formula, `--set "Day==TODAY() - 7"`). The run lists the
+values it used.
 
 ## Formats
 

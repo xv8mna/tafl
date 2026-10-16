@@ -7,6 +7,7 @@ the panels to update and schedules a recalculation in the background.
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import os
 import re
 from collections.abc import Iterable
@@ -18,7 +19,20 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from etl_tool.api import Action, Mode
 from etl_tool.api.params import List, Param
-from etl_tool.core import Connection, Engine, Group, Project, Registry, Status, Step, StepResult, Table, TableResult
+from etl_tool.core import (
+    Connection,
+    Engine,
+    Group,
+    Parameter,
+    Project,
+    Registry,
+    Status,
+    Step,
+    StepResult,
+    Table,
+    TableResult,
+    parameters,
+)
 
 from .theme import GROUP_COLORS
 from .worker import Worker
@@ -66,6 +80,7 @@ class Session(QObject):
         self.overview = False  # True while the project map is shown: calculate every table
         self._undo: list[dict[str, Any]] = []
         self._redo: list[dict[str, Any]] = []
+        self._parameter_values: tuple[tuple, dict[str, Any]] | None = None  # (what they are from, values)
 
         self._worker = Worker(self)
         self._worker.finished.connect(self._on_results)
@@ -210,6 +225,14 @@ class Session(QObject):
     def table_columns(self, table_id: str) -> list[str] | None:
         result = self.results.get(table_id)
         return result.df.columns if result is not None and result.df is not None else None
+
+    def parameter_values(self) -> dict[str, Any]:
+        """Name -> value of the project's parameters, as the calculation uses them (a Failed for
+        a formula with an error), for the checks of formulas while typing."""
+        key = (tuple((p.name, p.value) for p in self.project.parameters), dt.date.today())
+        if self._parameter_values is None or self._parameter_values[0] != key:
+            self._parameter_values = (key, parameters.values(self.project))
+        return dict(self._parameter_values[1])
 
     def table_status(self, table_id: str) -> str:
         """The table's status: "ok", "error", "disabled" (turned off), "skipped" (uses a table
@@ -670,6 +693,20 @@ class Session(QObject):
                 for param in action.params if action else ():
                     if param.kind == "connection" and step.params.get(param.key) in renames:
                         step.params[param.key] = renames[step.params[param.key]]
+        self._edited(structure=True)
+
+    def set_parameters(self, new: list[Parameter], renames: dict[str, str] | None = None) -> None:
+        """Replace the project's parameters; ``renames`` (old name -> new name) also writes
+        ``{New}`` for ``{Old}`` in the settings of the steps."""
+        renames = {old: new_name for old, new_name in (renames or {}).items() if old != new_name}
+        if not renames and [p.to_dict() for p in self.project.parameters] == [p.to_dict() for p in new]:
+            return
+        self._checkpoint()
+        self.project.parameters = new
+        if renames:
+            for table in self.project.tables:
+                for step in table.steps:
+                    step.params = parameters.renamed(step.params, renames)
         self._edited(structure=True)
 
     # --- undo --------------------------------------------------------------------------------

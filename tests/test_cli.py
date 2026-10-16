@@ -6,6 +6,7 @@ import openpyxl
 import pytest
 
 from etl_tool.cli import main
+from etl_tool.core import Parameter, Project
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "make_examples.py"
 
@@ -78,3 +79,33 @@ def test_tables_that_are_off_are_skipped(demo, capsys):
     assert "skipped: uses “Customers”, which is turned off" in output
     assert "skipped: uses “Orders”, which is skipped" in output
     assert not (demo.parent / "output").exists()
+
+
+def test_parameters_and_set(tmp_path, capsys):
+    (tmp_path / "orders_2026-10-01.csv").write_text("Id\n1\n2\n", encoding="utf-8")
+    (tmp_path / "orders_2026-10-02.csv").write_text("Id\n1\n2\n3\n", encoding="utf-8")
+    project = Project(name="Daily", parameters=[Parameter("Day", "2026-10-01"), Parameter("Next", "={Day} + 1")])
+    table = project.add_table("Orders")
+    project.add_step(table, "csv.import", {"file": "orders_{Day}.csv"})
+    project.add_step(table, "csv.export", {"file": "out_{Next}.csv"})
+    path = project.save(tmp_path / "daily.tafl")
+
+    assert main(["run", str(path)]) == 0
+    output = capsys.readouterr().out
+    assert "Parameters\n  {Day} = 2026-10-01\n  {Next} = 2026-10-02\n" in output
+    assert (tmp_path / "out_2026-10-02.csv").read_text(encoding="utf-8-sig").splitlines() == ["Id", "1", "2"]
+
+    assert main(["run", str(path), "--set", "day=2026-10-02"]) == 0
+    assert "{Day} = 2026-10-02" in capsys.readouterr().out
+    assert (tmp_path / "out_2026-10-03.csv").read_text(encoding="utf-8-sig").splitlines() == ["Id", "1", "2", "3"]
+
+    assert main(["show", str(path), "--table", "Orders", "--set", "Day=2026-10-02", "--set", "Next==1 +"]) == 1
+    output = capsys.readouterr().out
+    assert "{Next} = error: the formula ends too early" in output
+    assert "The parameter {Next} has an error" in output  # the export uses it: an error even in a preview
+
+    assert main(["run", str(path), "--set", "Month=10"]) == 2
+    assert "The project has no parameter 'Month' (its parameters: Day, Next)" in capsys.readouterr().err
+    assert main(["run", str(path), "--set", "Day"]) == 2
+    assert "--set needs NAME=VALUE, not 'Day'" in capsys.readouterr().err
+    assert main(["run", str(path), "--set", "Day=2026-09-30"]) == 1  # no such file

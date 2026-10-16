@@ -3,7 +3,8 @@ it, and a preview of the result on the first rows of the data, updated while typ
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 import polars as pl
 from PySide6.QtCore import QByteArray, QSettings, Qt, QTimer, Signal
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from etl_tool.api.dtypes import type_label
-from etl_tool.core.completion import Suggestion, column_suggestions
+from etl_tool.core.completion import Suggestion, column_suggestions, parameter_suggestions
 from etl_tool.core.formula_preview import NO_DATA, Column, Preview, preview
 
 from . import theme
@@ -55,13 +56,14 @@ class FormulaWindow(QDialog):
         condition: bool = False,
         name: str = "",
         creates: bool = False,
+        parameters: Callable[[], Mapping[str, Any]] = dict,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.resize(1100, 700)
-        self._frame, self._no_data, self._earlier = frame, no_data, earlier
+        self._frame, self._no_data, self._earlier, self._parameters = frame, no_data, earlier, parameters
         self._condition, self._name, self._creates = condition, name, creates
         self._original = text
         self._shown_text = text  # the text of the last change (coloring changes nothing)
@@ -76,7 +78,7 @@ class FormulaWindow(QDialog):
         self.editor.textChanged.connect(self._text_changed)
         self.editor.setMinimumHeight(4 * self.editor.fontMetrics().lineSpacing())
         self._highlighter = FormulaHighlighter(self.editor.document())
-        self._completer = FormulaCompleter(self.editor, self._column_suggestions)
+        self._completer = FormulaCompleter(self.editor, self._column_suggestions, lambda: parameter_suggestions(parameters()))
         self.editor.cursorPositionChanged.connect(
             lambda: self.editor.setExtraSelections(bracket_selections(self.editor))
         )
@@ -172,10 +174,13 @@ class FormulaWindow(QDialog):
         no_data = (self._no_data() or NO_DATA) if frame is None else ""
         self._checked = (frame, no_data)
         condition, name, creates = self._condition, self._name, self._creates
+        parameters = dict(self._parameters())
+        self._highlighter.set_parameters(parameters)
         self._check.start(
             lambda cancel: preview(
-                frame, text, earlier, condition=condition, name=name, creates=creates, cancel=cancel, no_data=no_data
-            )
+                frame, text, earlier, condition=condition, name=name, creates=creates, cancel=cancel, no_data=no_data,
+                parameters=parameters,
+            )  # fmt: skip
         )
 
     def inputs_changed(self) -> None:

@@ -5,14 +5,16 @@ from __future__ import annotations
 import re
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Any
 
 import polars as pl
 
 from etl_tool.api import ActionError, Cancelled, expressions
 from etl_tool.api.dtypes import type_label
+from etl_tool.api.parameters import PLACE, fill_formula
 
 from .cancel import CancelEvent
 
@@ -79,14 +81,31 @@ def preview(
     rows: int = SAMPLE_ROWS,
     cancel: threading.Event | None = None,
     no_data: str = "",
+    parameters: Mapping[str, Any] | None = None,
 ) -> Preview:
     """Evaluate ``formula`` on the first ``rows`` rows of ``frame``. In Calculate columns
     (``creates``), ``earlier`` are the (name, formula) rows above and ``name`` is this row's
-    name: the rows above are added first, and the names are checked as the step does. Setting
+    name: the rows above are added first, and the names are checked as the step does. The
+    ``parameters`` (name -> value) are filled in first, as the calculation does. Setting
     ``cancel`` stops the work (Cancelled)."""
     if frame is None:
         _forget()
         return Preview(False, no_data or NO_DATA)
+    typed = formula
+    if parameters:
+        filled = []
+        for number, (new, text) in enumerate(earlier, 1):
+            try:
+                filled.append((new, fill_formula(text, parameters)))
+            except ActionError as e:  # a parameter with an error
+                columns = _prepare(frame, tuple(filled), rows, cancel).columns
+                return Preview(False, f"Row {number} ([{new.strip()}]) has an error: {e}", columns=columns)
+        earlier = filled
+        try:
+            formula = fill_formula(formula, parameters)
+        except ActionError as e:
+            columns = _prepare(frame, tuple(earlier), rows, cancel).columns
+            return Preview(False, str(e), columns=columns, **_locate(typed, str(e)))
     with _interrupted_by(cancel):
         sample = _prepare(frame, tuple(earlier), rows, cancel)
         problem = sample.problem or _same_name(earlier, name)
@@ -104,7 +123,7 @@ def preview(
             if problem:
                 return Preview(False, problem, columns=sample.columns)
             message = _message(str(e))
-            return Preview(False, message, columns=sample.columns, **_locate(formula, message))
+            return Preview(False, message, columns=sample.columns, **_locate(typed, message))
     data = sample.data
     if used:
         base = data.select(used).head(SHOWN_ROWS)
@@ -215,6 +234,10 @@ def _remember(sample: _Sample) -> None:
 def _locate(formula: str, message: str) -> dict:
     """Where the mistake of an error message is in the formula (``mistake``), and what to write
     there instead (``fix``), if the message tells."""
+    if parameter := re.match(r"(?:There is no parameter|The parameter) \{(.+?)\}", message):
+        name = parameter.group(1).strip().lower()
+        place = next((m for m in PLACE.finditer(formula) if m[1].strip().lower() == name), None)
+        return {"mistake": place.span(), "fix": None} if place else {}
     tokens = expressions.tokenize(formula)
     suggestion = re.search(r"\(did you mean (.+)\?\)$", message)
     fix = suggestion.group(1) if suggestion else None

@@ -35,6 +35,7 @@ from .checks import checks
 from .connections_dialog import ConnectionsDialog
 from .data_panel import DataPanel
 from .map import MapView
+from .parameters_dialog import ParametersDialog
 from .run_panel import RunPanel
 from .session import Session
 from .settings_panel import SettingsPanel
@@ -137,6 +138,9 @@ class MainWindow(QMainWindow):
             "Read files and databases again (Ctrl+R)",
         )
         self.connections_action = self._action("Connections…", self.edit_connections, tip="Database connections of this project")
+        self.parameters_action = self._action(
+            "Parameters…", self.edit_parameters, tip="Values that settings use as {Name}, e.g. a date in file names and SQL"
+        )
         self.functions_action = self._action(
             "Formula functions", lambda: functions_window.show_functions(self), QKeySequence("F1"),
             "What the functions in formulas do and how they are written (F1)",
@@ -181,6 +185,7 @@ class MainWindow(QMainWindow):
         project.addSeparator()
         project.addAction(self.reload_action)
         project.addAction(self.connections_action)
+        project.addAction(self.parameters_action)
         view = bar.addMenu("&View")
         view.addAction(self.tables_view_action)
         view.addAction(self.map_view_action)
@@ -212,6 +217,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.reload_action)
         toolbar.addSeparator()
         toolbar.addAction(self.connections_action)
+        toolbar.addAction(self.parameters_action)
 
     def _update_actions(self) -> None:
         self.undo_action.setEnabled(self.session.can_undo)
@@ -394,6 +400,9 @@ class MainWindow(QMainWindow):
 
     def edit_connections(self) -> None:
         ConnectionsDialog(self.session, self).exec()
+
+    def edit_parameters(self) -> None:
+        ParametersDialog(self.session, self).exec()
 
     # --- dialogs -----------------------------------------------------------------------------
 

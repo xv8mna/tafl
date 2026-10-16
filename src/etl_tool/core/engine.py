@@ -19,15 +19,30 @@ import time
 import traceback
 import uuid
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 import polars as pl
 
-from etl_tool.api import Action, ActionError, Cancelled, Context, Database, Kind, Mode, Params, ValidationContext
+from etl_tool.api import (
+    Action,
+    ActionError,
+    Cancelled,
+    Connector,
+    Context,
+    Database,
+    Kind,
+    Mode,
+    P,
+    Params,
+    ValidationContext,
+)
 from etl_tool.api.expressions import is_panic
+from etl_tool.api.parameters import Failed, sql_literal
 
+from . import parameters
 from .project import Project, Step, Table
 from .registry import Registry
 
@@ -145,6 +160,8 @@ class Engine:
         self.cache = cache if cache is not None else ResultCache()
         # Part of every source's cache key: raising it makes all sources read their data again.
         self.reload_token = 0
+        # Values given for the project's parameters, e.g. by `tafl run --set Day=2026-10-01`
+        self.parameter_overrides: dict[str, str] = {}
 
     def reload(self) -> None:
         """Re-read all sources on the next calculation (databases can't tell us they changed)."""
@@ -290,6 +307,8 @@ class _Evaluation:
         self.run_id = uuid.uuid4().hex if mode == Mode.RUN else ""
         self.results: dict[str, TableResult] = {}
         self.stack: list[str] = []
+        # Worked out once per calculation, so that =TODAY() means the same day for every step
+        self.parameters = parameters.values(self.project, engine.parameter_overrides)
 
     def table(self, table_id: str, until: int | None = None) -> TableResult:
         full = until is None
@@ -360,7 +379,9 @@ class _Evaluation:
         if index > 0 and action.kind == Kind.SOURCE:
             return _error(step, f"'{action.name}' can only be the first step of a table")
         try:
-            params = action.resolve(action.upgrade(step.params, step.version))
+            raw = action.upgrade(step.params, step.version)
+            raw = parameters.fill(action.params, raw, self.parameters, self._literal(action, raw))
+            params = action.resolve(raw)
         except ActionError as e:
             return _error(step, str(e))
         except Exception as e:
@@ -421,6 +442,16 @@ class _Evaluation:
             self.engine.cache.put(key, out)
         return StepResult(step.id, Status.OK, df=out, key=key, messages=ctx.messages, seconds=seconds)
 
+    def _literal(self, action: Action, raw: Mapping[str, Any]) -> Callable[[Any], str]:
+        """How the database of the step's connection writes a value into SQL."""
+        for param in action.params:
+            if isinstance(param, P.ConnectionRef):
+                definition = self.project.connection(str(raw.get(param.key) or ""))
+                connector = self.registry.connectors.get(definition.type) if definition else None
+                if connector is not None:
+                    return connector.literal
+        return sql_literal
+
     def _key(self, action: Action, params: Params, prev_key: str, deps: dict[str, TableResult], ctx: Context) -> str:
         parts = [prev_key, action.id, str(action.version), json.dumps(params, sort_keys=True, default=str)]
         parts += [f"{ref}={deps[ref].key}" for ref in sorted(deps)]
@@ -433,7 +464,25 @@ class _Evaluation:
                     parts.append(f"no-fingerprint={time.time_ns()}")  # can't tell: read again
         if action.side_effects:
             parts.append(f"run={self.run_id}")
+        for param in action.params:  # changed connection settings: read the data again
+            if isinstance(param, P.ConnectionRef):
+                parts.append(f"connection={self._connection_part(str(params.get(param.key) or ''))}")
         return hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+    def _connection_part(self, name: str) -> str:
+        definition = self.project.connection(name)
+        connector = self.registry.connectors.get(definition.type) if definition else None
+        if definition is None or connector is None:
+            return "none"
+        try:
+            settings = self.connection_settings(definition.settings, connector)
+        except ActionError as e:
+            return f"error={e}"
+        return json.dumps([definition.type, settings], sort_keys=True, default=str)
+
+    def connection_settings(self, settings: Mapping[str, Any], connector: Connector) -> dict[str, Any]:
+        """A connection's settings with the parameters filled in (as texts)."""
+        return parameters.fill(list(connector.params), settings, self.parameters)
 
     def _validation_context(self, df: pl.DataFrame | None, deps: dict[str, TableResult]) -> ValidationContext:
         def table_columns(ref: str) -> list[str] | None:
@@ -454,6 +503,7 @@ class _StepContext(Context):
         super().__init__(mode=evaluation.mode, project_dir=evaluation.project.directory, cancel=evaluation.cancel)
         self._evaluation = evaluation
         self._deps = deps
+        self.parameters = {k: v for k, v in evaluation.parameters.items() if not isinstance(v, Failed)}
 
     def table(self, table_id: str) -> pl.DataFrame:
         result = self._deps.get(table_id)
@@ -471,7 +521,7 @@ class _StepContext(Context):
         connector = self._evaluation.registry.connectors.get(definition.type)
         if connector is None:
             raise ActionError(f"Unknown connection type '{definition.type}'. Is its plugin installed?")
-        return connector.open(definition.settings, self, create=create)
+        return connector.open(self._evaluation.connection_settings(definition.settings, connector), self, create=create)
 
 
 def _error(

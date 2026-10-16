@@ -18,9 +18,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from etl_tool.api import Context
+from etl_tool.api import ActionError, Context
 from etl_tool.api.params import resolve
-from etl_tool.core import Connection
+from etl_tool.core import Connection, parameters
 
 from . import theme
 from .forms import FormContext, ParamForm
@@ -162,7 +162,11 @@ class ConnectionsDialog(QDialog):
         connector = connection and self.registry.connectors.get(connection.type)
         if connector is None:
             return
-        settings = dict(connection.settings)
+        try:  # {Name} of a parameter, as the calculation fills it in
+            settings = parameters.fill(list(connector.params), connection.settings, self.session.parameter_values())
+        except ActionError as e:
+            self._tested((False, str(e)))
+            return
         ctx = Context(project_dir=self.session.project.directory)
         self.test_result.setText("Connecting…")
         self.test_button.setEnabled(False)

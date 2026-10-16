@@ -1,5 +1,6 @@
-"""Colors in a formula: [columns], functions, keywords, 'texts', numbers and comments, an
-unknown [column] in red, and the bracket that matches the one at the cursor."""
+"""Colors in a formula: [columns], functions, keywords, 'texts', numbers, comments and
+{parameters}, an unknown [column] or {parameter} in red, and the bracket that matches the one
+at the cursor."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QT
 from PySide6.QtWidgets import QPlainTextEdit, QTextEdit
 
 from etl_tool.api import expressions
+from etl_tool.api.parameters import formula_places
 from etl_tool.core.formula_preview import _KEYWORDS, _may_be_column
 
 from . import theme
@@ -35,7 +37,8 @@ def _format(color: str, *, italic: bool = False, bold: bool = False) -> QTextCha
 
 class FormulaHighlighter(QSyntaxHighlighter):
     """Colors the whole formula from its tokens (a /* comment */ or a text may span lines).
-    ``set_columns`` gives the names a formula can use: other [names] turn red."""
+    ``set_columns`` gives the names a formula can use: other [names] turn red; likewise
+    ``set_parameters`` for {names}."""
 
     def __init__(self, document: QTextDocument) -> None:
         super().__init__(document)
@@ -48,8 +51,10 @@ class FormulaHighlighter(QSyntaxHighlighter):
             "string": _format(colors["text"]),
             "number": _format(colors["number"]),
             "comment": _format(colors["comment"], italic=True),
+            "parameter": _format(colors["parameter"]),
         }
         self._known: set[str] | None = None  # folded names; None: not known (no data yet)
+        self._parameters: set[str] | None = None  # lowercase names; None: not known
         self._text: str | None = None  # the formula the spans are for
         self._spans: list[tuple[int, int, str]] = []  # (start, end, kind) in Qt positions
 
@@ -57,6 +62,13 @@ class FormulaHighlighter(QSyntaxHighlighter):
         known = None if names is None else {expressions._fold(n) for n in names}
         if known != self._known:
             self._known = known
+            self._text = None
+            self.rehighlight()
+
+    def set_parameters(self, names: Iterable[str] | None) -> None:
+        known = None if names is None else {n.strip().lower() for n in names}
+        if known != self._parameters:
+            self._parameters = known
             self._text = None
             self.rehighlight()
 
@@ -84,6 +96,10 @@ class FormulaHighlighter(QSyntaxHighlighter):
             kind = _kind(formula, tokens, index, self._known)
             if kind:
                 spans.append((position(token.start), position(token.end), kind))
+        for start, end, name, in_text in formula_places(formula):  # after the tokens: colored over them
+            known = self._parameters is None or name.strip().lower() in self._parameters
+            if known or not in_text:  # an unknown {name} in a text stays text
+                spans.append((position(start), position(end), "parameter" if known else "unknown"))
         return spans
 
 

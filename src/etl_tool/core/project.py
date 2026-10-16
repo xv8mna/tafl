@@ -147,11 +147,28 @@ class Connection:
 
 
 @dataclass
+class Parameter:
+    """A value the settings of steps use as ``{name}``: fixed, or a formula when it starts with
+    ``=`` (see ``etl_tool.api.parameters``)."""
+
+    name: str
+    value: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "value": self.value}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Parameter:
+        return cls(name=str(data["name"]), value=str(data.get("value") or ""))
+
+
+@dataclass
 class Project:
     name: str = "Untitled"
     tables: list[Table] = field(default_factory=list)
     connections: list[Connection] = field(default_factory=list)
     groups: list[Group] = field(default_factory=list)
+    parameters: list[Parameter] = field(default_factory=list)
     path: Path | None = field(default=None, compare=False)
 
     @property
@@ -249,6 +266,8 @@ class Project:
         }
         if self.groups:
             data["groups"] = [g.to_dict() for g in self.groups]
+        if self.parameters:
+            data["parameters"] = [p.to_dict() for p in self.parameters]
         data["tables"] = [t.to_dict() for t in self.tables]
         return data
 
@@ -264,6 +283,7 @@ class Project:
             tables=[Table.from_dict(t) for t in data.get("tables") or []],
             connections=[Connection.from_dict(c) for c in data.get("connections") or []],
             groups=[Group.from_dict(g) for g in data.get("groups") or []],
+            parameters=[Parameter.from_dict(p) for p in data.get("parameters") or []],
             path=path,
         )
         project._repair_ids()

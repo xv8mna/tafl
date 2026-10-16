@@ -1,5 +1,5 @@
-"""The suggestion list of a formula editor: it opens on [ and after two letters of a word (or
-with Ctrl+Space), follows the typing, and Enter, Tab or a click writes the suggestion in."""
+"""The suggestion list of a formula editor: it opens on [ and { and after two letters of a word
+(or with Ctrl+Space), follows the typing, and Enter, Tab or a click writes the suggestion in."""
 
 from __future__ import annotations
 
@@ -81,12 +81,19 @@ class _Popup(QFrame):
 
 
 class FormulaCompleter(QObject):
-    """Suggestions for ``edit``. ``columns()`` gives the columns the formula can use."""
+    """Suggestions for ``edit``. ``columns()`` gives the columns the formula can use,
+    ``parameters()`` the project's parameters."""
 
-    def __init__(self, edit: QPlainTextEdit, columns: Callable[[], Sequence[Suggestion]]) -> None:
+    def __init__(
+        self,
+        edit: QPlainTextEdit,
+        columns: Callable[[], Sequence[Suggestion]],
+        parameters: Callable[[], Sequence[Suggestion]] = list,
+    ) -> None:
         super().__init__(edit)
         self.edit = edit
         self._columns = columns
+        self._parameters = parameters
         self._popup: _Popup | None = None
         self._context: Context | None = None
         self._typed = False  # the next change of the text comes from a key
@@ -190,7 +197,12 @@ class FormulaCompleter(QObject):
         cursor = self.edit.textCursor()
         text = self.edit.toPlainText()
         context = None if cursor.hasSelection() else context_at(text, _python_index(text, cursor.position()), forced=self._forced)
-        items = suggestions(context, self._columns()) if context is not None else []
+        if context is None:
+            items = []
+        elif context.kind == "parameter":
+            items = suggestions(context, (), self._parameters())
+        else:
+            items = suggestions(context, self._columns())
         if context is not None and context.kind == "word" and items and items[0].key.casefold() == context.prefix.casefold():
             if items[0].kind == "keyword" and len([i for i in items if i.key.casefold() == context.prefix.casefold()]) == 1:
                 items = []  # the word is complete: Enter must apply the formula, not write it again

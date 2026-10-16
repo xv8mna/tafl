@@ -6,7 +6,7 @@ import os
 import threading
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .errors import ActionError, Cancelled
 
@@ -35,6 +35,9 @@ class Context:
         self.project_dir = Path(project_dir) if project_dir else None
         self.messages: list[tuple[str, str]] = []
         self._cancel = cancel
+        # The project's parameters (name -> value). Their {Name} in the step's settings is filled
+        # in before the action runs; actions only need this for values they build themselves.
+        self.parameters: dict[str, Any] = {}
 
     def table(self, table_id: str) -> pl.DataFrame:
         """The result of another table. Only tables chosen in this step's parameters."""

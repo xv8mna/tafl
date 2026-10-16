@@ -167,3 +167,21 @@ def test_the_kept_sample_lets_go_of_its_input():
     assert formula_preview._cache_frame is frame
     preview(None, "[x]")  # the input is gone (e.g. an earlier step fails)
     assert formula_preview._cache_frame is None and not formula_preview._cache
+
+
+def test_parameters_are_filled_in_first():
+    from etl_tool.api.parameters import Failed
+
+    values = {"Rate": 1.5, "Bad": Failed("oops")}
+    result = preview(DATA, "[Amount] * {rate}", parameters=values)
+    assert result.ok and result.values.to_list() == [1.5, 3.0, 4.5] and result.rows.columns == ["Amount", "Result"]
+    assert preview(DATA, "[Amount] * {Rate}").message.startswith("There is no parameter {Rate}")
+    missing = preview(DATA, "[Amount] * {Rat}", parameters=values)
+    assert missing.message.startswith("There is no parameter {Rat}") and missing.mistake == (11, 16)
+    bad = preview(DATA, "[Amount] * {bad}", parameters=values)
+    assert bad.message == "The parameter {Bad} has an error: oops" and bad.mistake == (11, 16)
+    assert bad.columns  # the columns are still offered
+    above = preview(DATA, "[X]", [("X", "{Bad}")], creates=True, name="Y", parameters=values)
+    assert above.message == "Row 1 ([X]) has an error: The parameter {Bad} has an error: oops"
+    unknown = preview(DATA, "{Rate} + [Nett]", parameters=values)
+    assert unknown.mistake == (9, 15) and unknown.fix == "[Net]"  # found in the formula as typed

@@ -19,7 +19,7 @@ A minimal plugin::
 
 from etl_tool import APP_NAME
 
-from . import dtypes, expressions, files, xlsx
+from . import dtypes, expressions, files, parameters, xlsx
 from . import params as P
 from .action import Action, Kind, action, file_fingerprint
 from .context import Context, Mode
@@ -66,6 +66,7 @@ __all__ = [
     "find_files",
     "frame_from_cursor",
     "make_series",
+    "parameters",
     "source_files",
     "source_params",
     "source_summary",

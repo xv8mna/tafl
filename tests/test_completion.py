@@ -1,5 +1,7 @@
 """Suggestions while typing a formula: what is typed at the cursor, ranking, what is written in."""
 
+import datetime as dt
+
 import pytest
 
 from etl_tool.core.completion import Context, column_suggestions, context_at, insertion, suggestions
@@ -96,3 +98,21 @@ def test_hints_and_duplicates():
 def test_every_column_is_listed():
     many = column_suggestions([(f"c{i}", "integer", None) for i in range(300)])
     assert len(suggestions(Context("column", 0, 1, ""), many)) == 300
+
+
+def test_parameters_after_a_brace():
+    from etl_tool.api.parameters import Failed
+    from etl_tool.core.completion import parameter_suggestions
+
+    found = parameter_suggestions({"Day": dt.date(2026, 10, 15), "Run Date": "x" * 50, "Bad": Failed("oops")})
+    assert [(s.name, s.detail) for s in found] == [("Day", "date: 2026-10-15"), ("Run Date", "text: " + "x" * 40 + "…"), ("Bad", "error")]
+    assert context_at("[A] + {", 7) == Context("parameter", 6, 7, "")
+    assert context_at("[A] + {Da}", 9) == Context("parameter", 6, 10, "Da")  # all of {Da} is replaced
+    assert context_at("'Report {Ru", 11) == Context("parameter", 8, 11, "Ru")  # in a text it is filled in, too
+    assert context_at("[{Da", 4).kind == "column"  # part of a column name
+    for formula in ('"{Da', "-- {Da", "$${Da"):  # in names, comments and $$texts$$ nothing is filled in
+        assert context_at(formula, len(formula)) is None
+    assert context_at("{Day} + 1", 5) is None  # after the }
+    context = context_at("{run d", 6)
+    assert [s.name for s in suggestions(context, COLUMNS, found)] == ["Run Date"]
+    assert insertion(context, found[1], "{run d + 1") == ("{Run Date} + 1", 10)

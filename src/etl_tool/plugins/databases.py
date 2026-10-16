@@ -118,6 +118,16 @@ class SqlServer(Connector):
         text = re.sub(r"\s*\(\d+\)\s*(\(SQL\w+\))?", " ", text)
         return re.sub(r"\s+", " ", text).strip(" ;") or str(error)
 
+    def literal(self, value):
+        # Dates as ISO text in a CAST: unambiguous whatever the server's language
+        if isinstance(value, dt.datetime):
+            return f"CAST('{value.isoformat(timespec='microseconds')}' AS datetime2)"
+        if isinstance(value, dt.date):
+            return f"CAST('{value.isoformat()}' AS date)"
+        if isinstance(value, str):
+            return "N'" + value.replace("'", "''") + "'"
+        return super().literal(value)
+
     def missing_table(self, error, table):
         # 42S02: base table or view not found; (4413): a view whose own tables are missing
         return bool(error.args) and error.args[0] == "42S02" and "(4413)" not in str(error)

@@ -98,3 +98,20 @@ def test_later_lines_follow_a_change_of_where_a_comment_ends(qapp):
     assert _colors(edit)[-1] == ("*/ [Net] * 2", "comment")
     edit.setPlainText("[Month] + INTERVAL 1 MONTH")  # a unit, not the column of that name
     assert _colors(edit)[-1] == ("MONTH", "keyword")
+
+
+def test_parameters_have_their_color(qapp):
+    edit = QPlainTextEdit()
+    highlighter = FormulaHighlighter(edit.document())
+    edit.setPlainText("[A] > {Day} || '{day} {Other}' || [{Day}] || {Other}")
+    assert ("{Other}", "parameter") in _colors(edit)  # before the names are known
+    highlighter.set_parameters(["Day"])
+    assert _colors(edit) == [
+        ("[A]", "column"),
+        ("{Day}", "parameter"),
+        ("'", "text"),
+        ("{day}", "parameter"),  # filled in inside a text, too
+        (" {Other}'", "text"),  # an unknown name in a text stays text
+        ("[{Day}]", "column"),
+        ("{Other}", "unknown"),
+    ]

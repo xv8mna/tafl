@@ -1,5 +1,28 @@
 # Changes
 
+## Unreleased
+
+### Parameters
+
+- **Project → Parameters** (also in the toolbar): values the whole project uses, written as
+  `{Name}` in any setting: file names, texts, formulas, SQL and connection settings. A value is
+  fixed (`2026-10-01`, `500`, `D:\Reports`) or a formula (`=TODAY() - 1`) that can use the
+  parameters above it. The dialog shows each value as it is now, or what is wrong.
+- In formulas a parameter is a value of its type (`[Date] = {Day}` compares dates); in SQL it is
+  written for the database (`CAST('2026-10-15' AS date)` on SQL Server, `N'…'` texts), so a
+  value can never change the SQL itself.
+- Formula fields: `{` lists the parameters with their values, `{Name}` has its own color (red
+  when there is no such parameter), and the line under the formula and the formula window use
+  the values.
+- `tafl run --set Name=VALUE` (and `tafl show`) gives a parameter another value for one run;
+  the run lists the values it used.
+- Renaming a parameter renames it in all steps.
+
+### Fixes
+
+- Changing a connection's settings reads the data of its imports again (before, only
+  **Reload data** did).
+
 ## 0.2.0 – 2026-10-16
 
 The first version with a Windows download: a folder with `tafl-app.exe` (the window) and

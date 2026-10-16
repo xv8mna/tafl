@@ -165,6 +165,7 @@ class SettingsPanel(QWidget):
             connections=[c.name for c in session.project.connections],
             project_dir=session.project.directory,
             edit_connections=self._edit_connections,
+            parameters=session.parameter_values,
         )
 
     def _clear(self, title: str, text: str) -> None:

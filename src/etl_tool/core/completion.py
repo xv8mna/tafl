@@ -1,21 +1,27 @@
-"""Suggestions while typing a formula: column names after [, functions and keywords after two
-letters of a word. Qt-free: what to suggest at the cursor and what to write in."""
+"""Suggestions while typing a formula: column names after [, the project's parameters after {,
+functions and keywords after two letters of a word. Qt-free: what to suggest at the cursor and
+what to write in."""
 
 from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
+from typing import Any
 
 import duckdb
 
 from etl_tool.api import expressions
+from etl_tool.api.parameters import Failed, as_text
 
 from .functions import CURATED, CURSOR, Function, more_functions
+from .parameters import value_label
 
 LIMIT = 60  # suggestions shown at most
+_PARAMETER_START = re.compile(r"\{([A-Za-z_][A-Za-z0-9_ ]*|)\Z")  # searched up to the cursor
+_PARAMETER_REST = re.compile(r"[A-Za-z0-9_ ]*\}")  # the rest of the name after the cursor
 # Words of SQL that have no entry in the function list, with what is written in.
 _KEYWORDS = (
     ("WHEN", "WHEN ", "CASE WHEN condition THEN value ... END"),
@@ -38,7 +44,7 @@ _KEYWORDS = (
 
 @dataclass(frozen=True)
 class Suggestion:
-    kind: str  # "column", "function" or "keyword"
+    kind: str  # "column", "parameter", "function" or "keyword"
     name: str
     detail: str  # the type of a column, how a function is written
     help: str = ""  # what it does
@@ -56,7 +62,7 @@ class Context:
     """What is being typed at the cursor: ``formula[start:end]`` is replaced by the suggestion;
     ``prefix`` is the part before the cursor that the suggestions must match."""
 
-    kind: str  # "column" (after [) or "word"
+    kind: str  # "column" (after [), "parameter" (after {) or "word"
     start: int
     end: int
     prefix: str
@@ -68,6 +74,8 @@ def context_at(formula: str, cursor: int, *, forced: bool = False) -> Context | 
     where a type or a unit goes ([Date]::DATE, CAST(x AS INTEGER), INTERVAL 1 MONTH): Enter
     must apply the formula there."""
     tokens = expressions.tokenize(formula)
+    if (parameter := _parameter_at(formula, tokens, cursor)) is not None:
+        return parameter
     for index, token in enumerate(tokens):
         if not token.start < cursor <= token.end and not (token.kind == "column" and token.start < cursor and not token.closed):
             continue
@@ -88,14 +96,17 @@ def context_at(formula: str, cursor: int, *, forced: bool = False) -> Context | 
     return Context("word", cursor, cursor, "") if forced else None
 
 
-def suggestions(context: Context, columns: Sequence[Suggestion]) -> list[Suggestion]:
+def suggestions(context: Context, columns: Sequence[Suggestion], parameters: Sequence[Suggestion] = ()) -> list[Suggestion]:
     """The suggestions for what is typed, best first: exact names, then names that start with
-    it, then names that contain it. After [ only columns; for a word, functions and keywords
-    come before columns (after them when nothing is typed yet), then names from SQL Server and
-    spreadsheets that lead to what to write instead, and DuckDB's other functions last."""
+    it, then names that contain it. After [ only columns, after { only parameters; for a word,
+    functions and keywords come before columns (after them when nothing is typed yet), then
+    names from SQL Server and spreadsheets that lead to what to write instead, and DuckDB's
+    other functions last."""
     prefix = context.prefix.casefold()
     if context.kind == "column":
         groups = [list(columns)]
+    elif context.kind == "parameter":
+        groups = [list(parameters)]
     else:
         curated, hints, more = _functions()
         groups = [curated, list(columns), hints, more] if prefix else [list(columns), curated, hints, more]
@@ -106,7 +117,7 @@ def suggestions(context: Context, columns: Sequence[Suggestion]) -> list[Suggest
             if rank is not None:
                 found.append((rank, group, order, item))
     found.sort(key=lambda entry: entry[:3])
-    limit = None if context.kind == "column" else LIMIT  # every column: they are what the step has
+    limit = None if context.kind in ("column", "parameter") else LIMIT  # every column: they are what the step has
     return [item for *_, item in found[:limit]]
 
 
@@ -144,6 +155,8 @@ def insertion(context: Context, suggestion: Suggestion, formula: str) -> tuple[s
     """The formula with the suggestion written in, and where the cursor goes."""
     if suggestion.kind == "column":
         text = "[" + suggestion.name.replace("]", "]]") + "]"
+    elif suggestion.kind == "parameter":
+        text = "{" + suggestion.name + "}"
     else:
         text = suggestion.insert or suggestion.name
         if context.prefix and context.prefix == context.prefix.lower() and context.prefix.isalpha():
@@ -154,6 +167,32 @@ def insertion(context: Context, suggestion: Suggestion, formula: str) -> tuple[s
     text = text.replace(CURSOR, "")
     new = formula[: context.start] + text + formula[context.end :]
     return new, context.start + (cursor if cursor >= 0 else len(text))
+
+
+def parameter_suggestions(values: Mapping[str, Any]) -> list[Suggestion]:
+    """Suggestions for the project's parameters (name -> value), with their values."""
+    found = []
+    for name, value in values.items():
+        if isinstance(value, Failed):
+            found.append(Suggestion("parameter", name, "error", help=f"This parameter has an error: {value.message}"))
+        else:
+            shown = as_text(value)
+            shown = shown if len(shown) <= 40 else shown[:40] + "…"
+            found.append(Suggestion("parameter", name, f"{value_label(value)}: {shown}", help="A parameter of the project (Project → Parameters)"))
+    return found
+
+
+def _parameter_at(formula: str, tokens: list[expressions.Token], cursor: int) -> Context | None:
+    """{ and the start of a name before the cursor, outside "names", [columns] and comments."""
+    found = _PARAMETER_START.search(formula, 0, cursor)
+    if found is None:
+        return None
+    start = found.start()
+    token = next((t for t in tokens if t.start <= start < t.end), None)
+    if token is not None and (token.kind in ("quoted", "column", "comment") or token.kind == "string" and not formula.startswith("'", token.start)):
+        return None
+    rest = _PARAMETER_REST.match(formula, cursor)
+    return Context("parameter", start, rest.end() if rest else cursor, found[1])
 
 
 def column_suggestions(columns: Sequence[tuple[str, str, int | None]]) -> list[Suggestion]:

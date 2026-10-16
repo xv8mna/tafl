@@ -45,6 +45,7 @@ FORMULA_COLORS = {
     "text": "#9fcf8a",
     "number": "#d7a77a",
     "comment": "#7f848e",
+    "parameter": "#56c2b6",  # {Name} of a project parameter
     "bracket": "#4a5a6a",  # behind the matching ( )
 }
 
