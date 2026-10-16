@@ -95,6 +95,12 @@ class Editor(QWidget):
         """Grey hint shown while the field is empty (used where there is no label)."""
 
 
+def _shown(param: Param, value: Any) -> Any:
+    """What the editor shows: the default for a value of the wrong kind (e.g. a number for a
+    table, from a project file written by hand), which the step's check reports."""
+    return value if value is None or param.accepts(value) else param.initial()
+
+
 def _row(*widgets: QWidget, stretch_first: bool = True) -> QHBoxLayout:
     layout = QHBoxLayout()
     layout.setContentsMargins(0, 0, 0, 0)
@@ -988,7 +994,7 @@ class ListEditor(Editor):
         for f in self._fields:
             editor = create_editor(f, self.ctx, self)
             editor.refresh(self.ctx, self._values)
-            editor.set_value(values.get(f.key, f.initial()))
+            editor.set_value(_shown(f, values.get(f.key, f.initial())))
             editor.changed.connect(self._child_changed)
             editors[f.key] = editor
         for f in self._fields:  # a formula that creates a column: later rows can use it
@@ -1133,6 +1139,7 @@ class ParamForm(QWidget):
         layout.addStretch(1)
 
     def set_values(self, values: dict[str, Any]) -> None:
+        values = dict(values) | {param.key: _shown(param, values.get(param.key)) for param, *_ in self._rows}
         for param, _, editor, _ in self._rows:
             editor.refresh(self.ctx, values)
             editor.set_value(values.get(param.key))

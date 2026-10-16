@@ -65,6 +65,25 @@ def test_int_validation():
     assert check(spec, resolve(spec, {"n": "5"}), vc) == []
     assert check(spec, resolve(spec, {"n": 0}), vc) == ["N: must be at least 1"]
     assert check(spec, resolve(spec, {"n": "x"}), vc) == ["N: must be a whole number"]
+    assert check(spec, resolve(spec, {"n": float("inf")}), vc) == ["N: must be a whole number"]  # 1e999 in a file
+
+
+def test_values_of_the_wrong_kind_are_reported_and_used_nowhere():
+    """A project file written by hand can hold e.g. a number where a table belongs."""
+    spec = [*SPEC, P.TableRefs("tables", "Tables", required=False), P.ConnectionRef("db", "Database", required=False)]
+    wrong = {"extra": 5, "other": ["t2"], "match": "left", "tables": {"t2": 1}, "db": 7}
+    params = resolve(spec, {"column": "id", **wrong})
+    assert {key: params[key] for key in wrong} == wrong  # kept as they are
+    assert table_refs(spec, params) == []
+    vc = ValidationContext(columns=["id"], tables={"t2": "Other"}, connections=["db"])
+    assert check(spec, params, vc) == [
+        "Extra: 5 is not a list of columns",
+        'Other table: ["t2"] is not a table',
+        'Match: "left" is not a list',
+        'Tables: {"t2": 1} is not a list of tables',
+        "Database: 7 is not a connection",
+    ]
+    assert resolve(spec, {"extra": [1, "B"], "tables": ("t2",)}).extra == ["1", "B"]  # names written as numbers
 
 
 def test_reserved_and_duplicate_parameter_names_are_rejected():

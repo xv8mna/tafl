@@ -20,8 +20,8 @@ for "table".
 
 Built with Python, [Polars](https://pola.rs), [DuckDB](https://duckdb.org) and
 [PySide6](https://doc.qt.io/qtforpython-6/) (Qt), and developed with the help of
-[Claude](https://www.anthropic.com/claude) (Anthropic). Status: an early version (0.1), developed
-and tested on Windows.
+[Claude](https://www.anthropic.com/claude) (Anthropic). Status: an early version, developed and
+tested on Windows; [CHANGELOG.md](CHANGELOG.md) lists the versions.
 
 ## Install
 
@@ -30,27 +30,29 @@ Driver 18 for SQL Server" (17 works too); Tafl signs in with your Windows accoun
 passwords are stored.
 
 **Download** (no Python needed): get `Tafl-<version>-windows.zip` from the
-[latest release](https://github.com/xv8mna/tafl/releases/latest), unzip it into a folder of
-yours (e.g. `C:\Tools\Tafl`), and start `tafl-app.exe` (the window) or `tafl.exe` (the command
-line). The programs are not signed: if Windows says "Windows protected your PC", click "More
-info", then "Run anyway". The `README.txt` in the folder has the rest.
+[latest release](https://github.com/xv8mna/tafl/releases/latest) and unzip it into a folder of
+yours: it holds the folder `Tafl`, so unzipping into `C:\Tools` gives `C:\Tools\Tafl`. Start
+`tafl-app.exe` (the window) or `tafl.exe` (the command line) in it. The programs are not
+signed: if Windows says "Windows protected your PC", click "More info", then "Run anyway". The
+`README.txt` in the folder has the rest.
 
-**From source** (Python 3.12 or newer, and Git):
+**From source** (Python 3.12, 3.13 or 3.14, and Git):
 
 ```
 git clone https://github.com/xv8mna/tafl.git
 cd tafl
-py -m venv .venv
+py -3.14 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.lock
 .venv\Scripts\python -m pip install --no-deps -e .
 .venv\Scripts\tafl-app
 ```
 
-`py -m venv` uses your default Python; with several versions installed, choose one, e.g.
-`py -3.13 -m venv .venv`. `requirements.lock` holds the exact versions of the libraries that
-Tafl is tested with (with their checksums). `tafl-app` opens the window (optionally with a project file as
-argument). `tafl` is the command line program. `.venv\Scripts\python tools\create_shortcut.py`
-puts a **Tafl** shortcut on the desktop.
+`py -3.14` chooses Python 3.14 (`py` alone takes the newest Python installed); 3.12 and 3.13
+work too. Python 3.15 does not work yet: DuckDB and pyodbc have no builds for it.
+`requirements.lock` holds the exact versions of the libraries that Tafl is tested with (with
+their checksums). `tafl-app` opens the window (optionally with a project file as argument).
+`tafl` is the command line program. `.venv\Scripts\python tools\create_shortcut.py` puts a
+**Tafl** shortcut on the desktop.
 
 **Other systems.** Tafl is plain Python and Qt, so it may work on Linux or macOS, but this is
 untested. Windows-specific parts: SQL Server connections (Windows sign-in), the plugin folder in
@@ -60,7 +62,8 @@ paths above (`.venv/bin/…` elsewhere).
 ## Try the demo
 
 `.venv\Scripts\tafl-app examples\demo.tafl` opens the demo project (or **File → Open** in the
-app). On the command line:
+app). The download has it in its `examples` folder; there, use `tafl-app.exe` and `tafl.exe`
+instead of `.venv\Scripts\tafl-app` and `.venv\Scripts\tafl`. On the command line:
 
 ```
 .venv\Scripts\tafl run examples\demo.tafl
@@ -358,7 +361,8 @@ def add_prefix(df, p, ctx):
 
 The settings form is built from `params`. Rules for plugins:
 
-- Import only from `etl_tool.api` (and third-party libraries), never from other plugins.
+- Import only from `etl_tool.api` (and third-party libraries), never from other plugins. The
+  Windows download includes only the libraries Tafl itself uses (Polars, DuckDB, …).
 - When parameters change, raise `version=` and add `migrate=`: a function
   `(params, old_version) -> params` that converts settings saved by older versions, so old
   projects keep working.

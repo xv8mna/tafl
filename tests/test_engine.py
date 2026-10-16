@@ -94,6 +94,20 @@ def test_settings_are_checked_before_running(project, registry):
     assert result.steps[2].error == "Sort by, row 1 – Column: column 'amount' not found (did you mean 'Amount'?)"
 
 
+def test_settings_of_the_wrong_kind_are_step_errors(project, registry):
+    """E.g. from a project file written by hand: a number where a table belongs."""
+    derived = project.add_table("Derived")
+    step = project.add_step(derived, "table.derive", {"table": 5})
+    match = [{"column": "Id", "other_column": "Id"}]
+    project.add_step(derived, "table.merge", {"other": ["t1"], "match": match, "columns": 3})
+    engine = Engine(project, registry)
+    assert engine.links(derived.id) == [] and engine.describe(step) == "Start from 5"
+    assert engine.evaluate("Derived").steps[0].error == "Table: 5 is not a table"
+    step.params["table"] = "t1"
+    errors = engine.evaluate("Derived").steps[1].error.splitlines()
+    assert errors == ['Other table: ["t1"] is not a table', "Columns to add (empty = all): 3 is not a list of columns"]
+
+
 def test_unknown_action_shows_error_and_survives_saving(project, registry, tmp_path):
     project.add_step("Orders", "fancy.plugin", {"keep": "me"})
     result = Engine(project, registry).evaluate("Orders")

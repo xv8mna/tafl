@@ -57,6 +57,15 @@ def test_list_rows_can_be_added_moved_and_removed(qtbot, registry):
     assert rows.value() == [{"column": "A", "order": "asc"}]
 
 
+def test_values_of_the_wrong_kind_show_the_default(qapp, registry):
+    """E.g. from a project file written by hand; the step's check reports them."""
+    action = registry.actions["table.merge"]
+    wrong = {"other": ["t2"], "match": "a", "columns": 3}
+    form = ParamForm(action.params, FormContext(columns=lambda source, v: ["a"], tables=[("t2", "Other")]))
+    form.set_values(json_ready(action.resolve(wrong)))
+    assert {key: form.values()[key] for key in wrong} == {"other": "", "match": [], "columns": []}
+
+
 def test_missing_columns_are_kept(qapp, registry):
     """A column that disappeared upstream stays selected (and is marked), so nothing is lost."""
     action = registry.actions["rows.dedupe"]

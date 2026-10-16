@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 import platform
+import sys
 from pathlib import Path
 
 import duckdb
 import polars as pl
 from PySide6 import __version__ as pyside_version
-from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtCore import QSettings, Qt, QUrl, qVersion
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -414,13 +415,17 @@ class MainWindow(QMainWindow):
         _text_dialog(self, "Plugins", "\n".join(lines))
 
     def show_about(self) -> None:
+        licenses = "."
+        if getattr(sys, "frozen", False):  # the download: the licenses of all its parts are next to the programs
+            licenses = f"; the licenses of all parts are in {Path(sys.executable).parent / 'licenses'}."
         QMessageBox.about(
             self,
             f"About {APP_NAME}",
             f"<b>{APP_NAME} {__version__}</b><br>Build tables step by step and see the data after every step.<br>"
             f"Free software under the MIT License: <a href='{PROJECT_URL}'>{PROJECT_URL}</a><br><br>"
             f"Python {platform.python_version()} · Polars {pl.__version__} · DuckDB {duckdb.__version__} · "
-            f"PySide6 {pyside_version}<br><br>Log file: {self.log_file or '-'}",
+            f"PySide6 {pyside_version}<br>Qt {qVersion()} and PySide6 are under the LGPL-3.0{licenses}<br><br>"
+            f"Log file: {self.log_file or '-'}",
         )
 
     def open_log_folder(self) -> None:

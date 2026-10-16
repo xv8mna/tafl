@@ -1,8 +1,9 @@
 name: release
 
-# A tag like v0.2.0 builds the Windows download, checks it and publishes it as a GitHub release
-# with that version's part of CHANGELOG.md. Started by hand, it only builds and keeps the zip as
-# an artifact of the run.
+# A pushed tag like v0.2.0 runs the tests, builds the Windows download, checks it and publishes it
+# as a GitHub release with that version's part of CHANGELOG.md, the source links of Qt and PySide6
+# and the checksum of the zip. Started by hand (also on a tag), it only runs the tests and the
+# build and keeps the zip as an artifact of the run.
 
 on:
   push:
@@ -13,22 +14,27 @@ permissions:
   contents: read
 
 jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+    permissions:
+      contents: read
+
   build:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      # No pip cache and no build isolation (it would fetch setuptools unchecked): everything the
+      # build uses comes from the lock file, checked by its hashes.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.14"
-          cache: pip
-          cache-dependency-path: requirements-build.lock
       - name: Install the tested versions
         run: |
           python -m pip install --require-hashes -r requirements-build.lock
-          python -m pip install --no-deps .
+          python -m pip install --no-deps --no-build-isolation .
       - name: Check that the tag is the version
         if: startsWith(github.ref, 'refs/tags/')
         shell: python
@@ -38,32 +44,71 @@ jobs:
           assert tag == f"v{etl_tool.__version__}", f"tag {tag}, but the version is {etl_tool.__version__}"
       - name: Build and check
         run: python tools/build.py
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: download
           path: dist/Tafl-*-windows.zip
           if-no-files-found: error
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [tests, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write  # to create the release
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: download
           path: dist
-      - name: Release notes from CHANGELOG.md
+      - name: Release notes from CHANGELOG.md, with the sources of Qt and PySide6 and the checksum
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v v="$version" '/^## / { take = index($0, "## " v " ") == 1 || $0 == "## " v } take' CHANGELOG.md | tail -n +2 > notes.md
           test -s notes.md || { echo "CHANGELOG.md has no section for $version"; exit 1; }
+          # The LGPL asks for the source code of the included Qt and PySide6: the versions the
+          # download was built with are the ones in the lock file.
+          pin() { sed -n "s/^$1==\([^ ;]*\).*/\1/p" requirements-build.lock; }
+          pyside=$(pin pyside6-essentials)
+          shiboken=$(pin shiboken6)
+          test -n "$pyside" && test "$pyside" = "$shiboken" || { echo "lock file: pyside6-essentials '$pyside', shiboken6 '$shiboken'"; exit 1; }
+          qt=$(echo "$pyside" | cut -d. -f1-3)  # PySide6 6.12.0 is built on Qt 6.12.0, 6.8.0.2 on Qt 6.8.0
+          qt_source="https://download.qt.io/archive/qt/${qt%.*}/$qt/single/"
+          pyside_source="https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-$pyside-src/"
+          for url in "$qt_source" "$pyside_source"; do
+            curl -sfIL --retry 3 --max-time 60 -o /dev/null "$url" || { echo "not found: $url"; exit 1; }
+          done
+          zip="Tafl-$version-windows.zip"
+          (cd dist && sha256sum "$zip" > "$zip.sha256")
+          sha=$(cut -d " " -f 1 "dist/$zip.sha256")
+          # lxml includes GNU libiconv (LGPL-2.1): a copy of its source goes with the release. The
+          # download's README.txt names the version that tools/build.py found in lxml.
+          iconv=$(unzip -p "dist/$zip" Tafl/README.txt | grep -o 'libiconv-[0-9][0-9.]*[0-9]\.tar\.gz' | head -n 1)
+          case "$iconv" in
+            libiconv-1.17.tar.gz) iconv_sha=8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313 ;;
+            *) echo "no checksum for '$iconv' here: add the one GNU's file has"; exit 1 ;;
+          esac
+          curl -sfL --retry 3 --max-time 300 -o "dist/$iconv" "https://ftp.gnu.org/pub/gnu/libiconv/$iconv"
+          echo "$iconv_sha  dist/$iconv" | sha256sum -c -
+          cat >> notes.md <<EOF
+
+          ### Licenses
+
+          The download includes Qt $qt and PySide6 $pyside with Shiboken6 $shiboken (Qt for Python).
+          They are under the LGPL-3.0 (see the folder \`licenses\` in the download).
+          Their source code is at download.qt.io: [Qt $qt]($qt_source) and [PySide6 and Shiboken6 $pyside]($pyside_source).
+          lxml includes GNU libiconv, under the LGPL-2.1: its source code, \`$iconv\`, is attached to this release.
+
+          ### Checksum
+
+          SHA-256 of \`$zip\`: \`$sha\` (also in \`$zip.sha256\`; in PowerShell: \`Get-FileHash $zip\`).
+          EOF
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --title "Tafl ${GITHUB_REF_NAME#v}" --notes-file notes.md
+        run: |
+          zip="dist/Tafl-${GITHUB_REF_NAME#v}-windows.zip"
+          gh release create "$GITHUB_REF_NAME" "$zip" "$zip.sha256" dist/libiconv-*.tar.gz --verify-tag --repo "$GITHUB_REPOSITORY" --title "Tafl ${GITHUB_REF_NAME#v}" --notes-file notes.md
