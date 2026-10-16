@@ -38,7 +38,11 @@ def needed(entry):
     path = entry[0].replace("\\", "/").lower()
     name = path.rsplit("/", 1)[-1]
     return not (
-        name.endswith(UNUSED_SUFFIXES)
+        # Windows' own C runtime: Windows 10 and 11 have it, and a copy that another program put
+        # on the build machine's PATH must not come along
+        name.startswith("api-ms-win-")
+        or name == "ucrtbase.dll"
+        or name.endswith(UNUSED_SUFFIXES)
         or path.startswith(UNUSED_FOLDERS)
         or name in UNUSED_FILES
         or (path.startswith("pyarrow/") and name.split(".")[0] in ARROW_EXTRAS)
