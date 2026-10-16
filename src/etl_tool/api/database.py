@@ -24,6 +24,8 @@ _MISSING_TABLE = re.compile(
     r"|unknown table|table .* not found",
     re.IGNORECASE,
 )
+# Errors that certainly don't mean a missing table
+_OTHER_ERROR = re.compile(r"permission|denied|not authori[sz]ed|privilege|access|locked|timeout|connection|login", re.IGNORECASE)
 
 
 class Connector:
@@ -59,10 +61,13 @@ class Connector:
         """Readable text for a driver error."""
         return str(error)
 
-    def missing_table(self, error: Exception) -> bool:
-        """True if ``error`` (from reading a table) means that the table doesn't exist, rather than
-        e.g. a missing permission. The default knows the messages of the common databases."""
-        return bool(_MISSING_TABLE.search(str(error)))
+    def missing_table(self, error: Exception, table: str) -> bool:
+        """True if ``error``, from reading ``table``, means that the table doesn't exist, rather
+        than e.g. a missing permission. The default knows the messages of the common databases;
+        other errors count as a missing table unless they speak of permissions, locks or the
+        connection."""
+        text = str(error)
+        return bool(_MISSING_TABLE.search(text)) or not _OTHER_ERROR.search(text)
 
     # --- writing (used by exports; override what your database does differently) ---------------
 
@@ -132,9 +137,14 @@ class Connector:
         cursor = conn.cursor()
         try:
             cursor.execute(sql)
-            return cursor.rowcount
+            return all_results(cursor)
         finally:
             cursor.close()
+
+    def column_types(self, conn: Any, table: str) -> dict[str, str]:
+        """The type of each column of an existing table, in lower case (e.g. ``"int"``), as far as
+        the database tells; the default tells nothing."""
+        return {}
 
     def open(self, settings: Mapping[str, Any], ctx: Context, *, create: bool = False) -> Database:
         params = resolve(self.params, settings)
@@ -257,7 +267,7 @@ class Database:
             cursor.execute(f"SELECT * FROM {self.qualified(table)} WHERE 1 = 0")
             return [str(d[0]) for d in cursor.description or ()]
         except Exception as e:
-            if self.connector.missing_table(e):
+            if self.connector.missing_table(e, table):
                 return None
             raise ActionError(self.connector.error_message(e)) from e
         finally:
@@ -365,17 +375,44 @@ def unique_names(names: Sequence[str]) -> list[str]:
     return result
 
 
+def all_results(cursor: Any) -> int:
+    """Go through every result of a statement batch: a driver may report the error of a later
+    statement only when its result is reached. Returns the rows changed in all of them, or -1."""
+    total, counted = 0, False
+    while True:
+        if cursor.rowcount >= 0:
+            total, counted = total + cursor.rowcount, True
+        nextset = getattr(cursor, "nextset", None)
+        try:
+            if nextset is None or not nextset():
+                break
+        except Exception as e:
+            if type(e).__name__ == "NotSupportedError":
+                break
+            raise
+    return total if counted else -1
+
+
 def split_name(name: str) -> list[str]:
-    """Split ``[dbo].[My Table]`` / ``"main"."t"`` / ``dbo.Orders`` into its unquoted parts."""
+    """Split ``[dbo].[My Table]`` / ``"main"."t"`` / ``dbo.Orders`` into its unquoted parts; a
+    doubled closing character inside quotes (``"a""b"``, ``[a]]b]``) stands for itself."""
     parts, current, quote = [], [], None
     closing = {"[": "]", '"': '"', "`": "`"}
-    for ch in name.strip():
+    text = name.strip()
+    index = 0
+    while index < len(text):
+        ch = text[index]
+        index += 1
         if quote:
-            if ch == closing[quote]:
+            if ch == closing[quote] and text[index : index + 1] == ch:
+                current.append(ch)
+                index += 1
+            elif ch == closing[quote]:
                 quote = None
             else:
                 current.append(ch)
-        elif ch in closing:
+            continue
+        if ch in closing:
             quote = ch
         elif ch == ".":
             parts.append("".join(current))

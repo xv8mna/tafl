@@ -12,7 +12,18 @@ import uuid
 
 import polars as pl
 
-from etl_tool.api import APP_NAME, ActionError, Connector, P, action, connector, dtypes, text_length
+from etl_tool.api import (
+    APP_NAME,
+    ActionError,
+    Connector,
+    P,
+    action,
+    all_results,
+    connector,
+    dtypes,
+    split_name,
+    text_length,
+)
 
 _SQLSERVER_DRIVERS = (
     "ODBC Driver 18 for SQL Server",
@@ -33,6 +44,15 @@ _PYTHON_TYPES = {
     bytearray: pl.Binary,
 }
 
+
+# What the ODBC driver's SQLSTATE means when it finds a bad value before the server does
+_VALUE_ERRORS = {
+    "22001": "a text is too long for its column",
+    "22003": "a number is too large for its column, or has too many digits",
+    "22007": "a date or time isn't valid for its column",
+    "22008": "a date or time is outside what its column can hold",
+    "22018": "a value can't be turned into the column's type (e.g. text in a number or date column)",
+}
 
 @connector(
     "sqlserver",
@@ -88,16 +108,27 @@ class SqlServer(Connector):
         # name 'x'. (208) (SQLExecDirectW)") -> "Invalid object name 'x'." With fast_executemany the
         # message comes first: ('String data, right truncation: length 24 buffer 20', 'HY000').
         parts = [str(arg) for arg in error.args]
+        state = next((part for part in parts if re.fullmatch(r"[0-9A-Z]{5}", part)), "")
         text = next((part for part in parts if not re.fullmatch(r"[0-9A-Z]{5}", part)), str(error))
+        if "[SQL Server]" not in text and (state in _VALUE_ERRORS or "right truncation" in text):
+            # The driver found it before the server: its (localized) text names no column or value
+            meaning = _VALUE_ERRORS.get(state, _VALUE_ERRORS["22001"])
+            return f"A value doesn't fit its column in the database: {meaning}"
         text = re.sub(r"\[[^\]]*\]", "", text)
         text = re.sub(r"\s*\(\d+\)\s*(\(SQL\w+\))?", " ", text)
-        text = re.sub(r"\s+", " ", text).strip(" ;") or str(error)
-        if "right truncation" in text:  # the driver's words for a value that doesn't fit its column
-            text = f"A value doesn't fit its column in the database: a text that is too long, or text in a number or date column ({text})"
-        return text
+        return re.sub(r"\s+", " ", text).strip(" ;") or str(error)
 
-    def missing_table(self, error):
-        return bool(error.args) and error.args[0] == "42S02"  # base table or view not found
+    def missing_table(self, error, table):
+        # 42S02: base table or view not found; (4413): a view whose own tables are missing
+        return bool(error.args) and error.args[0] == "42S02" and "(4413)" not in str(error)
+
+    def column_types(self, conn, table):
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT name, TYPE_NAME(user_type_id) FROM sys.columns WHERE object_id = OBJECT_ID(?)", self.qualified(table))
+            return {name: kind.lower() for name, kind in cursor.fetchall()}
+        finally:
+            cursor.close()
 
     def sql_type(self, series, temporary=False):
         dtype = series.dtype
@@ -146,8 +177,9 @@ class SqlServer(Connector):
             for batch in re.split(r"^\s*GO\s*;?\s*$", sql, flags=re.IGNORECASE | re.MULTILINE):
                 if batch.strip():
                     cursor.execute(batch)
-                    if cursor.rowcount >= 0:
-                        total, counted = total + cursor.rowcount, True
+                    rows = all_results(cursor)  # an error in a later statement of the batch shows up here
+                    if rows >= 0:
+                        total, counted = total + rows, True
         finally:
             cursor.close()
         return total if counted else -1
@@ -175,8 +207,10 @@ class SQLite(Connector):
         )
         return [name for (name,) in rows]
 
-    def missing_table(self, error):
-        return "no such table" in str(error)
+    def missing_table(self, error, table):
+        # Only this table: "no such table: main.x" from a view on a dropped table x is no reason to create it
+        missing = re.search(r"no such table: (?:\w+\.)?(.+)$", str(error))
+        return missing is not None and missing[1].lower() == split_name(table)[-1].lower()
 
     def sql_type(self, series, temporary=False):
         dtype = series.dtype
@@ -329,6 +363,9 @@ def export_database(df, p, ctx):
     if df.width == 0:
         raise ActionError("Nothing to export: the table has no columns")
     with ctx.database(p.connection, create=True) as db:  # a SQLite file is created if needed
+        parts = split_name(p.table)
+        if db.connector.id == "sqlite" and len(parts) > 1 and parts[0].lower() == "temp":
+            raise ActionError(f"{p.table} would be a temporary table: it disappears when the export ends. Choose another name.")
         table = db.qualified(p.table)
         existing = db.columns(p.table)
         if existing is None:
@@ -339,6 +376,7 @@ def export_database(df, p, ctx):
             ctx.log(f"Created table {p.table}")
             existing = list(df.columns)
         names = _target_names(df.columns, existing, p)
+        _check_whole_numbers(df, names, db.connector.column_types(db.raw, p.table), p.table)
         data = db.connector.prepare_frame(df.select(list(names)))
         keys = _key_names(p, names) if p.mode in _KEYED else []
         if p.mode in ("update", "upsert"):
@@ -367,6 +405,26 @@ def export_database(df, p, ctx):
         ("deleted", deleted), ("updated", updated), ("added", added)) if count > 0]
     ctx.log(f"{p.table}: " + (", ".join(parts) if parts else "nothing changed"))
     return df
+
+
+_WHOLE_NUMBER_TYPES = {"tinyint", "smallint", "int", "integer", "bigint", "bit"}
+
+
+def _check_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str) -> None:
+    """The database would cut off decimals that go into a whole-number column (1.5 -> 1) without
+    a word: refuse instead."""
+    kinds = {name.lower(): kind for name, kind in types.items()}
+    for source, target in names.items():
+        column = df[source]
+        if column.dtype.is_float() and kinds.get(target.lower()) in _WHOLE_NUMBER_TYPES:
+            values = column.drop_nulls().drop_nans()
+            if values.len() and (values != values.round(0)).any():
+                example = values.filter(values != values.round(0))[0]
+                raise ActionError(
+                    f"The column {target} of {table} holds whole numbers ({kinds[target.lower()]}), but {source} has "
+                    f"decimals (e.g. {example}): they would be cut off. Round them first, e.g. ROUND([{source}]), "
+                    "or change the column's type in the database."
+                )
 
 
 def _target_names(columns: list[str], existing: list[str], p) -> dict[str, str]:

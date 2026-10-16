@@ -152,6 +152,43 @@ def test_no_permission_is_not_a_missing_table():
     assert columns(Exception('relation "orders" does not exist')) is None
     with pytest.raises(ActionError, match="permission was denied"):
         columns(Exception("The SELECT permission was denied on the object 'orders'"))
+    assert columns(Exception("Relation »orders« existiert nicht")) is None  # unknown words: as before, missing
+
+
+def test_a_view_whose_table_is_gone_is_not_a_missing_table(db):
+    db.export(DATA)
+    db.command("CREATE VIEW broken AS SELECT * FROM orders; DROP TABLE orders")
+    with pytest.raises(ActionError, match="no such table: main.orders"):  # not "view broken already exists"
+        db.export(DATA, table="broken")
+
+
+def test_names_with_doubled_quotes():
+    from etl_tool.api import split_name
+
+    assert split_name('"my ""big"" table"') == ['my "big" table']
+    assert split_name("[dbo].[a]]b]") == ["dbo", "a]b"]
+    assert split_name("dbo.Orders") == ["dbo", "Orders"]
+
+
+def test_a_temporary_sqlite_table_is_refused(db):
+    with pytest.raises(ActionError, match="temporary table"):
+        db.export(DATA, table="temp.orders")
+
+
+def test_messages_of_the_sql_server_driver():
+    """The ODBC driver finds some bad values before the server; its own (localized) text names no
+    column or value."""
+    from etl_tool.core import Registry
+
+    connector = Registry.default().connectors["sqlserver"]
+    driver = "[22018] [Microsoft][ODBC Driver 17 for SQL Server]Ung�ltiger Zeichenwert (0) (SQLExecute)"
+    assert connector.error_message(Exception("22018", driver)) == (
+        "A value doesn't fit its column in the database: a value can't be turned into the column's type "
+        "(e.g. text in a number or date column)"
+    )
+    assert "a text is too long" in connector.error_message(Exception("String data, right truncation: length 24 buffer 20", "HY000"))
+    server = "[22018] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]Conversion failed when converting the nvarchar value 'x' to data type int. (245) (SQLExecDirectW)"
+    assert connector.error_message(Exception("22018", server)) == "Conversion failed when converting the nvarchar value 'x' to data type int."
 
 
 def test_a_failed_command_changes_nothing(db):
@@ -254,6 +291,20 @@ def test_sqlserver_export(registry):
         with pytest.raises(ActionError):
             export(data, table=new, mode="replace_where", condition="no_such_column = 1")
         assert read(f"SELECT OBJECT_ID('{new}') AS id").rows() == [(None,)]
+
+        # Decimals into a whole-number column would be cut off by the database: refused
+        with pytest.raises(ActionError, match="holds whole numbers .* decimals .* 1.5"):
+            export(pl.DataFrame({"OrderNo": [1.5, 2.0]}))
+        export(pl.DataFrame({"OrderNo": [11.0, None]}))  # whole numbers stored as decimals are fine
+
+        # An error in a later statement of a batch fails the command, and nothing is kept
+        command = registry.actions["db.command"]
+        for sql in (f"DELETE FROM {name};\nSELECT 1/0;", f"DELETE FROM {name}; RAISERROR('check failed', 16, 1);"):
+            with pytest.raises(ActionError, match="Divide by zero|check failed"):
+                command(data, {"connection": "server", "sql": sql}, ctx)
+            assert read(f"SELECT COUNT(*) AS n FROM {name}").rows() == [(4,)]
+        command(data, {"connection": "server", "sql": f"UPDATE {name} SET Net = 1; UPDATE {name} SET Net = 2"}, ctx)
+        assert ctx.messages[-1] == ("info", "Done: 8 rows changed")  # both statements counted
     finally:
         with ctx.database("server") as db:
             for table in (name, new):

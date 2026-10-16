@@ -23,7 +23,17 @@ from . import dtypes, expressions, files, xlsx
 from . import params as P
 from .action import Action, Kind, action, file_fingerprint
 from .context import Context, Mode
-from .database import Connector, Database, connector, frame_from_cursor, make_series, text_length, unique_names
+from .database import (
+    Connector,
+    Database,
+    all_results,
+    connector,
+    frame_from_cursor,
+    make_series,
+    split_name,
+    text_length,
+    unique_names,
+)
 from .errors import ActionError, Cancelled, EtlError
 from .files import combine, find_files, source_files, source_params, source_summary, sources_fingerprint
 from .params import Params, ValidationContext
@@ -47,6 +57,7 @@ __all__ = [
     "ValidationContext",
     "action",
     "combine",
+    "all_results",
     "connector",
     "dtypes",
     "expressions",
@@ -58,6 +69,7 @@ __all__ = [
     "source_files",
     "source_params",
     "source_summary",
+    "split_name",
     "sources_fingerprint",
     "text_length",
     "unique_names",

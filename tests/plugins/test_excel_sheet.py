@@ -254,14 +254,14 @@ def test_what_the_replaced_sheet_had_of_its_own_is_named(act, tmp_path):
     act("excel.export", DATA, {"file": str(path), "sheet": "Data", "existing": "sheet"}, ctx=ctx)
     assert ctx.messages[-2] == (
         "warning",
-        "The old sheet 'Data' had charts, pictures, shapes, comments, conditional formats and data validation of "
-        "its own: they are gone with it (the other sheets keep theirs). To keep such things, put them on another sheet.",
+        "The old sheet 'Data' had its own charts, pictures, shapes, comments, conditional formats and data validation, "
+        "and they were removed with it (the other sheets keep theirs). To keep such things, put them on another sheet.",
     )
     _check_package(path)
     assert openpyxl.load_workbook(path)["Data"]["A2"].value == "Huber"
 
 
-@pytest.mark.parametrize("kind", ["pivotTable", "slicer"])
+@pytest.mark.parametrize("kind", ["pivotTable", "slicer", "timeline"])
 def test_a_sheet_with_its_own_pivot_tables_or_slicers_is_not_replaced(act, tmp_path, kind):
     """Excel connects them with caches elsewhere in the workbook: Tafl leaves such a sheet alone."""
     path = tmp_path / "pivot.xlsx"
@@ -270,7 +270,8 @@ def test_a_sheet_with_its_own_pivot_tables_or_slicers_is_not_replaced(act, tmp_p
     book.close()
     contents = _parts(path)
     contents[f"xl/{kind}s/{kind}1.xml"] = b"<x/>"
-    folder = "http://schemas.microsoft.com/office/2007/relationships/" if kind == "slicer" else RELATIONSHIP
+    folder = {"slicer": "http://schemas.microsoft.com/office/2007/relationships/",
+              "timeline": "http://schemas.microsoft.com/office/2011/relationships/"}.get(kind, RELATIONSHIP)  # fmt: skip
     contents["xl/worksheets/_rels/sheet1.xml.rels"] = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
@@ -280,10 +281,62 @@ def test_a_sheet_with_its_own_pivot_tables_or_slicers_is_not_replaced(act, tmp_p
         for name, content in contents.items():
             archive.writestr(name, content)
     before = path.read_bytes()
-    word = "pivot tables" if kind == "pivotTable" else "slicers"
+    word = {"pivotTable": "pivot tables", "slicer": "slicers", "timeline": "timelines"}[kind]
     with pytest.raises(ActionError, match=f"has {word} of its own.*Move them to another sheet"):
         act("excel.export", DATA, {"file": str(path), "sheet": "Data", "existing": "sheet"})
     assert path.read_bytes() == before
+
+
+def test_lost_objects_that_are_easy_to_mistake(act, tmp_path):
+    """A new kind of chart with its stand-in text box, an old form button, a header picture and
+    an empty list of validation rules; a drawing that is referred to but missing."""
+    path = tmp_path / "data.xlsx"
+    book = xlsxwriter.Workbook(path)
+    book.add_worksheet("Data").write_column("A1", ["Net", 1])
+    book.close()
+    contents = _parts(path)
+    drawing = (
+        '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
+        'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><xdr:twoCellAnchor>'
+        '<mc:AlternateContent><mc:Choice Requires="cx1"><xdr:graphicFrame/></mc:Choice>'
+        "<mc:Fallback><xdr:sp><xdr:txBody>This chart isn't available</xdr:txBody></xdr:sp></mc:Fallback>"
+        "</mc:AlternateContent></xdr:twoCellAnchor></xdr:wsDr>"
+    )
+    contents["xl/drawings/drawing1.xml"] = drawing.encode()
+    contents["xl/drawings/_rels/drawing1.xml.rels"] = (
+        b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        b'<Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2014/relationships/chartEx" Target="../charts/chartEx1.xml"/>'
+        b"</Relationships>"
+    )
+    contents["xl/charts/chartEx1.xml"] = b"<x/>"
+    contents["xl/drawings/vmlDrawing1.vml"] = b'<xml><v:shape><x:ClientData ObjectType="Button"/></v:shape></xml>'
+    relations = (
+        f'<Relationship Id="rId1" Type="{RELATIONSHIP}drawing" Target="../drawings/drawing1.xml"/>'
+        f'<Relationship Id="rId2" Type="{RELATIONSHIP}vmlDrawing" Target="../drawings/vmlDrawing1.vml"/>'
+        f'<Relationship Id="rId3" Type="{RELATIONSHIP}drawing" Target="../drawings/missing.xml"/>'
+    )
+    contents["xl/worksheets/_rels/sheet1.xml.rels"] = (
+        f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{relations}</Relationships>'
+    ).encode()
+    sheet = contents["xl/worksheets/sheet1.xml"].decode()
+    contents["xl/worksheets/sheet1.xml"] = sheet.replace(
+        "</worksheet>", '<dataValidations count="0"/><legacyDrawingHF r:id="rId9"/></worksheet>'
+    ).encode()
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in contents.items():
+            archive.writestr(name, content)
+    ctx = StubContext()
+    act("excel.export", DATA, {"file": str(path), "sheet": "Data", "existing": "sheet"}, ctx=ctx)
+    warning = next(text for level, text in ctx.messages if level == "warning")
+    assert warning.startswith("The old sheet 'Data' had its own charts, form controls and header and footer pictures,")
+
+
+def test_a_tag_cut_in_two_by_a_piece_is_found():
+    from etl_tool.api.xlsx import _SHEET_OWN, _search
+
+    for offset in (-20, -5, 0, 5):  # around the end of the first 1 MiB piece
+        text = b"x" * ((1 << 20) + offset) + b"<conditionalFormatting sqref='A1'>"
+        assert _search(io.BytesIO(text), _SHEET_OWN) == [True, False, False], offset
 
 
 def _parts(path) -> dict[str, bytes]:

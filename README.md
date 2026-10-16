@@ -262,7 +262,8 @@ date-times with a time zone are written in that zone's local time. If the file e
     Formulas with fixed ranges such as `=SUM(Data!C2:C500)` stay as they are: use the table or
     whole columns (`Data!C:C`).
   - What the replaced sheet itself holds goes with it: its own charts, pictures, shapes,
-    comments, conditional formats and data validation (the step warns when there were any).
+    SmartArt, comments, controls, embedded objects, conditional formats, data validation and
+    header and footer pictures (the step warns when there were any).
     A sheet with pivot tables, slicers or timelines of its own is not replaced at all, because
     Excel ties them to other parts of the workbook: move them to another sheet first.
   - Excel calculates the formulas when it opens the file, and refreshes the pivot tables built on

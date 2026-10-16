@@ -11,8 +11,9 @@ So that what is built on the sheet keeps working:
 
 - the sheet keeps its place, tab color, visibility and code name (for macros), and its
   Excel table keeps its name (used by formulas like ``=SUM(Sales[Net])`` and pivot tables);
-- ranges over the sheet's rows of data (from row 1 or 2 down to the old last row) in charts,
-  named ranges and pivot table sources end at the new last row;
+- ranges over the sheet's rows of data (from row 1 or 2 down to the old last row; on a sheet
+  with only its header row, down to row 2) in charts, named ranges and pivot table sources end
+  at the new last row;
 - Excel calculates the formulas again when it opens the file, and refreshes the pivot
   tables that use the sheet.
 """
@@ -83,9 +84,10 @@ def replace_sheet(
     """Writes a sheet into the existing workbook ``target`` (see the module's description).
     True if it replaced a sheet, False if it added one.
 
-    The old sheet's own charts, pictures, comments, conditional formats and data validation go
-    with it: ``warn`` is told so. A sheet with pivot tables, slicers or timelines of its own is
-    not replaced (an ActionError): Excel connects them with other parts of the workbook.
+    What the old sheet holds of its own (charts, pictures, shapes, comments, controls, embedded
+    objects, conditional formats, data validation, header and footer pictures) goes with it:
+    ``warn`` is told so. A sheet with pivot tables, slicers or timelines of its own is not
+    replaced (an ActionError): Excel connects them with other parts of the workbook.
 
     ``write`` gets an empty xlsxwriter workbook (with the target's date system; text that
     starts with = stays text) and adds one sheet to it, e.g. with
@@ -122,7 +124,7 @@ def replace_sheet(
         temporary.unlink(missing_ok=True)
     if replacement.lost and warn is not None:
         warn(
-            f"The old sheet '{replacement.name}' had {_listed(replacement.lost)} of its own: they are gone "
+            f"The old sheet '{replacement.name}' had its own {_listed(replacement.lost)}, and they were removed "
             "with it (the other sheets keep theirs). To keep such things, put them on another sheet."
         )
     return replacement.replaced
@@ -183,8 +185,8 @@ class _Replacement:
         self._check_own_objects()
 
     def _check_own_objects(self) -> None:
-        """Pivot tables, slicers and timelines on the old sheet are refused; its charts, pictures,
-        comments, conditional formats and data validation are listed in ``lost``."""
+        """Pivot tables, slicers and timelines on the old sheet are refused; what else it holds of
+        its own is listed in ``lost``."""
         kinds = {_kind(relation) for relation in self.book.relations(self.part)}
         refused = [word for kind, word in (("pivotTable", "pivot tables"), ("slicer", "slicers"), ("timeline", "timelines")) if kind in kinds]
         if refused:
@@ -194,19 +196,31 @@ class _Replacement:
             )
         drawn: set[str] = set()
         for _, drawing in self.book.related(self.part, "drawing"):
+            if self.book.name(drawing) is None:  # a relationship to a part that isn't there
+                continue
             drawn |= {_kind(relation) for relation in self.book.relations(drawing)}
-            if re.search(rb"<(\w+:)?(sp|cxnSp)[\s>]", self.book.read(drawing)):
+            # Without the stand-ins Excel keeps for older versions (a text box instead of a new kind
+            # of chart, a shape for a form button), what is left are the real shapes
+            xml = _STAND_IN.sub(b"", self.book.read(drawing))
+            if re.search(rb"<(\w+:)?(sp|cxnSp)[\s>]", xml):
                 drawn.add("shape")
+        vml = [part for _, part in self.book.related(self.part, "vmlDrawing") if self.book.name(part) is not None]
+        old_controls = any(re.search(rb'ObjectType="(?!Note")', self.book.read(part)) for part in vml)
+        with self.book.open(self.part) as stream:
+            rules, validation, header_pictures = _search(stream, _SHEET_OWN)
         found = {
-            "charts": "chart" in drawn,
+            "charts": bool(drawn & {"chart", "chartEx"}),
             "pictures": "image" in drawn,
             "shapes": "shape" in drawn,
+            "SmartArt graphics": "diagramData" in drawn,
             "comments": bool(kinds & {"comments", "threadedComment"}),
-            "form controls": "ctrlProp" in kinds,
+            "form controls": "ctrlProp" in kinds or old_controls,
+            "ActiveX controls": "control" in kinds,
+            "embedded objects": bool(kinds & {"oleObject", "package"}),
+            "conditional formats": rules,
+            "data validation": validation,
+            "header and footer pictures": header_pictures,
         }
-        with self.book.open(self.part) as stream:
-            rules = _search(stream, (rb"<(\w+:)?conditionalFormatting[\s>]", rb"<(\w+:)?dataValidations?[\s>]"))
-        found["conditional formats"], found["data validation"] = rules
         self.lost = [what for what, there in found.items() if there]
 
     def run(self, new: _Package) -> None:
@@ -664,17 +678,26 @@ def _insert(parent: etree._Element, element: etree._Element, after: tuple[str, .
     parent.insert(position, element)
 
 
-def _search(stream: IO[bytes], patterns: tuple[bytes, ...]) -> list[bool]:
-    """Whether each pattern occurs in the stream, read in pieces (sheets can be large)."""
+def _search(stream: IO[bytes], patterns: tuple[tuple[bytes, re.Pattern[bytes]], ...]) -> list[bool]:
+    """Whether each (word, pattern) occurs in the stream, read in pieces (sheets can be large).
+    The pattern is only tried where its word is: that is much faster than the pattern alone."""
     found = [False] * len(patterns)
-    compiled = [re.compile(pattern) for pattern in patterns]
     rest = b""
-    while chunk := stream.read(1 << 20):
+    while not all(found) and (chunk := stream.read(1 << 20)):
         text = rest + chunk
-        for index, pattern in enumerate(compiled):
-            found[index] = found[index] or bool(pattern.search(text))
+        for index, (word, pattern) in enumerate(patterns):
+            found[index] = found[index] or (word in text and pattern.search(text) is not None)
         rest = text[-256:]  # a tag that is cut in two is found in the next piece
     return found
+
+
+# What the sheet's XML itself holds: conditional formats, data validation (not an empty list of
+# them), header and footer pictures
+_SHEET_OWN = tuple(
+    (word.encode(), re.compile(rb"<(\w+:)?" + word.encode() + rb"[\s>/]"))
+    for word in ("conditionalFormatting", "dataValidation", "legacyDrawingHF")
+)
+_STAND_IN = re.compile(rb"<(\w+):Fallback\b.*?</\1:Fallback>|<(\w+):Choice\b[^>]*Requires=\"a14\"[^>]*>.*?</\2:Choice>", re.S)
 
 
 def _listed(words: list[str]) -> str:
