@@ -24,6 +24,12 @@ from tafl import APP_FOLDER
 from tafl.api import API_VERSION, Action, Connector
 
 ENV_VAR = "TAFL_PLUGINS"
+# Plugins written for 0.1.0 import the package by its earlier name
+OLD_PACKAGE = "etl_tool"
+RENAMED = (
+    "Since Tafl 0.2.0, plugins import from tafl.api instead of etl_tool.api: change the imports of the plugin "
+    "(e.g. from tafl.api import P, action; EtlError is called TaflError now)."
+)
 
 
 @dataclass
@@ -116,8 +122,15 @@ class Registry:
         self.plugins.append(info)
         try:
             module = importer()
-        except Exception:
-            info.errors.append("Could not load:\n" + traceback.format_exc(limit=-4).strip())
+        except Exception as e:
+            error = "Could not load:\n" + traceback.format_exc(limit=-4).strip()
+            # Also an ImportError: in a folder updated from 0.1.0, left-over etl_tool folders with only
+            # __pycache__ in them can make etl_tool importable (without anything in it)
+            if isinstance(e, ImportError) and (
+                (e.name or "").split(".")[0] == OLD_PACKAGE or "'EtlError' from 'tafl.api'" in str(e)
+            ):
+                error += f"\n{RENAMED}"  # the last line: the command line shows only that one
+            info.errors.append(error)
             return
         self.add_module(module, info)
 

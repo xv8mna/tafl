@@ -54,6 +54,9 @@ their checksums). `tafl-app` opens the window (optionally with a project file as
 `tafl` is the command line program. `.venv\Scripts\python tools\create_shortcut.py` puts a
 **Tafl** shortcut on the desktop.
 
+To update: `git pull`, then run the two `pip install` lines above again. Coming from 0.1.0, also
+run `tools\create_shortcut.py` again; [CHANGELOG.md](CHANGELOG.md) says what changed for plugins.
+
 **Other systems.** Tafl is plain Python and Qt, so it may work on Linux or macOS, but this is
 untested. Windows-specific parts: SQL Server connections (Windows sign-in), the plugin folder in
 `%APPDATA%` (elsewhere, use `TAFL_PLUGINS`), the desktop shortcut, and the `.venv\Scripts\…`
@@ -436,7 +439,7 @@ The settings form is built from `params`. Rules for plugins:
 
 - Import only from `tafl.api` (and third-party libraries), never from other plugins. The
   Windows download includes only the libraries Tafl itself uses (Polars, DuckDB, …).
-- When parameters change, raise `version=` and add `migrate=`: a function
+- When an action's settings (`params`) change, raise `version=` and add `migrate=`: a function
   `(params, old_version) -> params` that converts settings saved by older versions, so old
   projects keep working.
 - Exports and commands (`kind="export"` / `"command"`) only run when a project is run, never in

@@ -6,7 +6,7 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from tafl.cli import main
+from tafl.cli import Console, main
 from tafl.core import Parameter, Project
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "make_examples.py"
@@ -68,6 +68,13 @@ def test_plugins_and_missing_project(capsys, tmp_path):
     assert main(["plugins"]) == 0
     assert "calc.enumerate" in capsys.readouterr().out
     assert main(["run", str(tmp_path / "missing.tafl")]) == 2
+
+
+def test_a_console_without_unicode_gets_words_for_the_symbols(capsys):
+    console = Console()
+    console.unicode = False  # e.g. output to a file in the Windows code page
+    console.print("4. Sort by Revenue ↓, Name → 2 × 3")
+    assert capsys.readouterr().out == "4. Sort by Revenue desc, Name -> 2 x 3\n"
 
 
 def test_tables_that_are_off_are_skipped(demo, capsys):

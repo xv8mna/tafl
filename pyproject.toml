@@ -40,8 +40,9 @@ dependencies = [
     "tzdata; sys_platform == 'win32'",  # time zones: Python on Windows reads them from it
 ]
 
-# setuptools is the build backend: with it in the lock files, Tafl installs from them alone
-# (pip install --no-deps --no-build-isolation).
+# setuptools is the build backend: with it in requirements-dev.lock and requirements-build.lock,
+# Tafl installs from those alone (pip install --no-deps --no-build-isolation, as CI does).
+# requirements.lock has only what Tafl needs to run: an install with it lets pip get setuptools.
 [project.optional-dependencies]
 dev = ["pytest>=9,<10", "pytest-qt>=4.4,<5", "openpyxl>=3.1,<4", "ruff==0.17.0", "setuptools>=77"]
 build = ["pyinstaller>=6.22,<7", "setuptools>=77"]  # the Windows download (tools/build.py)

@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import random
+import zipfile
 from pathlib import Path
 
 import xlsxwriter
@@ -28,15 +30,30 @@ CUSTOMERS = [
 
 
 def write_customers(path: Path) -> None:
-    """An Excel sheet the way people make them: a title, an empty row, then the table."""
-    wb = xlsxwriter.Workbook(path)
-    wb.set_properties({"created": dt.datetime(2026, 10, 1)})  # the same content on every run
+    """An Excel sheet the way people make them: a title, an empty row, then the table.
+
+    The content is the same on every run, but the compressed bytes differ between Python builds
+    (their zlib): a file that already has this content stays as it is."""
+    buffer = io.BytesIO()
+    wb = xlsxwriter.Workbook(buffer)  # parts in temporary files, as when writing to a file
+    wb.set_properties({"created": dt.datetime(2026, 10, 1)})
     ws = wb.add_worksheet("Kunden")
     ws.write("A1", "Kundenliste (Stand 01.10.2026)", wb.add_format({"bold": True, "font_size": 14}))
     ws.write_row("A3", ["Kundennr", "Name", "Ort"], wb.add_format({"bold": True}))
     for row, customer in enumerate(CUSTOMERS, start=3):
         ws.write_row(row, 0, customer)
     wb.close()
+    data = buffer.getvalue()
+    if not (path.is_file() and _unzipped(path.read_bytes()) == _unzipped(data)):
+        path.write_bytes(data)
+
+
+def _unzipped(data: bytes) -> dict[str, bytes] | None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            return {name: archive.read(name) for name in archive.namelist()}
+    except zipfile.BadZipFile:
+        return None
 
 
 def write_orders(path: Path) -> None:

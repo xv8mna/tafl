@@ -61,6 +61,38 @@ def test_external_plugins_load_and_failures_are_isolated(tmp_path):
     assert registry.actions["demo.upper"].description == "Upper-cases a column."
 
 
+def test_a_plugin_for_the_earlier_package_name_is_told_what_to_import(tmp_path):
+    """Plugins written for 0.1.0 import etl_tool.api: the error says what changed."""
+    write(tmp_path, "old.py", GOOD.replace("from tafl.api", "from etl_tool.api"))
+    write(tmp_path, "other.py", "import no_such_module_here\n")
+    registry = Registry()
+    registry.load_folder(tmp_path)
+
+    plugins = {p.name: p for p in registry.plugins}
+    error = plugins["old"].errors[0]
+    assert "No module named 'etl_tool'" in error
+    assert error.splitlines()[-1].startswith("Since Tafl 0.2.0, plugins import from tafl.api instead of etl_tool.api")
+    assert "tafl.api" not in plugins["other"].errors[0]
+
+
+def test_the_hint_also_with_left_over_folders_and_the_old_error_name(tmp_path, monkeypatch):
+    """A folder updated from 0.1.0 can keep src/etl_tool/api with only __pycache__ in it: then
+    etl_tool.api can be imported, without anything in it."""
+    (tmp_path / "left" / "etl_tool" / "api" / "__pycache__").mkdir(parents=True)
+    monkeypatch.syspath_prepend(str(tmp_path / "left"))
+    plugins_folder = tmp_path / "plugins"
+    plugins_folder.mkdir()
+    write(plugins_folder, "old.py", GOOD.replace("from tafl.api", "from etl_tool.api"))
+    write(plugins_folder, "half.py", "from tafl.api import EtlError\n")
+    registry = Registry()
+    registry.load_folder(plugins_folder)
+
+    for name in ("old", "half"):
+        error = next(p for p in registry.plugins if p.name == name).errors[0]
+        assert error.splitlines()[-1].startswith("Since Tafl 0.2.0, plugins import from tafl.api"), error
+        assert "EtlError is called TaflError now" in error
+
+
 def test_actions_grouped_by_category(registry):
     groups = registry.by_category()
     assert {"Import", "Export", "Rows", "Columns", "Text", "Calculate", "Combine"} <= set(groups)

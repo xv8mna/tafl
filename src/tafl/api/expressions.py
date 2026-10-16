@@ -77,6 +77,7 @@ _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
 _VIEW = "__input"
 _ROW = "__etl_row__"
+_FRAME = "__frame"  # the data of a formula that is calculated on a table (see _needs_table)
 _SAFE = {"enable_external_access": False, "autoinstall_known_extensions": False, "autoload_known_extensions": False}
 # DuckDB's settings and catalog: no use in a formula, and they show paths of this computer.
 _BLOCKED = {"current_setting", "getvariable", "which_secret", "query", "query_table"}
@@ -159,17 +160,18 @@ def column_names(formula: str) -> list[str]:
     return names
 
 
-def translate(formula: str) -> str:
+def translate(formula: str, *, row_number: bool = True) -> str:
     """Turn a user formula into DuckDB SQL: ``[Col]`` -> ``"Col"``, ``ISNULL(`` -> ``coalesce(``.
 
     Texts and identifiers in double quotes are left untouched; comments become spaces. Raises
-    ActionError for a text, ``[column]``, comment or parenthesis that isn't closed.
+    ActionError for a text, ``[column]``, comment or parenthesis that isn't closed. With
+    ``row_number``, ``COLUMNS(*)`` leaves out the row number that keeps the rows in order.
     """
     tokens = tokenize(formula)
     problem = _unclosed(formula, tokens)
     if problem:
         raise ActionError(f"Formula error: {problem}\nFormula: {formula}")
-    around = _hide_row_number(formula, tokens)
+    around = _hide_row_number(formula, tokens) if row_number else {}
     out: list[str] = []
     for index, token in enumerate(tokens):
         text = formula[token.start : token.end]
@@ -211,6 +213,24 @@ def _hide_row_number(formula: str, tokens: list[Token]) -> dict[int, tuple[str, 
     return around
 
 
+def _needs_table(formula: str) -> bool:
+    """COLUMNS with a pattern or a lambda, and a query on __input, would see the row number that
+    keeps the rows in order (only COLUMNS(*) can leave it out): such a formula is calculated on
+    a table, whose own row numbers (rowid) they don't see."""
+    tokens = tokenize(formula)
+    for index, token in enumerate(tokens):
+        if token.kind != "word":
+            continue
+        word = _fold(formula[token.start : token.end])
+        if word == _VIEW:
+            return True
+        if word == "columns" and _is_call(tokens, index):
+            argument = _next_index(tokens, _next_index(tokens, index))
+            if argument is None or formula[tokens[argument].start : tokens[argument].end] != "*":
+                return True
+    return False
+
+
 def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.Series:
     """Evaluate a formula for every row; returns one value per row, in row order. With
     ``condition``, the result must be true or false."""
@@ -220,21 +240,34 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
 
     if (name := left_in_formula(formula)) is not None:
         raise ActionError(f"Formula error: there is no parameter {{{name}}} (Project → Parameters lists them)\nFormula: {formula}")
-    body = translate(formula)
+    table = _needs_table(formula)
+    if table and any(_fold(column) == "rowid" for column in df.columns):
+        raise ActionError(
+            "Formula error: COLUMNS with a pattern or a lambda, and a query on __input, don't work with a "
+            "column named rowid (DuckDB keeps that name for its own row numbers): rename the column first"
+            f"\nFormula: {formula}"
+        )
+    body = translate(formula, row_number=not table)
     _check_calls(formula)
     _check_names(formula, df.columns)
     con = _connection()
-    try:
-        _register(con, df.with_row_index(_ROW))
-    except duckdb.Error as e:  # e.g. interrupted
-        raise ActionError(_clean_error(e, formula, df.columns)) from None
+    order = "rowid" if table else _ROW
     try:
         try:
+            if table:
+                _register(con, df, _FRAME)
+                _clear(con, _VIEW)
+                con.execute(f'CREATE TEMP TABLE "{_VIEW}" AS SELECT * FROM "{_FRAME}"')
+            else:
+                _register(con, df.with_row_index(_ROW), _VIEW)
+        except duckdb.Error as e:  # e.g. interrupted
+            raise ActionError(_clean_error(e, formula, df.columns)) from None
+        try:
             # On lines of its own: an error on the line after the formula means it ends too early
-            relation = con.sql(f"SELECT (\n{body}\n) AS value FROM {_VIEW} ORDER BY {_ROW}")
+            relation = con.sql(f"SELECT (\n{body}\n) AS value FROM {_VIEW} ORDER BY {order}")
             result_type = str(relation.types[0])
             if result_type.startswith("TIMESTAMP WITH TIME ZONE"):  # local time: the grid shows no zones
-                relation = con.sql(f"SELECT CAST((\n{body}\n) AS TIMESTAMP) AS value FROM {_VIEW} ORDER BY {_ROW}")
+                relation = con.sql(f"SELECT CAST((\n{body}\n) AS TIMESTAMP) AS value FROM {_VIEW} ORDER BY {order}")
                 result_type = "TIMESTAMP"
         except duckdb.Error as e:
             raise ActionError(_clean_error(e, formula, df.columns)) from None
@@ -254,10 +287,13 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
                 raise
             raise ActionError(f"Formula error: {_first_line(e)}\nFormula: {formula}") from None
     finally:
-        try:
-            con.unregister(_VIEW)
-        except duckdb.Error:  # interrupted (the view may be left: the next formula drops it)
-            pass
+        for name in (_VIEW, _FRAME):
+            try:
+                con.unregister(name)
+            except duckdb.Error:  # interrupted (the view may be left: the next formula drops it)
+                pass
+        if table:
+            _clear(con, _VIEW)
     if result.height != df.height:
         raise ActionError(
             "The formula must give one value per row. For totals use the Aggregate action, "
@@ -317,15 +353,24 @@ def _connection() -> duckdb.DuckDBPyConnection:
     return con
 
 
-def _register(con: duckdb.DuckDBPyConnection, frame: pl.DataFrame) -> None:
-    """Make ``frame`` the view the formula reads. An interrupted unregister can leave the view
-    behind (and unregister then doesn't remove it): it is dropped, so that formulas on this
+def _register(con: duckdb.DuckDBPyConnection, frame: pl.DataFrame, name: str) -> None:
+    """Make ``frame`` the view ``name``. An interrupted formula can leave a view or table of that
+    name behind (and unregister then doesn't remove it): it is dropped, so that formulas on this
     thread keep working."""
     try:
-        con.register(_VIEW, frame)
+        con.register(name, frame)
     except duckdb.CatalogException:
-        con.execute(f'DROP VIEW IF EXISTS "{_VIEW}"')
-        con.register(_VIEW, frame)
+        _clear(con, name)
+        con.register(name, frame)
+
+
+def _clear(con: duckdb.DuckDBPyConnection, name: str) -> None:
+    """Drop the view or the table ``name``, if there is one."""
+    for kind in ("VIEW", "TABLE"):
+        try:
+            con.execute(f'DROP {kind} IF EXISTS "{name}"')
+        except duckdb.CatalogException:  # the name is the other kind
+            pass
 
 
 def _temp_folder() -> str:
@@ -507,7 +552,9 @@ def _first_line(error: BaseException) -> str:
 
 def _clean_error(error: Exception, formula: str, columns: Sequence[str] = ()) -> str:
     text = str(error)
-    if _ROW in text and "GROUP BY" in text:  # an aggregate such as SUM([x]) without OVER (...)
+    # An aggregate such as SUM([x]) without OVER (...); a formula has no GROUP BY of its own, unless
+    # in a query on __input
+    if "must appear in the GROUP BY clause" in text and not re.search(r"\bgroup\s+by\b", formula, re.IGNORECASE):
         return (
             "Formula error: the formula must give one value per row. For totals use the Aggregate "
             f"action, or a window function such as SUM([Amount]) OVER ().\nFormula: {formula}"

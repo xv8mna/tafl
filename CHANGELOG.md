@@ -4,7 +4,35 @@
 
 The first version with a Windows download: a folder with `tafl-app.exe` (the window) and
 `tafl.exe` (the command line), no Python needed. Unzip it, start `tafl-app.exe`, and open
-`examples\demo.tafl` to try it. New: parameters, values that the whole project uses.
+`examples\demo.tafl` to try it. New: parameters, values that the whole project uses, and help
+with formulas (a list of the functions, a formula window, checks while typing).
+
+### For plugins
+
+- The Python package is called `tafl` now, like the app: plugins import from `tafl.api` instead
+  of `etl_tool.api`, and the base class of `ActionError` and `Cancelled` is `TaflError` (it was
+  `EtlError`). A plugin that still imports `etl_tool.api` doesn't load, and its error says what
+  to change.
+- New in `tafl.api`: `parameters` (the project parameters and how `{Name}` is filled in),
+  `all_results` and `split_name`; `Connector.literal`, `sql_spans`, `fill_sql`, `missing_table`
+  and `column_types`, which a connector can override for its database; `expressions.tokenize`,
+  `column_names`, `is_panic` and `evaluate(..., condition=True)`; `P.Expression(creates=...)`
+  for the formula of a new column; `accepts` of every setting (a value of the wrong kind);
+  `dtypes.type_label`; a `warn` function for `xlsx.replace_sheet`.
+
+### Updating an installation from source
+
+```
+git pull
+.venv\Scripts\python -m pip install -r requirements.lock
+.venv\Scripts\python -m pip install --no-deps -e .
+.venv\Scripts\python tools\create_shortcut.py
+```
+
+The first `pip install` brings the libraries to the tested versions (tzdata is new). The second
+one writes the commands `tafl` and `tafl-app` again: until then they look for the package by
+its earlier name and don't start. The last line renews the desktop shortcut, whose icon file
+moved. If a folder `src\etl_tool` is left (with only Python's cache files in it), delete it.
 
 ### Parameters
 
@@ -33,7 +61,7 @@ The first version with a Windows download: a folder with `tafl-app.exe` (the win
   `sp_executesql N'…'`) makes it code there: give such a value to the dynamic SQL as a
   parameter instead (the README shows how).
 - A `{Name}` that is no parameter is an error in a formula (outside quotes and column names)
-  and a warning in other settings.
+  and, in a project with parameters, a warning in other settings.
 - Formula fields: `{` lists the parameters with their values (also inside column names),
   `{Name}` has its own color (red where it would be an error), and the line under the
   formula and the formula window use the values.
@@ -88,9 +116,6 @@ from other people" in the README.
 - On Windows, a file or folder name with a `:` (e.g. a time, `08:30`) is an error; before, an
   export wrote the data into a hidden part of a file. So is a drive without a `\` after it
   (`C:data.csv`, a file in the current folder of drive C).
-- Checking formulas while typing: a check that was stopped at an unlucky moment could make later
-  checks fail.
-- The Python package is called `tafl` now, like the app: plugins import from `tafl.api`.
 - A damaged project file shows a message that says what is wrong. Before, it gave an unexpected
   error, or closed the app when the app was started with it.
 - A step setting of the wrong kind in a project file (e.g. a number where a table belongs) is an

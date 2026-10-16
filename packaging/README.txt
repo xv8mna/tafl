@@ -41,6 +41,8 @@ Plugins
 -------
 Your own plugins go into %APPDATA%\Tafl\plugins (or into the folders named in the environment
 variable TAFL_PLUGINS). Both programs load them, and a plugin can import:
+- Tafl's plugin API, tafl.api (before version 0.2.0: etl_tool.api), and tafl.api.testing for
+  tests: see "Writing a plugin" at https://github.com/xv8mna/tafl#writing-a-plugin
 - the Python standard library, without tkinter, turtle and turtledemo, IDLE, curses,
   ensurepip, venv, antigravity and the texts of help() (pydoc_data)
 - the libraries Tafl uses: Polars, DuckDB, PyArrow (without Flight, Substrait, ORC and the

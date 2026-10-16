@@ -2,7 +2,9 @@
 
 Everything exported here is a stable contract. Changes must stay backwards compatible while
 ``API_VERSION`` stays the same. A plugin can declare the API version it needs (e.g.
-``REQUIRES_API = 2``): apps with an older API don't load it and say why.
+``REQUIRES_API = 2``): apps with an older API don't load it and say why. The one exception was
+version 0.2.0, which renamed the package with the app: plugins import from ``tafl.api`` instead
+of ``etl_tool.api``, and the base class ``EtlError`` is ``TaflError`` now.
 
 A minimal plugin::
 
@@ -34,7 +36,7 @@ from .database import (
     text_length,
     unique_names,
 )
-from .errors import ActionError, Cancelled, EtlError
+from .errors import ActionError, Cancelled, TaflError
 from .files import combine, find_files, source_files, source_params, source_summary, sources_fingerprint
 from .params import Params, ValidationContext
 
@@ -49,11 +51,11 @@ __all__ = [
     "Connector",
     "Context",
     "Database",
-    "EtlError",
     "Kind",
     "Mode",
     "P",
     "Params",
+    "TaflError",
     "ValidationContext",
     "action",
     "combine",

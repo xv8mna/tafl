@@ -109,3 +109,20 @@ def test_the_startup_check_fails_after_an_unexpected_error(start, monkeypatch, q
         assert window.session.result is None
     else:
         assert window.session.result is not None and window.session.result.ok  # the project itself calculated
+
+
+def test_the_startup_check_calculates_every_table_and_logs_what_failed(start, monkeypatch, qtbot, tmp_path, demo):
+    """A formula error in Orders, the second table, fails the check (exit code 3), not only one
+    in the first table that the window shows; the log says which table and step."""
+    text = demo.read_text(encoding="utf-8").replace("ROUND([Net] * 1.19, 2)", "ROUND([Nett] * 1.19, 2)")
+    demo.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("TAFL_STARTUP_CHECK", "1")
+    codes = []
+    monkeypatch.setattr(QApplication, "exit", staticmethod(codes.append))
+    monkeypatch.setattr(QApplication, "exec", lambda self: qtbot.waitUntil(lambda: bool(codes), timeout=60_000))
+    _, window = start(demo)
+    assert codes == [3]
+    assert window.session.result is not None and window.session.result.ok  # Customers, the table shown
+    logged = (tmp_path / APP_FOLDER / f"{COMMAND}.log").read_text(encoding="utf-8")
+    assert "Startup check: Table 'Orders' has an error: step 6 (calc.columns): Formula error in [Gross]: column [Nett] not found" in logged
+    assert "Startup check: Table 'Revenue by customer' has an error" in logged

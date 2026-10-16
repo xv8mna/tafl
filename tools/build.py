@@ -237,8 +237,8 @@ def _license_path(file: PurePath) -> PurePath:
 
 def _check(version: str) -> None:
     """Both programs start and load the plugins and a plugin that imports what plugins may use. The
-    command line runs the examples; the window opens the demo and calculates. All in a temporary
-    folder, without the settings and plugins of the build machine."""
+    command line runs the examples; the window opens the demo and calculates all its tables. All in
+    a temporary folder, without the settings and plugins of the build machine."""
     cli, window = APP / "tafl.exe", APP / "tafl-app.exe"
     started = time.perf_counter()
     with tempfile.TemporaryDirectory() as folder:
@@ -283,7 +283,7 @@ def _check(version: str) -> None:
         print(
             f"checked in {checked - started:.1f} s: tafl.exe --version, plugins (with a plugin that imports the standard "
             f"library), run --preview, run of both examples, show in UTF-8; tafl-app.exe opened the demo with that "
-            f"plugin in {time.perf_counter() - checked:.1f} s"
+            f"plugin and calculated its tables in {time.perf_counter() - checked:.1f} s"
         )
 
 
@@ -298,7 +298,7 @@ def _run(program: Path, *arguments: str | Path, env: dict[str, str], timeout: in
             return result.stdout.decode("utf-8", "replace")
         ended, output = f"ended with exit code {result.returncode}", result.stdout + result.stderr
     message = f"{program.name} {' '.join(map(str, arguments))} {ended}:\n{output.decode('utf-8', 'replace')}"
-    if log is not None:  # tafl-app.exe: 3 for no result or a plugin error, 4 for an unexpected error
+    if log is not None:  # tafl-app.exe: 3 for a table or plugin error (logged), 4 for an unexpected error
         logged = log.read_text(encoding="utf-8", errors="replace")[-20000:] if log.is_file() else "(no log file)"
         message += f"\n{log}:\n{logged}"
     raise SystemExit(message)

@@ -182,7 +182,7 @@ class Console:
 
     def print(self, text: str = "") -> None:
         if not self.unicode:
-            text = text.replace("×", "x").replace("→", "->").replace("↓", " desc").replace("…", "...").replace("–", "-")
+            text = text.replace("×", "x").replace("→", "->").replace("↓", "desc").replace("…", "...").replace("–", "-")
         print(text)
 
     def warn(self, text: str) -> None:

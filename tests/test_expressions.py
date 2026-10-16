@@ -200,6 +200,38 @@ def test_columns_star_leaves_out_the_row_number():
     assert expressions.evaluate(df, "COUNT(*) OVER ()").to_list() == [2, 2]
 
 
+def test_patterns_lambdas_and_queries_dont_see_the_row_number():
+    """COLUMNS with a pattern or a lambda, and a query on __input, see only the table's columns,
+    and the rows stay in their order."""
+    df = pl.DataFrame({"a1": [1, 2, 3], "a2": [10, 20, 30], "b": [100, 300, 200]})
+    total = [111, 322, 233]
+    assert expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*COLUMNS('.*')))").to_list() == total
+    assert expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*COLUMNS(c -> c LIKE '%')))").to_list() == total
+    assert expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*COLUMNS(lambda c: true)))").to_list() == total
+    assert expressions.evaluate(df, "TO_JSON(STRUCT_PACK(*COLUMNS('a1')))").to_list() == ['{"a1":1}', '{"a1":2}', '{"a1":3}']
+    assert expressions.evaluate(df, "(SELECT SUM([a1]) FROM __input) + [a1]").to_list() == [7, 8, 9]
+    ordered = "LIST_SUM(LIST_VALUE(*COLUMNS('a.*'))) * 1000 + ROW_NUMBER() OVER (ORDER BY [b] DESC)"
+    assert expressions.evaluate(df, ordered).to_list() == [11003, 22001, 33002]
+    with pytest.raises(ActionError, match='No matching columns found that match regex "_" Did you mean: "a1", "a2", "b"\nFormula'):
+        expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*COLUMNS('_')))")
+    with pytest.raises(ActionError, match="must give one value per row"):
+        expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*COLUMNS('.*'))) + SUM([a1])")
+    with pytest.raises(ActionError, match="don't work with a column named rowid"):  # DuckDB's own row numbers
+        expressions.evaluate(df.rename({"b": "RowId"}), "LIST_SUM(LIST_VALUE(*COLUMNS('.*')))")
+    assert expressions.evaluate(df.rename({"b": "RowId"}), "[RowId] + 1").to_list() == [101, 301, 201]
+
+
+def test_a_table_left_behind_by_an_interrupt_is_dropped():
+    df = pl.DataFrame({"a": [1, 2]})
+    con = expressions._connection()
+    con.execute('CREATE TEMP TABLE "__input" AS SELECT 1 AS z')  # as if a formula on a table was stopped
+    assert expressions.evaluate(df, "[a] + 1").to_list() == [2, 3]
+    con.execute('CREATE TEMP TABLE "__input" AS SELECT 1 AS z')
+    con.register("__frame", df)
+    assert expressions.evaluate(df, "LIST_SUM(LIST_VALUE(*COLUMNS('a')))").to_list() == [1, 2]
+    assert expressions.evaluate(df, "[a] * 2").to_list() == [2, 4]
+
+
 def test_a_formula_that_ends_too_early(people):
     for formula in ("[Age] +", "CASE WHEN [Age] > 1 THEN 1", "[Age] > 1 AND\n-- a comment", "[Age] +\r"):
         with pytest.raises(ActionError, match="the formula ends too early"):

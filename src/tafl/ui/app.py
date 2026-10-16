@@ -13,7 +13,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from tafl import APP_FOLDER, APP_NAME, COMMAND
-from tafl.core import Registry
+from tafl.core import Registry, Status
 
 from . import theme
 from .main_window import MainWindow
@@ -33,13 +33,16 @@ def main(argv: list[str] | None = None) -> int:
     theme.apply(app)
     app.setWindowIcon(theme.app_icon())
 
-    # tools\build.py: the built app starts, opens a project and calculates, and nobody is there to
-    # click a message away. Exit code 3: no result or plugin errors, 4: an unexpected error.
+    # tools\build.py: the built app starts, opens a project and calculates every table, and nobody
+    # is there to click a message away. Exit code 3: a table that has an error or no result, or a
+    # plugin error (the log says which); 4: an unexpected error.
     check = bool(os.environ.get("TAFL_STARTUP_CHECK"))
     registry = Registry.default()
     for name, error in registry.errors:
         log.warning("Plugin %s failed to load: %s", name, error)
     session = Session(registry)
+    if check:
+        session.set_overview(True)  # all tables, as for the project map, not only the selected one
     window = MainWindow(session, log_file)
     hook = _excepthook(window, dialogs=not check)
     sys.excepthook = hook
@@ -70,11 +73,33 @@ def main(argv: list[str] | None = None) -> int:
                 return
             if hook.errors:
                 app.exit(4)
-            else:
-                app.exit(0 if session.result is not None and session.result.ok and not registry.errors else 3)
+                return
+            problems = _check_problems(session)
+            for problem in problems:
+                log.error("Startup check: %s", problem)
+            app.exit(3 if problems else 0)
 
         QTimer.singleShot(0, finish)
     return app.exec()
+
+
+def _check_problems(session: Session) -> list[str]:
+    """What fails the startup check: plugins that didn't load, and tables without a result or
+    with an error (a table that is turned off is fine)."""
+    problems = [f"Plugin {name} failed to load: {error}" for name, error in session.registry.errors]
+    if not session.project.tables:
+        problems.append("No project with tables was opened")
+    for table in session.project.tables:
+        result = session.results.get(table.id)
+        if result is None:
+            problems.append(f"Table '{table.name}' was not calculated")
+        elif result.failed:
+            errors = [f"table: {result.error}"] if result.error else []
+            for number, (step, step_result) in enumerate(zip(table.steps, result.steps), start=1):
+                if step_result.status == Status.ERROR:
+                    errors.append(f"step {number} ({step.action}): {step_result.error}")
+            problems.append(f"Table '{table.name}' has an error: " + "; ".join(errors or ["(no message)"]))
+    return problems
 
 
 def _setup_logging() -> Path | None:
