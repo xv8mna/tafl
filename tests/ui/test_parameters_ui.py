@@ -1,11 +1,14 @@
 """Parameters in the window: the dialog, renaming, and {Name} in formula fields."""
 
 import datetime as dt
+import time
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialogButtonBox
 
-from etl_tool.core import Parameter
+from etl_tool.api.parameters import Fixed
+from etl_tool.core import Connection, Parameter, parameters
+from etl_tool.ui.connections_dialog import ConnectionsDialog
 from etl_tool.ui.parameters_dialog import ParametersDialog
 
 
@@ -25,9 +28,9 @@ def test_the_dialog_shows_values_and_problems(session):
     assert _cell(dialog, 0, 2).startswith("Error: the formula ends too early")
     assert _cell(dialog, 1, 2).startswith("Error: The parameter {Day} has an error")
     dialog.table.item(1, 0).setText("day")
-    assert dialog.problem.text() == "There are two parameters named 'day'" and not _ok(dialog).isEnabled()
+    assert dialog.problem.text() == "There are two parameters named 'day'" and _ok(dialog).isEnabled()
     dialog.table.item(1, 0).setText("")
-    assert dialog.problem.text() == "Every parameter needs a name." and not _ok(dialog).isEnabled()
+    assert dialog.problem.text() == "Every parameter needs a name."
     dialog.table.item(1, 0).setText("Month")
     assert dialog.problem.isHidden() and _ok(dialog).isEnabled()
     dialog.reject()
@@ -49,7 +52,7 @@ def test_add_move_delete_and_undo(session):
     dialog.remove()
     dialog._accept()
     assert [(p.name, p.value) for p in session.project.parameters] == [("Parameter2", "2026-10-01")]
-    assert session.dirty and session.parameter_values() == {"Parameter2": dt.date(2026, 10, 1)}
+    assert session.dirty and session.parameter_values() == {"Parameter2": Fixed(dt.date(2026, 10, 1), "2026-10-01")}
     session.undo()
     assert session.project.parameters == [] and session.parameter_values() == {}
     dialog.deleteLater()
@@ -66,6 +69,80 @@ def test_renaming_a_parameter_updates_its_steps(session, registry, tmp_path):
     assert step.params["file"] == "orders_{Month}_{Day}.csv"
     assert [p.name for p in session.project.parameters] == ["Month", "Day"]
     dialog.deleteLater()
+
+
+def test_renaming_also_updates_the_other_parameters_and_the_connections(session):
+    session.project.parameters = [
+        Parameter("Day", "2026-10-01"),
+        Parameter("Month", "=strftime({Day}, '%Y-%m')"),
+        Parameter("Folder", "D:/Data"),
+    ]
+    session.project.connections = [Connection("shop", "sqlite", {"file": "{Folder}/shop_{Day}.db"})]
+    table = session.project.add_table("Orders")
+    step = session.project.add_step(table, "csv.import", {"file": "orders_{Day}.csv"})
+    dialog = ParametersDialog(session)
+    dialog.table.item(0, 0).setText("Date")
+    dialog._accept()
+    assert session.project.parameters[1].value == "=strftime({Date}, '%Y-%m')"
+    assert session.project.connections[0].settings["file"] == "{Folder}/shop_{Date}.db"
+    assert step.params["file"] == "orders_{Date}.csv"
+    assert session.parameter_values()["Month"] == "2026-10"  # still worked out from the date
+    session.undo()  # one undo step for all of it
+    assert [p.name for p in session.project.parameters] == ["Day", "Month", "Folder"]
+    assert session.project.parameters[1].value == "=strftime({Day}, '%Y-%m')"
+    assert session.project.connections[0].settings["file"] == "{Folder}/shop_{Day}.db"
+    assert session.project.tables[0].steps[0].params["file"] == "orders_{Day}.csv"
+    session.redo()
+    assert session.project.connections[0].settings["file"] == "{Folder}/shop_{Date}.db"
+    dialog.deleteLater()
+
+
+def test_ok_takes_over_the_cell_that_is_being_edited(session, qtbot):
+    """OK is always enabled. Pressed while a cell is still being edited, it first takes over
+    what is typed there: here the fix of a duplicate name. With problems the dialog stays open."""
+    session.project.parameters = [Parameter("Day", "2026-10-01"), Parameter("Month", "10")]
+    dialog = ParametersDialog(session)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.table.item(1, 0).setText("day")
+    qtbot.mouseClick(_ok(dialog), Qt.MouseButton.LeftButton)
+    assert dialog.isVisible() and dialog.problem.text() == "There are two parameters named 'day'"
+    assert [p.name for p in session.project.parameters] == ["Day", "Month"]  # nothing applied
+
+    dialog.table.setCurrentCell(1, 0)
+    dialog.table.editItem(dialog.table.item(1, 0))
+    editor = dialog.table.indexWidget(dialog.table.model().index(1, 0))
+    editor.setText("Week")  # typed, the cell not left yet
+    assert _cell(dialog, 1, 0) == "day"
+    qtbot.mouseClick(_ok(dialog), Qt.MouseButton.LeftButton)
+    assert not dialog.isVisible() and dialog.result() == dialog.DialogCode.Accepted
+    assert [p.name for p in session.project.parameters] == ["Day", "Week"]
+
+
+def test_a_slow_formula_is_stopped(session, qtbot, monkeypatch):
+    """A parameter's formula may take a few seconds (5; here less): then it is an error, in the
+    dialog and in the connection test, and the window goes on working."""
+    monkeypatch.setitem(parameters.values.__kwdefaults__, "limit", 0.5)
+    slow = "=(SELECT sum(hash(x)) FROM range(2000000000) t(x))"
+    session.project.parameters = [Parameter("Slow", slow), Parameter("Next", "=1 + 1")]
+    session.project.connections = [Connection("shop", "sqlite", {"file": "{Slow}.db"})]
+    started = time.perf_counter()
+    dialog = ParametersDialog(session)
+    assert time.perf_counter() - started < 4
+    assert _cell(dialog, 0, 2) == "Error: the formula took longer than 0.5 seconds"
+    assert _cell(dialog, 1, 2) == "2   (whole number)"  # the next formula on this thread works
+    dialog.table.item(0, 1).setText("=40 + 2")
+    assert _cell(dialog, 0, 2) == "42   (whole number)"
+    dialog.reject()
+    dialog.deleteLater()
+
+    session.reload_sources()  # worked out again: by the connection test, in the background
+    connections = ConnectionsDialog(session)
+    qtbot.addWidget(connections)
+    connections._test()
+    assert connections.test_result.text() == "Connecting…"
+    qtbot.waitUntil(lambda: connections.test_button.isEnabled(), timeout=10_000)
+    assert connections.test_result.text() == "The parameter {Slow} has an error: the formula took longer than 0.5 seconds"
 
 
 def test_the_window_has_the_dialog(window):
@@ -113,6 +190,12 @@ def test_a_brace_lists_the_parameters(window, session, settle, demo, qtbot):
     qtbot.keyClicks(gross._edit, "v")
     qtbot.keyClick(gross._edit, Qt.Key.Key_Return)
     assert gross.value() == "[Net] * {VAT}" and not completer.visible
+    qtbot.keyClicks(gross._edit, " + [Ne")
+    assert completer.visible and completer.shown[0].name == "Net"
+    qtbot.keyClicks(gross._edit, "t {")  # in a column name too: it is filled in there
+    assert completer.visible and [s.name for s in completer.shown] == ["VAT", "Bad"]
+    qtbot.keyClick(gross._edit, Qt.Key.Key_Return)
+    assert gross.value() == "[Net] * {VAT} + [Net {VAT}" and gross._edit.textCursor().position() == len(gross.value())
     gross.set_value("ROUND([Net] * 1.19, 2)")
 
 

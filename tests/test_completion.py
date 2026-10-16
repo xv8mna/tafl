@@ -4,7 +4,7 @@ import datetime as dt
 
 import pytest
 
-from etl_tool.core.completion import Context, column_suggestions, context_at, insertion, suggestions
+from etl_tool.core.completion import Context, Suggestion, column_suggestions, context_at, insertion, suggestions
 
 COLUMNS = column_suggestions([("Net", "number", None), ("Customer Name", "text", None), ("Netto]x", "number", None), ("Gross", "number", 1)])
 
@@ -109,10 +109,20 @@ def test_parameters_after_a_brace():
     assert context_at("[A] + {", 7) == Context("parameter", 6, 7, "")
     assert context_at("[A] + {Da}", 9) == Context("parameter", 6, 10, "Da")  # all of {Da} is replaced
     assert context_at("'Report {Ru", 11) == Context("parameter", 8, 11, "Ru")  # in a text it is filled in, too
-    assert context_at("[{Da", 4).kind == "column"  # part of a column name
-    for formula in ('"{Da', "-- {Da", "$${Da"):  # in names, comments and $$texts$$ nothing is filled in
+    for formula in ("-- {Da", "/* {Da", "$${Da"):  # in comments and $$texts$$ nothing is filled in
         assert context_at(formula, len(formula)) is None
     assert context_at("{Day} + 1", 5) is None  # after the }
     context = context_at("{run d", 6)
     assert [s.name for s in suggestions(context, COLUMNS, found)] == ["Run Date"]
     assert insertion(context, found[1], "{run d + 1") == ("{Run Date} + 1", 10)
+
+
+def test_parameters_in_column_names():
+    """Names are filled in too ([Sales {Year}]): { lists the parameters inside [ ] and " "."""
+    assert context_at("[Sales {", 8) == Context("parameter", 7, 8, "")
+    assert context_at("[Sales {Ye] * 2", 10) == Context("parameter", 7, 10, "Ye")  # in a [ that isn't closed
+    assert context_at("[Sales {Ye}] * 2", 10) == Context("parameter", 7, 11, "Ye")  # all of {Ye} is replaced
+    assert context_at('"Sales {Y', 9) == Context("parameter", 7, 9, "Y")
+    year = Suggestion("parameter", "Year", "whole number: 2026")
+    assert insertion(context_at("[Sales {Ye] * 2", 10), year, "[Sales {Ye] * 2") == ("[Sales {Year}] * 2", 13)
+    assert context_at("[Sales ", 7).kind == "column"  # before the { the column names, as before

@@ -7,7 +7,6 @@ the panels to update and schedules a recalculation in the background.
 from __future__ import annotations
 
 import copy
-import datetime as dt
 import os
 import re
 from collections.abc import Iterable
@@ -18,6 +17,7 @@ import polars as pl
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from etl_tool.api import Action, Mode
+from etl_tool.api.parameters import PLACE
 from etl_tool.api.params import List, Param
 from etl_tool.core import (
     Connection,
@@ -80,7 +80,6 @@ class Session(QObject):
         self.overview = False  # True while the project map is shown: calculate every table
         self._undo: list[dict[str, Any]] = []
         self._redo: list[dict[str, Any]] = []
-        self._parameter_values: tuple[tuple, dict[str, Any]] | None = None  # (what they are from, values)
 
         self._worker = Worker(self)
         self._worker.finished.connect(self._on_results)
@@ -228,11 +227,9 @@ class Session(QObject):
 
     def parameter_values(self) -> dict[str, Any]:
         """Name -> value of the project's parameters, as the calculation uses them (a Failed for
-        a formula with an error), for the checks of formulas while typing."""
-        key = (tuple((p.name, p.value) for p in self.project.parameters), dt.date.today())
-        if self._parameter_values is None or self._parameter_values[0] != key:
-            self._parameter_values = (key, parameters.values(self.project))
-        return dict(self._parameter_values[1])
+        a formula with an error), for the checks of formulas while typing. They are worked out
+        again when the parameters change and on Reload data (see ``Engine.parameter_values``)."""
+        return self.engine.parameter_values()
 
     def table_status(self, table_id: str) -> str:
         """The table's status: "ok", "error", "disabled" (turned off), "skipped" (uses a table
@@ -697,16 +694,19 @@ class Session(QObject):
 
     def set_parameters(self, new: list[Parameter], renames: dict[str, str] | None = None) -> None:
         """Replace the project's parameters; ``renames`` (old name -> new name) also writes
-        ``{New}`` for ``{Old}`` in the settings of the steps."""
+        ``{New}`` for ``{Old}`` in the settings of the steps and the connections, and in the
+        values of the parameters."""
         renames = {old: new_name for old, new_name in (renames or {}).items() if old != new_name}
         if not renames and [p.to_dict() for p in self.project.parameters] == [p.to_dict() for p in new]:
             return
         self._checkpoint()
-        self.project.parameters = new
+        self.project.parameters = [Parameter(p.name, parameters.renamed(p.value, renames)) for p in new]
         if renames:
             for table in self.project.tables:
                 for step in table.steps:
                     step.params = parameters.renamed(step.params, renames)
+            for connection in self.project.connections:
+                connection.settings = parameters.renamed(connection.settings, renames)
         self._edited(structure=True)
 
     # --- undo --------------------------------------------------------------------------------
@@ -799,7 +799,8 @@ class Session(QObject):
 
     def _rebase_paths(self, old_dir: Path | None, new_dir: Path) -> None:
         """Keep file paths valid when the project is saved in another folder: relative paths are
-        relative to the project file."""
+        relative to the project file. A path that starts with a parameter ({Folder}\\orders.csv)
+        stays as it is: the parameter may stand for a whole folder."""
         for table in self.project.tables:
             for step in table.steps:
                 action = self.registry.actions.get(step.action)
@@ -851,7 +852,7 @@ def _rebase(values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | Non
         if param.kind not in ("file", "folder"):
             continue
         text = str(values.get(param.key) or "").strip()
-        if not text or "%" in text or text.startswith("~"):
+        if not text or "%" in text or text.startswith("~") or PLACE.match(text):
             continue
         path = Path(text)
         if not path.is_absolute():

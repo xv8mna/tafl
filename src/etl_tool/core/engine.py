@@ -19,7 +19,7 @@ import time
 import traceback
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -40,7 +40,7 @@ from etl_tool.api import (
     ValidationContext,
 )
 from etl_tool.api.expressions import is_panic
-from etl_tool.api.parameters import Failed, sql_literal
+from etl_tool.api.parameters import fill_sql
 
 from . import parameters
 from .project import Project, Step, Table
@@ -162,6 +162,9 @@ class Engine:
         self.reload_token = 0
         # Values given for the project's parameters, e.g. by `tafl run --set Day=2026-10-01`
         self.parameter_overrides: dict[str, str] = {}
+        # The parameters' values by what they were worked out from (shared with snapshots)
+        self._parameter_values: dict[tuple, dict[str, Any]] = {}
+        self._parameter_lock = threading.Lock()
 
     def reload(self) -> None:
         """Re-read all sources on the next calculation (databases can't tell us they changed)."""
@@ -172,7 +175,28 @@ class Engine:
         a background thread while the project is being edited."""
         twin = Engine(copy.deepcopy(self.project), self.registry, self.cache)
         twin.reload_token = self.reload_token
+        twin.parameter_overrides = dict(self.parameter_overrides)
+        twin._parameter_values, twin._parameter_lock = self._parameter_values, self._parameter_lock
         return twin
+
+    def parameter_values(self) -> dict[str, Any]:
+        """Name -> value of the project's parameters (a Failed for one that can't be worked out).
+        They are worked out again only when the parameters, the overrides or the reload token
+        change (a run reloads): the calculations in between use the same values, so that =NOW()
+        doesn't change with every edit."""
+        key = (
+            tuple((p.name, p.value) for p in self.project.parameters),
+            tuple(sorted(self.parameter_overrides.items())),
+            self.reload_token,
+        )
+        with self._parameter_lock:
+            found = self._parameter_values.pop(key, None)
+            if found is None:
+                found = parameters.values(self.project, self.parameter_overrides)
+            self._parameter_values[key] = found  # to the end: the values unused for longest are dropped first
+            while len(self._parameter_values) > 8:  # a snapshot may still use an older key
+                del self._parameter_values[next(iter(self._parameter_values))]
+        return dict(found)
 
     def evaluate(
         self,
@@ -307,8 +331,8 @@ class _Evaluation:
         self.run_id = uuid.uuid4().hex if mode == Mode.RUN else ""
         self.results: dict[str, TableResult] = {}
         self.stack: list[str] = []
-        # Worked out once per calculation, so that =TODAY() means the same day for every step
-        self.parameters = parameters.values(self.project, engine.parameter_overrides)
+        # The same for every step, so that =TODAY() means the same day everywhere
+        self.parameters = engine.parameter_values()
 
     def table(self, table_id: str, until: int | None = None) -> TableResult:
         full = until is None
@@ -380,12 +404,20 @@ class _Evaluation:
             return _error(step, f"'{action.name}' can only be the first step of a table")
         try:
             raw = action.upgrade(step.params, step.version)
-            raw = parameters.fill(action.params, raw, self.parameters, self._literal(action, raw))
+            connector = self._connector(action, raw)
+            unknown = []
+            if self.parameters:
+                spans = connector.sql_spans if connector is not None else None
+                unknown = parameters.unknown_names(action.params, raw, self.parameters, spans)
+            raw = parameters.fill(action.params, raw, self.parameters, connector.fill_sql if connector is not None else fill_sql)
             params = action.resolve(raw)
         except ActionError as e:
             return _error(step, str(e))
         except Exception as e:
             return _error(step, f"Could not read the step settings: {e}", traceback.format_exc())
+        warnings = [
+            ("warning", f"{{{name}}} is not a parameter of the project: it was left as it is") for name in unknown
+        ]
 
         # Tables this step uses are calculated first.
         deps: dict[str, TableResult] = {}
@@ -399,9 +431,8 @@ class _Evaluation:
             deps[ref] = dependency
 
         if action.side_effects and self.mode == Mode.PREVIEW:
-            return StepResult(
-                step.id, Status.SKIPPED, df=df, key=prev_key, messages=[("info", "Runs only when the project is run")]
-            )
+            messages = [*warnings, ("info", "Runs only when the project is run")]
+            return StepResult(step.id, Status.SKIPPED, df=df, key=prev_key, messages=messages)
 
         ctx = _StepContext(self, deps)
         key = self._key(action, params, prev_key, deps, ctx)
@@ -411,11 +442,12 @@ class _Evaluation:
         if use_cache:
             cached = self.engine.cache.get(key)
             if cached is not None:
-                return StepResult(step.id, Status.OK, df=cached, key=key, cached=True)
+                return StepResult(step.id, Status.OK, df=cached, key=key, cached=True, messages=list(warnings))
 
         problems = action.check(params, self._validation_context(df, deps))
         if problems:
-            return _error(step, "\n".join(problems))
+            return _error(step, "\n".join(problems), messages=warnings)
+        ctx.messages.extend(warnings)
 
         started = time.perf_counter()
         try:
@@ -442,15 +474,15 @@ class _Evaluation:
             self.engine.cache.put(key, out)
         return StepResult(step.id, Status.OK, df=out, key=key, messages=ctx.messages, seconds=seconds)
 
-    def _literal(self, action: Action, raw: Mapping[str, Any]) -> Callable[[Any], str]:
-        """How the database of the step's connection writes a value into SQL."""
+    def _connector(self, action: Action, raw: Mapping[str, Any]) -> Connector | None:
+        """The database type of the step's connection: it fills the parameters into the SQL."""
         for param in action.params:
             if isinstance(param, P.ConnectionRef):
                 definition = self.project.connection(str(raw.get(param.key) or ""))
                 connector = self.registry.connectors.get(definition.type) if definition else None
                 if connector is not None:
-                    return connector.literal
-        return sql_literal
+                    return connector
+        return None
 
     def _key(self, action: Action, params: Params, prev_key: str, deps: dict[str, TableResult], ctx: Context) -> str:
         parts = [prev_key, action.id, str(action.version), json.dumps(params, sort_keys=True, default=str)]
@@ -503,7 +535,6 @@ class _StepContext(Context):
         super().__init__(mode=evaluation.mode, project_dir=evaluation.project.directory, cancel=evaluation.cancel)
         self._evaluation = evaluation
         self._deps = deps
-        self.parameters = {k: v for k, v in evaluation.parameters.items() if not isinstance(v, Failed)}
 
     def table(self, table_id: str) -> pl.DataFrame:
         result = self._deps.get(table_id)

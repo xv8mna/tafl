@@ -1,5 +1,7 @@
 import datetime as dt
 import re
+import threading
+import time
 
 import duckdb
 import polars as pl
@@ -250,3 +252,58 @@ def test_time_zones_collations_and_json_work_without_loading_extensions():
     assert expressions.evaluate(df, "timezone('Europe/Berlin', [d]::TIMESTAMPTZ)").len() == 1
     assert expressions.evaluate(df, "[t] COLLATE de < 'Birnen'").to_list() == [True]
     assert expressions.evaluate(df, "json_extract_string([s], '$.a')").to_list() == ["1"]
+
+
+def test_a_view_left_behind_by_an_interrupt_is_dropped(people):
+    """An interrupted unregister can leave the view a formula reads: the formulas of that thread
+    must keep working."""
+    con = expressions._connection()
+    con.execute('CREATE TEMP VIEW "__input" AS SELECT 1 AS left_over')
+    with pytest.raises(duckdb.CatalogException, match="already exists"):  # what every formula met before
+        con.register("__input", people)
+    assert expressions.evaluate(people, "[Age] + 1").to_list() == [35, 28, 42, 20, 59]
+    assert expressions.evaluate(people, "[Age] * 2").to_list() == [68, 54, 82, 38, 116]
+
+
+def test_an_interrupted_unregister_is_no_error(people, monkeypatch):
+    class Interrupted:
+        """The formula connection, interrupted while it unregisters the view."""
+
+        def __init__(self, con):
+            self._con = con
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+        def unregister(self, name):
+            raise duckdb.InterruptException("INTERRUPT Error: Interrupted!")
+
+    con = expressions._connection()
+    monkeypatch.setattr(expressions, "_connection", lambda: Interrupted(con))
+    assert expressions.evaluate(people, "[Age] + 1").to_list() == [35, 28, 42, 20, 59]
+    monkeypatch.undo()
+    assert expressions.evaluate(people.head(1), "[Name]").to_list() == ["Anna"]
+
+
+def test_interrupts_while_registering_the_view(people):
+    """An interrupt can hit any of DuckDB's calls of a formula: it is an error of that formula only."""
+    con = expressions._connection()
+    stop = threading.Event()
+
+    def keep_interrupting():
+        while not stop.is_set():
+            con.interrupt()
+            time.sleep(0.0005)
+
+    thread = threading.Thread(target=keep_interrupting, daemon=True)
+    thread.start()
+    try:
+        for _ in range(200):
+            try:
+                expressions.evaluate(people, "[Age] + 1")
+            except ActionError as e:
+                assert "Interrupted" in str(e)
+    finally:
+        stop.set()
+        thread.join()
+    assert expressions.evaluate(people, "[Age] + 1").to_list() == [35, 28, 42, 20, 59]

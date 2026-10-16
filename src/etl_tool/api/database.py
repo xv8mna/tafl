@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from .errors import ActionError
-from .parameters import sql_literal
+from .parameters import fill_sql, sql_literal, sql_spans
 from .params import Param, Params, resolve
 
 if TYPE_CHECKING:
@@ -66,6 +66,27 @@ class Connector:
         """``value`` written into SQL (for parameters: ``WHERE Day = {Day}``). The default suits
         most databases: texts in single quotes, dates as '2026-10-01'."""
         return sql_literal(value)
+
+    def sql_spans(self, sql: str) -> list[tuple[int, int, str]]:
+        """Where ``sql`` has its texts, names, comments and $$texts$$, as this database reads
+        them: (start, end, kind), see ``parameters.sql_spans`` (here with its defaults).
+        ``fill_sql`` fills in the parameters by them, and the warnings about a ``{Name}`` that
+        is no parameter use them. Override it for a database that reads them differently, e.g.
+        ``parameters.sql_spans(sql, nested_comments=False)``: a value written where the database
+        doesn't expect it could change the SQL."""
+        return sql_spans(sql)
+
+    def fill_sql(self, sql: str, values: Mapping[str, Any]) -> str:
+        """``sql`` with the parameters' ``{Name}`` filled in (values: name -> value; a fixed
+        value is a ``parameters.Fixed``: ``parameters.plain`` gives its value, ``as_text`` its
+        text), for the SQL settings of the steps that use this connection: written by
+        ``literal`` (with a space between it and a word, a number or a quote right next to it),
+        and as text inside '…' with the quotes doubled; names, comments and $$texts$$ (found by
+        ``sql_spans``) stay as they are. A database that takes values in another form at some
+        places overrides it and gives ``parameters.fill_sql`` a ``literal_at`` instead of
+        ``literal``: it gets the plain value and the position of its ``{Name}`` in ``sql`` (the
+        built-in SQL Server connector writes the arguments of EXEC as constants that way)."""
+        return fill_sql(sql, values, self.literal, spans=self.sql_spans(sql))
 
     def missing_table(self, error: Exception, table: str) -> bool:
         """True if ``error``, from reading ``table``, means that the table doesn't exist, rather

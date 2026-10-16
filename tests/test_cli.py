@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import openpyxl
@@ -109,3 +110,22 @@ def test_parameters_and_set(tmp_path, capsys):
     assert main(["run", str(path), "--set", "Day"]) == 2
     assert "--set needs NAME=VALUE, not 'Day'" in capsys.readouterr().err
     assert main(["run", str(path), "--set", "Day=2026-09-30"]) == 1  # no such file
+
+
+def test_the_listed_values_are_those_the_run_used(tmp_path, capsys):
+    (tmp_path / "orders.csv").write_text("Id\n1\n", encoding="utf-8")
+    project = Project(name="Random", parameters=[Parameter("Version", "1.0"), Parameter("R", "=CAST(RANDOM() * 1e9 AS BIGINT)")])
+    table = project.add_table("Orders")
+    project.add_step(table, "csv.import", {"file": "orders.csv"})
+    project.add_step(table, "csv.export", {"file": "out_v{Version}_{R}.csv"})
+    path = project.save(tmp_path / "random.tafl")
+
+    assert main(["run", str(path)]) == 0
+    output = capsys.readouterr().out
+    listed = re.search(r"Parameters\n  \{Version\} = 1\.0\n  \{R\} = (\d+)\n", output)
+    assert listed and output.index("Parameters") < output.index("Orders")
+    assert [p.name for p in tmp_path.glob("out_*.csv")] == [f"out_v1.0_{listed[1]}.csv"]
+
+    assert main(["show", str(path), "--table", "Orders"]) == 0
+    output = capsys.readouterr().out
+    assert output.index("Parameters") < output.index("Orders") < output.index(" rows ")

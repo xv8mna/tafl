@@ -1,10 +1,12 @@
 """Colors in formulas and the matching bracket."""
 
+import datetime as dt
 import time
 
 from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import QPlainTextEdit
 
+from etl_tool.api.parameters import Failed
 from etl_tool.ui import theme
 from etl_tool.ui.formula_style import FormulaHighlighter, bracket_selections
 
@@ -105,13 +107,43 @@ def test_parameters_have_their_color(qapp):
     highlighter = FormulaHighlighter(edit.document())
     edit.setPlainText("[A] > {Day} || '{day} {Other}' || [{Day}] || {Other}")
     assert ("{Other}", "parameter") in _colors(edit)  # before the names are known
-    highlighter.set_parameters(["Day"])
+    highlighter.set_parameters({"Day": dt.date(2026, 10, 1)})
     assert _colors(edit) == [
         ("[A]", "column"),
         ("{Day}", "parameter"),
         ("'", "text"),
         ("{day}", "parameter"),  # filled in inside a text, too
         (" {Other}'", "text"),  # an unknown name in a text stays text
-        ("[{Day}]", "column"),
+        ("[", "column"),
+        ("{Day}", "parameter"),  # and inside a column name
+        ("]", "column"),
         ("{Other}", "unknown"),
     ]
+
+
+def test_parameters_are_colored_by_place(qapp):
+    """{Name} is filled in as a value, in texts and in column names, not in comments and $$texts$$:
+    a known one has its color wherever it is filled in, an unknown one is red only as a value.
+    [Sales {Year}] is the column of the name with the value filled in."""
+    edit = QPlainTextEdit()
+    highlighter = FormulaHighlighter(edit.document())
+    highlighter.set_columns(["Net", "Sales 2026"])
+    highlighter.set_parameters({"Year": 2026, "Bad": Failed("oops")})
+    edit.setPlainText('[Sales {Year}] + "Sales {year}" + [Sales {Yr}] + [Sales {Bad}] -- {Year} {Yr}\n$${Year} {Yr}$$ || {Yr}')
+    assert _colors(edit) == [
+        ("[Sales ", "column"),
+        ("{Year}", "parameter"),
+        ("]", "column"),
+        ('"Sales ', "column"),
+        ("{year}", "parameter"),
+        ('"', "column"),
+        ("[Sales {Yr}]", "unknown"),  # no such column; the unknown name in it isn't an error itself
+        ("[Sales ", "column"),  # a parameter with an error: the column can't be known
+        ("{Bad}", "parameter"),
+        ("]", "column"),
+        ("-- {Year} {Yr}", "comment"),
+        ("$${Year} {Yr}$$", "text"),
+        ("{Yr}", "unknown"),
+    ]
+    highlighter.set_parameters({"Year": 2027})  # another value: another column
+    assert _colors(edit)[:3] == [("[Sales ", "unknown"), ("{Year}", "parameter"), ("]", "unknown")]

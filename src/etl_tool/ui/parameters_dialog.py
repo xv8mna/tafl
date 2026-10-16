@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QDialog,
     QDialogButtonBox,
@@ -25,11 +26,11 @@ from . import theme
 from .session import Session
 
 HELP = (
-    "Use a parameter in any setting as <b>{Name}</b>: in file names, texts, formulas and SQL. "
-    "A value is fixed (<code>2026-10-01</code>, <code>500</code>, <code>D:\\Data</code>) or a formula when it "
-    "starts with = (<code>=TODAY() - 1</code>), calculated each time the project is calculated; a formula can "
-    "use the parameters above it. For one run with other values: "
-    "<code>tafl run project.tafl --set Name=value</code>."
+    "Use a parameter as <b>{Name}</b> in the settings you type: file names, folders, texts, formulas, SQL "
+    "and connection settings. A value is fixed (<code>2026-10-01</code>, <code>500</code>, <code>D:\\Data</code>) "
+    "or a formula when it starts with = (<code>=TODAY() - 1</code>); a formula can use the parameters above "
+    "it and is worked out when the project opens, when the parameters change, on Reload data (Ctrl+R) and "
+    "for every run. For one run with other values: <code>tafl run project.tafl --set Name=value</code>."
 )
 _NAME, _VALUE, _NOW = range(3)
 
@@ -145,11 +146,11 @@ class ParametersDialog(QDialog):
     def _update(self) -> None:
         """Show what each value is now, and what is wrong."""
         found = self.parameters()
-        project = Project(parameters=found)
-        problems = parameters.problems(Project(parameters=[p for p in found if p.name]))
-        if any(not p.name for p in found):
-            problems.insert(0, "Every parameter needs a name.")
-        values = {name.lower(): value for name, value in parameters.values(project).items()}
+        if [p.to_dict() for p in found] == [p.to_dict() for p in self.session.project.parameters]:
+            worked_out = self.session.parameter_values()  # as the calculation uses them
+        else:
+            worked_out = parameters.values(Project(parameters=found))
+        values = {name.strip().lower(): value for name, value in worked_out.items()}
         self.table.blockSignals(True)
         for row, parameter in enumerate(found):
             item = self.table.item(row, _NOW)
@@ -163,9 +164,15 @@ class ParametersDialog(QDialog):
                 item.setForeground(QColor(theme.TEXT_DIM))
             item.setToolTip(item.text())
         self.table.blockSignals(False)
+        self._show_problems(found)
+
+    def _show_problems(self, found: list[Parameter]) -> list[str]:
+        problems = parameters.problems(Project(parameters=[p for p in found if p.name]))
+        if any(not p.name for p in found):
+            problems.insert(0, "Every parameter needs a name.")
         self.problem.setText("\n".join(problems))
         self.problem.setVisible(bool(problems))
-        self.box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not problems)
+        return problems
 
     def _update_buttons(self) -> None:
         row, count = self.table.currentRow(), self.table.rowCount()
@@ -173,8 +180,22 @@ class ParametersDialog(QDialog):
         self.up_button.setEnabled(0 < row < count)
         self.down_button.setEnabled(0 <= row < count - 1)
 
+    def _commit_editor(self) -> None:
+        """Take over what is typed in a cell that is still being edited (OK may be pressed
+        before the cell is left)."""
+        for row in range(self.table.rowCount()):
+            for column in (_NAME, _VALUE):
+                editor = self.table.indexWidget(self.table.model().index(row, column))
+                if editor is not None:
+                    self.table.commitData(editor)
+                    self.table.closeEditor(editor, QAbstractItemDelegate.EndEditHint.NoHint)
+
     def _accept(self) -> None:
+        """OK: with problems the dialog stays open and shows them, else the parameters apply."""
+        self._commit_editor()
         found = self.parameters()
+        if self._show_problems(found):
+            return
         renames = {}
         for row, parameter in enumerate(found):
             original = self.table.item(row, _NAME).data(Qt.ItemDataRole.UserRole)

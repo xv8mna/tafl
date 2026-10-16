@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from etl_tool.core import Connection, Project, Status
+from etl_tool.core import Connection, Parameter, Project, Status
 
 
 def test_open_select_and_calculate(qtbot, settle, session, demo):
@@ -73,6 +73,45 @@ def test_saving_elsewhere_keeps_file_paths_working(qtbot, settle, session, demo,
     session.save_project(demo)  # back next to the data: relative again
     assert first.params["file"] == "data/customers.xlsx"
     assert not session.dirty
+
+
+def test_saving_elsewhere_keeps_paths_that_start_with_a_parameter(session, registry, tmp_path):
+    """{Folder}\\orders.csv may stand for any folder: it stays as it is. A parameter later in a
+    relative path is part of a file name: the path is kept working as any other."""
+    project = Project(name="x", parameters=[Parameter("Folder", "D:\\Data"), Parameter("Day", "2026-10-01")])
+    project.add_connection("shop", "sqlite", file="{Folder}\\shop.db")
+    table = project.add_table("Orders")
+    project.add_step(table, registry.actions["csv.import"], {"file": "{Folder}\\orders.csv"})
+    daily = project.add_table("Daily")
+    project.add_step(daily, registry.actions["csv.import"], {"file": "data\\{Day}.csv"})
+    project.save(tmp_path / "here" / "x.tafl")
+    session.open_project(tmp_path / "here" / "x.tafl")
+    session.save_project(tmp_path / "elsewhere" / "x.tafl")
+    assert session.project.tables[0].steps[0].params["file"] == "{Folder}\\orders.csv"
+    assert session.project.connections[0].settings["file"] == "{Folder}\\shop.db"
+    moved = session.project.tables[1].steps[0].params["file"]
+    assert Path(moved).resolve() == (tmp_path / "here" / "data" / "{Day}.csv").resolve()  # outside the new folder: the full path
+    session.save_project(tmp_path / "here" / "x.tafl")  # back: relative again
+    assert session.project.tables[1].steps[0].params["file"] == "data/{Day}.csv"
+    assert session.project.tables[0].steps[0].params["file"] == "{Folder}\\orders.csv"
+
+
+def test_parameter_values_stay_until_a_reload(session, settle, demo):
+    """The checks of formulas use the values of the calculation: worked out again when the
+    parameters change and on Reload data, not with every edit (=RANDOM() stays the same)."""
+    session.open_project(demo)
+    session.set_parameters([Parameter("R", "=RANDOM()")])
+    first = session.parameter_values()["R"]
+    session.set_note(session.project.tables[0].steps[0].id, "An edit")
+    settle(session)
+    assert session.parameter_values()["R"] == first == session.engine.snapshot().parameter_values()["R"]
+    session.reload_sources()
+    second = session.parameter_values()["R"]
+    assert second != first
+    session.set_parameters([Parameter("R", "=RANDOM()"), Parameter("S", "1")])
+    assert session.parameter_values()["R"] not in (first, second)
+    session.undo()
+    assert session.parameter_values()["R"] == second  # the same parameters as before: the same values
 
 
 def test_run_project_writes_exports_and_previews_reuse_it(qtbot, settle, session, demo):

@@ -162,18 +162,18 @@ class ConnectionsDialog(QDialog):
         connector = connection and self.registry.connectors.get(connection.type)
         if connector is None:
             return
-        try:  # {Name} of a parameter, as the calculation fills it in
-            settings = parameters.fill(list(connector.params), connection.settings, self.session.parameter_values())
-        except ActionError as e:
-            self._tested((False, str(e)))
-            return
+        settings, values = dict(connection.settings), self.session.parameter_values
         ctx = Context(project_dir=self.session.project.directory)
         self.test_result.setText("Connecting…")
         self.test_button.setEnabled(False)
 
         def work(_cancel):
+            try:  # {Name} of a parameter, as the calculation fills it in (a formula may take a while)
+                filled = parameters.fill(list(connector.params), settings, values())
+            except ActionError as e:
+                return False, str(e)
             try:
-                with connector.open(settings, ctx) as db:
+                with connector.open(filled, ctx) as db:
                     return True, f"Connected — {len(db.tables())} tables and views"
             except Exception as e:
                 return False, str(e)

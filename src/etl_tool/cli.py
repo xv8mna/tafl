@@ -1,7 +1,7 @@
 """Command line: run projects, look at tables, list plugins.
 
-    tafl run PROJECT [--table NAME ...] [--preview]
-    tafl show PROJECT --table NAME [--step N] [--rows 20]
+    tafl run PROJECT [--table NAME ...] [--preview] [--set NAME=VALUE ...]
+    tafl show PROJECT --table NAME [--step N] [--rows 20] [--set NAME=VALUE ...]
     tafl plugins
 """
 
@@ -62,8 +62,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _parameters(engine: Engine, given: list[str], console: Console) -> int | None:
-    """Takes the --set values; lists the parameters with the values the run uses. 2 if a value
-    is given for no parameter, or a name can't be used."""
+    """Takes the --set values. 2 if a value is given for no parameter, or a name can't be used."""
     overrides = {}
     for item in given:
         name, sign, value = item.partition("=")
@@ -77,17 +76,22 @@ def _parameters(engine: Engine, given: list[str], console: Console) -> int | Non
     if found:
         return 2
     engine.parameter_overrides = overrides
+    return None
+
+
+def _list_parameters(engine: Engine, console: Console) -> None:
+    """The parameters with the values the calculation used (a run works them out anew)."""
     if engine.project.parameters:
         console.print("Parameters")
-        for name, value in parameters.values(engine.project, overrides).items():
+        for name, value in engine.parameter_values().items():
             shown = f"error: {value.message}" if isinstance(value, Failed) else as_text(value)
             console.print(f"  {{{name}}} = {shown}")
-    return None
 
 
 def _run(engine: Engine, args: argparse.Namespace, console: Console) -> int:
     started = time.perf_counter()
     results = engine.run(args.table, mode=Mode.PREVIEW if args.preview else Mode.RUN)
+    _list_parameters(engine, console)
     failed = False
     for table_id, result in results.items():
         table = engine.project.table(table_id)
@@ -111,6 +115,7 @@ def _show(engine: Engine, args: argparse.Namespace, console: Console) -> int:
         console.error(f"Table '{table.name}' has steps 1 to {len(table.steps)}")
         return 2
     result = engine.evaluate(table.id, until=None if args.step is None else args.step - 1)
+    _list_parameters(engine, console)
     console.print(table.name)
     if result.error:
         console.print(f"  {console.symbol(Status.ERROR)} {result.error}")

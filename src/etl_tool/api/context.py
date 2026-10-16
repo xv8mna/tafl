@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .errors import ActionError, Cancelled
 
@@ -35,9 +36,6 @@ class Context:
         self.project_dir = Path(project_dir) if project_dir else None
         self.messages: list[tuple[str, str]] = []
         self._cancel = cancel
-        # The project's parameters (name -> value). Their {Name} in the step's settings is filled
-        # in before the action runs; actions only need this for values they build themselves.
-        self.parameters: dict[str, Any] = {}
 
     def table(self, table_id: str) -> pl.DataFrame:
         """The result of another table. Only tables chosen in this step's parameters."""
@@ -54,11 +52,24 @@ class Context:
         raise ActionError(f"Connection '{connection}' is not available here")
 
     def resolve_path(self, path: str | Path) -> Path:
-        """Expand ``%VARS%`` and ``~``; relative paths are relative to the project file."""
+        """Expand ``%VARS%`` and ``~``; relative paths are relative to the project file. On
+        Windows a drive without a ``\\`` after it (``C:data.csv`` is in the current folder of
+        drive C) and a ':' after the drive (``report 08:30.csv`` would write into a hidden part
+        of the file ``report 08``) are an ActionError."""
         text = str(path).strip()
         if not text:
             raise ActionError("No file or folder specified")
         resolved = Path(os.path.expandvars(os.path.expanduser(text)))
+        if os.name == "nt":
+            drive, rest = os.path.splitdrive(str(resolved))
+            if re.fullmatch(r"[A-Za-z]:", drive) and not resolved.root:
+                where = "" if text == drive else f" (in {text})"
+                raise ActionError(f"'{drive}' needs a \\ after it: {drive}\\ is the top folder of drive {drive[0].upper()}{where}")
+            if ":" in rest or (drive.endswith(":") and not resolved.root):  # 8:30.csv: "8:" would be a drive
+                raise ActionError(
+                    f"':' can't be part of a file or folder name: {text}. For a time in a name, write it without ':', "
+                    "e.g. STRFTIME(NOW(), '%H-%M')"
+                )
         if not resolved.is_absolute() and self.project_dir is not None:
             resolved = self.project_dir / resolved
         return resolved

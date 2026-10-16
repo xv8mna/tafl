@@ -71,10 +71,11 @@ app). On the command line:
   `examples\output`).
   With `--preview` it only calculates and writes nothing; `--table NAME` runs only that table and
   the tables it uses (with their exports and commands); `--set Day=2026-10-01` gives a
-  [parameter](#parameters) another value for this run. It exits with 0 when everything worked,
+  [parameter](#parameters) another value for this run (the demo has none). For a project with
+  parameters it lists the values the run used. It exits with 0 when everything worked,
   1 when a step failed and 2 when the project can't be opened or has no such table or
   parameter.
-- `show` prints the steps of a table and the data after one step.
+- `show` prints the steps of a table and the data after one step (also with `--set`).
 - `plugins` lists all actions and shows plugins that failed to load.
 - `.venv\Scripts\python examples\make_examples.py` recreates the demo data and project.
 - `.venv\Scripts\python tools\make_big_project.py` creates `examples\big500.tafl`, a big project
@@ -310,34 +311,72 @@ the data of its step: no files, network or database access.
 ## Parameters
 
 A parameter is a value the whole project uses, such as the day a daily report is for. Define
-them with **Parameters** in the toolbar (or **Project → Parameters…**) and write `{Name}` in any
-setting: file names, texts, formulas, SQL, connection settings.
+them with **Parameters** in the toolbar (or **Project → Parameters…**) and write `{Name}` in the
+settings you type, of steps and of connections: file names, folders, texts, column names,
+formulas and SQL. Numbers, choices and checkboxes take no parameters.
 
 | Name | Value | Gives |
 |---|---|---|
-| `Day` | `=TODAY() - 1` | yesterday, worked out each time the project is calculated |
+| `Day` | `=TODAY() - 1` | yesterday |
 | `Month` | `=STRFTIME({Day}, '%Y-%m')` | `2026-10`: a formula can use the parameters above it |
 | `Folder` | `D:\Reports` | a fixed text |
 | `Limit` | `500` | a fixed number (also: dates `2026-10-01`, date-times `2026-10-01 08:30`) |
 
+Formulas are worked out when the project opens, when the parameters change, on **Reload data**
+(Ctrl+R) and for every run. The previews in between keep these values, so `=NOW()` doesn't
+change with every edit. A formula may take 5 seconds: a slower one is stopped and counts as an
+error. The dialog shows each value as it is now, or what is wrong.
+
 How `{Name}` is filled in depends on where it is written:
 
-- **File names, folders, texts**: the value as text, e.g. `{Folder}\sales_{Month}.xlsx`.
+- **File names, folders, texts, column names**: the value as text, e.g.
+  `{Folder}\sales_{Month}.xlsx`. A fixed value stays as it was written: `2.50`, not `2.5`.
+  Windows file names can't contain `:`, so write a time without it, e.g.
+  `=STRFTIME(NOW(), '%Y-%m-%d %H-%M')`.
 - **Formulas**: a value of its type, so `[Date] = {Day}` compares dates and `[Net] > {Limit}`
-  numbers. Inside quotes the text: `'Report ' || '{Month}'`.
+  numbers; a negative number in parentheses, `(-5)`. Inside quotes and column names the text:
+  `'Report {Month}'`, `[Sales {Month}]`. Comments stay as they are.
 - **SQL**: a value written for that database, e.g. `WHERE OrderDate = {Day}` becomes
-  `WHERE OrderDate = CAST('2026-10-15' AS date)` on SQL Server. Quotes in a text need no care,
-  and a value can never change the SQL itself (so `{Name}` can't stand for a table name).
-  Inside '…' the text: `LIKE '%{Month}%'`.
+  `WHERE OrderDate = CAST('2026-10-15' AS date)` on SQL Server; texts in quotes, with their own
+  quotes doubled. Inside '…' the text, also with the quotes doubled: `LIKE '%{Month}%'`. Names
+  (`[…]`, `"…"`) and comments stay as they are, so `{Name}` can't stand for a table name.
+  SQLite and SQL Server connections find texts, names and comments where their database does
+  (e.g. SQL Server's nested `/* */` comments), so a value can't end or start one.
+- **SQL Server**: the arguments of `EXEC` take only constants, so there a date is written
+  `'20261015'` and a date-time `'2026-10-15T08:30:00.000'`, which every language setting reads
+  the same (`EXEC dbo.Refresh @Day = {Day}`, also `EXEC (…, {Day}) AT Server`). A text
+  parameter gets them in this form too: write `@Label = '{Day}'` for `2026-10-15`. An argument
+  can't be a calculation such as `{Days} + 1` (or `-{Days}` with a negative value). A date-time
+  with parts of a millisecond gets six digits, which a `datetime` or `smalldatetime` parameter
+  doesn't take: cut it to whole seconds for one, e.g. `=DATE_TRUNC('second', NOW())`. A
+  `datetime` column (not `datetime2`) keeps times to 1/300 of a second: compare it with whole
+  seconds or a range, as `= {Stamp}` with milliseconds can find nothing. Other places that take
+  only constants get the typed form and fail: write a date there in quotes yourself, e.g. a
+  procedure's default value `@Day date = '{Day}'`, or an ODBC `{call …}`.
+- **SQL that runs SQL**: inside '…' a value is only text, but a text that is itself run as SQL
+  (`EXEC('…')`, `sp_executesql N'…'`) makes it code there. Give such a value to the dynamic SQL
+  as a parameter instead:
+  `DECLARE @Day date = {Day}; EXEC sp_executesql N'SELECT … WHERE Day = @Day', N'@Day date', @Day = @Day`.
+
+In formulas and SQL a value never joins a word or a number next to it: a space goes between
+them, so `Sales_{Year}` becomes `Sales_ 2026`, not the table `Sales_2026`. `{Name}` can't stand
+for a part of a name there (in file names and texts it can: `sales_{Month}.xlsx`). In SQL,
+`5-{Offset}` with -5 becomes `5- -5`, not `5--5`, the start of a comment.
+
+A fixed date-time with a time zone, `2026-10-01 08:30+02:00`, is that moment in the local time
+of the computer in formulas and SQL, as `NOW()` is.
 
 Only names of parameters are filled in: other braces, e.g. `\d{3}` in a pattern, stay as they
-are. In formulas, `{` lists the parameters with their values, and the line under the formula
-uses them. A parameter whose formula has an error stops the steps that use it. Renaming a
-parameter in the dialog renames it in all steps.
+are. A `{Name}` that is no parameter stays as it is: in a formula, outside quotes and column
+names, that is an error; in other settings the step shows a warning (in a project with
+parameters). A parameter whose formula has an error stops the steps that use it. In formulas,
+`{` lists the parameters with their values, and the line under the formula uses them. Renaming
+a parameter in the dialog renames it in the steps, in the other parameters and in the
+connections.
 
 For one run with other values: `tafl run daily.tafl --set Day=2026-10-01` (several `--set`
-for several parameters; a value can be a formula, `--set "Day==TODAY() - 7"`). The run lists the
-values it used.
+for several parameters; a value can be a formula, `--set "Day==TODAY() - 7"`; `tafl show` takes
+`--set` too). The run lists the values it used.
 
 ## Formats
 

@@ -7,14 +7,14 @@ import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import polars as pl
 
 from etl_tool.api import ActionError, Cancelled, expressions
 from etl_tool.api.dtypes import type_label
-from etl_tool.api.parameters import PLACE, fill_formula
+from etl_tool.api.parameters import fill_formula, fill_text, formula_places
 
 from .cancel import CancelEvent
 
@@ -37,6 +37,12 @@ class Column:
     name: str
     type: str  # the word the grid uses: text, integer, number, date, ...
     row: int | None = None  # made by this row of the same step (Calculate columns), not an input column
+    written: str = ""  # the row's name as written, if a parameter is filled into it ("Sales {Year}")
+
+    @property
+    def label(self) -> str:
+        """The name to write in a formula: as the row has it, so it follows the parameters."""
+        return self.written or self.name
 
 
 @dataclass
@@ -86,44 +92,46 @@ def preview(
     """Evaluate ``formula`` on the first ``rows`` rows of ``frame``. In Calculate columns
     (``creates``), ``earlier`` are the (name, formula) rows above and ``name`` is this row's
     name: the rows above are added first, and the names are checked as the step does. The
-    ``parameters`` (name -> value) are filled in first, as the calculation does. Setting
-    ``cancel`` stops the work (Cancelled)."""
+    ``parameters`` (name -> value) are filled in first, as the calculation does: into the
+    formulas and into the names of the rows. Setting ``cancel`` stops the work (Cancelled)."""
     if frame is None:
         _forget()
         return Preview(False, no_data or NO_DATA)
-    typed = formula
+    typed, written = formula, [new.strip() for new, _ in earlier]
     if parameters:
         filled = []
         for number, (new, text) in enumerate(earlier, 1):
             try:
-                filled.append((new, fill_formula(text, parameters)))
+                filled.append((fill_text(new, parameters), fill_formula(text, parameters)))
             except ActionError as e:  # a parameter with an error
-                columns = _prepare(frame, tuple(filled), rows, cancel).columns
+                columns = _written(_prepare(frame, tuple(filled), rows, cancel).columns, written)
                 return Preview(False, f"Row {number} ([{new.strip()}]) has an error: {e}", columns=columns)
         earlier = filled
         try:
+            name = fill_text(name, parameters)
             formula = fill_formula(formula, parameters)
         except ActionError as e:
-            columns = _prepare(frame, tuple(earlier), rows, cancel).columns
+            columns = _written(_prepare(frame, tuple(earlier), rows, cancel).columns, written)
             return Preview(False, str(e), columns=columns, **_locate(typed, str(e)))
     with _interrupted_by(cancel):
         sample = _prepare(frame, tuple(earlier), rows, cancel)
+        columns = _written(sample.columns, written)
         problem = sample.problem or _same_name(earlier, name)
         if creates and not name.strip():
             problem = problem or "This row has no column name yet: the step needs one."
         if not formula.strip():
-            return Preview(problem is None, problem or "Type a formula: double-click a column or a function to insert it.", columns=sample.columns)
+            return Preview(problem is None, problem or "Type a formula: double-click a column or a function to insert it.", columns=columns)
         if _empty(formula):
-            return Preview(False, problem or "The formula is empty: it has only comments.", columns=sample.columns)
+            return Preview(False, problem or "The formula is empty: it has only comments.", columns=columns)
         used = used_columns(formula, sample.data.columns)
         try:
             values = _evaluate(sample.data, used, formula, condition, cancel)
         except ActionError as e:
             _stop_if(cancel)
             if problem:
-                return Preview(False, problem, columns=sample.columns)
+                return Preview(False, problem, columns=columns)
             message = _message(str(e))
-            return Preview(False, message, columns=sample.columns, **_locate(typed, message))
+            return Preview(False, message, columns=columns, **_locate(typed, message))
     data = sample.data
     if used:
         base = data.select(used).head(SHOWN_ROWS)
@@ -142,7 +150,7 @@ def preview(
     note = "window functions see only these rows here" if frame.height > rows and _has_word(formula, "over") else ""
     if note:
         message += f" ({note})"
-    return Preview(problem is None, problem or message, shown, sample.columns, values, scope, note)
+    return Preview(problem is None, problem or message, shown, columns, values, scope, note)
 
 
 def used_columns(formula: str, columns: Sequence[str]) -> list[str]:
@@ -200,6 +208,17 @@ def _prepare(frame: pl.DataFrame, earlier: tuple[tuple[str, str], ...], rows: in
     return sample
 
 
+def _written(columns: list[Column], names: Sequence[str]) -> list[Column]:
+    """The columns of the rows above with the names as written in the rows, where parameters
+    were filled into them."""
+    return [
+        replace(column, written=names[column.row - 1])
+        if column.row is not None and column.row <= len(names) and names[column.row - 1] != column.name
+        else column
+        for column in columns
+    ]
+
+
 def _forget() -> None:
     """Drop the kept samples: the input they were made from must not stay in memory for them."""
     global _cache_frame
@@ -234,10 +253,12 @@ def _remember(sample: _Sample) -> None:
 def _locate(formula: str, message: str) -> dict:
     """Where the mistake of an error message is in the formula (``mistake``), and what to write
     there instead (``fix``), if the message tells."""
-    if parameter := re.match(r"(?:There is no parameter|The parameter) \{(.+?)\}", message):
-        name = parameter.group(1).strip().lower()
-        place = next((m for m in PLACE.finditer(formula) if m[1].strip().lower() == name), None)
-        return {"mistake": place.span(), "fix": None} if place else {}
+    if parameter := re.match(r"(There is no parameter|The parameter) \{(.+?)\}", message):
+        name, unknown = parameter.group(2).strip().lower(), parameter.group(1) == "There is no parameter"
+        for start, end, found, place in formula_places(formula):  # an unknown name is an error only as a value
+            if found.strip().lower() == name and (place == "formula" or not unknown):
+                return {"mistake": (start, end), "fix": None}
+        return {}
     tokens = expressions.tokenize(formula)
     suggestion = re.search(r"\(did you mean (.+)\?\)$", message)
     fix = suggestion.group(1) if suggestion else None

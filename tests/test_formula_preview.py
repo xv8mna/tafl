@@ -185,3 +185,38 @@ def test_parameters_are_filled_in_first():
     assert above.message == "Row 1 ([X]) has an error: The parameter {Bad} has an error: oops"
     unknown = preview(DATA, "{Rate} + [Nett]", parameters=values)
     assert unknown.mistake == (9, 15) and unknown.fix == "[Net]"  # found in the formula as typed
+
+
+def test_parameters_in_the_names_of_new_columns(tmp_path, registry):
+    """Calculate columns fills {Name} into the names of the new columns and into the formulas
+    ([Sales {Year}]): the preview does the same, so it agrees with the calculation."""
+    from etl_tool.api.parameters import Failed
+    from etl_tool.core import Engine, Parameter, Project
+
+    (tmp_path / "data.csv").write_text("Amount\n1\n2\n3\n", encoding="utf-8")
+    project = Project(name="Test", parameters=[Parameter("Year", "2026")])
+    project.path = tmp_path / "test.tafl"
+    table = project.add_table("T")
+    project.add_step(table, "csv.import", {"file": "data.csv"})
+    rows = [("Sales {Year}", "[Amount] * 10"), ("Double {Year}", "[Sales {Year}] * 2")]
+    project.add_step(table, "calc.columns", {"columns": [{"name": name, "formula": formula} for name, formula in rows]})
+    engine = Engine(project, registry)
+    calculated = engine.evaluate("T")
+    assert calculated.ok, calculated.first_error
+    assert calculated.df.columns == ["Amount", "Sales 2026", "Double 2026"]
+
+    values = engine.parameter_values()
+    result = preview(DATA, rows[1][1], rows[:1], creates=True, name=rows[1][0], parameters=values)
+    assert result.ok, result.message
+    assert result.rows.columns == ["Sales 2026", "Double 2026"]
+    assert result.values.to_list() == calculated.df["Double 2026"].to_list() == [20, 40, 60]
+    made = [(c.name, c.label) for c in result.columns if c.row is not None]
+    assert made == [("Sales 2026", "Sales {Year}")]  # offered as written: it follows the parameter
+    same = preview(DATA, "1", [("Sales {Year}", "1")], creates=True, name="Sales 2026", parameters=values)
+    assert same.message.startswith("Two new columns are named “Sales 2026”")  # as the step sees them
+
+    values["Bad"] = Failed("oops")
+    above = preview(DATA, "[Amount]", [("Sales {Bad}", "1")], creates=True, name="X", parameters=values)
+    assert above.message == "Row 1 ([Sales {Bad}]) has an error: The parameter {Bad} has an error: oops"
+    named = preview(DATA, "[Amount]", creates=True, name="X {Bad}", parameters=values)
+    assert not named.ok and named.message == "The parameter {Bad} has an error: oops" and named.columns

@@ -159,7 +159,8 @@ class Parameter:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Parameter:
-        return cls(name=str(data["name"]), value=str(data.get("value") or ""))
+        value = data.get("value")
+        return cls(name=str(data["name"]), value="" if value is None else str(value))
 
 
 @dataclass

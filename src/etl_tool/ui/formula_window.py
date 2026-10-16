@@ -230,7 +230,7 @@ class FormulaWindow(QDialog):
             self._set_status(result.ok, result.message)
         self.model.set_frame(result.rows if result.rows is not None else pl.DataFrame())
         self.table.resizeColumnsToContents()
-        if [(c.name, c.type, c.row) for c in result.columns] != [(c.name, c.type, c.row) for c in self._columns]:
+        if result.columns != self._columns:
             self._columns = result.columns
             self._fill_columns()
             self._highlighter.set_columns([c.name for c in result.columns] or None)
@@ -247,7 +247,7 @@ class FormulaWindow(QDialog):
 
     def _column_suggestions(self) -> list[Suggestion]:
         if self._columns:  # with the rows above
-            return column_suggestions([(c.name, c.type, c.row) for c in self._columns])
+            return column_suggestions([(c.label, c.type, c.row) for c in self._columns])
         frame = self._frame()  # before the first preview: the input columns
         return column_suggestions([(n, type_label(t), None) for n, t in frame.schema.items()]) if frame is not None else []
 
@@ -256,11 +256,13 @@ class FormulaWindow(QDialog):
         self.column_list.clear()
         items = []
         for column in self._columns:
-            if search and search not in column.name.lower():
+            if search and search not in column.label.lower():
                 continue
             kind = column.type if column.row is None else f"{column.type} (row {column.row})"
-            item = QTreeWidgetItem([column.name, kind])
-            item.setData(0, Qt.ItemDataRole.UserRole, column.name)
+            item = QTreeWidgetItem([column.label, kind])
+            item.setData(0, Qt.ItemDataRole.UserRole, column.label)
+            if column.written:
+                item.setToolTip(0, f"Now “{column.name}”, with the values of the parameters")
             if column.row is not None:
                 item.setForeground(1, QColor(theme.ACCENT))
             items.append(item)

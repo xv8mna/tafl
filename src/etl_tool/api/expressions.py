@@ -224,7 +224,10 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     _check_calls(formula)
     _check_names(formula, df.columns)
     con = _connection()
-    con.register(_VIEW, df.with_row_index(_ROW))
+    try:
+        _register(con, df.with_row_index(_ROW))
+    except duckdb.Error as e:  # e.g. interrupted
+        raise ActionError(_clean_error(e, formula, df.columns)) from None
     try:
         try:
             # On lines of its own: an error on the line after the formula means it ends too early
@@ -251,7 +254,10 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
                 raise
             raise ActionError(f"Formula error: {_first_line(e)}\nFormula: {formula}") from None
     finally:
-        con.unregister(_VIEW)
+        try:
+            con.unregister(_VIEW)
+        except duckdb.Error:  # interrupted (the view may be left: the next formula drops it)
+            pass
     if result.height != df.height:
         raise ActionError(
             "The formula must give one value per row. For totals use the Aggregate action, "
@@ -309,6 +315,17 @@ def _connection() -> duckdb.DuckDBPyConnection:
         with _connections_lock:
             _connections[ident] = con
     return con
+
+
+def _register(con: duckdb.DuckDBPyConnection, frame: pl.DataFrame) -> None:
+    """Make ``frame`` the view the formula reads. An interrupted unregister can leave the view
+    behind (and unregister then doesn't remove it): it is dropped, so that formulas on this
+    thread keep working."""
+    try:
+        con.register(_VIEW, frame)
+    except duckdb.CatalogException:
+        con.execute(f'DROP VIEW IF EXISTS "{_VIEW}"')
+        con.register(_VIEW, frame)
 
 
 def _temp_folder() -> str:

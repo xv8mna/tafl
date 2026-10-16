@@ -183,13 +183,14 @@ def parameter_suggestions(values: Mapping[str, Any]) -> list[Suggestion]:
 
 
 def _parameter_at(formula: str, tokens: list[expressions.Token], cursor: int) -> Context | None:
-    """{ and the start of a name before the cursor, outside "names", [columns] and comments."""
+    """{ and the start of a name before the cursor, where it is filled in: also in '…' texts,
+    [columns] and "names", not in comments and $$texts$$."""
     found = _PARAMETER_START.search(formula, 0, cursor)
     if found is None:
         return None
     start = found.start()
     token = next((t for t in tokens if t.start <= start < t.end), None)
-    if token is not None and (token.kind in ("quoted", "column", "comment") or token.kind == "string" and not formula.startswith("'", token.start)):
+    if token is not None and (token.kind == "comment" or token.kind == "string" and not formula.startswith("'", token.start)):
         return None
     rest = _PARAMETER_REST.match(formula, cursor)
     return Context("parameter", start, rest.end() if rest else cursor, found[1])

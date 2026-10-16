@@ -4,13 +4,14 @@ at the cursor."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import QPlainTextEdit, QTextEdit
 
-from etl_tool.api import expressions
-from etl_tool.api.parameters import formula_places
+from etl_tool.api import ActionError, expressions
+from etl_tool.api.parameters import fill_text, formula_places
 from etl_tool.core.formula_preview import _KEYWORDS, _may_be_column
 
 from . import theme
@@ -37,8 +38,10 @@ def _format(color: str, *, italic: bool = False, bold: bool = False) -> QTextCha
 
 class FormulaHighlighter(QSyntaxHighlighter):
     """Colors the whole formula from its tokens (a /* comment */ or a text may span lines).
-    ``set_columns`` gives the names a formula can use: other [names] turn red; likewise
-    ``set_parameters`` for {names}."""
+    ``set_columns`` gives the names a formula can use: other [names] turn red. ``set_parameters``
+    gives the project's parameters: {Name} gets their color wherever it is filled in; another
+    {name} turns red where it would be an error (as a value, not inside quotes or a column name),
+    and [Sales {Year}] is the column with the value filled in."""
 
     def __init__(self, document: QTextDocument) -> None:
         super().__init__(document)
@@ -54,7 +57,8 @@ class FormulaHighlighter(QSyntaxHighlighter):
             "parameter": _format(colors["parameter"]),
         }
         self._known: set[str] | None = None  # folded names; None: not known (no data yet)
-        self._parameters: set[str] | None = None  # lowercase names; None: not known
+        self._values: dict[str, Any] | None = None  # the parameters: name -> value; None: not known
+        self._parameters: set[str] | None = None  # their names, stripped and in lowercase
         self._text: str | None = None  # the formula the spans are for
         self._spans: list[tuple[int, int, str]] = []  # (start, end, kind) in Qt positions
 
@@ -65,10 +69,11 @@ class FormulaHighlighter(QSyntaxHighlighter):
             self._text = None
             self.rehighlight()
 
-    def set_parameters(self, names: Iterable[str] | None) -> None:
-        known = None if names is None else {n.strip().lower() for n in names}
-        if known != self._parameters:
-            self._parameters = known
+    def set_parameters(self, values: Mapping[str, Any] | None) -> None:
+        values = None if values is None else dict(values)
+        if values != self._values:
+            self._values = values
+            self._parameters = None if values is None else {n.strip().lower() for n in values}
             self._text = None
             self.rehighlight()
 
@@ -93,20 +98,22 @@ class FormulaHighlighter(QSyntaxHighlighter):
         spans = []
         position = _Positions(formula)
         for index, token in enumerate(tokens):
-            kind = _kind(formula, tokens, index, self._known)
+            kind = _kind(formula, tokens, index, self._known, self._values)
             if kind:
                 spans.append((position(token.start), position(token.end), kind))
-        for start, end, name, in_text in formula_places(formula):  # after the tokens: colored over them
+        for start, end, name, place in formula_places(formula):  # after the tokens: colored over them
             known = self._parameters is None or name.strip().lower() in self._parameters
-            if known or not in_text:  # an unknown {name} in a text stays text
+            if known or place == "formula":  # an unknown {name} in a text or a name stays as it is
                 spans.append((position(start), position(end), "parameter" if known else "unknown"))
         return spans
 
 
-def _kind(formula: str, tokens: list[expressions.Token], index: int, known: set[str] | None) -> str:
+def _kind(
+    formula: str, tokens: list[expressions.Token], index: int, known: set[str] | None, values: Mapping[str, Any] | None
+) -> str:
     token = tokens[index]
     if token.kind in ("column", "quoted"):
-        if known is not None and token.closed and expressions._fold(expressions._name(formula, token)) not in known:
+        if known is not None and token.closed and (name := _column(formula, token, values)) is not None and name not in known:
             return "unknown"
         return "column"
     if token.kind in ("string", "number", "comment"):
@@ -120,6 +127,18 @@ def _kind(formula: str, tokens: list[expressions.Token], index: int, known: set[
         if word in _KEYWORDS or word in _MORE_KEYWORDS:
             return "keyword"
     return ""
+
+
+def _column(formula: str, token: expressions.Token, values: Mapping[str, Any] | None) -> str | None:
+    """The folded name of a [column] or "name", with the parameters filled in as the
+    calculation does; None if a parameter in it has an error (its {Name} shows that)."""
+    name = expressions._name(formula, token)
+    if values and "{" in name:
+        try:
+            name = fill_text(name, values)
+        except ActionError:
+            return None
+    return expressions._fold(name)
 
 
 def bracket_selections(edit: QPlainTextEdit) -> list[QTextEdit.ExtraSelection]:

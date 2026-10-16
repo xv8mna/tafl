@@ -507,7 +507,7 @@ class ExpressionEditor(Editor):
     def _column_suggestions(self) -> list[Suggestion]:
         result = self._result
         if result is not None and result.columns:  # with their types, and the rows above
-            return column_suggestions([(c.name, c.type, c.row) for c in result.columns])
+            return column_suggestions([(c.label, c.type, c.row) for c in result.columns])
         frame = self.ctx.input_frame()  # before the first check: the input columns
         if frame is not None:
             return column_suggestions([(name, type_label(kind), None) for name, kind in frame.schema.items()])
