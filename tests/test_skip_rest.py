@@ -139,17 +139,99 @@ def test_another_table_and_tables_that_use_a_skipped_one(project, registry):
     project.add_step(check, "csv.import", {"file": "orders.csv"})
     project.add_step(check, "flow.skip_if_empty", {"which": "other", "table": orders.id})
     project.add_step(check, "csv.export", {"file": "out/check.csv"})
+    uses_check = project.add_table("Uses check")
+    project.add_step(uses_check, "table.derive", {"table": check.id})
+    project.add_step(uses_check, "calc.columns", {"columns": [{"name": "Half", "formula": "[Amount] / 2"}]})
     engine = Engine(project, registry)
     assert engine.dependencies(check.id) == [orders.id]
 
     results = engine.run()
-    assert results[report.id].ok and results[report.id].df.columns == ["Id", "Amount", "Half"]  # uses the data
+    # Orders has no rows and skipped its rest: there is nothing for Report to work with
+    assert statuses(results[report.id]) == [Status.OK, Status.SKIPPED] and results[report.id].ok
+    no_data = "The table “Orders” has no data (its rest was skipped)"
+    assert results[report.id].steps[0].skip_rest == no_data
+    assert results[report.id].df.columns == ["Id", "Amount"] and results[report.id].df.height == 0
     assert statuses(results[check.id]) == [Status.OK, Status.OK, Status.SKIPPED]
-    assert results[check.id].steps[1].skip_rest == "The table “Orders” is empty"
+    assert results[check.id].steps[1].skip_rest == no_data
     assert results[check.id].df.height == 2  # its own data, unchanged
+    # Check skipped its rest too, but it has rows: they are used as usual
+    assert statuses(results[uses_check.id]) == [Status.OK, Status.OK]
+    assert results[uses_check.id].df["Half"].to_list() == [2.5, 3.5]
 
     orders.steps[1].params["condition"] = "[Amount] > 6"
-    assert statuses(engine.run()[check.id]) == [Status.OK, Status.OK, Status.OK]
+    results = engine.run()
+    assert statuses(results[check.id]) == [Status.OK, Status.OK, Status.OK]
+    assert statuses(results[report.id]) == [Status.OK, Status.OK] and results[report.id].df["Half"].to_list() == [3.5]
+
+
+@pytest.fixture
+def daily(tmp_path) -> Project:
+    """Inbox: the files of a folder (none: skip the rest), with exports. Total starts from
+    Inbox, Report and Customers merge with it, History appends it, Summary starts from Total."""
+    (tmp_path / "inbox").mkdir()
+    (tmp_path / "customers.csv").write_text("Id;Name\n1;Anna\n2;Ben\n", encoding="utf-8")
+    project = Project(name="Daily")
+    project.path = tmp_path / "daily.tafl"
+    inbox = project.add_table("Inbox")
+    project.add_step(inbox, "csv.import", {"source": "folder", "folder": "inbox", "pattern": "*.csv", "no_files": "skip"})
+    project.add_step(inbox, "calc.columns", {"columns": [{"name": "Gross", "formula": "ROUND([Net] * 1.19, 2)"}]})
+    project.add_step(inbox, "csv.export", {"file": "out/inbox.csv"})
+    total = project.add_table("Total")
+    project.add_step(total, "table.derive", {"table": inbox.id})
+    project.add_step(total, "calc.aggregate", {"calculations": [{"function": "sum", "column": "Gross"}]})
+    project.add_step(total, "csv.export", {"file": "out/total.csv"})
+    for name, how in (("Report", "lookup"), ("Customers", "inner")):
+        table = project.add_table(name)
+        project.add_step(table, "csv.import", {"file": "customers.csv"})
+        match = [{"column": "Id", "other_column": "Id"}]
+        project.add_step(table, "table.merge", {"other": inbox.id, "match": match, "how": how, "columns": ["Gross"]})
+        project.add_step(table, "rows.filter_formula", {"condition": "[Gross] > 0"})
+        project.add_step(table, "csv.export", {"file": f"out/{name.lower()}.csv"})
+    history = project.add_table("History")
+    project.add_step(history, "csv.import", {"file": "customers.csv"})
+    project.add_step(history, "table.append", {"tables": [inbox.id]})
+    project.add_step(history, "csv.export", {"file": "out/history.csv"})
+    summary = project.add_table("Summary")
+    project.add_step(summary, "table.derive", {"table": total.id})
+    project.add_step(summary, "csv.export", {"file": "out/summary.csv"})
+    return project
+
+
+def test_a_day_without_data_skips_the_tables_that_use_the_import(daily, registry, tmp_path):
+    results = {daily.table(t).name: r for t, r in Engine(daily, registry).run().items()}
+    assert all(r.ok for r in results.values())
+    no_data = "The table “Inbox” has no data (its rest was skipped)"
+    assert statuses(results["Total"]) == [Status.OK, Status.SKIPPED, Status.SKIPPED]
+    assert results["Total"].steps[0].skip_rest == no_data and results["Total"].steps[0].messages == [("info", no_data)]
+    assert results["Total"].df.columns == ["File"] and results["Total"].df.height == 0  # the data of Inbox
+    for name in ("Report", "Customers", "History"):  # the step that uses Inbox doesn't run
+        assert statuses(results[name]) == [Status.OK, Status.OK] + [Status.SKIPPED] * (len(results[name].steps) - 2)
+        assert results[name].steps[1].skip_rest == no_data
+        assert results[name].df.columns == ["Id", "Name"] and results[name].df.height == 2  # the data going in
+    # Total skipped its rest and has no rows, too
+    assert statuses(results["Summary"]) == [Status.OK, Status.SKIPPED]
+    assert results["Summary"].steps[0].skip_rest == "The table “Total” has no data (its rest was skipped)"
+    assert not (tmp_path / "out").exists()
+
+    (tmp_path / "inbox" / "a.csv").write_text("Id;Net\n1;10\n", encoding="utf-8")
+    results = {daily.table(t).name: r for t, r in Engine(daily, registry).run().items()}
+    assert all(r.ok and r.skipped_from is None for r in results.values())
+    assert results["Total"].df.to_dicts() == [{"Sum of Gross": 11.9}]
+    assert results["Report"].df["Name"].to_list() == ["Anna"] and results["History"].df.height == 3
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == [
+        "customers.csv", "history.csv", "inbox.csv", "report.csv", "summary.csv", "total.csv",
+    ]  # fmt: skip
+
+
+def test_a_day_without_data_on_the_command_line(daily, capsys):
+    daily.save()
+    assert main(["run", str(daily.path)]) == 0
+    output = capsys.readouterr().out
+    assert "1. Start from Inbox   0 rows × 1 column" in output
+    assert "i The table “Inbox” has no data (its rest was skipped)" in output
+    assert "2. Aggregate: Sum of Gross   (skipped: the table “Inbox” has no data (its rest was skipped))" in output
+    assert "(skipped: the table “Total” has no data (its rest was skipped))" in output
+    assert "✗" not in output and "Done in" in output
 
 
 @pytest.mark.parametrize("mode", [Mode.PREVIEW, Mode.RUN])

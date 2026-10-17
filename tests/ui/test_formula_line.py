@@ -93,7 +93,7 @@ def test_while_typing_the_line_is_greyed_until_it_is_checked(window, session, se
     gross._edit.textCursor().insertText("x")
     assert theme.TEXT_DISABLED in gross.line.styleSheet() and gross._edit.extraSelections() == []
     gross._edit.textCursor().deletePreviousChar()  # the same text again: the result fits again
-    assert theme.STATUS_COLORS["error"] in gross.line.styleSheet() and len(gross._edit.extraSelections()) == 1
+    assert theme.STATUS_TEXT["error"] in gross.line.styleSheet() and len(gross._edit.extraSelections()) == 1
     gross._edit.setPlainText(gross._last)
 
 

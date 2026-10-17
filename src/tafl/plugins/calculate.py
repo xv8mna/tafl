@@ -131,12 +131,7 @@ def enumerate_rows(df, p, ctx):
             "Calculate",
             fields=[
                 P.Choice("function", "Function", _FUNCTIONS),
-                P.Column(
-                    "column",
-                    "Column",
-                    required=False,
-                    visible_if={"function": tuple(f for f, _ in _FUNCTIONS if f != "count_rows")},
-                ),
+                P.Column("column", "Column", visible_if={"function": tuple(f for f, _ in _FUNCTIONS if f != "count_rows")}),
                 P.Text("name", "Result name (empty = automatic)"),
             ],
             min_items=1,
@@ -211,4 +206,4 @@ def _result_name(calc) -> str:
         return calc.name.strip()
     if calc.function == "count_rows":
         return "Count"
-    return f"{_FUNCTION_LABELS[calc.function].split(' (')[0]} of {calc.column}"
+    return f"{_FUNCTION_LABELS[calc.function].split(' (')[0]} of {calc.column or '?'}"

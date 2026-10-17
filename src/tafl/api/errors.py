@@ -31,7 +31,8 @@ class SkipRest(TaflError):
 
     The step is OK and shows the message; the steps after it are skipped with the message. The
     table's result is ``df`` if given, else the table that went into the step (for an import: an
-    empty table). Tables that use this table get that result.
+    empty table). Tables that use this table get that result; when it has no rows, the step
+    that uses it ends that table too, in the same way.
     """
 
     def __init__(self, message: str, df: pl.DataFrame | None = None) -> None:

@@ -115,7 +115,11 @@ def _typed_pairs(pairs, dtype: pl.DataType):
                 converted.append(None)
                 continue
             series = pl.Series([text.strip()])
-            if dtype.is_numeric():
+            if isinstance(dtype, pl.Decimal):  # exact decimals: all digits count
+                value = dtypes.parse_decimal(text.strip(), "," if "," in text else ".")
+                if value is not None and not _fits(value, dtype):
+                    value = None
+            elif dtype.is_numeric():
                 decimal = "," if "," in text else "."
                 value = dtypes.parse_numbers(series, decimal)[0]
                 if value is not None and dtype.is_integer():  # all digits, also beyond 15
@@ -131,6 +135,13 @@ def _typed_pairs(pairs, dtype: pl.DataType):
             converted.append(value)
         result.append(tuple(converted))
     return result
+
+
+def _fits(value, dtype: pl.Decimal) -> bool:
+    """Whether a Decimal column can hold ``value`` without cutting digits."""
+    _, digits, exponent = value.normalize().as_tuple()
+    whole = max(len(digits) + exponent, 0)  # digits before the decimal point
+    return max(-exponent, 0) <= dtype.scale and whole <= (dtype.precision or 38) - dtype.scale
 
 
 @action(

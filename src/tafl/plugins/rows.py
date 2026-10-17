@@ -109,7 +109,7 @@ def sort(df, p, ctx):
     their order."""
     text = {name for name, dtype in df.schema.items() if dtype == pl.String}
     return df.sort(
-        [dtypes.text_sort_key(pl.col(b.column)) if b.column in text else pl.col(b.column) for b in p.by],
+        [dtypes.text_sort_key(df[b.column]) if b.column in text else pl.col(b.column) for b in p.by],
         descending=[b.order == "desc" for b in p.by],
         nulls_last=p.empty_last,
         maintain_order=True,
@@ -223,6 +223,9 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
         number = dtypes.parse_numbers(pl.Series([value]), _decimal_of(value))[0]
         if number is None:
             raise ActionError(f"'{text}' is not a number (column '{column}')")
+        if isinstance(dtype, pl.Decimal):  # exact decimals: all digits
+            exact = dtypes.parse_decimal(value, _decimal_of(value))
+            return number if exact is None else exact
         if dtype.is_integer() and number.is_integer():  # all digits, also beyond 15
             whole = dtypes.parse_integers(pl.Series([value]), _decimal_of(value))[0]
             return number if whole is None else whole
@@ -233,10 +236,16 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
             return day if dtype == pl.Date else dt.datetime.combine(day, dt.time())
         if value.lower() in ("now", "jetzt") and dtype == pl.Datetime:
             return dt.datetime.now()
-        parse = dtypes.parse_dates if dtype == pl.Date else dtypes.parse_datetimes
-        parsed = parse(pl.Series([value]))[0]
+        if dtype == pl.Date:
+            parsed = dtypes.parse_dates(pl.Series([value]))[0]
+            if parsed is None:
+                raise ActionError(f"'{text}' is not a date (column '{column}'); use e.g. 31.12.2025 or 2025-12-31")
+            return parsed
+        parsed = dtypes.parse_datetimes(pl.Series([value]))[0]
         if parsed is None:
-            raise ActionError(f"'{text}' is not a date (column '{column}'); use e.g. 31.12.2025 or 2025-12-31")
+            raise ActionError(
+                f"'{text}' is not a date-time (column '{column}'); use e.g. 31.12.2025 08:30 or 2025-12-31 08:30"
+            )
         return parsed
     if dtype == pl.Boolean:
         parsed = dtypes.parse_booleans(pl.Series([value]))[0]

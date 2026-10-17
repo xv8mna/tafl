@@ -31,6 +31,7 @@ import polars as pl
 
 from .dtypes import normalize
 from .errors import ActionError
+from .files import _new_scratch_folder
 
 _MACROS = (
     "CREATE MACRO iif(c, a, b) AS CASE WHEN c THEN a ELSE b END",
@@ -382,7 +383,7 @@ def _temp_folder() -> str:
     global _temp
     with _temp_lock:
         if _temp is None:
-            _temp = Path(tempfile.mkdtemp(prefix="tafl-formulas-"))
+            _temp = _new_scratch_folder()  # deleted at the end, or by the next process if this one is ended
             atexit.register(shutil.rmtree, _temp, ignore_errors=True)
         return tempfile.mkdtemp(dir=_temp)
 

@@ -44,6 +44,8 @@ class DisplayFormat:
             return self.datetime
         if dtype == pl.Boolean:
             return lambda v: "true" if v else "false"
+        if dtype == pl.Decimal:  # every digit, with the decimal separator of the PC
+            return lambda v: format(v, "f").replace(".", self.decimal)
         return str
 
     def number(self, value: float) -> str:

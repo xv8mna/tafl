@@ -22,7 +22,8 @@ An action raises ``ActionError("...")`` for a problem the user can fix: the step
 message as an error. To end its table at this step without an error, e.g. when there is nothing
 to do, it raises ``SkipRest("No new orders")``: the step shows the message, the steps after it
 are skipped, and the table's result is the table that went into the step (or the table given as
-``SkipRest(message, df)``; for an import without one, an empty table).
+``SkipRest(message, df)``; for an import without one, an empty table). When that result has no
+rows, a step of another table that uses it ends that table too.
 """
 
 from tafl import APP_NAME

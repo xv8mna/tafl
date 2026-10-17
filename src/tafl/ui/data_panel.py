@@ -14,8 +14,8 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QHeaderView,
-    QLabel,
     QMenu,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTableView,
@@ -31,7 +31,8 @@ from . import theme
 from .filter_pane import FilterPane
 from .filters import Filter, apply, to_json
 from .frame_model import FrameModel
-from .session import Session, count, first_error, missing_settings, size_text
+from .labels import ElidedLabel, WrappedLabel
+from .session import Session, count, first_error, missing_settings, size_text, waiting_text
 from .worker import Worker
 
 MAX_COPY_CELLS = 2_000_000  # more is a case for an export
@@ -46,14 +47,18 @@ class DataPanel(QWidget):
     def __init__(self, session: Session, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.session = session
-        self.title = QLabel(self)
+        # Texts of any length above the grid (a summary, a path): they end with "…" when there is
+        # not enough room, and never make the window wider. The summary gives way first.
+        self.title = ElidedLabel(self, widest=320, narrowest=100)
         self.title.setObjectName("Title")
-        self.subtitle = QLabel(self)
+        self.subtitle = ElidedLabel(self)
         self.subtitle.setObjectName("Dim")
-        self.info = QLabel(self)
+        self.subtitle.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.info = ElidedLabel(self, widest=420)
         self.info.setObjectName("Dim")
-        self.busy = QLabel("Calculating…", self)
-        self.busy.setStyleSheet(f"color: {theme.ACCENT};")
+        self.busy = ElidedLabel(self)
+        self.busy.setText("Calculating…")
+        self.busy.setStyleSheet(f"color: {theme.ACCENT_TEXT};")
         self.busy.hide()
         self.filter_pane = FilterPane(session, self)
         self.filter_pane.hide()
@@ -97,9 +102,8 @@ class DataPanel(QWidget):
         self._copier.finished.connect(self._copied)
         self._copier.failed.connect(lambda text: self.status_message.emit("Copying failed: " + text.strip().splitlines()[-1]))
 
-        self.message = QLabel(self)
+        self.message = WrappedLabel(parent=self, narrowest=200)
         self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.message.setWordWrap(True)
         self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.message.setMargin(40)
         self.stack = QStackedWidget(self)
@@ -154,7 +158,7 @@ class DataPanel(QWidget):
             self.subtitle.setText("")
             return
         number = table.steps.index(step) + 1
-        self.subtitle.setText(f"after step {number}: {session.engine.describe(step)}")
+        self.subtitle.setText(f"after step {number}: {session.describe(step)}")
         if not table.enabled:
             self._no_data(
                 table.id,
@@ -175,6 +179,13 @@ class DataPanel(QWidget):
         if failed is not None and missing_settings(failed[1]):
             self._no_data(table.id, f"Step {failed[0]} is not complete yet: the steps after it are calculated when it is.")
             return
+        if result.status in (Status.ERROR, Status.BLOCKED) and (waiting := session.waits_for(table.id)) is not None:
+            first = first_error(session.result)
+            text = f"Step {first[0] if first else number} {waiting_text(waiting)}"
+            if result.status == Status.BLOCKED:
+                text += ": the steps after it are calculated when it is"
+            self._no_data(table.id, text + ".")
+            return
         if result.status == Status.ERROR and not needed:
             self._no_data(table.id, f"Step {number} has an error:\n\n{result.error}", error=True)
             return
@@ -186,7 +197,7 @@ class DataPanel(QWidget):
             self._no_data(table.id, f"Step {number} is not complete yet: fill in {', '.join(needed)}.")
             return
         if needed:  # the data before the step, until it is filled in
-            self.subtitle.setText(f"going into step {number}: {session.engine.describe(step)}")
+            self.subtitle.setText(f"going into step {number}: {session.describe(step)}")
         if df is None:
             self._no_data(table.id, "No data.")
             return
@@ -196,8 +207,10 @@ class DataPanel(QWidget):
             self._show_frame(df, shown)
         self.stack.setCurrentWidget(self.view)
         timing = "cached" if result.cached else f"{result.seconds:.2f} s"
+        # Kept short: the settings beside the grid say what is missing (and the tooltip does)
+        self.info.set_tooltip(f"Step {number} is not complete yet: fill in {', '.join(needed)}" if needed else "")
         if needed:
-            timing = f"step {number} is not complete yet: fill in {', '.join(needed)}"
+            timing = f"step {number} is not complete yet"
         elif result.status == Status.SKIPPED and result.skip_rest:
             timing = f"skipped: {result.skip_reason}"
         elif result.status == Status.SKIPPED:
@@ -211,7 +224,7 @@ class DataPanel(QWidget):
             self.info.setText(
                 f"{shown.height:,} of {count(df.height, 'row')} × {count(df.width, 'column')}  ·  filtered   ·   {timing}"
             )
-            self.info.setStyleSheet(f"color: {theme.ACCENT};")
+            self.info.setStyleSheet(f"color: {theme.ACCENT_TEXT};")
 
     def _filtered(self, table_id: str, df: pl.DataFrame) -> pl.DataFrame:
         """The rows that pass the table's instant filters (the same frame again if nothing changed)."""
@@ -244,6 +257,7 @@ class DataPanel(QWidget):
         self.message.setStyleSheet(f"color: {theme.ERROR_TEXT if error else theme.TEXT_DIM};")
         self.stack.setCurrentWidget(self.message)
         self.info.setText("")
+        self.info.set_tooltip("")
         self.info.setStyleSheet("")
 
     def _fit_columns(self) -> None:

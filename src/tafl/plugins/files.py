@@ -1,19 +1,19 @@
 """Files and folders: a table of the files in a folder, and commands that copy, move, rename
 or delete the files listed in a table, or create a folder. The commands work out what happens
-to every file before they change the first one: a missing file, a name that isn't allowed or
-two files that would get the same name stop the step with nothing changed."""
+to every file before they change the first one: a missing file, a name that isn't allowed, a
+read-only file to replace or delete, or two files that would get the same name stop the step
+with nothing changed. Each file is copied, moved, renamed or deleted completely or not at all
+(see ``tafl.api.files``)."""
 
 from __future__ import annotations
 
 import datetime as dt
 import os
-import shutil
 from pathlib import Path
 
 import polars as pl
-import send2trash
 
-from tafl.api import ActionError, P, action, find_files
+from tafl.api import ActionError, P, action, files, find_files
 
 
 def _listing_fingerprint(p, ctx):
@@ -134,12 +134,12 @@ def _listed_files(df: pl.DataFrame, p, ctx) -> list[tuple[Path, Path | None]]:
     if p.column not in df.columns:
         raise ActionError(f"There is no column {p.column}")
     base = _base(p, ctx)
-    files: dict[str, tuple[Path, Path | None]] = {}
+    found: dict[str, tuple[Path, Path | None]] = {}
     for value in df[p.column].cast(pl.String).to_list():
         if value is not None and value.strip():
             path, relative = _resolve(value, base)
-            files.setdefault(_key(path), (path, relative))
-    return list(files.values())
+            found.setdefault(_key(path), (path, relative))
+    return list(found.values())
 
 
 def _exists(path: Path, p, skipped: list[Path]) -> bool:
@@ -149,42 +149,6 @@ def _exists(path: Path, p, skipped: list[Path]) -> bool:
         skipped.append(path)
         return False
     raise ActionError(f"{path} is a folder, not a file" if path.is_dir() else f"File not found: {path}")
-
-
-_DEVICES = frozenset(["CON", "PRN", "AUX", "NUL", *(f"{port}{n}" for port in ("COM", "LPT") for n in "0123456789¹²³")])
-
-
-def _name_problem(name: str, text: str) -> str | None:
-    """Why ``name`` can't be the name of a file or folder in Windows (a message that shows
-    ``text``, the name or the whole path), or None."""
-    if name in (".", ".."):
-        return f"'{name}' can't be a file name: . and .. stand for folders"
-    if ":" in name:  # the message of Context.resolve_path
-        return (
-            f"':' can't be part of a file or folder name: {text}. For a time in a name, write it without ':', "
-            "e.g. STRFTIME(NOW(), '%H-%M')"
-        )
-    if any(ord(c) < 32 for c in name):
-        return f"Line breaks, tabs and other control characters can't be part of a file or folder name: {text!r}"
-    if bad := [f"'{c}'" for c in dict.fromkeys(name) if c in '<>"|?*']:
-        return f"{' and '.join(bad)} can't be part of a file or folder name: {text}"
-    if name.endswith((".", " ")):
-        return f"A file or folder name can't end with a dot or a space: '{text}'"
-    if (device := name.split(".")[0].rstrip(" ").upper()) in _DEVICES:
-        return f"{device} is reserved for a device in Windows and can't be a file or folder name: {text}"
-    return None
-
-
-def _check_folder(folder: Path) -> None:
-    """A plain message instead of the system's when ``folder`` can't be created: a file is in
-    the way, or the name of a folder still to be created isn't allowed."""
-    for path in (folder, *folder.parents):
-        if path.is_dir():
-            break
-        if path.name not in ("", ".", "..") and (problem := _name_problem(path.name, str(folder))):
-            raise ActionError(problem)  # before exists(): in Windows, folder\CON exists (the console)
-        if path.exists():
-            raise ActionError(f"{path} is a file, not a folder")
 
 
 def _numbered(target: Path, exists) -> Path:
@@ -209,10 +173,10 @@ class _Targets:
         key = _key(path)
         return key in self.written or (key not in self.gone and path.exists())
 
-    def place(self, source: Path, wanted: Path, existing: str, hint: str = "") -> Path | None:
-        """Where ``source`` goes: ``wanted`` or a numbered name; None = skip it. ``hint``
-        ends the message when two files would get the same name."""
-        destination = wanted
+    def place(self, source: Path, wanted: Path, existing: str, hint: str = "") -> tuple[Path, bool] | None:
+        """Where ``source`` goes (``wanted`` or a numbered name), and whether it replaces a file
+        there; None = skip it. ``hint`` ends the message when two files would get the same name."""
+        destination, replaces = wanted, False
         if self.exists(wanted):
             first = self.written.get(_key(wanted))
             if existing == "skip":
@@ -233,8 +197,14 @@ class _Targets:
                 )
             elif wanted.is_dir():
                 raise ActionError(f"{wanted} is a folder: a file can't replace it")
+            elif not os.access(wanted, os.W_OK):  # on Windows: the read-only attribute
+                raise ActionError(f"{wanted} is read-only, so it can't be replaced")
+            else:
+                replaces = True
+        if problem := files.name_problem(destination.name, str(destination)):  # e.g. too long with (2)
+            raise ActionError(problem)
         self.take(source, destination)
-        return destination
+        return destination, replaces
 
     def take(self, source: Path, destination: Path) -> None:
         self.written[_key(destination)] = source
@@ -242,11 +212,11 @@ class _Targets:
             self.gone.add(_key(source))
 
 
-def _failed(verb: str, source: Path, error: OSError, done: int, past: str) -> ActionError:
-    text = f"Could not {verb} {source.name}: {error.strerror or error}"
-    if done:
-        text += f". {done:,} file{'s were' if done != 1 else ' was'} {past} before it"
-    return ActionError(text)
+def _failed(error: ActionError, done: int, past: str) -> ActionError:
+    """The message of a file that failed part-way, with how many files were done before it."""
+    if not done:
+        return error
+    return ActionError(f"{error}. {done:,} file{'s were' if done != 1 else ' was'} {past} before it")
 
 
 def _report(ctx, verb: str, done: int, skipped: list[Path], where: str = "", unchanged: int = 0) -> None:
@@ -273,27 +243,23 @@ def _copy_or_move(df, p, ctx, move: bool) -> pl.DataFrame:
             skipped.append(source)
             continue
         if wanted.parent not in folders:
-            _check_folder(wanted.parent)
+            files.check_folder(wanted.parent)
             folders.add(wanted.parent)
         hint = ", or keep the subfolders" if relative is not None and not p.subfolders else ""
-        destination = targets.place(source, wanted, p.existing, hint)
-        if destination is None:
+        if (place := targets.place(source, wanted, p.existing, hint)) is None:
             skipped.append(source)
             continue
-        plan.append((source, destination))
+        plan.append((source, *place))
     done = 0
-    for source, destination in plan:
+    for source, destination, replaces in plan:
         ctx.check_cancelled()
-        try:
-            destination.parent.mkdir(parents=True, exist_ok=True)
+        try:  # a failed copy or move leaves both files as they were
             if move:
-                if destination.exists():
-                    destination.unlink()  # "replace": os.replace can't cross drives, shutil.move can
-                shutil.move(source, destination)
+                files.move_file(source, destination, replace=replaces)
             else:
-                shutil.copy2(source, destination)  # keeps the modification time
-        except OSError as e:
-            raise _failed("move" if move else "copy", source, e, done, "moved" if move else "copied") from None
+                files.copy_file(source, destination, replace=replaces, warn=ctx.warn)  # with the modification time
+        except ActionError as error:
+            raise _failed(error, done, "moved" if move else "copied") from None
         done += 1
     _report(ctx, "Moved" if move else "Copied", done, skipped, f" to {target}")
     return df
@@ -359,21 +325,21 @@ def rename_files(df, p, ctx):
         if column not in df.columns:
             raise ActionError(f"There is no column {column}")
     base = _base(p, ctx)
-    files: dict[str, tuple[Path, str]] = {}
+    renames: dict[str, tuple[Path, str]] = {}
     for value, new in df.select(pl.col(p.column).cast(pl.String), pl.col(p.new_name).cast(pl.String)).rows():
         if value is not None and value.strip():
             source, _ = _resolve(value, base)
-            files.setdefault(_key(source), (source, (new or "").strip()))  # each file once
-    targets = _Targets([source for source, _ in files.values()], moves=True, done="renamed to", column=p.column)
+            renames.setdefault(_key(source), (source, (new or "").strip()))  # each file once
+    targets = _Targets([source for source, _ in renames.values()], moves=True, done="renamed to", column=p.column)
     plan, skipped, unchanged = [], [], 0
-    for source, new in files.values():  # all files are checked before the first one is renamed
+    for source, new in renames.values():  # all files are checked before the first one is renamed
         ctx.check_cancelled()
         if not new:
             skipped.append(source)
             continue
         if any(sep in new for sep in ("\\", "/")):
             raise ActionError(f"The new name {new} is a path: only a name is allowed (the file stays in its folder)")
-        if problem := _name_problem(new, new):
+        if problem := files.name_problem(new):
             raise ActionError(problem)
         if not _exists(source, p, skipped):
             continue
@@ -383,18 +349,18 @@ def rename_files(df, p, ctx):
                 unchanged += 1
                 continue
             targets.take(source, wanted)  # only upper and lower case change
-            destination = wanted
-        elif (destination := targets.place(source, wanted, p.existing)) is None:
+            place = wanted, False
+        elif (place := targets.place(source, wanted, p.existing)) is None:
             skipped.append(source)
             continue
-        plan.append((source, destination))
+        plan.append((source, *place))
     done = 0
-    for source, destination in plan:
+    for source, destination, replaces in plan:
         ctx.check_cancelled()
         try:
-            os.replace(source, destination)
-        except OSError as e:
-            raise _failed("rename", source, e, done, "renamed") from None
+            files.move_file(source, destination, replace=replaces)
+        except ActionError as error:
+            raise _failed(error, done, "renamed") from None
         done += 1
     _report(ctx, "Renamed", done, skipped, unchanged=unchanged)
     return df
@@ -422,21 +388,20 @@ def _real_name(path: Path) -> str:
 def delete_files(df, p, ctx):
     """Deletes the files listed in a column of the table: to the Recycle Bin, or for good.
     Runs only when the project is run; the table passes through unchanged."""
-    files, skipped = [], []
+    chosen, skipped = [], []
     for source, _ in _listed_files(df, p, ctx):  # all files are checked before the first one is deleted
         ctx.check_cancelled()
         if _exists(source, p, skipped):
-            files.append(source)
+            if p.how == "permanent" and not os.access(source, os.W_OK):  # on Windows: the read-only attribute
+                raise ActionError(f"{source} is read-only, so it can't be deleted")
+            chosen.append(source)
     done = 0
-    for source in files:
+    for source in chosen:
         ctx.check_cancelled()
         try:
-            if p.how == "permanent":
-                source.unlink()
-            else:
-                send2trash.send2trash(source)
-        except OSError as e:  # send2trash's TrashPermissionError is one too
-            raise _failed("delete", source, e, done, "deleted" if p.how == "permanent" else "moved to the Recycle Bin") from None
+            files.delete_file(source, recycle=p.how != "permanent")
+        except ActionError as error:
+            raise _failed(error, done, "deleted" if p.how == "permanent" else "moved to the Recycle Bin") from None
         done += 1
     _report(ctx, "Deleted" if p.how == "permanent" else "Moved to the Recycle Bin:", done, skipped)
     return df
@@ -454,9 +419,11 @@ def create_folder(df, p, ctx):
     """Creates a folder (and the folders above it) if it doesn't exist yet. Runs only when the
     project is run; the table passes through unchanged."""
     folder = ctx.resolve_path(p.folder)
-    _check_folder(folder)
+    files.check_folder(folder)
     try:
         folder.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise ActionError(f"No permission to create the folder {folder}") from None
     except OSError as e:
         raise ActionError(f"Could not create {folder}: {e.strerror or e}") from None
     ctx.log(f"Folder {folder} is there")

@@ -297,14 +297,19 @@ class Project:
             raise ProjectError("No file name given")
         target = target.resolve()
         text = json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=target.name, suffix=".tmp", dir=target.parent)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix=target.name, suffix=".tmp", dir=target.parent)
+        except PermissionError:
+            raise ProjectError(f"No permission to save in {target.parent}: save the project in another folder") from None
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text + "\n")
             os.replace(tmp, target)
-        except BaseException:
+        except BaseException as error:
             Path(tmp).unlink(missing_ok=True)
+            if isinstance(error, PermissionError) and target.is_file() and not os.access(target, os.W_OK):
+                raise ProjectError(f"{target.name} is read-only, so it can't be saved") from None
             raise
         self.path = target
         return target

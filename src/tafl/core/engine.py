@@ -9,7 +9,9 @@ Modes: in Preview, exports and commands are skipped (the table passes through un
 they execute, and sources are re-read.
 
 An action that raises SkipRest ends its table there: the step is OK, the steps after it are
-skipped, and the table's result is the data of that step.
+skipped, and the table's result is the data of that step. A step that uses a table which skipped
+its rest and has no rows (e.g. an import on a day without files) ends its own table the same way,
+without running: there is no data for it to work with.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ import time
 import traceback
 import uuid
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, NamedTuple
@@ -49,6 +51,7 @@ from tafl.api.expressions import is_panic
 from tafl.api.parameters import fill_sql
 
 from . import parameters
+from .cancel import stopping_queries
 from .project import Project, Step, Table
 from .registry import Registry
 
@@ -95,15 +98,19 @@ class TableResult:
     steps: list[StepResult] = field(default_factory=list)
     error: str | None = None  # problem with the table as a whole (no steps, circular reference)
     skipped: str | None = None  # why it wasn't calculated: "turned off", or a table it uses is off
+    # The run was stopped while this table was calculated: ``steps`` are the steps that ran
+    stopped: bool = False
 
     @property
     def ok(self) -> bool:
-        return self.error is None and self.skipped is None and bool(self.steps) and all(s.ok for s in self.steps)
+        if self.error is not None or self.skipped is not None or self.stopped:
+            return False
+        return bool(self.steps) and all(s.ok for s in self.steps)
 
     @property
     def failed(self) -> bool:
-        """An error (a skipped table has none)."""
-        return self.skipped is None and not self.ok
+        """An error (a skipped or stopped table has none)."""
+        return self.skipped is None and not self.stopped and not self.ok
 
     @property
     def df(self) -> pl.DataFrame | None:
@@ -254,8 +261,18 @@ def installed_memory() -> int | None:
         return None
 
 
-# Below, `except (Exception, SystemExit)`: a plugin's migrate or fingerprint function that calls
-# sys.exit() fails like any other broken plugin code, without ending the program.
+# What plugin code can raise. A migrate, summary or fingerprint function that calls sys.exit() or
+# raises KeyboardInterrupt fails like any other broken plugin code, without ending the program,
+# unless the calculation is being stopped (see _stop_if).
+_BROKEN = (Exception, SystemExit, KeyboardInterrupt)
+
+
+def _stop_if(cancel: threading.Event | None) -> None:
+    """Raise Cancelled if ``cancel`` is set. Ctrl+C on the command line sets it before it
+    interrupts, and a stopped DuckDB query is reported as an error: what goes wrong while it is
+    set is the stop, not a problem of the step."""
+    if cancel is not None and cancel.is_set():
+        raise Cancelled() from None
 
 
 class Engine:
@@ -263,6 +280,9 @@ class Engine:
         self.project = project
         self.registry = registry
         self.cache = cache if cache is not None else ResultCache()
+        # Stops the work when set (Ctrl+C on the command line); calculations without a cancel
+        # event of their own use it. A KeyboardInterrupt while it isn't set is a plugin's error.
+        self.cancel: threading.Event | None = None
         # Part of every source's cache key: raising it makes all sources read their data again.
         self.reload_token = 0
         # Values given for the project's parameters, e.g. by `tafl run --set Day=2026-10-01`
@@ -280,6 +300,7 @@ class Engine:
         a background thread while the project is being edited."""
         twin = Engine(copy.deepcopy(self.project), self.registry, self.cache)
         twin.reload_token = self.reload_token
+        twin.cancel = self.cancel
         twin.parameter_overrides = dict(self.parameter_overrides)
         twin._parameter_values, twin._parameter_lock = self._parameter_values, self._parameter_lock
         return twin
@@ -312,13 +333,14 @@ class Engine:
         cancel: threading.Event | None = None,
     ) -> TableResult:
         """Calculate one table (only up to step index ``until`` if given)."""
-        return _Evaluation(self, Mode(mode), cancel).table(self.project.table(table).id, until)
+        evaluation = _Evaluation(self, Mode(mode), self.cancel if cancel is None else cancel)
+        return evaluation.table(self.project.table(table).id, until)
 
     def evaluate_all(
         self, table: str, *, mode: Mode | str = Mode.PREVIEW, cancel: threading.Event | None = None
     ) -> dict[str, TableResult]:
         """Calculate a table; returns its result and the results of the tables it uses."""
-        evaluation = _Evaluation(self, Mode(mode), cancel)
+        evaluation = _Evaluation(self, Mode(mode), self.cancel if cancel is None else cancel)
         table_id = self.project.table(table).id
         evaluation.table(table_id)
         return dict(evaluation.results)
@@ -329,17 +351,34 @@ class Engine:
         *,
         mode: Mode | str = Mode.RUN,
         cancel: threading.Event | None = None,
+        done: Callable[[str, TableResult], None] | None = None,
     ) -> dict[str, TableResult]:
         """Calculate tables (default: all) and the tables they use, in dependency order.
 
         In Run mode (the default) all sources are read again and exports and commands execute.
         The results are cached, so a preview afterwards shows the data of the run.
+
+        ``done`` gets each table's result as soon as the table is calculated. When the run is
+        stopped (Cancelled), it also gets the table that was being calculated, with ``stopped``
+        set and the steps that ran before the stop.
         """
         if Mode(mode) == Mode.RUN:
             self.reload()
-        evaluation = _Evaluation(self, Mode(mode), cancel)
+        evaluation = _Evaluation(self, Mode(mode), self.cancel if cancel is None else cancel)
         wanted = None if tables is None else [self.project.table(t).id for t in tables]
-        return {table_id: evaluation.table(table_id) for table_id in self.execution_order(wanted)}
+        results = {}
+        try:
+            for table_id in self.execution_order(wanted):
+                results[table_id] = evaluation.table(table_id)
+                if done is not None:
+                    done(table_id, results[table_id])
+        except (Cancelled, KeyboardInterrupt):
+            stopped, evaluation.stopped = evaluation.stopped, None
+            if done is not None and stopped is not None:
+                stopped.stopped = True
+                done(stopped.table_id, stopped)
+            raise
+        return results
 
     def links(self, table: str | None = None) -> list[Link]:
         """Which step uses which other table (of one table, or of all tables)."""
@@ -352,7 +391,8 @@ class Engine:
                     continue
                 try:
                     params = action.resolve(action.upgrade(step.params, step.version))
-                except (Exception, SystemExit):
+                except _BROKEN:
+                    _stop_if(self.cancel)
                     continue
                 for ref in action.table_refs(params):
                     if (source := self.project.find_table(ref)) is not None:
@@ -395,7 +435,8 @@ class Engine:
                     continue
                 try:
                     step.params = action.upgrade(step.params, step.version)
-                except (Exception, SystemExit):  # left as it is; calculating the table shows the error
+                except _BROKEN:  # left as it is; calculating the table shows the error
+                    _stop_if(self.cancel)
                     continue
                 step.version = action.version
                 changed.append(step)
@@ -408,7 +449,8 @@ class Engine:
             return f"Unknown action '{step.action}'"
         try:
             params = action.resolve(action.upgrade(step.params, step.version))
-        except (Exception, SystemExit):
+        except _BROKEN:
+            _stop_if(self.cancel)
             return action.name
         shown = Params(params)
         for param in action.params:
@@ -424,7 +466,11 @@ class Engine:
                 shown[param.key] = _unfilled_rows(param, value)
             else:
                 shown[param.key] = _unfilled(param, value)
-        return action.describe(shown)
+        try:
+            return action.describe(shown)  # a summary that fails otherwise gives the action's name
+        except KeyboardInterrupt:
+            _stop_if(self.cancel)
+            return action.name
 
     def table_name(self, ref: str) -> str:
         table = self.project.find_table(ref)
@@ -443,6 +489,7 @@ class _Evaluation:
         self.run_id = uuid.uuid4().hex if mode == Mode.RUN else ""
         self.results: dict[str, TableResult] = {}
         self.stack: list[str] = []
+        self.stopped: TableResult | None = None  # the table being calculated when it was stopped
         # The same for every step, so that =TODAY() means the same day everywhere
         self.parameters = engine.parameter_values()
 
@@ -486,6 +533,10 @@ class _Evaluation:
                     failed = True
                 else:
                     df, key, skip_rest = step_result.df, step_result.key, step_result.skip_rest
+        except (Cancelled, KeyboardInterrupt):
+            if self.stopped is None:  # the innermost table: the one whose step was running
+                self.stopped = result
+            raise
         finally:
             self.stack.pop()
         if full:
@@ -510,8 +561,7 @@ class _Evaluation:
         return None
 
     def _step(self, table: Table, index: int, step: Step, df: pl.DataFrame | None, prev_key: str) -> StepResult:
-        if self.cancel is not None and self.cancel.is_set():
-            raise Cancelled()
+        _stop_if(self.cancel)
         action = self.registry.actions.get(step.action)
         if action is None:
             return _error(step, f"Unknown action '{step.action}'. Is the plugin that provides it installed?")
@@ -533,9 +583,13 @@ class _Evaluation:
             raw = parameters.fill(action.params, raw, self.parameters, connector.fill_sql if connector is not None else fill_sql)
             params = action.resolve(raw)
         except ActionError as e:
+            _stop_if(self.cancel)
             return _error(step, str(e))
-        except (Exception, SystemExit) as e:
-            return _error(step, f"Could not read the step settings: {e}", traceback.format_exc())
+        except _BROKEN as e:  # e.g. a plugin's migrate function
+            _stop_if(self.cancel)
+            ended = not isinstance(e, Exception)  # sys.exit() or KeyboardInterrupt
+            problem = f"{_owner(action)} tried to end the program ({_friendly(e)})" if ended else str(e)
+            return _error(step, f"Could not read the step settings: {problem}", traceback.format_exc())
         warnings = [
             ("warning", f"{{{name}}} is not a parameter of the project: it was left as it is") for name in unknown
         ]
@@ -551,11 +605,18 @@ class _Evaluation:
                 return _error(step, _dependency_error(found.name, dependency), inherited=True)
             deps[ref] = dependency
 
+        ctx = _StepContext(self, deps)
+        if (empty := _empty_and_skipped(deps)) is not None:  # nothing to work with: this table ends here too
+            message = f"The table “{self.engine.table_name(empty)}” has no data (its rest was skipped)"
+            data = df if df is not None else deps[empty].df
+            key = self._key(action, params, prev_key, deps, ctx)
+            messages = [*warnings, ("info", message)]
+            return StepResult(step.id, Status.OK, df=data, key=key, messages=messages, skip_rest=message)
+
         if action.side_effects and self.mode == Mode.PREVIEW:
             messages = [*warnings, ("info", "Runs only when the project is run")]
             return StepResult(step.id, Status.SKIPPED, df=df, key=prev_key, messages=messages)
 
-        ctx = _StepContext(self, deps)
         key = self._key(action, params, prev_key, deps, ctx)
         # Exports and commands always execute. Everything else is cached; a run raises the reload
         # token first, so it never gets old data from the cache.
@@ -577,7 +638,8 @@ class _Evaluation:
 
         started = time.perf_counter()
         try:
-            out = action.run(df.clone() if df is not None else None, params, ctx)
+            with stopping_queries(self.cancel):  # Stop and Ctrl+C also stop a formula that runs
+                out = action.run(df.clone() if df is not None else None, params, ctx)
         except Cancelled:
             raise
         except SkipRest as e:  # cached under this step's own key: the key of the data going in has no SkipRest
@@ -590,17 +652,18 @@ class _Evaluation:
                 self.engine.cache.put(key, data, message, step=step.id, messages=ctx.messages[len(warnings) :])
             ctx.messages.append(("info", message))
             return StepResult(step.id, Status.OK, df=data, key=key, messages=ctx.messages, seconds=seconds, skip_rest=message)
-        except ActionError as e:
+        except ActionError as e:  # also a DuckDB query that Ctrl+C stopped ("Query interrupted")
+            _stop_if(self.cancel)
             return _error(step, str(e), messages=ctx.messages, seconds=time.perf_counter() - started)
         except Exception as e:
+            _stop_if(self.cancel)
             seconds = time.perf_counter() - started
             return _error(step, _friendly(e), traceback.format_exc(), ctx.messages, seconds=seconds)
         except BaseException as e:
             # Not an Exception: a crash inside Polars (Rust), and an action that tries to end the
             # program (sys.exit, KeyboardInterrupt). Ctrl+C on the command line sets the cancel
             # event before it interrupts: then the calculation stops.
-            if self.cancel is not None and self.cancel.is_set():
-                raise Cancelled() from None
+            _stop_if(self.cancel)
             if not (is_panic(e) or isinstance(e, SystemExit | KeyboardInterrupt)):
                 raise
             message = _friendly(e) if is_panic(e) else f"{_owner(action)} tried to end the program ({_friendly(e)})"
@@ -636,7 +699,8 @@ class _Evaluation:
             if action.fingerprint is not None:
                 try:
                     parts.append(repr(action.fingerprint(params, ctx)))
-                except (Exception, SystemExit):
+                except _BROKEN:
+                    _stop_if(self.cancel)
                     parts.append(f"no-fingerprint={time.time_ns()}")  # can't tell: read again
         if action.side_effects:
             parts.append(f"run={self.run_id}")
@@ -744,6 +808,16 @@ def _unfilled_rows(param: P.List, rows: list) -> list:
 
 def _owner(action: Action) -> str:
     return f"The plugin '{action.plugin}'" if action.plugin else f"'{action.name}'"
+
+
+def _empty_and_skipped(deps: Mapping[str, TableResult]) -> str | None:
+    """The first used table that skipped its rest and has no rows (a used table whose data has
+    rows is used as usual)."""
+    for ref, dependency in deps.items():
+        data = dependency.df
+        if dependency.skipped_from is not None and data is not None and data.height == 0:
+            return ref
+    return None
 
 
 def _dependency_error(name: str, dependency: TableResult) -> str:

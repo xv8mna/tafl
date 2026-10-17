@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 from tafl.core import Group, Link, Status, Table
 
 from .. import theme
-from ..session import Session, first_error, missing_settings
+from ..session import Session, first_error, missing_settings, waiting_text
 from .layout import GROUP_TITLE, HEADER, NODE_WIDTH, PADDING, ROW, frame_rect
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ def node_rows(session: Session, table: Table, linked_steps: set[str]) -> list[No
             rows.append(NodeRow(f"⋯ {skipped} step{'s' if skipped > 1 else ''}", kind="gap"))
             skipped = 0
         kind = "link" if step.id in linked_steps else "export" if export else "step"
-        rows.append(NodeRow(session.engine.describe(step), step.id, number, kind, step.enabled))
+        rows.append(NodeRow(session.describe(step), step.id, number, kind, step.enabled))
     if skipped:
         rows.append(NodeRow(f"⋯ {skipped} more step{'s' if skipped > 1 else ''}", kind="gap"))
     if not table.steps:
@@ -97,6 +97,7 @@ class Box(QGraphicsObject):
         self.rows = rows
         self.height = node_height(rows)
         self.edges: list[Edge] = []
+        self.skipped_after = 0  # number of the step that skipped the rest of the table (0: none did)
         self._press_pos: QPointF | None = None
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -159,6 +160,19 @@ class Box(QGraphicsObject):
         painter.setPen(QPen(QColor(theme.BORDER), 1))
         painter.drawLine(QPointF(5, HEADER), QPointF(NODE_WIDTH, HEADER))
 
+    def dimmed(self, index: int) -> bool:
+        """Whether row ``index`` is painted like a step that is off: it is off, or it comes after
+        the step that skipped the rest of the table (a row "⋯ 2 steps" right after that step too)."""
+        row = self.rows[index]
+        if not row.enabled:
+            return True
+        if not self.skipped_after:
+            return False
+        if row.number:
+            return row.number > self.skipped_after
+        before = next((r.number for r in reversed(self.rows[:index]) if r.number), 0)
+        return row.kind == "gap" and before >= self.skipped_after
+
     def _paint_rows(self, painter: QPainter, numbers: bool) -> None:
         metrics = QFontMetrics(painter.font())
         number_width = metrics.horizontalAdvance("00") + 8 if numbers else 14
@@ -172,7 +186,7 @@ class Box(QGraphicsObject):
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(theme.status_color(self.view.session.table_status(row.key)))
                 painter.drawEllipse(QPointF(20, top + ROW / 2), 3.5, 3.5)
-            color = theme.TEXT_DISABLED if not row.enabled else theme.MAP_TEXT_DIM if row.kind == "gap" else theme.TEXT
+            color = theme.TEXT_DISABLED if self.dimmed(index) else theme.MAP_TEXT_DIM if row.kind == "gap" else theme.TEXT
             painter.setPen(QColor(color))
             text = metrics.elidedText(row.text, Qt.TextElideMode.ElideRight, int(NODE_WIDTH - left - 12))
             painter.drawText(QRectF(left, top, NODE_WIDTH - left - 12, ROW), Qt.AlignmentFlag.AlignVCenter, text)
@@ -288,7 +302,9 @@ class TableNode(Box):
             )
 
     def _incomplete(self) -> str:
-        """A line for the tooltip when a step is not filled in yet."""
+        """A line for the tooltip when a step is not filled in yet (or one of a table it uses)."""
+        if self.status == "waiting" and (waiting := self.view.session.waits_for(self.table_id)) is not None:
+            return "\n" + waiting_text(waiting, capital=True)
         failed = first_error(self.view.session.results.get(self.table_id)) if self.status == "incomplete" else None
         if failed is None:
             return ""

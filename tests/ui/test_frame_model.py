@@ -1,4 +1,5 @@
 import datetime as dt
+from decimal import Decimal
 
 import polars as pl
 from PySide6.QtCore import QLocale, Qt
@@ -30,6 +31,17 @@ def test_values_follow_the_regional_settings(qapp):
     english = model_for(QLocale(QLocale.Language.English, QLocale.Country.UnitedKingdom))
     assert english.data(english.index(0, 2)) == "1234.5"
     assert english.data(english.index(0, 3)) == "31/12/2025"
+
+
+def test_exact_decimals_show_every_digit_with_the_regional_separator(qapp):
+    values = pl.Series("n", [Decimal("12345678901234.5678"), Decimal("1.1000"), Decimal("-0.0001")], pl.Decimal(18, 4))
+    for language, country, separator in (("German", "Germany", ","), ("English", "UnitedKingdom", ".")):
+        model = FrameModel()
+        model.display = DisplayFormat(QLocale(getattr(QLocale.Language, language), getattr(QLocale.Country, country)))
+        model.set_frame(values.to_frame())
+        shown = [model.data(model.index(row, 0)) for row in range(3)]
+        assert shown == [t.replace(".", separator) for t in ("12345678901234.5678", "1.1000", "-0.0001")]
+        assert model.data(model.index(0, 0), Qt.ItemDataRole.TextAlignmentRole) & Qt.AlignmentFlag.AlignRight
 
 
 def test_empty_cells_headers_and_alignment(qapp):

@@ -85,7 +85,7 @@ class ParametersDialog(QDialog):
 
         self.problem = QLabel(self)
         self.problem.setWordWrap(True)
-        self.problem.setStyleSheet(f"color: {theme.STATUS_COLORS['error']};")
+        self.problem.setStyleSheet(f"color: {theme.STATUS_TEXT['error']};")
         self.box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
         self.box.accepted.connect(self._accept)
         self.box.rejected.connect(self.reject)
@@ -186,7 +186,7 @@ class ParametersDialog(QDialog):
         for row, parameter in enumerate(current):
             value = values.get(parameter.name.lower())
             if isinstance(value, Failed):
-                self._show(row, f"Error: {value.message}", theme.STATUS_COLORS["error"])
+                self._show(row, f"Error: {value.message}", theme.STATUS_TEXT["error"])
             else:
                 self._show(row, _label(value), theme.TEXT_DIM)
         self.table.blockSignals(False)

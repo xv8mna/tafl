@@ -89,7 +89,9 @@ def merge(df, p, ctx):
     the row count never changes. Left, inner and full join work like in SQL: every matching row
     is used, so a row repeats when the other table has several matches. Keep rows with or
     without a match filters this table without adding columns. Empty keys never match. Keys of
-    different types (a number and a text) are compared as text; the key columns keep their type.
+    different types (a number and a text) are compared as text; the key columns keep their type,
+    except in a full join whose other table has keys that don't fit it (2.5 for whole numbers):
+    then they get a type that fits both.
     """
     other = ctx.table(p.other)
     right_on = [m.other_column for m in p.match]

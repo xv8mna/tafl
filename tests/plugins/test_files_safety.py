@@ -2,6 +2,7 @@
 never replace each other, and names Windows doesn't allow get a plain message."""
 
 import os
+import re
 import shutil
 
 import polars as pl
@@ -170,17 +171,21 @@ def test_delete_checks_all_files_first(act, inbox, monkeypatch):
 
 
 def test_a_failure_part_way_says_how_many_files_were_done(act, tmp_path, inbox, monkeypatch):
-    copy2 = shutil.copy2
+    copyfileobj = shutil.copyfileobj
 
-    def copy_one(source, destination):
-        if source.name == "b.csv":
-            raise PermissionError(13, "Access is denied")
-        return copy2(source, destination)
+    def full_disk(reader, writer, *args):
+        if reader.name.endswith("b.csv"):
+            writer.write(b"half")
+            raise OSError(28, "There is not enough space on the disk")
+        return copyfileobj(reader, writer, *args)
 
-    monkeypatch.setattr(shutil, "copy2", copy_one)
+    monkeypatch.setattr(shutil, "copyfileobj", full_disk)
     table = pl.DataFrame({"File": [str(inbox / "a.csv"), str(inbox / "2025" / "01" / "b.csv")]})
-    with pytest.raises(ActionError, match=r"^Could not copy b\.csv: Access is denied\. 1 file was copied before it$"):
-        act("files.copy", table, {"column": "File", "target": str(tmp_path / "out")})
+    out = tmp_path / "out"
+    message = f"^Can't write {re.escape(str(out / 'b.csv'))}: There is not enough space on the disk. 1 file was copied before it$"
+    with pytest.raises(ActionError, match=message):
+        act("files.copy", table, {"column": "File", "target": str(out)})
+    assert files_in(out) == {"a.csv": "a"}  # no half-written b.csv, no temporary file
 
 
 # --- folders ----------------------------------------------------------------------------------------
@@ -209,7 +214,20 @@ def test_create_folder_gives_plain_messages(act, tmp_path):
         act("files.mkdir", None, {"folder": str(tmp_path / "what?")})
     with pytest.raises(ActionError, match=r"^CON is reserved for a device in Windows"):
         act("files.mkdir", None, {"folder": str(tmp_path / "con" / "x")})
-    assert not (tmp_path / "what").exists()
+    with pytest.raises(ActionError, match=r"^A file or folder name can have at most 255 characters: F{50}… has 256$"):
+        act("files.mkdir", None, {"folder": str(tmp_path / "new" / ("F" * 256))})
+    assert sorted(os.listdir(tmp_path)) == ["file"]
+
+
+def test_a_numbered_name_that_would_be_too_long_stops_before_any_file_is_copied(act, tmp_path, inbox):
+    long = inbox / ("L" * 251 + ".csv")  # 255 characters, the most Windows allows
+    long.write_text("long", encoding="utf-8")
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / long.name).write_text("there", encoding="utf-8")
+    table = pl.DataFrame({"File": [str(inbox / "a.csv"), str(long)]})
+    with pytest.raises(ActionError, match=r"^A file or folder name can have at most 255 characters: L{50}… has 259$"):
+        act("files.copy", table, {"column": "File", "target": str(tmp_path / "out")})
+    assert files_in(tmp_path / "out") == {long.name: "there"}
 
 
 # --- rename -----------------------------------------------------------------------------------------
@@ -287,6 +305,7 @@ def test_a_listed_file_is_not_replaced_before_it_is_renamed(act, names):
         ("a.csv.", r"^A file or folder name can't end with a dot or a space: 'a\.csv\.'$"),
         ("nul.txt", r"^NUL is reserved for a device in Windows and can't be a file or folder name: nul\.txt$"),
         ("com1", r"^COM1 is reserved"),
+        ("N" * 300 + ".csv", r"^A file or folder name can have at most 255 characters: N{50}… has 304$"),
     ],
 )
 def test_names_windows_does_not_allow_stop_before_any_file_is_renamed(act, names, new, message):

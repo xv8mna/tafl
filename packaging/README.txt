@@ -50,12 +50,16 @@ file. A batch file for the Task Scheduler (the folder C:\Logs must exist):
 
   @echo off
   set PYTHONIOENCODING=utf-8
-  echo ===== %date% %time% report.tafl >> C:\Logs\report.log
-  C:\Tools\Tafl\tafl.exe run C:\Projects\report.tafl >> C:\Logs\report.log 2>&1
+  echo ===== %date% %time% report.tafl >> "C:\Logs\report.log"
+  "C:\Tools\Tafl\tafl.exe" run "C:\Projects\report.tafl" >> "C:\Logs\report.log" 2>&1
 
 The echo line puts the date and time before each run's output. The last line's exit code is
 the batch file's: 0 when the run worked, 1 when a step failed, 2 when the project can't be
-used (e.g. the file isn't there).
+used (e.g. the file isn't there) or the command line is wrong.
+
+Keep the quotes around the paths: without them, a path with a space in it (e.g. a folder
+"My Reports") is split at the space, and Windows doesn't find tafl.exe, or tafl.exe stops
+with exit code 2 ("unrecognized arguments").
 
 When its output goes to a file, tafl.exe writes in the Windows code page: characters outside
 it become "?" in the output, and codes like \u2192 in error and warning messages. The line

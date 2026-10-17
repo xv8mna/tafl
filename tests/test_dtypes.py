@@ -1,4 +1,6 @@
 import datetime as dt
+import random
+from decimal import Decimal
 
 import polars as pl
 import pytest
@@ -102,6 +104,55 @@ def test_normalize_types():
     assert dtypes.normalize(pl.Series(["1.50"]).cast(pl.Decimal(10, 2))).dtype == pl.Float64
 
 
+def test_normalize_can_keep_every_digit_of_decimals():
+    ids = pl.Series([Decimal("12345678901234567890123"), Decimal("12345678901234567890124")], dtype=pl.Decimal(30, 0))
+    amounts = pl.Series([Decimal("12345678901234.5678"), Decimal("1.1000"), None], dtype=pl.Decimal(18, 4))
+    counts = pl.Series([Decimal("9223372036854775807"), None], dtype=pl.Decimal(20, 0))
+    assert dtypes.normalize(ids, exact=True).equals(ids)  # a decimal number would make both IDs equal
+    assert dtypes.normalize(amounts, exact=True).equals(amounts)
+    assert dtypes.normalize(counts, exact=True).dtype == pl.Int64
+    assert dtypes.normalize(counts, exact=True).to_list() == [2**63 - 1, None]
+    assert dtypes.normalize(pl.Series([1, 2], dtype=pl.UInt8), exact=True).dtype == pl.Int64
+    assert dtypes.normalize(ids).dtype == pl.Float64  # formulas: as before
+
+
+def test_decimals_that_lose_digits_as_decimal_numbers():
+    s = pl.Series(
+        [Decimal("12345678901234.5678"), Decimal("1.1000"), Decimal("2.6750"), Decimal("-0.0001"), None],
+        dtype=pl.Decimal(18, 4),
+    )
+    assert dtypes.float_loses_digits(s).to_list() == [True, False, False, False, False]
+    big = pl.Series([Decimal("9" * 38), Decimal("10" + "0" * 20)], dtype=pl.Decimal(38, 0))
+    assert dtypes.float_loses_digits(big).to_list() == [True, False]
+
+
+def test_decimals_to_text_keep_their_digits():
+    values = [Decimal("0.123456789012345678"), Decimal("-1.100000000000000000"), Decimal("0")]
+    s = pl.Series(values, dtype=pl.Decimal(38, 18))
+    assert dtypes.format_numbers(s).to_list() == ["0,123456789012345678", "-1,1", "0"]
+    ids = pl.Series([Decimal("12345678901234567890123"), Decimal("100")], dtype=pl.Decimal(30, 0))
+    assert dtypes.format_numbers(ids, "", ".").to_list() == ["12345678901234567890123", "100"]
+    assert dtypes.format_numbers(ids, "#,##0", ".").to_list() == ["12,345,678,901,234,567,890,123", "100"]
+
+
+@pytest.mark.parametrize(
+    ("text", "decimal", "expected"),
+    [
+        ("12345678901234,5678", ",", Decimal("12345678901234.5678")),
+        ("1.234.567.890.123.456.789.012", ",", Decimal("1234567890123456789012")),
+        (" 1,10 € ", ",", Decimal("1.10")),
+        ("12,5-", ",", Decimal("-12.5")),
+        ("1e5", ".", Decimal("100000")),
+        ("x", ",", None),
+        ("inf", ".", None),
+        ("", ",", None),
+    ],
+)
+def test_parse_decimal_is_exact(text, decimal, expected):
+    parsed = dtypes.parse_decimal(text, decimal)
+    assert parsed == expected and str(parsed) == str(expected)
+
+
 def test_whole_numbers_and_midnight_dates():
     df = pl.DataFrame(
         {
@@ -178,6 +229,22 @@ def test_two_digit_years_like_excel():
     assert dtypes.parse_datetimes(pl.Series(["31.12.45 08:15"]), "dd.mm.yy hh:mm").to_list() == [dt.datetime(1945, 12, 31, 8, 15)]
 
 
+def test_date_times_with_two_digit_years():
+    s = pl.Series(["31.12.25 08:30", "1.1.45 23:59:30", "29.02.24 0:00", "31.12.25 25:00", None])
+    expected = [
+        dt.datetime(2025, 12, 31, 8, 30), dt.datetime(1945, 1, 1, 23, 59, 30), dt.datetime(2024, 2, 29), None, None
+    ]  # fmt: skip
+    assert dtypes.parse_datetimes(s).to_list() == expected
+    assert dtypes.parse_dates(s).to_list() == [d and d.date() for d in expected]
+    stamps = pl.DataFrame(
+        {"T": ["31.12.25 08:30", "01.01.30 17:05", ""], "S": ["31.12.99 08:30:15", "1.1.00 0:00:00", None]}
+    )
+    assert dtypes.infer_types(stamps).to_dict(as_series=False) == {
+        "T": [dt.datetime(2025, 12, 31, 8, 30), dt.datetime(1930, 1, 1, 17, 5), None],
+        "S": [dt.datetime(1999, 12, 31, 8, 30, 15), dt.datetime(2000, 1, 1), None],
+    }
+
+
 def test_parse_dates_reads_each_value_in_its_own_format():
     s = pl.Series(["31.12.2025", "2025-12-30", "29.12.25", "2025/12/28", "2025-12-27 10:30", "31.02.2025", "soon", None])
     assert dtypes.parse_dates(s).to_list() == [
@@ -228,6 +295,40 @@ def test_format_numbers_refuses_what_it_cant_write(fmt, message):
         dtypes.format_numbers(pl.Series([1.5]), fmt)
 
 
+def _unicode_keys(s: pl.Series) -> pl.Series:
+    """The sort key worked out the plain way, for every text."""
+    folded = s.str.normalize("NFKD").str.to_lowercase().str.replace_all(r"\p{M}+", "")
+    fold = {"ß": "ss", "æ": "ae", "œ": "oe", "ø": "o", "đ": "d", "ð": "d", "ł": "l", "þ": "th", "ı": "i"}
+    return folded.str.replace_many(list(fold), list(fold.values()))
+
+
+def test_text_sort_key_takes_shortcuts_with_the_same_result():
+    chars = pl.Series([chr(c) for c in range(1, 0x30000) if not 0xD800 <= c < 0xE000])  # every character alone
+    assert dtypes.text_sort_key(chars).equals(_unicode_keys(chars))
+    rng = random.Random(7)
+    pool = "aZ 9-Äöüßé́̈ŁłØİıǅﬁ²ΣσςΟΔΟΣ日本😀 "
+    texts = ["".join(rng.choice(pool) for _ in range(rng.randint(0, 8))) for _ in range(5000)]
+    s = pl.Series([*texts, None, "ΟΔΟΣ", "Ἀθῆναι"])
+    assert dtypes.text_sort_key(s).equals(_unicode_keys(s))
+    repeated = pl.Series(texts[:100] * 300)  # many repeated values: each one is worked out once
+    assert dtypes.text_sort_key(repeated).equals(_unicode_keys(repeated))
+    assert pl.DataFrame({"t": repeated}).select(dtypes.text_sort_key(pl.col("t")))["t"].equals(_unicode_keys(repeated))
+    assert dtypes.text_sort_key(pl.Series([], dtype=pl.String)).len() == 0
+
+
+def test_text_sort_key_decomposes_only_what_needs_it(monkeypatch):
+    seen = []
+    plain = dtypes._unicode_keys
+    dtypes._latin_keys()  # the table, worked out once
+    monkeypatch.setattr(dtypes, "_unicode_keys", lambda s: seen.append(s.to_list()) or plain(s))
+    words = ("Äpfel", "Straße", "élan", "Zebra", "Ölkanne")
+    names = pl.Series([f"Kunde {i} {w}" for i in range(30_000) for w in words])  # all different
+    repeated = pl.Series(["Äpfel", "Straße", "日本", "Zebra"] * 25_000)
+    assert dtypes.text_sort_key(names)[:3].to_list() == ["kunde 0 apfel", "kunde 0 strasse", "kunde 0 elan"]
+    assert dtypes.text_sort_key(repeated)[:3].to_list() == ["apfel", "strasse", "日本"]
+    assert seen == [["日本"]]  # once, for all its rows
+
+
 def test_text_sort_key_sorts_like_excel():
     words = ["Zebra", "apfel", "Äpfel", "Apfel", "Özdemir", "zebra", "Peter", "Straße", "Strasse", "Stras", "été", "Ætna", "ẞ"]
     expected = ["Ætna", "apfel", "Äpfel", "Apfel", "été", "Özdemir", "Peter", "ẞ", "Stras", "Straße", "Strasse", "Zebra", "zebra"]
@@ -236,4 +337,5 @@ def test_text_sort_key_sorts_like_excel():
     assert sorted(words, key=dtypes.text_key) == expected
     keys = df.select(dtypes.text_sort_key(pl.col("w")))["w"].to_list()
     assert keys == [dtypes.text_key(w) for w in words]
+    assert dtypes.text_sort_key(df["w"]).to_list() == keys
     assert dtypes.text_key("é") == dtypes.text_key("é") == "e"  # also with a separate accent

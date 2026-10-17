@@ -1,4 +1,5 @@
 import datetime as dt
+from decimal import Decimal
 
 import polars as pl
 import pytest
@@ -63,6 +64,17 @@ def test_replace_typed_values(act):
     assert out["d"].to_list() == [dt.date(2026, 1, 1), None]
     out = replace(act, df, ["n"], [("1234567890123456789", "1")])
     assert out["n"].to_list() == [1, 1234567890123456768]
+
+
+def test_replace_exact_decimals(act):
+    ids = [Decimal("12345678901234567890.1234"), Decimal("12345678901234567890.1235"), Decimal("1.1000")]
+    df = pl.DataFrame({"n": pl.Series(ids, dtype=pl.Decimal(30, 4))})
+    out = replace(act, df, ["n"], [("12345678901234567890,1234", "7,5"), ("1.1", "")])
+    assert out["n"].to_list() == [Decimal("7.5"), ids[1], None] and out.schema["n"] == pl.Decimal(30, 4)
+    ctx = StubContext()  # a value with more decimal places than the column holds isn't cut
+    out = replace(act, df, ["n"], [("1,1", "1,12345")], ctx)
+    assert out["n"].to_list() == ["12345678901234567890.1234", "12345678901234567890.1235", "1.1000"]  # as numbers in text
+    assert ctx.warnings == ["'n' was converted to text because a value isn't a Decimal(precision=30, scale=4)"]
 
 
 def test_upper_case_writes_sharp_s_as_ss_like_formulas(act):

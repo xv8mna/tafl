@@ -13,10 +13,11 @@ from __future__ import annotations
 import argparse
 import contextlib
 import signal
+import socket
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import polars as pl
@@ -24,9 +25,22 @@ import polars as pl
 from tafl import APP_NAME, COMMAND, __version__
 from tafl.api import Cancelled, Mode
 from tafl.api.parameters import Failed, as_text
-from tafl.core import EXTENSION, Engine, Project, ProjectError, Registry, Status, StepResult, parameters
+from tafl.core import (
+    EXTENSION,
+    Engine,
+    Project,
+    ProjectError,
+    Registry,
+    Status,
+    StepResult,
+    Table,
+    TableResult,
+    parameters,
+)
+from tafl.core.cancel import CancelEvent
 
 STOPPED = 130  # Ctrl+C
+_SUMMARY = 300  # characters of a step's summary that are printed at most, as in the window
 
 
 def _codes(*codes: tuple[int, str]) -> str:
@@ -47,7 +61,7 @@ _CODES = (
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     console = Console()
-    stop = threading.Event()
+    stop = CancelEvent()  # setting it also stops a formula that runs
     try:
         with _ctrl_c(stop):
             return _main(args, console, stop)
@@ -103,7 +117,9 @@ def _at_least_one(text: str) -> int:
 @contextlib.contextmanager
 def _ctrl_c(stop: threading.Event) -> Iterator[None]:
     """Ctrl+C sets ``stop`` before it interrupts: the engine then stops the calculation, instead
-    of taking the interruption for an error of the step it came in."""
+    of taking the interruption for an error of the step it came in. The interruption comes when
+    the program runs Python code again, which a query in DuckDB may not let it do until the query
+    is over: so ``stop`` is also set at once by another thread, which stops the query."""
     if threading.current_thread() is not threading.main_thread():  # signals reach only the main thread
         yield
         return
@@ -113,10 +129,45 @@ def _ctrl_c(stop: threading.Event) -> Iterator[None]:
         raise KeyboardInterrupt
 
     previous = signal.signal(signal.SIGINT, interrupt)
+    end_watching = _watch_for_ctrl_c(stop)
     try:
         yield
     finally:
+        end_watching()
         signal.signal(signal.SIGINT, previous if previous is not None else signal.default_int_handler)
+
+
+def _watch_for_ctrl_c(stop: threading.Event) -> Callable[[], None]:
+    """Sets ``stop`` from another thread when Ctrl+C comes: Python writes the number of each
+    signal into a socket (``signal.set_wakeup_fd``). Returns the function that ends it."""
+    try:
+        reader, writer = socket.socketpair()
+    except OSError:  # no sockets: Ctrl+C still stops the run, a query only when it is over
+        return lambda: None
+    writer.setblocking(False)
+    try:
+        previous = signal.set_wakeup_fd(writer.fileno(), warn_on_full_buffer=False)
+    except (OSError, ValueError):
+        reader.close()
+        writer.close()
+        return lambda: None
+
+    def watch() -> None:
+        with contextlib.suppress(OSError):
+            while data := reader.recv(64):  # empty when the writer is closed
+                if signal.SIGINT in data:
+                    stop.set()
+
+    thread = threading.Thread(target=watch, name="ctrl-c", daemon=True)
+    thread.start()
+
+    def end() -> None:
+        signal.set_wakeup_fd(previous)
+        writer.close()
+        thread.join(1)
+        reader.close()
+
+    return end
 
 
 def _main(args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
@@ -129,6 +180,7 @@ def _main(args: argparse.Namespace, console: Console, stop: threading.Event) -> 
         return _plugins(registry, console)
     try:
         engine = Engine(_load(args.project), registry)
+        engine.cancel = stop  # with it set, a KeyboardInterrupt is Ctrl+C, not a plugin's error
         for name, error in registry.errors:
             console.warn(f"Plugin '{name}' failed to load: {error.splitlines()[-1]}")
         if (code := _parameters(engine, args.values, console)) is not None:
@@ -187,24 +239,45 @@ def _list_parameters(engine: Engine, console: Console) -> None:
 
 
 def _run(engine: Engine, args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
+    """Prints each table as soon as it is calculated. After Ctrl+C, what ran before the stop is
+    printed too: the tables that were done, and the steps of the table that was stopped."""
     started = time.perf_counter()
-    results = engine.run(args.table, mode=Mode.PREVIEW if args.preview else Mode.RUN, cancel=stop)
-    _list_parameters(engine, console)
-    failed = False
-    for table_id, result in results.items():
-        table = engine.project.table(table_id)
-        console.print(table.name)
-        if result.skipped:
-            console.print(f"  {console.symbol(Status.DISABLED)} skipped: {result.skipped}")
-            continue
-        if result.error:
-            console.print(f"  {console.symbol(Status.ERROR)} {result.error}")
-            failed = True
-        for number, (step, step_result) in enumerate(zip(table.steps, result.steps), start=1):
-            console.step(number, engine.describe(step), step_result)
-            failed |= step_result.status == Status.ERROR
+    failed = listed = False
+
+    def done(table_id: str, result: TableResult) -> None:
+        nonlocal failed, listed
+        if not listed:  # the values the run uses (a run works them out anew)
+            _list_parameters(engine, console)
+            listed = True
+        failed |= _print_table(engine, engine.project.table(table_id), result, console)
+
+    try:
+        engine.run(args.table, mode=Mode.PREVIEW if args.preview else Mode.RUN, cancel=stop, done=done)
+    except (KeyboardInterrupt, Cancelled):
+        console.print(f"Stopped after {time.perf_counter() - started:.2f}s")
+        raise
+    if not listed:  # a project without tables
+        _list_parameters(engine, console)
     console.print(f"{'Failed' if failed else 'Done'} in {time.perf_counter() - started:.2f}s")
     return 1 if failed else 0
+
+
+def _print_table(engine: Engine, table: Table, result: TableResult, console: Console) -> bool:
+    """Prints a table's steps with their results; True if it has an error."""
+    console.print(table.name)
+    if result.skipped:
+        console.print(f"  {console.symbol(Status.DISABLED)} skipped: {result.skipped}")
+        return False
+    failed = result.error is not None
+    if result.error:
+        console.print(f"  {console.symbol(Status.ERROR)} {result.error}")
+    for number, (step, step_result) in enumerate(zip(table.steps, result.steps), start=1):
+        console.step(number, engine.describe(step), step_result)
+        failed |= step_result.status == Status.ERROR
+    if result.stopped:
+        for number, step in enumerate(table.steps[len(result.steps) :], start=len(result.steps) + 1):
+            console.step(number, engine.describe(step), None, stopped=number == len(result.steps) + 1)
+    return failed
 
 
 def _show(engine: Engine, args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
@@ -291,7 +364,7 @@ class Console:
         return text
 
     def print(self, text: str = "") -> None:
-        print(self.plain(text))
+        print(self.plain(text), flush=True)  # in a log file too, even if the run is ended
 
     def table(self, df: pl.DataFrame, rows: int) -> None:
         """The first ``rows`` rows of ``df``. Without Unicode the symbols in the data become words
@@ -319,8 +392,16 @@ class Console:
     def error(self, text: str) -> None:
         print(f"Error: {text}", file=sys.stderr)
 
-    def step(self, number: int, description: str, result: StepResult | None, selected: bool = False) -> None:
+    def step(
+        self, number: int, description: str, result: StepResult | None, selected: bool = False, stopped: bool = False
+    ) -> None:
+        """``result`` None: the step didn't run; ``stopped``: it was running when the run was stopped."""
         marker = ">" if selected else " "
+        if len(description) > _SUMMARY:  # e.g. a filter with thousands of values
+            description = description[: _SUMMARY - 1].rstrip() + "…"
+        if stopped:
+            self.print(f" {marker}{self.symbol(Status.BLOCKED)} {number}. {description}   (stopped)")
+            return
         if result is None:
             self.print(f" {marker}      {number}. {description}")
             return

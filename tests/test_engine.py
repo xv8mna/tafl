@@ -3,11 +3,13 @@ import threading
 import time
 import types
 
+import duckdb
 import polars as pl
 import pytest
 
-from tafl.api import ActionError, Cancelled, P, action
+from tafl.api import ActionError, Cancelled, P, action, expressions
 from tafl.core import Engine, Project, Registry, ResultCache, Status
+from tafl.core.cancel import CancelEvent
 
 CSV = "Id;Customer;Amount;Date\n1;A;10,5;01.01.2025\n2;B;20;02.01.2025\n3;A;5;03.01.2025\n"
 
@@ -397,29 +399,80 @@ def test_a_step_that_tries_to_end_the_program_is_a_step_error(project, quitting_
     assert result.steps[-1].error == "The plugin 'quitting' tried to end the program (KeyboardInterrupt)"
 
 
-def test_plugin_code_besides_run_that_tries_to_end_the_program(project):
-    """A migrate, summary or fingerprint function that calls sys.exit() fails like other broken code."""
+def _leaving_registry(error: BaseException) -> Registry:
+    """The built-in actions plus ones whose migrate, summary and fingerprint raise ``error``."""
 
-    def bye(*_):
-        raise SystemExit("bye")
+    def leave(*_):
+        raise error
 
     module = types.ModuleType("leaving")
-    module.old = action("demo.old", "Old", version=2, migrate=bye, summary=bye)(lambda df, p, ctx: df)
-    module.source = action("demo.source", "Source", kind="source", fingerprint=bye)(lambda df, p, ctx: pl.DataFrame({"a": [1]}))
+    module.old = action("demo.old", "Old", version=2, migrate=leave, summary=leave)(lambda df, p, ctx: df)
+    module.source = action("demo.source", "Source", kind="source", fingerprint=leave)(lambda df, p, ctx: pl.DataFrame({"a": [1]}))
+    module.titled = action("demo.titled", "Titled", summary=leave)(lambda df, p, ctx: df)
     registry = Registry()
     registry.load_builtin()
     registry.add_module(module)
-    project.add_step("Orders", "demo.old", {})
-    project.tables[0].steps[-1].version = 1
-    engine = Engine(project, registry)
-    assert engine.describe(project.tables[0].steps[-1]) == "Old"
-    assert project.tables[0].steps[-1] not in engine.upgrade_steps() and engine.links() == []
-    failed = engine.evaluate("Orders").steps[-1]
-    assert failed.status == Status.ERROR and failed.error == "Could not read the step settings: bye"
+    return registry
+
+
+@pytest.mark.parametrize(
+    ("error", "shown"), [(SystemExit("bye"), "SystemExit: bye"), (KeyboardInterrupt(), "KeyboardInterrupt")]
+)
+def test_plugin_code_besides_run_that_tries_to_end_the_program(project, error, shown):
+    """A migrate, summary or fingerprint function that calls sys.exit() or raises
+    KeyboardInterrupt fails like other broken code."""
+    project.add_step("Orders", "demo.old", {}, version=1)
+    project.add_step("Orders", "demo.titled", {})
+    engine = Engine(project, _leaving_registry(error))
+    assert engine.describe(project.tables[0].steps[-2]) == "Old"
+    assert engine.describe(project.tables[0].steps[-1]) == "Titled"
+    assert project.tables[0].steps[-2] not in engine.upgrade_steps() and engine.links() == []
+    failed = engine.evaluate("Orders").steps[-2]
+    assert failed.status == Status.ERROR
+    assert failed.error == f"Could not read the step settings: The plugin 'leaving' tried to end the program ({shown})"
 
     project.add_step(project.add_table("Other"), "demo.source", {})
     assert engine.evaluate("Other").df.to_dicts() == [{"a": 1}]  # without a fingerprint: read every time
     assert not engine.evaluate("Other").steps[0].cached
+
+
+def test_a_keyboard_interrupt_from_plugin_code_after_cancelling_stops(project):
+    """Ctrl+C on the command line sets the cancel event before it interrupts: then a
+    KeyboardInterrupt in a migrate, summary or fingerprint function stops the work."""
+    project.add_step("Orders", "demo.old", {}, version=1)
+    project.add_step("Orders", "demo.titled", {})
+    engine = Engine(project, _leaving_registry(KeyboardInterrupt()))
+    engine.cancel = threading.Event()
+    engine.cancel.set()
+    for work in (
+        lambda: engine.describe(project.tables[0].steps[-2]),
+        lambda: engine.describe(project.tables[0].steps[-1]),
+        engine.upgrade_steps,
+        engine.links,
+    ):
+        with pytest.raises(Cancelled):
+            work()
+
+    # The step settings and the fingerprint, while calculating
+    cancel = threading.Event()
+
+    def ctrl_c(*_):
+        cancel.set()
+        raise KeyboardInterrupt
+
+    module = types.ModuleType("stopping")
+    module.old = action("demo.old2", "Old", version=2, migrate=ctrl_c)(lambda df, p, ctx: df)
+    module.source = action("demo.source2", "Source", kind="source", fingerprint=ctrl_c)(lambda df, p, ctx: pl.DataFrame())
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    project.add_step(project.add_table("Old"), "csv.import", {"file": "orders.csv"})
+    project.add_step("Old", "demo.old2", {}, version=1)
+    project.add_step(project.add_table("New"), "demo.source2", {})
+    for table in ("Old", "New"):
+        cancel.clear()
+        with pytest.raises(Cancelled):
+            Engine(project, registry).evaluate(table, cancel=cancel)
 
 
 def test_an_interruption_after_cancelling_stops_the_calculation(project):
@@ -439,6 +492,119 @@ def test_an_interruption_after_cancelling_stops_the_calculation(project):
     project.add_step("Orders", "demo.ctrl_c", {})
     with pytest.raises(Cancelled):
         Engine(project, registry).evaluate("Orders", cancel=cancel)
+
+
+@pytest.mark.parametrize(
+    "error", [ActionError("Formula error: Query interrupted"), duckdb.InterruptException("Query interrupted")]
+)
+def test_an_error_after_cancelling_stops_the_calculation(project, error):
+    """Ctrl+C stops a DuckDB query, which reports it as an error: with the cancel event set,
+    that is the stop, also in the last step."""
+    cancel = threading.Event()
+    module = types.ModuleType("interrupted")
+
+    @action("demo.stopped_query", "Stopped query")
+    def stopped_query(df, p, ctx):
+        cancel.set()
+        raise error
+
+    module.stopped_query = stopped_query
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    project.add_step("Orders", "demo.stopped_query", {})
+    with pytest.raises(Cancelled):
+        Engine(project, registry).evaluate("Orders", cancel=cancel)
+    assert Engine(project, registry).evaluate("Orders").steps[-1].status == Status.ERROR  # not stopping: an error
+
+
+SLOW = "(SELECT COUNT(*) FROM range(3000000000) t(i) WHERE i % 7 = 8) = 0"  # many seconds
+
+
+def test_a_formula_that_is_interrupted_stops_the_calculation(project):
+    """The cancel event is set while a formula runs, and its DuckDB query is interrupted."""
+    cancel = threading.Event()
+    module = types.ModuleType("interrupting")
+
+    @action("demo.interrupted_formula", "Interrupted formula")
+    def interrupted_formula(df, p, ctx):
+        con = expressions._connection()  # this thread's: the one the formula uses
+        lock = threading.Lock()
+        running = [True]
+
+        def ctrl_c():
+            cancel.set()
+            while True:  # DuckDB forgets an interrupt that comes before the query starts
+                with lock:  # never after the formula: it would stop the next query on this thread
+                    if not running[0]:
+                        return
+                    con.interrupt()
+                time.sleep(0.02)
+
+        thread = threading.Thread(target=ctrl_c, daemon=True)
+        thread.start()
+        try:
+            return expressions.filter_rows(df, SLOW)
+        finally:
+            with lock:
+                running[0] = False
+            thread.join()
+
+    module.interrupted_formula = interrupted_formula
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    project.add_step("Orders", "demo.interrupted_formula", {})
+    started = time.perf_counter()
+    with pytest.raises(Cancelled):
+        Engine(project, registry).evaluate("Orders", cancel=cancel)
+    assert time.perf_counter() - started < 5
+
+
+def test_stopping_a_calculation_stops_the_formula_that_runs(project, registry):
+    """A CancelEvent (the window's Stop, Ctrl+C on the command line) interrupts DuckDB itself:
+    the step doesn't have to look at it."""
+    project.add_step("Orders", "rows.filter_formula", {"condition": SLOW})
+    cancel = CancelEvent()
+    threading.Timer(0.3, cancel.set).start()
+    started = time.perf_counter()
+    with pytest.raises(Cancelled):
+        Engine(project, registry).evaluate("Orders", cancel=cancel)
+    assert time.perf_counter() - started < 5
+    after = Engine(project, registry).evaluate("Orders", until=1)  # the next query on this thread runs
+    assert after.ok
+
+
+def test_a_run_reports_each_table_and_the_one_it_stopped_in(project, tmp_path):
+    cancel = threading.Event()
+    module = types.ModuleType("interrupted")
+
+    @action("demo.ctrl_c", "Ctrl+C")
+    def ctrl_c(df, p, ctx):
+        cancel.set()
+        raise KeyboardInterrupt
+
+    module.ctrl_c = ctrl_c
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    second = project.add_table("Second")
+    project.add_step(second, "table.derive", {"table": "t1"})
+    project.add_step(second, "rows.sort", {"by": [{"column": "Id"}]})
+    project.add_step(second, "demo.ctrl_c", {})
+    project.add_step(second, "csv.export", {"file": "out/second.csv"})
+    reported = []
+    with pytest.raises(Cancelled):
+        Engine(project, registry).run(cancel=cancel, done=lambda table_id, result: reported.append((table_id, result)))
+    assert [table_id for table_id, _ in reported] == ["t1", second.id]
+    orders, stopped = reported[0][1], reported[1][1]
+    assert orders.ok and not orders.stopped and (tmp_path / "out" / "orders.csv").exists()
+    assert stopped.stopped and statuses(stopped) == [Status.OK, Status.OK]  # the steps before the stop
+    assert not stopped.ok and not stopped.failed and stopped.df is None
+
+    reported.clear()
+    results = Engine(project, registry).run(["t1"], done=lambda table_id, result: reported.append((table_id, result)))
+    assert reported == list(results.items()) and results["t1"].ok
 
 
 def test_a_failed_step_has_the_time_it_ran(project, quitting_registry):

@@ -1,4 +1,5 @@
 import datetime as dt
+import decimal
 import os
 import sqlite3
 import uuid
@@ -480,6 +481,92 @@ def test_a_value_the_driver_cant_read_names_its_column():
 
     with pytest.raises(ActionError, match=r"^Convert Value first, e.g. CAST\(\[Value\] AS text\)$"):
         make_series("Value", [None, 1, ActionError("Convert {column} first, e.g. CAST([{column}] AS text)")])
+
+
+def test_decimals_keep_their_digits():
+    """Different IDs never become equal: whole numbers become Int64 when they fit, decimals
+    Float64 when it keeps them as they are; otherwise they stay exact (Decimal)."""
+    from tafl.api import make_series
+
+    D = decimal.Decimal
+    ids = make_series("Id", [D("1234567890123456789"), D("1234567890123456788"), None], pl.Decimal(19, 0))
+    assert ids.dtype == pl.Int64 and ids.to_list() == [1234567890123456789, 1234567890123456788, None]
+    longer = make_series("Id", [D("12345678901234567891"), D("12345678901234567892")], pl.Decimal(20, 0))
+    assert longer.dtype == pl.Decimal(20, 0) and longer.to_list() == [D("12345678901234567891"), D("12345678901234567892")]
+    amounts = make_series("Amount", [D("12345678901234.5678"), D("0.1000")], pl.Decimal(18, 4))
+    assert amounts.dtype == pl.Decimal(18, 4) and amounts.to_list() == [D("12345678901234.5678"), D("0.1000")]
+    assert make_series("Rate", [D("1.10"), D("123.45000000000000000000")], pl.Decimal(38, 20)).to_list() == [1.1, 123.45]
+    assert make_series("Rate", [D("1.5"), None]).dtype == pl.Float64  # a driver that gives no type
+    assert make_series("Rate", [D("0.12345678901234567"), None]).dtype == pl.Decimal(38, 17)
+    assert make_series("N", [D("5")], pl.Int64).to_list() == [5]
+    huge = make_series("Huge", [D("1" * 40), D("1.5")])  # more than the 38 digits of a Decimal
+    assert huge.to_list() == ["1" * 40, "1.5"]
+
+
+def test_sqlserver_fits_values_to_their_columns(registry):
+    """As the driver does with date-times: times cut to their column's digits, date-times for a
+    date column their date, offsets for datetimeoffset in the driver's form, decimals rounded."""
+    fit = registry.connectors["sqlserver"].fit_frame
+    df = pl.DataFrame({
+        "Time": [dt.time(8, 0, 1, 567891)],
+        "Second": [dt.datetime(2026, 10, 2, 8, 30, 1, 999999)],
+        "Day": [dt.datetime(2026, 10, 2, 8, 30)],
+        "Zoned": pl.Series([dt.datetime(2026, 7, 1, 8, 30, 0, 123456)]).dt.replace_time_zone("Europe/Berlin"),
+        "Text": ["2026-10-01T08:30:00.1234567+02:00"],
+        "Utc": ["2026-10-01T08:30:00.5Z"],
+        "Price": pl.Series([decimal.Decimal("-2.675")], dtype=pl.Decimal(38, 8)),
+        "Rate": pl.Series([decimal.Decimal("1.5")], dtype=pl.Decimal(38, 8)),
+        "Other": ["x"],
+    })  # fmt: skip
+    types = {
+        "Time": "time(3)", "Second": "datetime2(0)", "Day": "date", "Zoned": "datetimeoffset(2)",
+        "Text": "datetimeoffset(3)", "Utc": "datetimeoffset(0)", "Price": "decimal(10,2)", "Rate": "float",
+    }  # fmt: skip
+    assert fit(df, types).row(0) == (
+        dt.time(8, 0, 1, 567000), dt.datetime(2026, 10, 2, 8, 30, 1), dt.date(2026, 10, 2), "2026-07-01 08:30:00.12 +02:00",
+        "2026-10-01 08:30:00.123 +02:00", "2026-10-01 08:30:00 +00:00", decimal.Decimal("-2.68"), 1.5, "x",
+    )  # fmt: skip
+    assert fit(df, {}).equals(df)
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_import_keeps_the_digits_of_numbers(registry):
+    """numeric(19, 0) and longer IDs: whole numbers while they fit, else Decimal, as amounts
+    with more digits than a Float64 keeps. They go back into the database as they were."""
+    settings = {"server": os.environ["TAFL_TEST_SQLSERVER"], "database": "tempdb"}
+    name = f"dbo.tafl_test_{uuid.uuid4().hex[:8]}"
+    columns = "n19 numeric(19,0), n20 numeric(20,0), few numeric(20,0), d184 decimal(18,4), d102 decimal(10,2), m money, n3820 numeric(38,20)"
+    project = Project(name="SqlServer")
+    project.add_connection("server", "sqlserver", **settings)
+    table = project.add_table("Numbers")
+    project.add_step(table, "db.import", {"connection": "server", "table": name})
+    project.add_step(table, "db.export", {"connection": "server", "table": f"{name}_copy"})
+    with registry.connectors["sqlserver"].open(settings, Context()) as db:
+        db.execute(f"CREATE TABLE {name} ({columns})")
+        db.execute(f"CREATE TABLE {name}_copy ({columns})")
+        db.execute(
+            f"INSERT INTO {name} VALUES (1234567890123456789, 12345678901234567891, 5, 12345678901234.5678, 1.5, "
+            "922337203685477.5807, 1.23456789012345678901), (1234567890123456788, 12345678901234567892, 6, 0.1, 2.25, 1, 0.5)"
+        )
+    try:
+        result = Engine(project, registry).evaluate(table.id)
+        assert result.ok, result.first_error
+        assert result.df.schema == {
+            "n19": pl.Int64, "n20": pl.Decimal(20, 0), "few": pl.Int64, "d184": pl.Decimal(18, 4), "d102": pl.Float64,
+            "m": pl.Decimal(19, 4), "n3820": pl.Decimal(38, 20),
+        }  # fmt: skip
+        assert result.df["n19"].n_unique() == 2 and result.df["n20"].n_unique() == 2
+        assert result.df["n20"].to_list() == [decimal.Decimal("12345678901234567891"), decimal.Decimal("12345678901234567892")]
+        assert result.df["d184"].to_list() == [decimal.Decimal("12345678901234.5678"), decimal.Decimal("0.1000")]
+        results = Engine(project, registry).run([table.id])
+        assert results[table.id].ok, results[table.id].first_error
+        with registry.connectors["sqlserver"].open(settings, Context()) as db:
+            values = "SELECT CONCAT_WS(';', n19, n20, few, d184, d102, m, n3820) AS r FROM {} ORDER BY few"
+            assert db.read(values.format(f"{name}_copy")).rows() == db.read(values.format(name)).rows()
+    finally:
+        with registry.connectors["sqlserver"].open(settings, Context()) as db:
+            for t in (name, f"{name}_copy"):
+                db.execute(f"IF OBJECT_ID('{t}') IS NOT NULL DROP TABLE {t}")
 
 
 def test_text_sizes_count_utf16_code_units():

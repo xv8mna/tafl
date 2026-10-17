@@ -219,7 +219,22 @@ def test_date_times_with_a_time_zone_keep_their_local_time(db):
     """As in the Excel export, and the same in SQL Server: 08:30 in Berlin stays 08:30."""
     at = pl.Series("At", [dt.datetime(2026, 10, 1, 8, 30), dt.datetime(2026, 7, 1, 8, 30, 0, 500)])
     db.export(pl.DataFrame({"OrderNo": [1, 2], "At": at.dt.replace_time_zone("Europe/Berlin")}))
-    assert db.rows("SELECT At FROM orders ORDER BY OrderNo") == [("2026-10-01 08:30:00.000000",), ("2026-07-01 08:30:00.000500",)]
+    assert db.rows("SELECT At FROM orders ORDER BY OrderNo") == [("2026-10-01 08:30:00",), ("2026-07-01 08:30:00.000500",)]
+
+
+def test_sqlite_writes_each_date_time_the_same_way_in_every_export(db):
+    """Whole seconds never get .000000 because another value of the export has a fraction:
+    otherwise the keys of a later export with other values would find no row."""
+    day = [dt.datetime(2026, 10, 2, hour) for hour in (8, 9, 10)]
+    db.export(pl.DataFrame({"OrderNo": [1, 2, 3], "At": day}))
+    later = pl.DataFrame({"OrderNo": [4, 5, 6, 7], "At": [*day, dt.datetime(2026, 10, 2, 11, 0, 0, 500000)]})
+    db.export(later, mode="upsert", key_columns=["At"])
+    assert db.context.messages[-1] == ("info", "orders: updated 3 rows, added 1 row")
+    assert db.rows("SELECT OrderNo, At FROM orders ORDER BY At") == [
+        (4, "2026-10-02 08:00:00"), (5, "2026-10-02 09:00:00"), (6, "2026-10-02 10:00:00"), (7, "2026-10-02 11:00:00.500000"),
+    ]  # fmt: skip
+    db.export(later.reverse(), mode="delete", key_columns=["At"])
+    assert db.rows("SELECT COUNT(*) FROM orders") == [(0,)]
 
 
 def test_sqlite_commands_run_in_one_transaction(db):
@@ -484,3 +499,207 @@ def test_sqlserver_export_mistakes_are_explained(registry):
         with ctx.database("server") as db:
             for table in (name, new):
                 db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")
+
+
+_SQLSERVER = pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+_BERLIN = pl.Series([dt.datetime(2026, 7, 1, 8, 30, 0, 500000), dt.datetime(2026, 1, 1, 8, 30)]).dt.replace_time_zone("Europe/Berlin")
+# The type of a column, and key values for it: Add stores them in the column's own way (Łódź is
+# Lódz in a varchar, 08:00:01.5 is 08:00:01 in a datetime2(0)), and the keyed modes must find them
+_KEYS = [
+    ("varchar(50)", ["Łódź", "Praha č", "Müller", "straße", None]),
+    ("nvarchar(50)", ["Łódź", "東京", "😀 smile", None]),
+    ("varchar(50) COLLATE Latin1_General_CS_AS", ["Łódź", "a", "A"]),
+    ("nvarchar(50) COLLATE Latin1_General_BIN2", ["Łódź", "a", "A"]),
+    ("varchar(50) COLLATE Latin1_General_100_CI_AS_SC_UTF8", ["Łódź", "Praha č"]),
+    ("char(5)", ["AB      ", "x"]),  # the spaces that don't fit are cut, as SQL Server does
+    ("datetime2(0)", [dt.datetime(2026, 10, 2, 8), dt.datetime(2026, 10, 2, 8, 0, 1, 500000), dt.datetime(2026, 10, 2, 8, 0, 2, 250000)]),
+    ("datetime2(3)", [dt.datetime(2026, 10, 2, 8, 0, 1, 123456), None]),
+    ("datetime2(7)", [dt.datetime(2026, 10, 2, 8, 0, 1, 123456)]),
+    ("datetime", [dt.datetime(2026, 10, 2, 8, 0, 1, 998500), dt.datetime(2026, 10, 2, 8, 0, 1, 123456)]),
+    ("smalldatetime", [dt.datetime(2026, 10, 2, 8, 0, 29, 999000), dt.datetime(2026, 10, 2, 8, 0, 30)]),
+    ("time(0)", [dt.time(8, 0, 1, 500000), dt.time(8, 0, 2)]),
+    ("time(3)", [dt.time(8, 0, 1, 123456)]),
+    ("date", [dt.datetime(2026, 10, 2, 8, 0, 1), dt.datetime(2026, 10, 3)]),
+    ("datetimeoffset(0)", [dt.datetime(2026, 7, 1, 8, 30, 0, 500000), dt.datetime(2026, 1, 1, 8, 30)]),
+    ("datetimeoffset(7)", _BERLIN),
+    ("datetimeoffset(3)", ["2026-10-01T08:30:00.123456+02:00", "2026-10-01T08:30:00Z", "2026-10-01 09:30:00"]),
+    ("varbinary(10)", [b"\x00\xff", b"\x01"]),
+    ("varbinary(max)", [b"\x00\xff" * 5000, b"\x01"]),
+    ("nvarchar(1000)", ["ä" * 900, "b" * 900]),  # too long for an index on the key
+    ("nvarchar(max)", ["ä" * 2000, "b"]),
+    # Values of another type than the column's, as in 0.2.0
+    ("int", [1, 2, None]),
+    ("int", ["1", "2", "003"]),
+    ("int", [1.0, 2.0]),
+    ("varchar(10)", [1, 2, 3]),
+    ("bigint", [9007199254740993, -9223372036854775808]),
+    ("bit", [True, False]),
+    ("datetime2(0)", [dt.date(2026, 1, 1), dt.date(2026, 1, 2)]),
+    ("decimal(18,2)", [1.1, 2.25, 0.07]),
+    ("decimal(10,2)", pl.Series([decimal.Decimal("1.50"), decimal.Decimal("2.255")], dtype=pl.Decimal(10, 3))),
+    ("uniqueidentifier", ["6F9619FF-8B86-D011-B42D-00C04FC964FF"]),
+]
+
+
+@_SQLSERVER
+@pytest.mark.parametrize(("kind", "values"), _KEYS, ids=[f"{i} {kind}" for i, (kind, _values) in enumerate(_KEYS)])
+def test_sqlserver_keys_find_the_rows_that_add_stored(registry, kind, values):
+    """The keyed modes stage the rows in a #temporary table with the types and collations of the
+    table's own columns: the keys find the rows that Add stored, whatever Add made of them, and
+    every mode stores the values as Add does."""
+    ctx, name = _sqlserver()
+    keys = values if isinstance(values, pl.Series) else pl.Series(values, strict=False)
+    data = pl.DataFrame({"K": keys, "V": keys})
+    n, s = data.height, "s" if data.height != 1 else ""
+    expected = {
+        "update": f"updated {n} row{s}",
+        "upsert": f"updated {n} row{s}",
+        "replace_keys": f"deleted {n} row{s}, added {n} row{s}",
+        "delete": f"deleted {n} row{s}",
+    }
+
+    def export(note, **params):
+        registry.actions["db.export"](data.with_columns(N=pl.lit(note)), {"connection": "server", "table": name} | params, ctx)
+
+    def rows():
+        with ctx.database("server") as db:
+            return sorted(db.read(f"SELECT K, V, N FROM {name}").rows(), key=repr)
+
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (K {kind}, V {kind}, N nvarchar(10))")
+        export("old")
+        stored = rows()
+        assert len(stored) == n
+        with ctx.database("server") as db:
+            db.execute(f"SELECT * INTO {name}_added FROM {name}")
+        for mode, message in expected.items():
+            with ctx.database("server") as db:
+                db.execute(f"DELETE FROM {name}; INSERT INTO {name} SELECT * FROM {name}_added")
+            export("new", mode=mode, key_columns=["K"])
+            assert ctx.messages[-1] == ("info", f"{name}: {message}"), mode
+            assert rows() == ([] if mode == "delete" else sorted([(k, v, "new") for k, v, _note in stored], key=repr)), mode
+        with ctx.database("server") as db:
+            db.execute(f"DELETE FROM {name}")
+        export("old", mode="upsert", key_columns=["K"])  # the new rows come from the stage
+        assert rows() == stored
+    finally:
+        with ctx.database("server") as db:
+            for table in (name, f"{name}_added"):
+                db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")
+
+
+@_SQLSERVER
+def test_sqlserver_keys_must_be_unique_as_the_column_holds_them(registry):
+    """08:00:01.2 and 08:00:01.7 are the same second in a datetime2(0) column: updating by them
+    wouldn't say which row wins."""
+    ctx, name = _sqlserver()
+    seconds = [dt.datetime(2026, 10, 2, 8, 0, 1, 200000), dt.datetime(2026, 10, 2, 8, 0, 1, 700000)]
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (K datetime2(0), Day date, V int)")
+        for key, values in (("K", seconds), ("Day", [dt.datetime(2026, 10, 2, 8), dt.datetime(2026, 10, 2, 9)])):
+            for mode in ("update", "upsert"):
+                with pytest.raises(ActionError, match=rf"don't identify the rows: 1 key value occurs more than once \(e.g. {key} = 2026-10-02"):
+                    registry.actions["db.export"](
+                        pl.DataFrame({key: values, "V": [1, 2]}), {"connection": "server", "table": name, "mode": mode, "key_columns": [key]}, ctx
+                    )
+        registry.actions["db.export"](pl.DataFrame({"K": seconds[:1], "V": [1]}), {"connection": "server", "table": name}, ctx)
+        with ctx.database("server") as db:
+            assert db.read(f"SELECT K FROM {name}").rows() == [(dt.datetime(2026, 10, 2, 8, 0, 1),)]
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_datetimeoffset_columns_get_the_zones_offset(registry):
+    """A date-time with a time zone keeps its zone's offset, one without a zone gets the offset of
+    this PC's time zone on its day (from the driver), in every mode; imported values (texts such
+    as 2026-10-01T08:30:00+02:00) go back as they were."""
+    ctx, name = _sqlserver()
+    copy = f"{name}_copy"
+    utc = pl.Series([dt.datetime(2026, 7, 1, 6, 30, 0, 500000), dt.datetime(2026, 1, 1, 7, 30), dt.datetime(2026, 7, 1, 6, 30)])
+    data = pl.DataFrame({"N": [1, 2, 3], "At": utc.dt.replace_time_zone("UTC")})
+    berlin = data.with_columns(pl.col("At").dt.convert_time_zone("Europe/Berlin"))  # the same moments
+    naive = dt.datetime(2026, 7, 1, 8, 30)
+    local = naive.astimezone().strftime("%z")
+    local = f"{local[:3]}:{local[3:]}"
+
+    def export(df, table=name, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": table} | params, ctx)
+
+    def stored(table=name):
+        with ctx.database("server") as db:
+            return db.read(f"SELECT N, At FROM {table} ORDER BY N").rows()
+
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (N int, At datetimeoffset(3))")
+            db.execute(f"CREATE TABLE {copy} (N int, At datetimeoffset(3))")
+        for mode in ("insert", "upsert"):
+            with ctx.database("server") as db:
+                db.execute(f"DELETE FROM {name}")
+            export(data, mode=mode, key_columns=["N"])
+            assert stored() == [
+                (1, "2026-07-01T06:30:00.500000+00:00"), (2, "2026-01-01T07:30:00+00:00"), (3, "2026-07-01T06:30:00+00:00"),
+            ], mode  # fmt: skip
+        export(berlin, mode="update", key_columns=["N"])
+        assert stored() == [
+            (1, "2026-07-01T08:30:00.500000+02:00"), (2, "2026-01-01T08:30:00+01:00"), (3, "2026-07-01T08:30:00+02:00"),
+        ]  # fmt: skip
+        export(data.drop("N"), mode="delete", key_columns=["At"])  # the same moments in another zone
+        assert ctx.messages[-1] == ("info", f"{name}: deleted 3 rows")
+        export(pl.DataFrame({"N": [4], "At": [naive]}), mode="upsert", key_columns=["N"])
+        export(pl.DataFrame({"N": [5], "At": [naive]}))
+        assert stored() == [(4, f"2026-07-01T08:30:00{local}"), (5, f"2026-07-01T08:30:00{local}")]
+        # An import gives texts with the offset: they go back unchanged, by Add and by key
+        imported = registry.actions["db.import"](None, {"connection": "server", "table": name}, ctx)
+        assert imported["At"].to_list() == [f"2026-07-01T08:30:00{local}"] * 2
+        export(imported, table=copy)
+        export(imported, table=copy, mode="upsert", key_columns=["At", "N"])
+        assert ctx.messages[-1] == ("info", f"{copy}: nothing changed")  # the keys found their rows
+        export(imported.with_columns(N=pl.col("N") + 10), table=copy, mode="upsert", key_columns=["At", "N"])
+        assert stored(copy) == [*stored(), *[(n + 10, at) for n, at in stored()]]
+    finally:
+        with ctx.database("server") as db:
+            for table in (name, copy):
+                db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")
+
+
+@_SQLSERVER
+def test_sqlserver_spaces_that_dont_fit_are_cut(registry):
+    """SQL Server leaves out the spaces at the end of a text that don't fit its column (and
+    ignores them when it compares texts): so does the export, in every mode. Other values that
+    are too long are refused with the column and an example."""
+    ctx, name = _sqlserver()
+
+    def export(df, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
+
+    def stored():
+        with ctx.database("server") as db:
+            return db.read(f"SELECT * FROM {name} ORDER BY Id").rows()
+
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (Id int, Code nvarchar(5), Fixed char(5), Short varchar(3), Data varbinary(2))")
+        export(pl.DataFrame({"Id": [1, 2], "Code": ["AB      ", "ABCDE  "], "Fixed": ["x      ", None], "Short": ["é   ", "ab"]}))
+        assert stored() == [(1, "AB   ", "x    ", "é  ", None), (2, "ABCDE", None, "ab", None)]
+        export(pl.DataFrame({"Id": [1, 3], "Code": ["CD        ", "😀😀  "]}), mode="upsert", key_columns=["Id"])
+        assert ctx.messages[-1] == ("info", f"{name}: updated 1 row, added 1 row")
+        assert [row[:2] for row in stored()] == [(1, "CD   "), (2, "ABCDE"), (3, "😀😀 ")]  # an emoji takes two
+        export(pl.DataFrame({"Code": ["CD          ", "ABCDEFG"], "Short": ["new", "too long"]}), mode="update", key_columns=["Code"])
+        assert ctx.messages[-1] == ("info", f"{name}: updated 1 row")  # ABCDEFG can't be in the column: left out
+        assert stored()[0][:4] == (1, "CD   ", "x    ", "new")
+        too_long = r"^The column Code .* up to 5 characters \(nvarchar\(5\)\), but Code has longer ones \(e.g. “ABCDEF  ”, 8 characters\)"
+        with pytest.raises(ActionError, match=too_long):
+            export(pl.DataFrame({"Id": [4], "Code": ["ABCDEF  "]}))
+        too_long = r"^The column Data .* up to 2 bytes \(varbinary\(2\)\), but Data has longer ones \(e.g. 0x000102, 3 bytes\)\. Shorten"
+        with pytest.raises(ActionError, match=too_long):
+            export(pl.DataFrame({"Id": [4], "Data": [b"\x00\x01\x02"]}), mode="upsert", key_columns=["Id"])
+        export(pl.DataFrame({"Data": [b"\x00\x01\x02"]}), mode="delete", key_columns=["Data"])  # can't be in the column
+        assert ctx.messages[-1] == ("info", f"{name}: nothing changed") and len(stored()) == 3
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

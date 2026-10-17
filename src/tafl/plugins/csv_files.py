@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import codecs
 import io
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -26,13 +27,16 @@ from tafl.api import (
 _DELIMITERS = [(";", "Semicolon ;"), (",", "Comma ,"), ("tab", "Tab"), ("|", "Pipe |")]
 _ENCODINGS = {"utf-8": "UTF-8", "cp1252": "Windows (ANSI)", "latin-1": "Latin-1", "utf-16": "UTF-16"}
 _CHUNK = 1 << 20
+_ONE_COLUMN = "\x1f"  # the delimiter for files that have none: text doesn't contain it
 
-# Numbers as text: 1.234,56 or 1234,56 (decimal comma) and 1,234.56 or 1234.56 (decimal point)
+# Numbers as text: 1.234,56 or 1234,56 (decimal comma) and 1,234.56 or 1234.56 (decimal point).
+# Thousands separators come after 1 to 3 digits that don't start with 0: 0.500 is a decimal.
 _NUMBER = {
-    ",": r"([0-9]+|[0-9]{1,3}(\.[0-9]{3})+)(,[0-9]+)?",
-    ".": r"([0-9]+|[0-9]{1,3}(,[0-9]{3})+)(\.[0-9]+)?",
+    ",": r"([0-9]+|[1-9][0-9]{0,2}(\.[0-9]{3})+)(,[0-9]+)?",
+    ".": r"([0-9]+|[1-9][0-9]{0,2}(,[0-9]{3})+)(\.[0-9]+)?",
 }
-_WHOLE = {",": r"^[+-]?([0-9]+|[0-9]{1,3}(\.[0-9]{3})+)$", ".": r"^[+-]?([0-9]+|[0-9]{1,3}(,[0-9]{3})+)$"}
+_WHOLE = {",": r"^[+-]?([0-9]+|[1-9][0-9]{0,2}(\.[0-9]{3})+)$", ".": r"^[+-]?([0-9]+|[1-9][0-9]{0,2}(,[0-9]{3})+)$"}
+_EITHER = r"^[+-]?([0-9]+|[1-9][0-9]{0,2}[.,][0-9]{3})$"  # 12, 1.250 and 1,250 fit both decimal separators
 _SPACES = "[   ]"
 _CURRENCY = "€$£"
 
@@ -86,12 +90,13 @@ def import_csv(df, p, ctx):
     subfolders) into one table: daily exports, for example.
 
     Delimiter, encoding and decimal separator are detected automatically unless chosen (for
-    each file). Numbers and dates are recognized when every value of a column fits, in all
-    files together: also amounts like 1.234,50 € or 123,45- and percentages like 12,5% (read
-    as 0.125). Columns with leading zeros (customer numbers, postal codes) stay text. A value
-    like 1.000 can be one thousand or one: it follows the other numbers of the file, and
-    without any it is one thousand in files with semicolons. Files are matched by column
-    names; a column missing in a file stays empty there.
+    each file); a file whose first line has no delimiter has one column. Numbers and dates are
+    recognized when every value of a column fits, in all files together: also amounts like
+    1.234,50 € or 123,45- and percentages like 12,5% (read as 0.125). Columns with leading
+    zeros (customer numbers, postal codes) stay text. A value like 1.000 can be one thousand
+    or one: it follows the other numbers of its column (like 0.500 or 2,5), else those of the
+    file, and without any it is one thousand in files with semicolons. Files are matched by
+    column names; a column missing in a file stays empty there.
     """
     paths, folder = source_files(p, ctx)
     parts, separators, encodings = [], [], []
@@ -106,9 +111,9 @@ def import_csv(df, p, ctx):
     def detect_types(data: pl.DataFrame) -> pl.DataFrame:
         if not p.detect_types:
             return data
-        decimal = p.decimal if p.decimal != "auto" else _guess_decimal(data, separators[0])
+        decimal, columns = (p.decimal, {}) if p.decimal != "auto" else _guess_decimal(data, separators[0])
         decimals.append(decimal)
-        return _detect_types(data, decimal, ctx.warn)
+        return _detect_types(data, {name: columns.get(name, decimal) for name in data.columns}, ctx.warn)
 
     out = combine(parts, p, folder, prepare=detect_types)
     decimal = [f"decimal {'comma' if decimals[0] == ',' else 'point'}"] if decimals else []
@@ -122,8 +127,13 @@ def import_csv(df, p, ctx):
 
 def _read_text_file(path: Path, p, warn: Callable[[str], None]) -> tuple[pl.DataFrame, str, str]:
     """One file as text columns named after its header: (data, delimiter, encoding)."""
-    raw = path.read_bytes()
+    try:
+        raw = path.read_bytes()
+    except OSError as error:  # e.g. open in a program that doesn't let others read it
+        raise files.read_error(error, path) from None
     data, encoding = _to_utf8(raw, p.encoding, path.name, warn)
+    if b"\r\r\n" in data:  # line ends converted twice: one line end, not a \r at the end of the last value
+        data = re.sub(rb"\r+\n", b"\r\n", data)
     sample = data[:65536].decode("utf-8", errors="ignore")
     separator = _detect_delimiter(sample, p.skip_lines) if p.delimiter == "auto" else _separator(p.delimiter)
     options = dict(separator=separator, has_header=False, skip_lines=p.skip_lines, raise_if_empty=False, encoding="utf8-lossy")
@@ -221,7 +231,7 @@ def export_csv(df, p, ctx):
         *(pl.when(pl.col(c).is_finite()).then(pl.col(c)).alias(c) for c, t in df.schema.items() if t.is_float()),
         *((pl.lit("0x") + pl.col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
     )
-    with files.replace_file(path) as temporary:
+    with files.replace_file(path, ctx.warn) as temporary:
         if p.encoding in ("utf-8", "utf-8-sig"):
             data.write_csv(temporary, include_bom=p.encoding == "utf-8-sig", **options)
         else:
@@ -307,9 +317,14 @@ def _utf8_counts(raw: bytes) -> tuple[int, int]:
 
 
 def _detect_delimiter(sample: str, skip_lines: int) -> str:
+    """The delimiter of the first line that splits most lines the same way. Without any in the
+    first line, the file has one column (its values can still have commas, as in 12,50)."""
     lines = [line for line in sample.splitlines()[skip_lines : skip_lines + 50] if line.strip()][:20]
+    candidates = (";", ",", "\t", "|")
+    if lines and not any(_count_outside_quotes(lines[0], candidate) for candidate in candidates):
+        return _ONE_COLUMN
     best, best_score = ",", -1.0
-    for candidate in (";", ",", "\t", "|"):
+    for candidate in candidates:
         counts = [_count_outside_quotes(line, candidate) for line in lines]
         if not counts or counts[0] == 0:
             continue
@@ -330,39 +345,57 @@ def _count_outside_quotes(line: str, char: str) -> int:
     return count
 
 
-def _guess_decimal(df: pl.DataFrame, separator: str) -> str:
-    """Count values that are only numbers with a decimal comma (1.234,56 / 12,5 / 1.234.567)
-    versus a decimal point (1,234.56 / 12.5) in a sample. Values like 1.000 and 1,000 fit both
-    and count for neither. Without a difference: comma in files with semicolons, else point."""
+def _guess_decimal(df: pl.DataFrame, separator: str) -> tuple[str, dict[str, str]]:
+    """The decimal separator of the file, and of the columns whose values show one. A value shows
+    a decimal comma (1.234,56 / 12,5 / 0,500 / 1.234.567) or a decimal point (1,234.56 / 12.5 /
+    0.500) when it fits only that one; values like 1.000 and 1,000 fit both. A column with a
+    value that shows a point has a decimal point, else one with a value that shows a comma a
+    decimal comma. For the file, the separator that more values of a sample show; without a
+    difference, a comma in files with semicolons, else a point."""
     comma = point = 0
+    columns: dict[str, str] = {}
     sample = df.head(2000)
-    for name, dtype in sample.schema.items():
-        if dtype == pl.String:
-            values = _bare(sample[name])
-            values = values.filter(~values.str.contains(r"^[+-]?[0-9]+$"))
-            fits_comma, fits_point = values.str.contains(f"^[+-]?{_NUMBER[',']}$"), values.str.contains(f"^[+-]?{_NUMBER['.']}$")
-            comma += (fits_comma & ~fits_point).sum()
-            point += (fits_point & ~fits_comma).sum()
+    for name, dtype in df.schema.items():
+        if dtype != pl.String:
+            continue
+        commas, points = _shown_decimals(sample[name])
+        comma, point = comma + commas, point + points
+        if not commas and not points and df.height > sample.height and sample[name].str.contains(_EITHER).all():
+            rest = df[name].slice(sample.height)  # numbers like 12 or 1.250 so far: also 0.500 after them?
+            commas, points = _shown_decimals(rest.filter(~rest.str.contains(_EITHER)))
+        if commas or points:
+            columns[name] = "." if points else ","
     if comma != point:
-        return "," if comma > point else "."
-    return "," if separator == ";" else "."
+        return ("," if comma > point else "."), columns
+    return ("," if separator == ";" else "."), columns
 
 
-def _detect_types(data: pl.DataFrame, decimal: str, warn: Callable[[str], None]) -> pl.DataFrame:
-    """``dtypes.infer_types``, and also: numbers with thousands separators only (1.000) become
-    whole numbers (exact, up to 19 digits); amounts (1.234,50 €, 123,45-) and percentages (12,5%
-    is 0.125) become numbers when every value of the column is one."""
+def _shown_decimals(s: pl.Series) -> tuple[int, int]:
+    """How many values are numbers only with a decimal comma, and how many only with a decimal
+    point (see ``_guess_decimal``)."""
+    values = _bare(s)
+    values = values.filter(~values.str.contains(r"^[+-]?[0-9]+$"))
+    fits_comma, fits_point = values.str.contains(f"^[+-]?{_NUMBER[',']}$"), values.str.contains(f"^[+-]?{_NUMBER['.']}$")
+    return (fits_comma & ~fits_point).sum(), (fits_point & ~fits_comma).sum()
+
+
+def _detect_types(data: pl.DataFrame, decimals: dict[str, str], warn: Callable[[str], None]) -> pl.DataFrame:
+    """``dtypes.infer_types`` with the decimal separator of each column, and also: numbers with
+    thousands separators only (1.000) become whole numbers (exact, up to 19 digits); amounts
+    (1.234,50 €, 123,45-) and percentages (12,5% is 0.125) become numbers when every value of
+    the column is one."""
     notes: dict[str, list[str]] = {}  # the warnings of infer_types, by column
     typed = data.with_columns(
-        [dtypes.infer_series(data[name], decimal, notes.setdefault(name, []).append) for name in data.columns]
+        [dtypes.infer_series(data[name], decimals[name], notes.setdefault(name, []).append) for name in data.columns]
     )
-    number = _NUMBER[decimal]
-    whole, percent, amount = _WHOLE[decimal], f"^[+-]?{number}%$", f"^[{_CURRENCY}]?[+-]?{number}-?[{_CURRENCY}]?$"
     updates = []
     for name, dtype in data.schema.items():
         kind = typed[name].dtype
         if dtype != pl.String or kind not in (pl.Float64, pl.String):
             continue
+        decimal = decimals[name]
+        number = _NUMBER[decimal]
+        whole, percent, amount = _WHOLE[decimal], f"^[+-]?{number}%$", f"^[{_CURRENCY}]?[+-]?{number}-?[{_CURRENCY}]?$"
         sample = _clean(data[name].drop_nulls().head(1000)).drop_nulls()  # most columns end here, quickly
         if kind == pl.Float64 or _fit(sample, whole):  # text: numbers too long for a decimal number
             pattern = whole
@@ -375,7 +408,7 @@ def _detect_types(data: pl.DataFrame, decimal: str, warn: Callable[[str], None])
         if not values.str.contains(pattern).all():
             continue
         if pattern == whole:
-            if kind == pl.String and values.str.contains(r"^[+-]?0[0-9.,]").any():
+            if kind == pl.String and values.str.contains(r"^[+-]?0[0-9]").any():
                 continue  # codes like 0815
             integers = dtypes.parse_integers(text, decimal)
             if integers.null_count() == text.null_count():  # else beyond Int64: the text stays
@@ -408,8 +441,9 @@ def _amounts(values: pl.Series) -> bool:
 
 
 def _clean(s: pl.Series) -> pl.Series:
-    """Text without spaces (also in 1 234,50 €); empty values as null."""
-    text = s.str.replace_all(_SPACES, "")
+    """Text without spaces (also in 1 234,50 €) and other white space at the ends (tabs, line
+    ends); empty values as null."""
+    text = s.str.strip_chars().str.replace_all(_SPACES, "")
     return pl.select(pl.when(pl.lit(text) == "").then(None).otherwise(pl.lit(text)).alias(s.name)).to_series()
 
 
@@ -423,4 +457,5 @@ def _separator(choice: str) -> str:
 
 
 def _describe_separator(separator: str) -> str:
-    return {"\t": "tab", ";": "semicolon", ",": "comma", "|": "pipe"}.get(separator, repr(separator))
+    names = {"\t": "tab", ";": "semicolon", ",": "comma", "|": "pipe", _ONE_COLUMN: "none (one column)"}
+    return names.get(separator, repr(separator))

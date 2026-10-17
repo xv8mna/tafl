@@ -484,7 +484,7 @@ class ExpressionEditor(Editor):
         elif self._checked_input is not None and self._checked_input[0] is None:  # no data to check with
             plain, color = result.message, theme.TEXT_DIM
         else:
-            plain, color = result.message, theme.STATUS_COLORS["error"]
+            plain, color = result.message, theme.STATUS_TEXT["error"]
         text = html.escape(plain, quote=False)
         if not result.ok and result.fix and result.mistake:
             text += f' · <a href="fix">Write {html.escape(result.fix, quote=False)}</a>'
@@ -790,7 +790,7 @@ class ColumnsEditor(Editor):
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsDragEnabled)
             item.setCheckState(Qt.CheckState.Checked if name in selected else Qt.CheckState.Unchecked)
             if self._columns is not None and name not in available:
-                item.setForeground(theme.status_color("error"))
+                item.setForeground(theme.status_text_color("error"))
             self._list.addItem(item)
         self._list.blockSignals(False)
 

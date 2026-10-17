@@ -5,11 +5,12 @@ from __future__ import annotations
 import datetime as dt
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHeaderView, QLabel, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHeaderView, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 from tafl.core import Status, TableResult
 
 from . import theme
+from .labels import WrappedLabel
 from .session import Session, size_text
 
 _STATUS = {
@@ -25,9 +26,8 @@ class RunPanel(QWidget):
     def __init__(self, session: Session, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.session = session
-        self.summary = QLabel("No run yet. Press F5 to run the project.", self)
+        self.summary = WrappedLabel("No run yet. Press F5 to run the project.", self)
         self.summary.setObjectName("Dim")
-        self.summary.setWordWrap(True)
         self.tree = QTreeWidget(self)
         self.tree.setHeaderLabels(["Step", "Result", "Time"])
         self.tree.setRootIsDecorated(True)
@@ -51,7 +51,7 @@ class RunPanel(QWidget):
         self.tree.clear()
         stopped = dt.datetime.now().strftime("%H:%M:%S")
         self.summary.setText(f"Run stopped at {stopped}: what ran before the stop is done (exports too), the rest did not run.")
-        self.summary.setStyleSheet(f"color: {theme.STATUS_COLORS['warning']};")
+        self.summary.setStyleSheet(f"color: {theme.STATUS_TEXT['warning']};")
 
     def show_results(self, results: dict[str, TableResult], seconds: float | None = None) -> None:
         """``seconds``: how long the run took (without it, the time of its steps added up)."""
@@ -66,20 +66,20 @@ class RunPanel(QWidget):
                 skipped += 1
                 top = QTreeWidgetItem([table.name, f"skipped: {result.skipped}", ""])
                 top.setIcon(0, theme.status_icon("disabled"))
-                top.setForeground(1, theme.status_color("skipped"))
+                top.setForeground(1, theme.status_text_color("skipped"))
                 top.setToolTip(1, f"Not calculated: it {result.skipped}")
                 top.setData(0, Qt.ItemDataRole.UserRole, (table_id, None))
                 self.tree.addTopLevelItem(top)
                 continue
             steps = {s.id: (n, s) for n, s in enumerate(table.steps, start=1)}
-            seconds = sum(r.seconds for r in result.steps)
-            total += seconds
+            table_seconds = sum(r.seconds for r in result.steps)
+            total += table_seconds
             ok = result.ok
             failed += not ok
             text = "ok" if ok else (result.first_error or "error")
             if ok and (ended := result.skipped_from) is not None:
                 text = f"ok, rest skipped: {ended.skip_reason}"
-            top = QTreeWidgetItem([table.name, text, f"{seconds:.2f} s"])
+            top = QTreeWidgetItem([table.name, text, f"{table_seconds:.2f} s"])
             top.setToolTip(1, text)
             top.setIcon(0, theme.status_icon("ok" if ok else "error"))
             top.setData(0, Qt.ItemDataRole.UserRole, (table_id, None))
@@ -88,7 +88,7 @@ class RunPanel(QWidget):
                 if step is None:
                     continue
                 text = _result_text(step_result)
-                child = QTreeWidgetItem([f"{number}. {self.session.engine.describe(step)}", text, f"{step_result.seconds:.2f} s"])
+                child = QTreeWidgetItem([f"{number}. {self.session.describe(step)}", text, f"{step_result.seconds:.2f} s"])
                 child.setIcon(0, theme.status_icon(_STATUS[step_result.status]))
                 child.setToolTip(1, step_result.error or text)
                 child.setData(0, Qt.ItemDataRole.UserRole, (table_id, step.id))
@@ -96,7 +96,7 @@ class RunPanel(QWidget):
                     if step_result.status == Status.SKIPPED and message == step_result.skip_rest:  # in its result
                         continue
                     note = QTreeWidgetItem([("⚠ " if level == "warning" else "") + message, "", ""])
-                    note.setForeground(0, theme.status_color("warning" if level == "warning" else "skipped"))
+                    note.setForeground(0, theme.status_text_color("warning" if level == "warning" else "skipped"))
                     child.addChild(note)
                 top.addChild(child)
             self.tree.addTopLevelItem(top)
@@ -108,7 +108,7 @@ class RunPanel(QWidget):
             problems += f", {skipped} skipped (off)"
         total = seconds if seconds is not None else total
         self.summary.setText(f"Run finished at {finished}: {tables} table{'s' if tables != 1 else ''}, {problems}, {total:.2f} s")
-        self.summary.setStyleSheet(f"color: {theme.STATUS_COLORS['error' if failed else 'ok']};")
+        self.summary.setStyleSheet(f"color: {theme.STATUS_TEXT['error' if failed else 'ok']};")
 
     def _jump(self, item: QTreeWidgetItem, _column: int) -> None:
         target = item.data(0, Qt.ItemDataRole.UserRole) or (item.parent() and item.parent().data(0, Qt.ItemDataRole.UserRole))

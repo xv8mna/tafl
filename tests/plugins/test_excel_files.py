@@ -159,6 +159,21 @@ def test_dont_export_an_empty_table(act, registry, tmp_path):
     assert export.upgrade({"file": "a.xlsx"}, 1) == {"file": "a.xlsx", "existing": "file", "skip_empty": False}
 
 
+def test_a_table_without_columns_gives_an_empty_sheet(act, tmp_path):
+    """As the CSV export gives an empty file, e.g. for a folder import without files and without
+    its File column."""
+    path = tmp_path / "out.xlsx"
+    ctx = StubContext()
+    act("excel.export", pl.DataFrame(), {"file": str(path), "sheet": "Data"}, ctx)
+    book = openpyxl.load_workbook(path)
+    assert book.sheetnames == ["Data"] and book["Data"].max_column == 1 and book["Data"]["A1"].value is None
+    assert ctx.messages == [("info", f"Wrote 0 rows to {path} (sheet 'Data')")]
+    act("excel.export", pl.DataFrame({"a": [1]}), {"file": str(path), "sheet": "Other", "existing": "sheet"})
+    act("excel.export", pl.DataFrame(), {"file": str(path), "sheet": "Other", "existing": "sheet"})
+    book = openpyxl.load_workbook(path)
+    assert book.sheetnames == ["Data", "Other"] and book["Other"]["A1"].value is None
+
+
 def test_a_failed_export_leaves_the_old_file(act, tmp_path, monkeypatch):
     path = tmp_path / "out.xlsx"
     act("excel.export", pl.DataFrame({"a": [1]}), {"file": str(path)})

@@ -1,6 +1,7 @@
 """Stopping a run, and closing the window while the project runs."""
 
 import threading
+import time
 import types
 
 import pytest
@@ -120,3 +121,32 @@ def test_run_results_show_how_long_the_run_took(running, qtbot):
     qtbot.waitUntil(lambda: not session.running, timeout=10_000)
     assert session.run_seconds >= 0.5
     assert window.run_panel.summary.text().endswith(f", {session.run_seconds:.2f} s")
+
+
+def test_stop_also_stops_a_formula_that_runs(qapp, qtbot, slow_registry, tmp_path, monkeypatch):
+    """A slow formula doesn't make Stop wait for it: its query is interrupted."""
+    (tmp_path / "data.csv").write_text("A;B\n1;2\n", encoding="utf-8")
+    project = Project()
+    table = project.add_table("Slow")
+    project.add_step(table, slow_registry.actions["csv.import"], {"file": "data.csv"})
+    slow = "(SELECT COUNT(*) FROM range(3000000000) t(i) WHERE i % 7 = 8) = 0"  # many seconds
+    project.add_step(table, slow_registry.actions["rows.filter_formula"], {"condition": slow})
+    path = project.save(tmp_path / "slow.tafl")
+    qapp.setOrganizationName("Tafl Tests")
+    session = Session(slow_registry)
+    window = MainWindow(session)
+    monkeypatch.setattr(window, "ask_save", lambda reason: pytest.fail(f"asked to save {reason}"))
+    window.show()
+    window.open_path(path)
+    session._worker.cancel()  # the preview stops its slow formula too
+    assert session._worker.wait(5_000)
+    window.run_project()
+    qtbot.wait(500)  # the formula runs now
+    started = time.perf_counter()
+    window.stop_action.trigger()
+    qtbot.waitUntil(lambda: not session.running, timeout=10_000)
+    assert time.perf_counter() - started < 5
+    assert window.run_panel.summary.text().startswith("Run stopped at ")
+    session._set_dirty(False)
+    window.close()
+    window.deleteLater()

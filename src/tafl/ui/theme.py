@@ -18,7 +18,8 @@ TEXT_DIM = "#adb0b3"
 PLACEHOLDER = "#9a9da0"  # grey text in empty fields: 4.8 : 1 against BASE
 TEXT_DISABLED = "#6f7275"  # what is off or not possible now
 SELECTION = "#3d6185"
-ACCENT = "#4f9ee3"
+ACCENT = "#4f9ee3"  # borders, arrows, selected things
+ACCENT_TEXT = "#72b4ee"  # text in the accent color: 4.5 : 1 against WINDOW, BASE and ALTERNATE
 ERROR_TEXT = "#f2caca"  # messages about an error, on the dark background
 SELECTED_DIM = "#c5d4e3"  # secondary text on a selected row
 
@@ -61,6 +62,15 @@ STATUS_COLORS = {
     "blocked": "#8c7a5a",
     "pending": "#5f7f9f",
     "incomplete": "#8fa3b8",  # a step that is not filled in yet
+    "waiting": "#8fa3b8",  # uses a table with a step that is not filled in yet
+}
+
+# Text in a status color (results, messages): 4.5 : 1 against WINDOW, BASE and ALTERNATE
+STATUS_TEXT = {
+    "ok": "#7cbb85",
+    "error": "#f49a9a",
+    "warning": "#d9a35b",
+    "skipped": TEXT_DIM,
 }
 
 STYLE_SHEET = f"""
@@ -98,7 +108,7 @@ QLabel#WarningBox {{
 QLabel#InfoBox {{
     background: #33414f; border: 1px solid #47617a; color: #cfe0f0; border-radius: 4px; padding: 6px 8px;
 }}
-QLineEdit[missing="true"], QComboBox[missing="true"] {{ color: {STATUS_COLORS["error"]}; }}
+QLineEdit[missing="true"], QComboBox[missing="true"] {{ color: {STATUS_TEXT["error"]}; }}
 QFrame#ListCard {{ background: {ALTERNATE}; border: 1px solid {BORDER}; border-radius: 4px; }}
 """
 
@@ -144,6 +154,11 @@ def palette() -> QPalette:
 
 def status_color(status: str) -> QColor:
     return QColor(STATUS_COLORS.get(status, STATUS_COLORS["pending"]))
+
+
+def status_text_color(status: str) -> QColor:
+    """For text: lighter than the status color where that is hard to read on the panels."""
+    return QColor(STATUS_TEXT.get(status, TEXT))
 
 
 def status_icon(status: str, size: int = 12) -> QIcon:

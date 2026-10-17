@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import threading
-import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -16,7 +15,7 @@ from tafl.api import ActionError, Cancelled, expressions
 from tafl.api.dtypes import type_label
 from tafl.api.parameters import fill_formula, fill_text, formula_places
 
-from .cancel import CancelEvent
+from .cancel import stopping_queries
 
 SAMPLE_ROWS = 1000  # rows the formula is checked on
 SHOWN_ROWS = 200  # rows the preview shows
@@ -395,30 +394,9 @@ def _empty(formula: str) -> bool:
 
 @contextmanager
 def _interrupted_by(cancel: threading.Event | None) -> Iterator[None]:
-    """Setting ``cancel`` stops a query that runs in DuckDB on this thread. DuckDB forgets an
-    interrupt that comes before the query starts, so it is repeated until the work is over."""
-    if not isinstance(cancel, CancelEvent):
+    """Setting ``cancel`` stops a query that runs in DuckDB on this thread."""
+    with stopping_queries(cancel):
         yield
-        return
-    con = expressions._connection()
-    lock = threading.Lock()
-    running = True
-
-    def keep_interrupting() -> None:
-        while True:
-            with lock:  # never after the work is over: it would stop the next query on this thread
-                if not running:
-                    return
-                con.interrupt()
-            time.sleep(0.05)
-
-    remove = cancel.when_set(lambda: threading.Thread(target=keep_interrupting, daemon=True).start())
-    try:
-        yield
-    finally:
-        remove()
-        with lock:
-            running = False
     _stop_if(cancel)
 
 

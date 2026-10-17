@@ -11,6 +11,7 @@ Standard column types in the app: Int64, Float64, String, Date, Datetime, Boolea
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import re
 import unicodedata
 from collections.abc import Callable
@@ -28,13 +29,14 @@ _INTEGER = r"^[+-]?(0|[1-9][0-9]{0,18})$"
 _LEADING_ZERO = r"^[+-]?0[0-9]+$"  # "01067": an ID or postal code, not the number 1067
 _VALUE = pl.col("value")  # see _apply
 _PLAIN_NUMBER = r"^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)$"  # after _number_text
+# Thousands separators come after 1 to 3 digits that don't start with 0: 0.500 is not 500.
 _NUMBER = {
-    ",": r"^[+-]?([0-9]+|[0-9]{1,3}(\.[0-9]{3})+)(,[0-9]+)?$",
-    ".": r"^[+-]?([0-9]+|[0-9]{1,3}(,[0-9]{3})+)(\.[0-9]+)?$",
+    ",": r"^[+-]?([0-9]+|[1-9][0-9]{0,2}(\.[0-9]{3})+)(,[0-9]+)?$",
+    ".": r"^[+-]?([0-9]+|[1-9][0-9]{0,2}(,[0-9]{3})+)(\.[0-9]+)?$",
 }
 _GROUPED = {
-    ",": r"^[+-]?[0-9]{1,3}(\.[0-9]{3})+(,[0-9]*)?$",
-    ".": r"^[+-]?[0-9]{1,3}(,[0-9]{3})+(\.[0-9]*)?$",
+    ",": r"^[+-]?[1-9][0-9]{0,2}(\.[0-9]{3})+(,[0-9]*)?$",
+    ".": r"^[+-]?[1-9][0-9]{0,2}(,[0-9]{3})+(\.[0-9]*)?$",
 }
 _SPACES = r"[   ]"
 _CURRENCY = "€$£"
@@ -53,6 +55,8 @@ _DATETIME_PATTERNS = (
     ("%Y-%m-%d %H:%M", r"^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2} [0-9]{1,2}:[0-9]{2}$"),
     ("%d.%m.%Y %H:%M:%S", r"^[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{4} [0-9]{1,2}:[0-9]{2}:[0-9]{2}$"),
     ("%d.%m.%Y %H:%M", r"^[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{4} [0-9]{1,2}:[0-9]{2}$"),
+    ("%d.%m.%y %H:%M:%S", r"^[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{2} [0-9]{1,2}:[0-9]{2}:[0-9]{2}$"),
+    ("%d.%m.%y %H:%M", r"^[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{2} [0-9]{1,2}:[0-9]{2}$"),
 )
 
 _EXCEL_EPOCH = dt.datetime(1899, 12, 30)
@@ -65,6 +69,9 @@ _DECIMAL_CONTEXT = Context(prec=400, rounding=ROUND_HALF_UP)  # room for every f
 _INFINITE = (float("inf"), float("-inf"))
 # Letters that don't take their base letter apart in Unicode (NFKD): how they sort.
 _FOLD = {"ß": "ss", "æ": "ae", "œ": "oe", "ø": "o", "đ": "d", "ð": "d", "ł": "l", "þ": "th", "ı": "i"}
+# The Latin letters with accents and the combining accents: their sort keys are worked out once.
+_LATIN = ((0x80, 0x250), (0x300, 0x370), (0x1E00, 0x1F00))
+_SAMPLE = 10_000  # values that tell whether a column has many repeated values
 
 
 # --- date formats ----------------------------------------------------------------------------
@@ -140,6 +147,18 @@ def parse_numbers(s: pl.Series, decimal: str = ",") -> pl.Series:
     return _apply(s, number_expr(_VALUE, decimal))
 
 
+def parse_decimal(text: str, decimal: str = ",") -> Decimal | None:
+    """One number typed as text -> an exact decimal (Python's Decimal), e.g. to compare it with
+    a Decimal column: it keeps all the digits, ``parse_numbers`` about 15. None when the text
+    isn't a number."""
+    plain = _apply(pl.Series([text], dtype=pl.String), _number_text(_VALUE, decimal))[0]
+    try:
+        number = Decimal(plain)
+    except (ArithmeticError, TypeError, ValueError):  # not a number
+        return None
+    return Decimal(format(number, "f")) if number.is_finite() else None  # 1e5 as 100000
+
+
 def parse_integers(s: pl.Series, decimal: str = ",") -> pl.Series:
     """Text -> Int64, like ``parse_numbers`` but exact for all 19 digits (a Float64 keeps 15).
     Decimals are rounded half away from zero, like in Excel; numbers outside the range of Int64
@@ -164,9 +183,13 @@ def _integer(text: pl.Expr) -> pl.Expr:
 
 def float_loses_digits(s: pl.Series, decimal: str = ",") -> pl.Series:
     """True for the values whose whole part a decimal number (Float64) can't keep exactly: whole
-    numbers beyond 2^53 (9,007,199,254,740,992), as numbers or as text."""
+    numbers beyond 2^53 (9,007,199,254,740,992), as numbers or as text. For exact decimals
+    (Decimal), all their decimal places count too."""
     if s.dtype.is_integer():
         return (s.cast(pl.Float64).cast(pl.Int128, strict=False) != s.cast(pl.Int128)).fill_null(False)
+    if isinstance(s.dtype, pl.Decimal):
+        back = s.cast(pl.Float64).cast(s.dtype, strict=False)
+        return ((back != s).fill_null(True) & s.is_not_null()).alias(s.name)
     lost = pl.repeat(False, s.len(), eager=True).alias(s.name)
     if s.dtype != pl.String:
         return lost
@@ -320,16 +343,19 @@ def type_label(dtype: pl.DataType) -> str:
     return str(dtype).lower()
 
 
-def normalize(s: pl.Series) -> pl.Series:
-    """Map other types to the app's standard ones (Decimal -> Int64/Float64, Int32 -> Int64, ...)."""
+def normalize(s: pl.Series, *, exact: bool = False) -> pl.Series:
+    """Map other types to the app's standard ones (Decimal -> Int64/Float64, Int32 -> Int64, ...).
+
+    With ``exact``, decimals (Decimal) keep all their digits: those without decimal places
+    become Int64 when every value fits, the others stay Decimal."""
     dtype = s.dtype
     if isinstance(dtype, pl.Decimal):
         if dtype.scale == 0:
             try:
                 return s.cast(pl.Int64)
             except Exception:  # does not fit into Int64
-                return s.cast(pl.Float64)
-        return s.cast(pl.Float64)
+                pass
+        return s if exact else s.cast(pl.Float64)
     if dtype.is_integer() and dtype not in (pl.Int64, pl.UInt64):
         return s.cast(pl.Int64)
     if dtype == pl.Float32:
@@ -342,12 +368,58 @@ def normalize(s: pl.Series) -> pl.Series:
 # --- sorting ---------------------------------------------------------------------------------
 
 
-def text_sort_key(expr: pl.Expr) -> pl.Expr:
+def text_sort_key(texts: pl.Expr | pl.Series) -> pl.Expr | pl.Series:
     """A key that sorts text like Excel: upper and lower case count the same, letters with
     accents sort with their base letter (ä with a, é with e), ß like ss. Sort with
-    ``maintain_order=True`` so that values with the same key keep their order."""
-    folded = expr.str.normalize("NFKD").str.to_lowercase().str.replace_all(r"\p{M}+", "")
+    ``maintain_order=True`` so that values with the same key keep their order.
+
+    For an expression the key is an expression, for a Series a Series (that one is worked out
+    right away)."""
+    if isinstance(texts, pl.Series):
+        return _text_keys(texts)
+    return texts.map_batches(_text_keys, return_dtype=pl.String, is_elementwise=True)
+
+
+def _text_keys(s: pl.Series) -> pl.Series:
+    if s.len() > 2 * _SAMPLE:
+        sample = s.gather_every(s.len() // _SAMPLE)
+        if 2 * sample.n_unique() < sample.len():  # many repeated values: each one is worked out once
+            values = s.unique().drop_nulls()
+            return s.replace_strict(values, _keys(values), default=None, return_dtype=pl.String)
+    return _keys(s)
+
+
+def _keys(s: pl.Series) -> pl.Series:
+    """The keys of ``text_sort_key``. Plain ASCII only needs lower case and most Latin letters a
+    table: only the other texts go through Unicode's decomposition, the slow part."""
+    keys = s.str.to_lowercase()
+    others = _not_ascii(s)
+    if others.len():
+        latin = keys.gather(others).str.replace_many(_latin_keys())
+        rest = _not_ascii(latin)
+        if rest.len():
+            latin = latin.scatter(rest, _unicode_keys(s.gather(others).gather(rest)))
+        keys = keys.scatter(others, latin)
+    return keys
+
+
+def _unicode_keys(s: pl.Series) -> pl.Series:
+    folded = s.str.normalize("NFKD").str.to_lowercase().str.replace_all(r"\p{M}+", "")
     return folded.str.replace_many(list(_FOLD), list(_FOLD.values()))
+
+
+@functools.cache
+def _latin_keys() -> dict[str, str]:
+    """The characters of ``_LATIN`` whose key is plain ASCII (é: e, Ł: l, ß: ss, an accent: none),
+    with that key. A character's key doesn't depend on the characters around it, and it is also
+    the key of its capital letter."""
+    chars = pl.Series([chr(c) for start, end in _LATIN for c in range(start, end)], dtype=pl.String)
+    return {c: key for c, key in zip(chars, _unicode_keys(chars), strict=True) if key.isascii()}
+
+
+def _not_ascii(s: pl.Series) -> pl.Series:
+    """The rows of the texts with other characters than ASCII (those take more than a byte)."""
+    return (s.str.len_bytes() != s.str.len_chars()).arg_true()
 
 
 def text_key(text: str) -> str:
@@ -478,10 +550,14 @@ def _format_text(fmt: str, tokens: list[str]) -> str:
     return "".join(out)
 
 
-def _plain_float(value: float) -> str:
+def _plain_float(value: float | Decimal) -> str:
     if value != value or value in (float("inf"), float("-inf")):
         return str(value)
-    text = f"{value:.10f}".rstrip("0").rstrip(".")
+    if isinstance(value, Decimal):  # all its digits
+        text = format(value, "f")
+        text = text.rstrip("0").rstrip(".") if "." in text else text
+    else:
+        text = f"{value:.10f}".rstrip("0").rstrip(".")
     return "0" if text in ("", "-0") else text
 
 

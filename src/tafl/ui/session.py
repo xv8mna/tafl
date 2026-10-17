@@ -35,6 +35,7 @@ from tafl.core import (
     parameters,
 )
 
+from .labels import shortened
 from .theme import GROUP_COLORS
 from .worker import Worker
 
@@ -42,6 +43,7 @@ _DEFAULT_TABLE_NAME = re.compile(r"Table \d+")
 _UNDO_LIMIT = 100
 _KEY_NAME = re.compile(r"(?i)(id|nr|no|number|key|code|nummer)$")
 _REQUIRED = ": required"  # how the check of a setting says that it is empty (tafl.api.params)
+_SUMMARY = 300  # characters of a step's summary the window shows at most
 
 # How one table can use another, as created from the project map: kind -> (action, preset).
 LINK_KINDS: dict[str, tuple[str, dict[str, Any]]] = {
@@ -86,10 +88,14 @@ class Session(QObject):
         self._stamp: tuple[int, int] | None = None  # the project file as it was opened or saved
         self._stopping = False
         self.run_seconds: float | None = None  # how long the last run took
+        # Tables whose results are out of date (a table they use changed, or Reload data): they
+        # are calculated again after the selected table, so that no table shows an old status.
+        self._recheck: set[str] = set()
+        self._waiting: dict[str, tuple[str, int, list[str]] | None] = {}  # waits_for, until results change
 
         self._worker = Worker(self)
         self._worker.finished.connect(self._on_results)
-        self._worker.failed.connect(self.error)
+        self._worker.failed.connect(self._failed)
         self._worker.busy_changed.connect(self.busy_changed)
         self._runner = Worker(self)
         self._runner.finished.connect(self._on_run_finished)
@@ -122,9 +128,20 @@ class Session(QObject):
         if target is None:
             raise ValueError("No file name")
         old_dir = self.project.directory
+        steps = [step for table in self.project.tables for step in table.steps]
+        before = None
         if old_dir != target.parent:
+            before = [copy.deepcopy(s.params) for s in steps], [copy.deepcopy(c.settings) for c in self.project.connections]
             self._rebase_paths(old_dir, target.parent)
-        saved = self.project.save(target)
+        try:
+            saved = self.project.save(target)
+        except BaseException:
+            if before is not None:  # not saved: the paths stay relative to the old folder
+                for step, params in zip(steps, before[0]):
+                    step.params = params
+                for connection, settings in zip(self.project.connections, before[1]):
+                    connection.settings = settings
+            raise
         self._stamp = _stamp(saved)
         self._set_dirty(False)
         self.structure_changed.emit()
@@ -145,6 +162,8 @@ class Session(QObject):
         self.project = project
         self.engine = Engine(project, self.registry, self.engine.cache)
         self.results = {}
+        self._recheck.clear()
+        self._waiting.clear()
         self._undo.clear()
         self._redo.clear()
         self.table_id = project.tables[0].id if project.tables else None
@@ -242,6 +261,8 @@ class Session(QObject):
             failed = first_error(result)
             if failed is not None and (needed := missing_settings(failed[1])):
                 return f"Step {failed[0]} is not complete yet (fill in {', '.join(needed)}): the preview follows when it is."
+            if failed is not None and (waiting := self.waits_for(table.id)) is not None:
+                return f"Step {failed[0]} {waiting_text(waiting)}: the preview follows when it is."
             return "A step before this one has an error: fix it to see a preview here."
         return "The steps before this one are still being calculated: the preview follows."
 
@@ -262,8 +283,8 @@ class Session(QObject):
 
     def table_status(self, table_id: str) -> str:
         """The table's status: "ok", "error", "incomplete" (a step is not filled in yet),
-        "disabled" (turned off), "skipped" (uses a table that is off) or "pending" (not
-        calculated yet)."""
+        "waiting" (it uses a table that is incomplete), "disabled" (turned off), "skipped"
+        (uses a table that is off) or "pending" (not calculated yet)."""
         table = self.project.find_table(table_id)
         if table is not None and not table.enabled:
             return "disabled"
@@ -275,7 +296,34 @@ class Session(QObject):
         if result.ok:
             return "ok"
         failed = first_error(result)
-        return "incomplete" if result.error is None and failed is not None and missing_settings(failed[1]) else "error"
+        if result.error is None and failed is not None and missing_settings(failed[1]):
+            return "incomplete"
+        return "waiting" if self.waits_for(table_id) is not None else "error"
+
+    def waits_for(self, table_id: str) -> tuple[str, int, list[str]] | None:
+        """When all that keeps a table from being calculated is a table it uses (directly or
+        through other tables) with a step that is not filled in yet: the name of that table, the
+        number of that step and the settings it needs. None for anything else."""
+        if table_id not in self._waiting:
+            self._waiting[table_id] = self._waits_for(table_id, set())
+        return self._waiting[table_id]
+
+    def _waits_for(self, table_id: str, seen: set[str]) -> tuple[str, int, list[str]] | None:
+        result = self.results.get(table_id)
+        failed = first_error(result)
+        if result is None or result.error is not None or failed is None or not failed[1].inherited:
+            return None
+        seen.add(table_id)
+        for link in self.engine.links(table_id):
+            used = self.results.get(link.source)
+            if link.step != failed[1].step_id or link.source in seen or used is None or used.ok or used.skipped:
+                continue
+            # The first table of the step that can't be calculated: the step's error is about it
+            own = first_error(used)
+            if used.error is None and own is not None and (needed := missing_settings(own[1])):
+                return self.project.table(link.source).name, own[0], needed
+            return self._waits_for(link.source, seen)
+        return None
 
     def missing_settings(self, step: Step | None) -> list[str]:
         """The settings the selected table's ``step`` still needs, when that is all that is
@@ -286,26 +334,56 @@ class Session(QObject):
         """Tables whose steps use ``table_id``."""
         return [t for t in self.project.tables if t.id != table_id and table_id in self.engine.dependencies(t.id)]
 
+    def users(self, table_ids: Iterable[str]) -> set[str]:
+        """Ids of the tables that use any of ``table_ids``, directly or through other tables."""
+        direct: dict[str, set[str]] = {}
+        for link in self.engine.links():
+            if link.enabled:
+                direct.setdefault(link.source, set()).add(link.target)
+        found: set[str] = set()
+        todo = list(table_ids)
+        while todo:
+            for user in direct.get(todo.pop(), ()):
+                if user not in found:
+                    found.add(user)
+                    todo.append(user)
+        return found
+
+    def describe(self, step: Step) -> str:
+        """The summary of a step for the window: a summary that lists thousands of values is
+        cut short."""
+        return shortened(self.engine.describe(step), _SUMMARY)
+
     # --- calculating -------------------------------------------------------------------------
 
     def recalculate(self) -> None:
         self._timer.start()
 
     def calculate_now(self) -> None:
-        """Calculate the selected table; on the project map, all other tables afterwards."""
+        """Calculate the selected table; on the project map, all other tables afterwards, and
+        else the tables whose results are out of date (see ``_on_results``)."""
         self._timer.stop()
         table_id = self.table_id if self.table_id and self.project.find_table(self.table_id) else None
         if table_id is not None:
             self._calculate("table", table_id)
         elif self.overview and self.project.tables:
             self._calculate("all", None)
+        else:
+            self._calculate_stale()
 
-    def _calculate(self, scope: str, table_id: str | None) -> None:
+    def _calculate(self, scope: str, table_id: str | None, table_ids: list[str] | None = None) -> None:
         engine = self.engine.snapshot()
         if scope == "table":
             self._worker.start(lambda cancel: ("table", engine.evaluate_all(table_id, cancel=cancel)))
+        elif scope == "tables":
+            self._worker.start(lambda cancel: ("tables", engine.run(table_ids, mode=Mode.PREVIEW, cancel=cancel)))
         else:
             self._worker.start(lambda cancel: ("all", engine.run(mode=Mode.PREVIEW, cancel=cancel)))
+
+    def _calculate_stale(self) -> None:
+        stale = [t.id for t in self.project.tables if t.id in self._recheck]
+        if stale:
+            self._calculate("tables", None, stale)
 
     def set_overview(self, enabled: bool) -> None:
         """While the project map is shown, every table is calculated (for its status)."""
@@ -314,7 +392,10 @@ class Session(QObject):
             self.calculate_now()
 
     def reload_sources(self) -> None:
+        """Read files and databases again: the selected table first, then every other table
+        that has a result, so that none keeps the status of data that has changed."""
         self.engine.reload()
+        self._recheck = set(self.results)
         self.calculate_now()
 
     def run_project(self, table_ids: list[str] | None = None) -> None:
@@ -354,15 +435,29 @@ class Session(QObject):
 
     def _on_results(self, outcome: tuple[str, dict[str, TableResult]]) -> None:
         scope, results = outcome
-        self.results.update(results)
+        changed = [t for t, r in results.items() if _signature(self.results.get(t)) != _signature(r)]
+        self._update_results(results)
+        if scope == "table" and changed:  # the tables that use a changed table show old results now
+            self._recheck |= (self.users(changed) & set(self.results)) - set(results)
         self.results_changed.emit()
         if scope == "table" and self.overview:  # the selected table first, then everything else
             self._calculate("all", None)
+        elif scope == "table":
+            self._calculate_stale()
+
+    def _failed(self, text: str) -> None:
+        self._recheck.clear()  # not again and again after every edit
+        self.error.emit(text)
+
+    def _update_results(self, results: dict[str, TableResult]) -> None:
+        self.results.update(results)
+        self._recheck -= set(results)
+        self._waiting.clear()
 
     def _on_run_finished(self, outcome: tuple[dict[str, TableResult], int, float]) -> None:
         results, reload_token, self.run_seconds = outcome
         self.engine.reload_token = max(self.engine.reload_token, reload_token)  # previews reuse the run
-        self.results.update(results)
+        self._update_results(results)
         self.results_changed.emit()
         self.run_finished.emit(results)
         self.calculate_now()
@@ -424,6 +519,7 @@ class Session(QObject):
         if not doomed:
             return
         self._checkpoint()
+        self._recheck |= self.users(doomed) & set(self.results)  # their steps use a table that is gone
         first = min(i for i, t in enumerate(self.project.tables) if t.id in doomed)
         self.project.tables = [t for t in self.project.tables if t.id not in doomed]
         for table_id in doomed:
@@ -475,6 +571,8 @@ class Session(QObject):
         self._checkpoint()
         for table in tables:
             table.enabled = enabled
+        changed = {t.id for t in tables}
+        self._recheck |= (self.users(changed) | changed) & set(self.results)  # skipped now, or not any more
         self._edited(structure=True)
 
     def set_groups_collapsed(
@@ -798,6 +896,7 @@ class Session(QObject):
         self.engine.project = restored
         self.table_id = state["table"] if restored.find_table(state["table"] or "") else None
         self.step_id = state["step"]
+        self._waiting.clear()
         self._set_dirty(True)
         self.structure_changed.emit()
         self.selection_changed.emit()
@@ -807,6 +906,7 @@ class Session(QObject):
     # --- helpers -----------------------------------------------------------------------------
 
     def _edited(self, *, structure: bool = False, step_id: str | None = None, calculate: bool = True) -> None:
+        self._waiting.clear()
         self._set_dirty(True)
         if structure:
             self.structure_changed.emit()
@@ -886,6 +986,17 @@ def first_error(result: TableResult | None) -> tuple[int, StepResult] | None:
     """The number and the result of the table's first step with an error."""
     steps = result.steps if result is not None else []
     return next(((n, r) for n, r in enumerate(steps, start=1) if r.status == Status.ERROR), None)
+
+
+def waiting_text(waiting: tuple[str, int, list[str]], *, capital: bool = False) -> str:
+    """"waits for “Orders”, whose step 9 is not complete yet" (see ``Session.waits_for``)."""
+    name, number, _ = waiting
+    return f"{'W' if capital else 'w'}aits for “{name}”, whose step {number} is not complete yet"
+
+
+def _signature(result: TableResult | None) -> tuple | None:
+    """What a table that uses this one depends on: if it changes, that table's result is old."""
+    return None if result is None else (result.key, result.ok, result.first_error, result.skipped)
 
 
 def missing_settings(result: StepResult | None) -> list[str]:

@@ -27,7 +27,6 @@ import io
 import posixpath
 import re
 import shutil
-import tempfile
 import zipfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -39,7 +38,7 @@ from lxml import etree
 from xlsxwriter import Workbook
 
 from .errors import ActionError
-from .files import read_error, replace_file
+from .files import _scratch_folder, read_error, replace_file
 
 _MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _PACKAGE = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -96,14 +95,14 @@ def replace_sheet(
     is written (see ``files.replace_file``); until then the new file is next to it, with a name
     starting with ~$.
     """
-    with replace_file(target) as temporary:
+    with replace_file(target, warn) as temporary:
         try:
             archive = zipfile.ZipFile(target)
         except zipfile.BadZipFile:
             raise ActionError(f"{target.name} is not an Excel workbook, or it is protected with a password") from None
         except OSError as error:
             raise read_error(error, target) from None
-        with archive, tempfile.TemporaryDirectory(prefix="tafl-") as folder:  # closed before the file is replaced
+        with archive, _scratch_folder() as folder:  # closed before the file is replaced
             book = _Package(archive)
             replacement = _Replacement(book, sheet)
             written = Path(folder) / "sheet.xlsx"

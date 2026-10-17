@@ -87,7 +87,7 @@ def test_map_keys_work_from_the_panels_beside_it(window, settle, session, demo):
 
 
 def test_the_group_bar_shows_that_there_are_more_groups(window, settle, session, demo):
-    window.resize(1000, 800)
+    window.resize(1500, 800)
     window.show()
     window.open_path(demo)
     window.show_map(True)

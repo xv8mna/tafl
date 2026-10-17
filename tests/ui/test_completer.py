@@ -168,8 +168,8 @@ def test_the_list_goes_with_its_field(window, session, settle, demo, qtbot):
     popup = editor._completer._popup
     assert popup.isVisible()
     scroll = window.settings_panel.findChild(QScrollArea)
-    scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
-    scroll.resize(scroll.width(), 120)  # the field is out of view now
+    scroll.resize(scroll.width(), 120)
+    scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())  # the field is out of view now
     editor._completer._place()
     assert not editor._completer.visible
     qtbot.keyClick(editor._edit, Qt.Key.Key_Space, CTRL)

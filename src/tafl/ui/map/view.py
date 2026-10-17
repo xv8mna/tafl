@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QToolButton,
     QVBoxLayout,
@@ -40,6 +41,7 @@ from tafl.core import Group
 from .. import theme
 from ..action_menu import fill_action_menu
 from ..data_panel import DataPanel
+from ..labels import ElidedLabel
 from ..session import Session
 from ..settings_panel import SettingsPanel
 from ..steps_panel import StepsPanel
@@ -62,6 +64,8 @@ from .layout import (
 
 _MIN_ZOOM, _MAX_ZOOM = 0.05, 2.5
 _GROUP_UNIT = "group:"  # a collapsed group on the map: "group:<group id>"
+# What a table's box says in its header instead of its size
+_STATUS_INFO = {"disabled": "off", "skipped": "skipped", "incomplete": "incomplete", "waiting": "waiting"}
 _NEW_GROUP = "\0new"  # stands for a group that is about to be created
 LINK_CHOICES = [
     ("lookup", "Lookup: add columns (first match)"),
@@ -325,7 +329,8 @@ class MapView(QWidget):
         self.search = QLineEdit(self)
         self.search.setPlaceholderText("Find table…  (Ctrl+F)")
         self.search.setClearButtonEnabled(True)
-        self.search.setFixedWidth(230)
+        self.search.setMinimumWidth(150)  # 230 when there is room
+        self.search.setMaximumWidth(230)
         self.search.setToolTip("Matching tables get an orange border; Enter jumps to the next one")
         self.search.textChanged.connect(self._search_changed)
         self.search.returnPressed.connect(self.find_next)
@@ -335,8 +340,10 @@ class MapView(QWidget):
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
         completer.activated[str].connect(self.find_table)
         self.search.setCompleter(completer)
-        hint = QLabel("Drag a table's ● onto another table to merge it · double-click to open · Shift+drag selects", self)
+        hint = ElidedLabel(self)  # gives way first when the window is narrow
+        hint.setText("Drag a table's ● onto another table to merge it · double-click to open · Shift+drag selects")
         hint.setObjectName("Dim")
+        hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         new_table = QPushButton("+ New table", self)
         new_menu = QMenu(new_table)
         new_menu.aboutToShow.connect(
@@ -349,9 +356,9 @@ class MapView(QWidget):
         header.setContentsMargins(6, 4, 6, 2)
         header.addWidget(title)
         header.addSpacing(10)
-        header.addWidget(self.search)
+        header.addWidget(self.search, 1)
         header.addSpacing(10)
-        header.addWidget(hint, 1)
+        header.addWidget(hint, 2)
         header.addWidget(new_table)
         header.addWidget(arrange)
         self.group_bar = GroupBar(self)
@@ -477,7 +484,7 @@ class MapView(QWidget):
         for link in links:
             source, source_key, target, target_key = ends(link)
             names = f"{project.table(link.source).name} → {project.table(link.target).name}"
-            step = session.engine.describe(session.find_step(link.step)[1])
+            step = session.describe(session.find_step(link.step)[1])
             off = "" if link.enabled else "  (step is off)"
             tooltip = f"{names}, step {link.index + 1}: {step}{off}\nClick to edit · right-click for more"
             edge = Edge(self, link, source, source_key, target, target_key, tooltip)
@@ -504,26 +511,32 @@ class MapView(QWidget):
         for table_id, node in self.nodes.items():
             node.status = session.table_status(table_id)
             result = session.results.get(table_id)
-            node.info = {"disabled": "off", "skipped": "skipped", "incomplete": "incomplete"}.get(node.status, "")
+            node.info = _STATUS_INFO.get(node.status, "")
+            ended = result.skipped_from if result is not None and not node.info else None
+            # The steps after one that skipped the rest of the table look like steps that are off
+            node.skipped_after = result.steps.index(ended) + 1 if ended is not None else 0
             if not node.info and result is not None:
                 node.info = f"{result.df.height:,} × {result.df.width}" if result.df is not None else "error"
+                if ended is not None and result.df is not None:
+                    node.info += " · rest skipped"
             node.update()
         for box in self.group_nodes.values():
             statuses = [session.table_status(t) for t in box.members]
             errors = statuses.count("error")
             off = statuses.count("disabled") + statuses.count("skipped")
+            unfinished = statuses.count("incomplete") + statuses.count("waiting")
             if errors:
                 box.summary = f"{errors} error{'s' if errors > 1 else ''}"
-                box.summary_color = theme.status_color("error")
-            elif "incomplete" in statuses:
-                box.summary, box.summary_color = f"{statuses.count('incomplete')} incomplete", QColor(theme.MAP_TEXT_DIM)
+                box.summary_color = theme.status_text_color("error")
+            elif unfinished:
+                box.summary, box.summary_color = f"{unfinished} incomplete", QColor(theme.MAP_TEXT_DIM)
             elif off:
                 box.summary = "all off" if off == len(statuses) else f"{off} off"
                 box.summary_color = QColor(theme.MAP_TEXT_DIM)
             elif "pending" in statuses:
                 box.summary, box.summary_color = "", QColor(theme.MAP_TEXT_DIM)
             else:
-                box.summary, box.summary_color = "all ok", theme.status_color("ok")
+                box.summary, box.summary_color = "all ok", theme.status_text_color("ok")
             box.update()
         self.group_bar.update_statuses()
 
@@ -771,7 +784,7 @@ class MapView(QWidget):
         number = target.steps.index(step) + 1
         keyless = step.action != "table.append" and not step.params.get("match", [{}])[0].get("column")
         hint = " — choose the matching columns on the right" if keyless else ""
-        self.message.emit(f"Added step {number} to “{target.name}”: {self.session.engine.describe(step)}{hint}")
+        self.message.emit(f"Added step {number} to “{target.name}”: {self.session.describe(step)}{hint}")
 
     def node_at(self, position: QPointF, exclude: TableNode | None = None) -> TableNode | None:
         for item in self.scene.items(position):

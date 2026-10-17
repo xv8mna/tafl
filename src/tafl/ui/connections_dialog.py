@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -42,6 +44,8 @@ class ConnectionsDialog(QDialog):
             (c.name, copy.deepcopy(c)) for c in session.project.connections
         ]
         self._form: ParamForm | None = None
+        self._testing: Connection | None = None  # the connection whose test is running
+        self._results: dict[int, tuple[bool, str]] = {}  # id of a connection -> its last test result
 
         self.list = QListWidget(self)
         self.list.currentRowChanged.connect(self._show)
@@ -70,7 +74,10 @@ class ConnectionsDialog(QDialog):
         self.test_result = QPlainTextEdit(self)
         self.test_result.setReadOnly(True)
         self.test_result.setFrameShape(QFrame.Shape.NoFrame)
-        self.test_result.setFixedHeight(5 * self.fontMetrics().lineSpacing() + 10)
+        # Five whole lines (no line cut in half, also when scrolled), on the dialog's own background
+        self.test_result.document().setDocumentMargin(0)
+        self.test_result.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # the lines wrap
+        self.test_result.setFixedHeight(5 * self.test_result.fontMetrics().lineSpacing())
         self.test_result.hide()
         self.details = QWidget(self)
         right = QVBoxLayout(self.details)
@@ -124,7 +131,14 @@ class ConnectionsDialog(QDialog):
             self._form = None
         connection = self._current()
         self.details.setEnabled(connection is not None)
-        self._show_result("")
+        testing = connection is not None and connection is self._testing
+        self.test_button.setEnabled(not testing)  # a test of another connection may be running
+        if testing:
+            self._show_result("Connecting…")
+        elif connection is not None and id(connection) in self._results:
+            self._show_tested(*self._results[id(connection)])
+        else:
+            self._show_result("")
         if connection is None:
             self.name.setText("")
             self.type_label.setText("Add a connection with “+ Add”.")
@@ -137,8 +151,12 @@ class ConnectionsDialog(QDialog):
         self.type_label.setText(connector.name)
         self._form = ParamForm(connector.params, FormContext(project_dir=self.session.project.directory), self)
         self._form.set_values(json_ready(resolve(connector.params, connection.settings)))
-        self._form.changed.connect(lambda values: connection.settings.update(values))
+        self._form.changed.connect(lambda values: self._changed(connection, values))
         self.form_host.addWidget(self._form)
+
+    def _changed(self, connection: Connection, values: dict) -> None:
+        connection.settings.update(values)
+        self._results.pop(id(connection), None)  # the last test was of other settings
 
     def _add(self, connector_id: str) -> None:
         connector = self.registry.connectors[connector_id]
@@ -154,6 +172,7 @@ class ConnectionsDialog(QDialog):
     def _remove(self) -> None:
         row = self.list.currentRow()
         if 0 <= row < len(self._rows):
+            self._results.pop(id(self._rows[row][1]), None)
             del self._rows[row]
             self._refresh_list()
             self._show(self.list.currentRow())
@@ -171,6 +190,8 @@ class ConnectionsDialog(QDialog):
             return
         settings, values = dict(connection.settings), self.session.parameter_values
         ctx = Context(project_dir=self.session.project.directory)
+        self._testing = connection
+        self._results.pop(id(connection), None)
         self._show_result("Connecting…")
         self.test_button.setEnabled(False)
 
@@ -188,13 +209,24 @@ class ConnectionsDialog(QDialog):
         self._worker.start(work)
 
     def _tested(self, outcome: tuple[bool, str]) -> None:
-        ok, text = outcome
-        self.test_button.setEnabled(True)
-        self._show_result(text, theme.STATUS_COLORS["ok" if ok else "error"])
+        """The result of the latest test: shown under its connection (also when another one was
+        selected meanwhile, and that one is selected again)."""
+        tested, self._testing = self._testing, None
+        if tested is not None:
+            self._results[id(tested)] = outcome
+        if tested is None or tested is self._current():
+            self.test_button.setEnabled(True)
+            self._show_tested(*outcome)
+
+    def _show_tested(self, ok: bool, text: str) -> None:
+        self._show_result(text, theme.STATUS_TEXT["ok" if ok else "error"])
 
     def _show_result(self, text: str, color: str = theme.TEXT) -> None:
         self.test_result.setPlainText(text)
-        self.test_result.setStyleSheet(f"QPlainTextEdit {{ color: {color}; background: transparent; }}")
+        palette = self.test_result.palette()
+        palette.setColor(QPalette.ColorRole.Base, QColor(theme.WINDOW))
+        palette.setColor(QPalette.ColorRole.Text, QColor(color))
+        self.test_result.setPalette(palette)
         self.test_result.setVisible(bool(text))
 
     def _accept(self) -> None:

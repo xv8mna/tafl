@@ -121,6 +121,80 @@ def test_values_like_1_000_follow_the_other_numbers(act, tmp_path):
     assert df["Wert"].to_list() == [1.0, 3.125] and df["Preis"].to_list() == [2.5, 4.0]
 
 
+@pytest.mark.parametrize(
+    ("values", "numbers"),
+    [
+        (["0.500", "1.250"], [0.5, 1.25]),
+        (["-0.250", "0.125", "12.500"], [-0.25, 0.125, 12.5]),
+        (["0.500", "1.250", "2.000"], [0.5, 1.25, 2.0]),
+        (["1.250", "+0.750", "-1.000"], [1.25, 0.75, -1.0]),
+    ],
+)
+def test_decimals_with_a_leading_zero_are_not_thousands(act, tmp_path, values, numbers):
+    (tmp_path / "w.csv").write_text("Artikel;Gewicht\r\n" + "".join(f"A;{v}\r\n" for v in values), encoding="utf-8")
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "w.csv")}, ctx)
+    assert df["Gewicht"].to_list() == numbers and df.schema["Gewicht"] == pl.Float64
+    assert ctx.messages == [("info", "Encoding utf-8, delimiter semicolon, decimal point")]
+
+
+def test_a_chosen_decimal_comma_doesnt_read_0_500_as_thousands(act, tmp_path):
+    (tmp_path / "w.csv").write_text("Artikel;Gewicht;Menge\nA;0.500;1.000\nB;1.250;-12.000\n", encoding="utf-8")
+    df = act("csv.import", None, {"file": str(tmp_path / "w.csv"), "decimal": ","})
+    assert df["Gewicht"].to_list() == ["0.500", "1.250"]  # not 500 and 1250: 0.500 can't be thousands
+    assert df["Menge"].to_list() == [1000, -12000]
+
+
+def test_a_column_follows_its_own_decimal_separator(act, tmp_path):
+    rows = ["A;1.000;2.500;3,50;0.500", "B;12.000;1.250;4,25;1.250", "C;500;10.000;1,99;2.000"]
+    (tmp_path / "t.csv").write_text("Artikel;Menge;Gewicht;Preis;Netto\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "t.csv")}, ctx)
+    assert df.drop("Artikel").to_dict(as_series=False) == {
+        "Menge": [1000, 12000, 500],
+        "Gewicht": [2500, 1250, 10000],
+        "Preis": [3.5, 4.25, 1.99],
+        "Netto": [0.5, 1.25, 2.0],
+    }
+    assert ctx.messages == [("info", "Encoding utf-8, delimiter semicolon, decimal comma")]
+    (tmp_path / "en.csv").write_text('item,qty,price\nA,"0,500",2.5\nB,"1,250",10\n', encoding="utf-8")
+    df = act("csv.import", None, {"file": str(tmp_path / "en.csv")})
+    assert df["qty"].to_list() == [0.5, 1.25] and df["price"].to_list() == [2.5, 10.0]
+    # a value that shows the separator after many that don't (beyond the sample)
+    (tmp_path / "long.csv").write_text("Nr;Gewicht;Menge\n" + "1;1.250;5\n" * 2500 + "2;0.500;0.250\n", encoding="utf-8")
+    df = act("csv.import", None, {"file": str(tmp_path / "long.csv")})
+    assert df["Gewicht"].unique().sort().to_list() == [0.5, 1.25]
+    assert df["Menge"].unique().sort().to_list() == [0.25, 5.0]
+
+
+def test_line_ends_converted_twice(act, tmp_path):
+    (tmp_path / "p.csv").write_bytes(b"Artikel;Preis\r\r\nA;1.5\r\r\nB;2.25\r\r\n")
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "p.csv")}, ctx)
+    assert df.to_dict(as_series=False) == {"Artikel": ["A", "B"], "Preis": [1.5, 2.25]}
+    assert ctx.messages == [("info", "Encoding utf-8, delimiter semicolon, decimal point")]
+    (tmp_path / "n.csv").write_bytes(b'Nr;Notiz\r\r\n1;"x; y"\r\r\n2;z\r\r\n3;\r\r\n')
+    df = act("csv.import", None, {"file": str(tmp_path / "n.csv")})
+    assert df["Notiz"].to_list() == ["x; y", "z", None]
+    (tmp_path / "t.csv").write_text("Artikel;Gewicht\nA;0.500\t\nB;1.250\t\n", encoding="utf-8")  # tabs at the end
+    assert act("csv.import", None, {"file": str(tmp_path / "t.csv")})["Gewicht"].to_list() == [0.5, 1.25]
+
+
+def test_a_file_with_one_column(act, tmp_path):
+    (tmp_path / "b.csv").write_text("Betrag\r\n1.234,50\r\n12,00\r\n", encoding="utf-8")
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "b.csv")}, ctx)
+    assert df.to_dict(as_series=False) == {"Betrag": [1234.5, 12.0]}
+    assert ctx.messages == [("info", "Encoding utf-8, delimiter none (one column), decimal comma")]
+    (tmp_path / "n.csv").write_text('"Name, Vorname"\nMüller, Hans\n"Schmidt; Eva"\n', encoding="utf-8")
+    df = act("csv.import", None, {"file": str(tmp_path / "n.csv")})
+    assert df.to_dict(as_series=False) == {"Name, Vorname": ["Müller, Hans", "Schmidt; Eva"]}
+    (tmp_path / "s.csv").write_text("Bericht\nA;1\n", encoding="utf-8")  # a title line: still one column, as before
+    assert act("csv.import", None, {"file": str(tmp_path / "s.csv")}).to_dict(as_series=False) == {"Bericht": ["A;1"]}
+    df = act("csv.import", None, {"file": str(tmp_path / "s.csv"), "skip_lines": 1, "header": False})
+    assert df.to_dict(as_series=False) == {"Column 1": ["A"], "Column 2": [1]}
+
+
 def test_long_numbers_with_thousands_separators_keep_all_digits(act, tmp_path):
     (tmp_path / "l.csv").write_text(
         "Id;Code;Mehr;Betrag\n"
@@ -159,7 +233,7 @@ def test_a_utf8_file_with_one_wrong_byte_stays_utf8(act, tmp_path):
     df = act("csv.import", None, {"file": str(tmp_path / "u.csv")}, ctx)
     assert df["Name"].to_list() == ["Müller", "Jürgen", "Bad�"]
     assert ctx.warnings == ["u.csv: 1 character is not UTF-8, shown as �"]
-    assert ctx.messages[-1] == ("info", "Encoding utf-8, delimiter comma, decimal point")
+    assert ctx.messages[-1] == ("info", "Encoding utf-8, delimiter none (one column), decimal point")
 
 
 def test_a_windows_file_with_one_utf8_character(act, tmp_path):
@@ -248,6 +322,16 @@ def test_export_binary_infinite_and_time_values(act, tmp_path):
     assert lines == ["id;data;ratio;at", "1;0x0102FF;;09:30:00", "2;;;", "3;0x;0.5;23:59:01"]
 
 
+def test_export_writes_the_shortest_text_that_reads_back_the_same(act, tmp_path):
+    values = [0.37 * 3, 1.1 * 3, 0.1, 1 / 3, 1234.5, -0.25, 2.0, 1e-7, 1.5e20]
+    path = tmp_path / "f.csv"
+    act("csv.export", pl.DataFrame({"x": values}), {"file": str(path)})
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    assert lines[1:7] == ["1,1099999999999999", "3,3000000000000003", "0,1", "0,3333333333333333", "1234,5", "-0,25"]
+    assert lines[7:] == ["2", "0,0000001", "150000000000000000000"]
+    assert act("csv.import", None, {"file": str(path)})["x"].to_list() == values
+
+
 def test_dont_export_an_empty_table(act, registry, tmp_path):
     path, empty = tmp_path / "out.csv", pl.DataFrame(schema={"a": pl.Int64})
     path.write_text("yesterday\n", encoding="utf-8")
@@ -261,5 +345,9 @@ def test_dont_export_an_empty_table(act, registry, tmp_path):
     assert path.read_text(encoding="utf-8-sig").splitlines() == ["a", "1"]
     act("csv.export", empty, {"file": str(path)})  # off: as before, the column names only
     assert path.read_text(encoding="utf-8-sig").splitlines() == ["a"]
+    act("csv.export", pl.DataFrame(), {"file": str(path), "skip_empty": True})  # no columns, no rows: not exported
+    assert path.read_text(encoding="utf-8-sig").splitlines() == ["a"]
+    act("csv.export", pl.DataFrame(), {"file": str(path)})  # an empty file, as before
+    assert path.read_text(encoding="utf-8-sig").strip() == ""
     export = registry.actions["csv.export"]
     assert export.version == 2 and export.upgrade({"file": "a.csv"}, 1) == {"file": "a.csv", "skip_empty": False}

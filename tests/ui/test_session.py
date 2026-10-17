@@ -1,6 +1,10 @@
+import re
+import tempfile
 from pathlib import Path
 
-from tafl.core import Connection, Parameter, Project, Status
+import pytest
+
+from tafl.core import Connection, Parameter, Project, ProjectError, Status
 
 
 def test_open_select_and_calculate(qtbot, settle, session, demo):
@@ -73,6 +77,21 @@ def test_saving_elsewhere_keeps_file_paths_working(qtbot, settle, session, demo,
     session.save_project(demo)  # back next to the data: relative again
     assert first.params["file"] == "data/customers.xlsx"
     assert not session.dirty
+
+
+def test_saving_into_a_folder_without_permission(qtbot, settle, session, demo, tmp_path, monkeypatch):
+    session.open_project(demo)
+    first = session.project.tables[0].steps[0]
+
+    def denied(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(tempfile, "mkstemp", denied)
+    folder = tmp_path / "denied"
+    with pytest.raises(ProjectError, match=f"^No permission to save in {re.escape(str(folder))}: save the project in another folder$"):
+        session.save_project(folder / "copy.tafl")
+    assert first.params["file"] == "data/customers.xlsx"  # not saved: the paths are as they were
+    assert session.project.path == demo.resolve()
 
 
 def test_saving_elsewhere_keeps_paths_that_start_with_a_parameter(session, registry, tmp_path):

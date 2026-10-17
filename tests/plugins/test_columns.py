@@ -1,4 +1,5 @@
 import datetime as dt
+from decimal import Decimal as D
 
 import polars as pl
 import pytest
@@ -118,6 +119,33 @@ def test_numbers_to_text_with_percent_and_text(act):
 def test_dates_to_text_with_month_names(act):
     df = pl.DataFrame({"d": [dt.date(2025, 12, 31)]})
     assert change(act, df, "d", "text", "d. mmmm yyyy (dddd)").to_list() == ["31. December 2025 (Wednesday)"]
+
+
+def test_exact_decimals(act):
+    amounts = [D("12345678901234.5678"), D("2.5000"), D("-2.5000"), None]
+    rates = [D("0.123456789012345678"), D("1.100000000000000000"), None, None]
+    df = pl.DataFrame(
+        {"Amount": pl.Series(amounts, dtype=pl.Decimal(18, 4)), "Rate": pl.Series(rates, dtype=pl.Decimal(38, 18))}
+    )
+    ctx = StubContext()
+    assert change(act, df, "Amount", "number", ctx=ctx).to_list() == [12345678901234.568, 2.5, -2.5, None]
+    assert ctx.warnings == [
+        "Amount: 1 value(s) were rounded, e.g. '12345678901234.5678': a decimal number keeps about 15 digits "
+        "(Whole number and Text keep them all)"
+    ]
+    assert change(act, df, "Amount", "integer").to_list() == [12345678901235, 3, -3, None]
+    assert change(act, df, "Amount", "text").to_list() == ["12345678901234,5678", "2,5", "-2,5", None]
+    assert change(act, df, "Rate", "text", decimal=".").to_list() == ["0.123456789012345678", "1.1", None, None]
+    assert change(act, df, "Amount", "text", "#,##0.00").to_list() == ["12.345.678.901.234,57", "2,50", "-2,50", None]
+
+
+def test_date_times_with_two_digit_years_without_a_format(act):
+    df = pl.DataFrame({"T": ["31.12.25 08:30", "01.01.45 17:05:09", ""]})
+    ctx = StubContext()
+    expected = [dt.datetime(2025, 12, 31, 8, 30), dt.datetime(1945, 1, 1, 17, 5, 9), None]
+    assert change(act, df, "T", "datetime", ctx=ctx).to_list() == expected
+    assert change(act, df, "T", "date", ctx=ctx).to_list() == [dt.date(2025, 12, 31), dt.date(1945, 1, 1), None]
+    assert not ctx.warnings
 
 
 def test_binary_to_text_as_hex(act):

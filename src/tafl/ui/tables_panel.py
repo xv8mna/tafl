@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .action_menu import fill_action_menu
-from .session import Session, first_error, missing_settings, size_text
+from .session import Session, first_error, missing_settings, size_text, waiting_text
 
 _KIND = Qt.ItemDataRole.UserRole  # "table" or "group"
 _ID = Qt.ItemDataRole.UserRole + 1
@@ -171,6 +171,8 @@ class TablesPanel(QWidget):
             elif status == "incomplete" and (failed := first_error(result)) is not None:
                 needed = ", ".join(missing_settings(failed[1]))
                 item.setToolTip(0, f"Step {failed[0]} is not complete yet: fill in {needed}")
+            elif status == "waiting" and (waiting := self.session.waits_for(table_id)) is not None:
+                item.setToolTip(0, waiting_text(waiting, capital=True))
             elif result is not None and result.df is not None:
                 text = size_text(result.df)
                 if (ended := result.skipped_from) is not None:

@@ -286,7 +286,7 @@ class FilterCard(QFrame):
         self.links = QLabel(self)
         self.links.setText(
             " · ".join(
-                f'<a href="{k}" style="color:{theme.ACCENT}; text-decoration:none">{k.capitalize()}</a>'
+                f'<a href="{k}" style="color:{theme.ACCENT_TEXT}; text-decoration:none">{k.capitalize()}</a>'
                 for k in ("all", "possible", "excluded", "none")
             )
         )

@@ -87,6 +87,8 @@ In the download's folder, write `tafl.exe` instead of `.venv\Scripts\tafl` (in P
   parameters it lists the values the run used. It exits with 0 when everything worked (tables
   that are turned off or skip their rest count as working), 1 when a step failed, 2 when the
   project can't be opened or has no such table or parameter, and 130 when Ctrl+C stopped it.
+  It prints each table as soon as it is calculated, so after Ctrl+C the output shows what ran
+  (e.g. which exports were written).
 - `show` prints the steps of a table and the data after one step (also with `--set`).
 - `plugins` lists all actions and shows plugins that failed to load.
 - `--help` lists the commands; `run --help` (and `show`, `plugins`) shows the options and exit
@@ -112,7 +114,8 @@ Only in a source install (they need Python):
   right-click to turn a step off or duplicate it. A step that still needs a setting is
   *incomplete* (grey-blue), not an error: its summary shows a `?` for what is missing, the data
   panel shows the data going into it, and the steps after it are calculated once it is filled
-  in. A run counts it as an error.
+  in. A run counts it as an error. A table that uses a table with an incomplete step is
+  *waiting* (grey-blue too) until that step is filled in.
 - **Settings** (right): the selected step's settings. Changes apply when you press Enter or leave
   the field (in SQL fields: Ctrl+Enter); the data updates in the background. Formula fields:
   Enter applies, Shift+Enter starts a new line. Typing **[** (or the **[ ]** button) lists the
@@ -138,11 +141,12 @@ Only in a source install (they need Python):
 - **Run project** (F5) calculates all tables and executes the exports and commands; **Run this
   table** (Shift+F5) does the same for the selected table and the tables it uses. While you edit,
   exports and commands never run. **Run results** list every table and step, with how long the
-  run took. **Stop** lets the step that is running finish (an export can take a while), then
-  stops; the run results say what ran. Closing the window during a run asks whether to wait or
-  to stop. **Reload data** (Ctrl+R) reads files and databases again. A
-  changed file is also read again by itself when the table is calculated again: when you select
-  the table again, change a step, or run. Selecting a step only shows what was calculated.
+  run took. **Stop** stops a formula that is running at once; another step that is running
+  finishes first (an export can take a while). The run results say what ran. Closing the window
+  during a run asks whether to wait or to stop. **Reload data** (Ctrl+R) reads files and
+  databases again and brings the status of every table up to date. A changed file is also read
+  again by itself when the table is calculated again: when you select the table again, change a
+  step, or run. Selecting a step only shows what was calculated.
 - **Map** (Ctrl+2): the project map, a full workspace: the selected table's steps and settings
   are on the right, its data below the map. **Tables** (Ctrl+1) switches back.
   - Every table is a box; arrows run from a table to the step that uses it (merge, append, start
@@ -224,12 +228,18 @@ folder** ("Read: All files in a folder"), with all subfolder levels if you like:
   still writing.
 - **When there are no files** that match: stop with an error (the default), continue with an
   empty table (with a warning), or skip the rest of the table (its exports and commands too,
-  see [File commands](#file-commands)). A folder that doesn't exist is always an error.
+  see [File commands](#file-commands)). The empty table has only the columns **File** and
+  **Path** (those that are switched on; without both, a CSV or Excel export writes an empty
+  file), so a later step that names another column fails: for a folder that is empty on some
+  days, such as an inbox, choose *Skip the rest of the table*.
+  A folder that doesn't exist is always an error.
 - All files become **one table**: columns are matched by name, a column missing in a file stays
   empty there, and a column whose type differs between files gets a type that fits all of them
-  (often text). CSV: delimiter and encoding are detected per file; the decimal separator,
-  numbers and dates once for all files. A value like `1.000` can be one thousand or one: it
-  follows the other numbers, and without any it is one thousand in files with semicolons.
+  (often text). CSV: delimiter and encoding are detected per file (a file whose first line has
+  no delimiter has one column); numbers, dates and the decimal separator once for all files,
+  the decimal separator also per column (`0.500` shows a decimal point, `2,5` a comma). A value
+  like `1.000` can be one thousand or one: it follows the other numbers of its column, else
+  those of the files, and without any it is one thousand in files with semicolons.
 - Optional columns **File** (file name) and **Path** (below the folder, e.g.
   `2025\01\orders_2025-01-02.csv`) show where each row came from. Calculated columns take
   what you need from them:
@@ -260,8 +270,11 @@ project runs (F5), never while you edit, and the table passes through unchanged.
 - Delete: to the Recycle Bin (can be restored), or for good.
 - Files that don't exist stop the run, or are skipped if you choose.
 - All files are checked before the first one is changed: a missing file, a name that Windows
-  doesn't allow (`:`, `..`, `CON`, …) or a folder where a file belongs stops the step with
-  nothing changed.
+  doesn't allow (`:`, `..`, `CON`, more than 255 characters, …), a read-only file to replace or
+  to delete for good, or a folder where a file belongs stops the step with nothing changed.
+- Each file is copied, moved or renamed completely or not at all. A move to another drive
+  copies the file first and deletes it only when the copy is complete; a file it replaces is
+  kept until then. When a file is open in another program, the message names it.
 - Two listed files that would get the same name, e.g. `2025\01\b.csv` and `2025\02\b.csv` moved
   into one folder: **Keep both** numbers them, **Replace it** and **Stop with an error** stop the
   step (keeping the subfolders keeps them apart). A step never replaces a file it has just
@@ -270,13 +283,21 @@ project runs (F5), never while you edit, and the table passes through unchanged.
 Example, daily exports: a table imports all files in `inbox` (*All files in a folder*, `*.csv`,
 **When there are no files**: *Skip the rest of the table*) and exports them. Its last step,
 **Move files** (column *File*, or *Path* with subfolders; "Paths in the column are below":
-`inbox`; to the folder `archive`), moves exactly the files it has read, after the exports. Keep
-the move in the importing table: a separate table might run before the import and move the files
-away first. On a day without files, the import skips the exports and the move: the run succeeds
-(Run results: *ok, rest skipped*), and the table has no error, also right after a run that
-emptied the inbox. If a step between import and exports can leave no rows (a filter), switch on
-**Don't export an empty table** in the exports rather than adding *Skip the rest if a table is
-empty*: the move still runs, so the files aren't read again the next day.
+`inbox`; to the folder `archive`), moves the files after the exports: when an export fails, the
+files stay in `inbox` for the next run. Keep the move in the importing table: a separate table
+might run before the import and move the files away first. On a day without files, the import
+skips the exports and the move: the run succeeds (Run results: *ok, rest skipped*), and the
+table has no error, also right after a run that emptied the inbox. A table that uses this table
+on such a day (to start from it, merge or append it) skips its rest from that step on.
+
+*Move files* moves the files in its column at its step: a file without rows there stays in
+`inbox` and is read again the next day, e.g. a file with only its header row, or one whose rows
+a filter before the move left out. With a filter, put the move before it (import, **Move
+files**, filter, exports): then every file with rows is moved, and the exports run after the
+move (when one fails, the files are in `archive` already). On a day when the table has no rows
+(files with only a header row, or the filter left none), **Don't export an empty table** in the
+exports, or the step *Skip the rest if a table is empty* before them, leaves the exported files
+as they are.
 
 Before you run a project you got from someone else, look at its exports and commands: *Delete
 files* can delete for good, and *Run SQL command* runs any SQL (see also
@@ -289,7 +310,11 @@ never while you edit.
 
 - A CSV or Excel export writes the new file next to the old one (named `~$…`) and replaces the
   old file only when the new one is complete: if the export fails, the old file stays as it was.
-  A file that is open in another program, such as Excel, gives a message that says so: close it
+  A `~$…` file left by a run that was ended (e.g. in the Task Manager) is deleted by the next
+  export of that file. In a folder where files may be changed but no new ones created, the
+  export writes over the old file directly, with a warning: then a failed export can leave it
+  half-written. A
+  file that is open in another program, such as Excel, gives a message that says so: close it
   and run again.
 - Binary values (e.g. from a `varbinary` column) are written as hex text, `0x0102FF`.
 - **Don't export an empty table** (in every export, off by default): when the table has no rows,
@@ -300,6 +325,9 @@ never while you edit.
   on a day without new data. That is not an error: the table's result is the data at this step,
   the run succeeds, and the skipped steps say why. Folder imports can do the same when there are
   no files ([Importing many files](#importing-many-files)).
+- A step that uses a table which skipped its rest and has no rows (*Start from*, *Merge*,
+  *Append*, …) doesn't run: there is no data for it. The rest of its own table is skipped too,
+  so the tables that start from an import on a day without files skip their exports as well.
 
 ## Exporting to a database
 
@@ -323,12 +351,20 @@ always in one transaction: if anything fails, the database stays as it was.
   `DECIMAL(p, s)`, `NVARCHAR(n)`, `DATE`, `DATETIME2`, `TIME`, `BIT`, `VARBINARY(MAX)`). For
   other types, create the table yourself first. A temporary table (`#name` in SQL Server,
   `temp.name` in SQLite) can't be the target: it would disappear when the export ends.
+- Values are stored as their columns hold them, the same way in every mode, and key values
+  compare as the columns do (with their collation). SQL Server cuts fractions of a second to
+  the digits of the column (`datetime2(0)` holds whole seconds), a `date` column keeps only the
+  date, a `varchar` column gets only the characters of the database's code page (Łódź becomes
+  Lódz), and spaces at the end of a text that don't fit are left out.
 - Date-times with a time zone are written in that zone's local time, without the zone (08:30 in
-  Berlin stays 08:30), as in the Excel export.
-- Updating needs one row per key value; duplicates stop the export with an example.
+  Berlin stays 08:30), as in the Excel export. A SQL Server `datetimeoffset` column gets the
+  zone's offset with it (08:30 +02:00 in Berlin in summer); a date-time without a zone gets the
+  offset of this PC's time zone on its day.
+- Updating needs one row per key value, as the key column holds it (08:00:01.2 and 08:00:01.7
+  are one value in a `datetime2(0)`); duplicates stop the export with an example.
 - SQL Server: values that don't fit stop the export with a message that names the column: a
-  text longer than its column (e.g. `nvarchar(50)`), a decimal for a whole-number column, an
-  infinite number (e.g. from a division by zero).
+  text or binary value longer than its column (e.g. `nvarchar(50)`), a decimal for a
+  whole-number column, an infinite number (e.g. from a division by zero).
 - 100,000 rows take a second or two with a local SQL Server, less with SQLite.
 
 **Run SQL command** runs any SQL when the project runs, e.g. `EXEC dbo.RefreshReport` after an
@@ -341,7 +377,9 @@ connection says what to install. Windows' own driver "SQL Server" is used only w
 as the connection's ODBC driver; a driver name that isn't installed gets a list of the ones that
 are.
 
-Database imports: a whole SQL Server table reads `sql_variant`, `geography`, `geometry` and
+Database imports: numbers keep all their digits. SQL Server `decimal`, `numeric` and `money`
+columns become whole numbers or decimal numbers when that keeps every value, else exact
+decimals. A whole SQL Server table reads `sql_variant`, `geography`, `geometry` and
 `hierarchyid` columns as text; a query needs a `CAST` for them (the message shows it). In
 SQLite, an import's `ATTACH` works only when the project is run, as it could create a file.
 
@@ -485,7 +523,8 @@ Formats use Excel's codes everywhere: dates `dd.mm.yyyy`, `dd.mm.yyyy hh:mm`; nu
 positive and negative numbers and zero, e.g. `#,##0.00;(#,##0.00);"–"`. *Change type* stops
 with a message at a number code it can't write (e.g. `0.00E+00`), and writes month and day
 names (`mmmm`, `dddd`) in English. Dates with two-digit years are read as in Excel: `31.12.25`
-is 2025, `01.01.75` is 1975 (00–29 are 20xx, 30–99 are 19xx).
+is 2025, `01.01.75` is 1975 (00–29 are 20xx, 30–99 are 19xx), also with a time
+(`31.12.25 08:30`).
 
 ## Sort order
 
@@ -549,8 +588,9 @@ The settings form is built from `params`. Rules for plugins:
   `(params, old_version) -> params` that converts settings saved by older versions, so old
   projects keep working.
 - Exports and commands (`kind="export"` / `"command"`) only run when a project is run, never in
-  preview. An export writes its file with `tafl.api.files.replace_file(path)`, which keeps the
-  old file until the new one is complete.
+  preview. An export writes its file with `tafl.api.files.replace_file(path, ctx.warn)`, which
+  keeps the old file until the new one is complete; `copy_file`, `move_file` and `delete_file`
+  there change a file completely or not at all.
 - `raise ActionError("...")` for a problem the user can fix. To end the table at this step
   without an error, e.g. when there is nothing to do, `raise SkipRest("No new orders")`: the
   steps after it are skipped with that message.

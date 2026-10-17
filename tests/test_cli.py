@@ -1,15 +1,20 @@
+import hashlib
 import importlib.util
 import json
 import re
 import signal
+import threading
+import time
 from pathlib import Path
 
 import openpyxl
 import polars as pl
 import pytest
 
+from tafl import cli
 from tafl.cli import Console, main
 from tafl.core import Parameter, Project
+from tafl.core.cancel import CancelEvent
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "make_examples.py"
 
@@ -79,6 +84,21 @@ def test_a_console_without_unicode_gets_words_for_the_symbols(capsys):
     assert capsys.readouterr().out == "4. Sort by Revenue desc, Name -> 2 x 3\n"
 
 
+def test_long_step_summaries_are_shortened(capsys, monkeypatch):
+    console, flushed = Console(), []
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: flushed.append(kwargs.get("flush")))
+    console.step(3, "Keep rows where Kunde is one of " + ", ".join(f"K{i:05d}" for i in range(20_000)), None)
+    console.unicode = False
+    console.step(4, "Sort by Name", None)
+    monkeypatch.undo()
+    assert flushed == [True, True]  # each line reaches a log file at once, also if the run is ended then
+    console.unicode = True
+    console.step(3, "Keep rows where Kunde is one of " + ", ".join(f"K{i:05d}" for i in range(20_000)), None)
+    line = capsys.readouterr().out.rstrip("\n")
+    assert line.startswith("        3. Keep rows where Kunde is one of K00000, ") and line.endswith("…")
+    assert len(line) == len("        3. ") + 300
+
+
 def test_without_unicode_the_columns_of_a_table_line_up(capsys):
     console = Console()
     console.unicode = False
@@ -102,9 +122,12 @@ def plugins(tmp_path, monkeypatch) -> Path:
 
 FAILING = '''
 import signal
+import threading
 import time
 
-from tafl.api import ActionError, action
+import polars as pl
+
+from tafl.api import ActionError, action, expressions
 
 
 @action("demo.interrupt", "Interrupt")
@@ -123,6 +146,31 @@ def ctrl_c(df, p, ctx):
 def slow_failure(df, p, ctx):
     time.sleep(0.2)
     raise ActionError("The server did not answer")
+
+
+@action("demo.slow_formula", "Slow formula")
+def slow_formula(df, p, ctx):
+    threading.Timer(0.3, signal.raise_signal, (signal.SIGINT,)).start()  # Ctrl+C while it runs
+    return expressions.filter_rows(df, "(SELECT COUNT(*) FROM range(3000000000) t(i) WHERE i % 7 = 8) = 0")
+
+
+def _interrupt(*_):
+    raise KeyboardInterrupt
+
+
+@action("demo.old", "Old", version=2, migrate=_interrupt)
+def old(df, p, ctx):
+    return df
+
+
+@action("demo.titled", "Titled", summary=_interrupt)
+def titled(df, p, ctx):
+    return df
+
+
+@action("demo.source", "Source", kind="source", fingerprint=_interrupt)
+def source(df, p, ctx):
+    return pl.DataFrame({"a": [1]})
 '''
 
 
@@ -152,6 +200,76 @@ def test_ctrl_c_stops_a_run(plugins, tmp_path, capsys):
     output = capsys.readouterr()
     assert "Error: Stopped" in output.err and "Failed in" not in output.out
     assert signal.getsignal(signal.SIGINT) is before
+
+
+def test_after_ctrl_c_what_ran_is_printed(plugins, tmp_path, capsys):
+    """The tables that were done (with their exports), and the steps of the stopped table."""
+    path = _plugin_project(tmp_path, "csv.export", "demo.ctrl_c", "demo.interrupt")
+    project = Project.load(path)
+    project.tables[0].steps[1].params["file"] = "out/orders.csv"
+    first = project.add_table("First")
+    project.tables.insert(0, project.tables.pop())  # calculated first
+    project.add_step(first, "csv.import", {"file": "orders.csv"})
+    project.add_step(first, "csv.export", {"file": "out/first.csv"})
+    project.save(path)
+    assert main(["--plugins", str(plugins), "run", str(path)]) == 130
+    output = capsys.readouterr()
+    lines = output.out.splitlines()
+    assert lines[0] == "First" and lines[3].startswith("  ✓ 2. Export to first.csv   1 row × 1 column")
+    assert lines[4] == f"          i Wrote 1 row to {tmp_path / 'out' / 'first.csv'}"
+    assert lines[5] == "Orders" and lines[8].startswith("  ✓ 2. Export to orders.csv   1 row × 1 column")
+    assert lines[10:12] == ["  · 3. Ctrl+C   (stopped)", "        4. Interrupt"]
+    assert re.fullmatch(r"Stopped after \d+\.\d\ds", lines[12]) and len(lines) == 13
+    assert output.err.endswith("\nError: Stopped\n")
+    assert (tmp_path / "out" / "first.csv").exists() and (tmp_path / "out" / "orders.csv").exists()
+
+
+def test_ctrl_c_while_a_formula_runs_stops_the_run(plugins, tmp_path, capsys):
+    """DuckDB reports the interrupted query as an error: that is the stop, not a step error."""
+    path = _plugin_project(tmp_path, "demo.slow_formula", "csv.export")
+    before = signal.signal(signal.SIGINT, lambda *_: None)  # never a Ctrl+C for pytest itself
+    try:
+        started = time.perf_counter()
+        assert main(["--plugins", str(plugins), "run", str(path)]) == 130
+        assert time.perf_counter() - started < 10
+    finally:
+        signal.signal(signal.SIGINT, before)
+    output = capsys.readouterr()
+    assert "Query interrupted" not in output.out and "Failed in" not in output.out
+    assert "  · 2. Slow formula   (stopped)" in output.out and output.err.endswith("Error: Stopped\n")
+
+
+def test_ctrl_c_is_seen_at_once_while_python_waits_for_a_library():
+    """A library call that doesn't look for signals (as a DuckDB query sometimes does) holds back
+    the interruption until it is over, but the stop is set at once by another thread."""
+    stop, seen = CancelEvent(), []
+    stop.when_set(lambda: seen.append((threading.current_thread().name, time.perf_counter())))
+    before = signal.signal(signal.SIGINT, lambda *_: None)  # never a Ctrl+C for pytest itself
+    started = time.perf_counter()
+    try:
+        with pytest.raises(KeyboardInterrupt), cli._ctrl_c(stop):
+            threading.Timer(0.05, signal.raise_signal, (signal.SIGINT,)).start()
+            hashlib.pbkdf2_hmac("sha256", b"x", b"y", 2_000_000)  # a second or so without looking for signals
+    finally:
+        signal.signal(signal.SIGINT, before)
+    ended = time.perf_counter()  # the interruption came when the call was over
+    assert seen and seen[0][0] == "ctrl-c" and seen[0][1] - started < (ended - started) / 2
+    assert signal.set_wakeup_fd(-1) == -1  # the watching ended
+
+
+def test_keyboard_interrupt_from_plugin_functions_is_their_error(plugins, tmp_path, capsys):
+    """A migrate, summary or fingerprint function that raises KeyboardInterrupt doesn't stop the run."""
+    path = _plugin_project(tmp_path, "demo.titled", "demo.old")
+    project = Project.load(path)
+    project.add_step(project.add_table("Other"), "demo.source", {})
+    project.save(path)
+    assert main(["--plugins", str(plugins), "run", str(path)]) == 1
+    output = capsys.readouterr()
+    assert "  ✓ 2. Titled   1 row × 1 column" in output.out
+    assert "  ✗ 3. Old\n" in output.out
+    assert "Could not read the step settings: The plugin 'failing' tried to end the program (KeyboardInterrupt)" in output.out
+    assert "  ✓ 1. Source   1 row × 1 column" in output.out
+    assert "Failed in" in output.out and "Stopped" not in output.err
 
 
 def test_a_failed_step_shows_how_long_it_ran(plugins, tmp_path, capsys):

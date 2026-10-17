@@ -125,6 +125,14 @@ class Connector:
         """``CREATE`` keywords and the name of a table that disappears with the connection."""
         return "CREATE TEMPORARY TABLE", name
 
+    def fit_frame(self, df: pl.DataFrame, types: Mapping[str, str]) -> pl.DataFrame:
+        """The data fitted to the columns of an existing table, before ``prepare_frame``:
+        ``types`` has the type of each column of ``df`` there, as ``column_types`` tells it (a
+        column it leaves out has no known type). For example, times cut to the precision of
+        their columns, as the driver does with date-times, so that every export mode stores the
+        same values. The default changes nothing."""
+        return df
+
     def prepare_frame(self, df: pl.DataFrame) -> pl.DataFrame:
         """The data in a form the driver can write: here, NaN becomes an empty value."""
         return df.with_columns(pl.col(c).fill_nan(None) for c, t in df.schema.items() if t.is_float())
@@ -132,11 +140,20 @@ class Connector:
     def prepare_cursor(self, cursor: Any) -> None:
         """Called before writing many rows with one cursor (e.g. to switch on bulk mode)."""
 
-    def input_sizes(self, df: pl.DataFrame, temporary: bool = False) -> Sequence[Any] | None:
+    def input_sizes(self, df: pl.DataFrame, types: Mapping[str, str] | None = None) -> Sequence[Any] | None:
         """The type and size of each column's values for the driver (DB-API ``setinputsizes``)
-        when the rows of ``df`` are written, or None to let the driver find them. ``temporary``:
-        into a table made by ``temp_table``, whose columns a driver may not be able to look up."""
+        when the rows of ``df`` are written, or None to let the driver find them. ``types``:
+        when the rows go into a table made by ``temp_table``, whose columns a driver may not be
+        able to look up, the type each column of ``df`` has there, as its ``CREATE`` gave it."""
         return None
+
+    def stage_types(self, conn: Any, table: str) -> dict[str, str]:
+        """The column types for a temporary table (``temp_table``) that holds rows for the
+        existing ``table`` while the export matches them by key: by column name, the types of
+        the table's own columns, so that values arrive there as in the table itself and keys
+        compare as its columns do (e.g. with their collation). A column it leaves out gets
+        ``sql_type(series, temporary=True)``; the default leaves out all."""
+        return {}
 
     def matching(self, keys: Sequence[str], left: str = "x", right: str = "s") -> str:
         """Rows ``left`` and ``right`` have the same values in the key columns (empty = empty)."""
@@ -161,7 +178,8 @@ class Connector:
         )
 
     def index_sql(self, stage: str, keys: Sequence[str]) -> str:
-        """An index on the key columns of a temporary table, so matching rows is fast."""
+        """An index on the key columns of a temporary table, so matching rows is fast. It may
+        also be SQL that leaves the index out when the database can't index those columns."""
         return f"CREATE INDEX {stage.lstrip('#')}_keys ON {stage} ({', '.join(self.quote(k) for k in keys)})"
 
     def run_script(self, conn: Any, sql: str) -> int:
@@ -175,8 +193,9 @@ class Connector:
             cursor.close()
 
     def column_types(self, conn: Any, table: str) -> dict[str, str]:
-        """The type of each column of an existing table, in lower case (e.g. ``"int"`` or
-        ``"nvarchar(50)"``), as far as the database tells; the default tells nothing."""
+        """The type of each column of an existing table, in lower case (e.g. ``"int"``,
+        ``"nvarchar(50)"`` or ``"datetime2(0)"``), as far as the database tells; the default
+        tells nothing."""
         return {}
 
     def read_table_sql(self, conn: Any, table: str) -> str:
@@ -373,8 +392,11 @@ def frame_from_cursor(cursor: Any, dtype_for: DtypeFor | None = None, batch_size
 def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) -> pl.Series:
     """Build a Series from Python values as a database driver returns them.
 
-    Decimals become Float64 (or Int64 when asked for); columns holding several kinds of values
-    (possible in SQLite) become text instead of losing values. A value that is an
+    Decimals keep all their digits, so that different IDs never become equal: whole numbers
+    (when ``dtype`` is Int64 or a Decimal without decimal places) become Int64 when every value
+    fits, other decimals Float64 when it keeps every value as it is; else they stay Decimal
+    (``dtype`` when it is one), or text beyond its 38 digits. Columns holding several kinds of
+    values (possible in SQLite) become text instead of losing values. A value that is an
     ``ActionError`` (what a driver's output converter gives for a value it can't read) stops
     the reading with its message, where ``{column}`` stands for the column's name.
     """
@@ -383,10 +405,8 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
         problem = next(v for v in values if isinstance(v, ActionError))
         raise ActionError(str(problem).replace("{column}", name))
     if decimal.Decimal in kinds:
-        convert = int if dtype == pl.Int64 else float
-        values = [None if v is None else convert(v) for v in values]
-        dtype = dtype if dtype == pl.Int64 else pl.Float64
-    elif kinds & {bytes, bytearray, memoryview}:
+        return _decimals(name, values, dtype)
+    if kinds & {bytes, bytearray, memoryview}:
         values = [None if v is None else bytes(v) for v in values]
         dtype = pl.Binary
     elif len(kinds) > 1 and not kinds <= {int, float} and not kinds <= {dt.date, dt.datetime}:
@@ -402,6 +422,32 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
 
 
 _NATIVE = {str, int, float, bool, dt.date, dt.datetime, dt.time, dt.timedelta}
+
+
+def _decimals(name: str, values: list[Any], dtype: pl.DataType | None) -> pl.Series:
+    """``make_series`` for decimal values (and the numbers among them)."""
+    numbers = [v if v is None or isinstance(v, decimal.Decimal) else decimal.Decimal(str(v)) for v in values]
+    exact = dtype if isinstance(dtype, pl.Decimal) else None
+    if dtype == pl.Int64 or (exact is not None and exact.scale == 0):
+        whole = [None if v is None else int(v) for v in numbers]
+        if all(v is None or -(2**63) <= v < 2**63 for v in whole):
+            return pl.Series(name, whole, dtype=pl.Int64)
+    else:
+        floats = [None if v is None else float(v) for v in numbers]
+        short = exact is not None and (exact.precision or 38) <= 15  # then every value fits
+        if short or all(_float_keeps(v, f) for v, f in zip(numbers, floats)):
+            return pl.Series(name, floats, dtype=pl.Float64)
+    try:
+        return pl.Series(name, numbers, dtype=exact)
+    except Exception:  # more than the 38 digits a Decimal holds
+        return pl.Series(name, [None if v is None else str(v) for v in numbers], dtype=pl.String)
+
+
+def _float_keeps(value: decimal.Decimal | None, number: float | None) -> bool:
+    """Whether the Float64 ``number`` is the decimal ``value`` as it is (15 digits always fit)."""
+    if value is None or not value.is_finite() or len(value.as_tuple().digits) <= 15:
+        return True
+    return decimal.Decimal(repr(number)) == value
 
 
 def text_length(series: pl.Series) -> int:

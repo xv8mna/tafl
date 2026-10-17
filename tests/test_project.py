@@ -1,4 +1,6 @@
 import json
+import stat
+import tempfile
 
 import pytest
 
@@ -25,6 +27,25 @@ def test_save_and_load_round_trip(tmp_path):
     assert loaded.to_dict() == project.to_dict()
     assert loaded.directory == tmp_path.resolve()
     assert [p.name for p in tmp_path.iterdir()] == ["sales.tafl"]  # no temp files left
+
+
+def test_plain_messages_when_the_project_cant_be_saved(tmp_path, monkeypatch):
+    project = sample_project()
+    path = project.save(tmp_path / "sales.tafl")
+    path.chmod(stat.S_IREAD)
+    try:
+        with pytest.raises(ProjectError, match=r"^sales.tafl is read-only, so it can't be saved$"):
+            project.save(path)
+    finally:
+        path.chmod(stat.S_IREAD | stat.S_IWRITE)
+    assert [p.name for p in tmp_path.iterdir()] == ["sales.tafl"]
+
+    def denied(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(tempfile, "mkstemp", denied)
+    with pytest.raises(ProjectError, match=r"^No permission to save in .*sub: save the project in another folder$"):
+        project.save(tmp_path / "sub" / "sales.tafl")
 
 
 def test_file_is_readable_json(tmp_path):

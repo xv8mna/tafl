@@ -10,6 +10,7 @@ from pathlib import Path
 
 import fastexcel
 import polars as pl
+import xlsxwriter
 
 from tafl.api import (
     ActionError,
@@ -107,6 +108,8 @@ def import_excel(df, p, ctx):
         try:
             reader = fastexcel.read_excel(str(path))
         except Exception as e:
+            if isinstance(e, OSError) or "(os error " in str(e):  # e.g. open in a program that doesn't let others read it
+                raise files.read_error(e, path) from None
             raise ActionError(f"Could not open {path.name}: {e}") from None
         for sheet in _chosen_sheets(list(reader.sheet_names), p, path, several_files=folder is not None):
             ctx.check_cancelled()
@@ -262,8 +265,6 @@ def export_excel(df, p, ctx):
     if p.skip_empty and df.height == 0:
         ctx.log("Not exported: the table is empty")
         return
-    if df.width == 0:
-        raise ActionError("Nothing to export: the table has no columns")
     if df.height > _MAX_ROWS:
         raise ActionError(
             f"The table has {df.height:,} rows, but an Excel sheet holds at most {_MAX_ROWS:,} below its header row: "
@@ -285,7 +286,7 @@ def export_excel(df, p, ctx):
         what = "replaced" if replaced else "added"
         ctx.log(f"Wrote {rows} to sheet '{replaced or sheet}' of {path} (sheet {what}, the other sheets are kept)")
     else:
-        with files.replace_file(path) as temporary:
+        with files.replace_file(path, ctx.warn) as temporary:
             try:
                 _write(data, temporary, sheet, p)
             except Exception as e:
@@ -311,6 +312,12 @@ def _excel_values(df: pl.DataFrame) -> pl.DataFrame:
 
 def _write(df: pl.DataFrame, workbook, sheet: str, p) -> None:
     """Writes the table to a new workbook (a file, or an xlsxwriter workbook) as an Excel table."""
+    if df.width == 0:  # e.g. a folder import without files: an empty sheet, as the CSV export writes an empty file
+        book = workbook if isinstance(workbook, xlsxwriter.Workbook) else xlsxwriter.Workbook(str(workbook))
+        book.add_worksheet(sheet)
+        if book is not workbook:
+            book.close()
+        return
     dtype_formats: dict = {pl.Date: p.date_format, pl.Datetime: p.datetime_format, pl.Duration: "[h]:mm:ss"}
     dtype_formats |= {t: p.integer_format for t in _INTEGER_TYPES}
     dtype_formats |= {pl.Float32: p.number_format, pl.Float64: p.number_format, pl.Decimal: p.number_format}

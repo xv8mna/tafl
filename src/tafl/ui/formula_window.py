@@ -241,7 +241,7 @@ class FormulaWindow(QDialog):
             self._set_status(False, "The preview failed: " + details.strip().splitlines()[-1])
 
     def _set_status(self, ok: bool, text: str) -> None:
-        color = theme.TEXT_DIM if ok else theme.STATUS_COLORS["error"]
+        color = theme.TEXT_DIM if ok else theme.STATUS_TEXT["error"]
         self.status.setStyleSheet(f"color: {color};")
         self.status.setText(text)
 

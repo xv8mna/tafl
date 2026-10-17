@@ -6,10 +6,12 @@ import bisect
 import contextlib
 import datetime as dt
 import decimal
+import functools
 import re
 import sqlite3
 import struct
 import uuid
+from typing import NamedTuple
 
 import polars as pl
 
@@ -140,8 +142,10 @@ class SqlServer(Connector):
 
     def dtype_for(self, description):
         type_code, precision, scale = description[1], description[4], description[5]
-        if type_code is decimal.Decimal:
-            return pl.Int64 if scale == 0 and (precision or 0) <= 18 else pl.Float64
+        if type_code is decimal.Decimal:  # decimal, numeric, money: make_series keeps their digits
+            if scale == 0 and (precision or 0) <= 18:
+                return pl.Int64
+            return pl.Decimal(min(precision or 38, 38), scale or 0)
         return _PYTHON_TYPES.get(type_code)
 
     def error_message(self, error):
@@ -210,9 +214,8 @@ class SqlServer(Connector):
         # 42S02: base table or view not found; (4413): a view whose own tables are missing
         return bool(error.args) and error.args[0] == "42S02" and "(4413)" not in str(error)
 
-    def _columns(self, conn, table):
-        """(name, type, is a CLR type, size in bytes or -1 for max) of each column of a table or
-        view, from the catalog of its database; the type of an alias type is the one it is based on."""
+    def _columns(self, conn, table) -> list[_Column]:
+        """The columns of a table or view, from the catalog of its database."""
         parts = split_name(table)
         if len(parts) > 3:  # on a linked server
             return []
@@ -220,21 +223,47 @@ class SqlServer(Connector):
         cursor = conn.cursor()
         try:
             cursor.execute(
-                f"SELECT c.name, COALESCE(TYPE_NAME(c.system_type_id), t.name), t.is_assembly_type, c.max_length "
-                f"FROM {catalog}.columns AS c JOIN {catalog}.types AS t ON t.user_type_id = c.user_type_id "
-                "WHERE c.object_id = OBJECT_ID(?) ORDER BY c.column_id",
+                f"SELECT c.name, COALESCE(TYPE_NAME(c.system_type_id), t.name), t.is_assembly_type, c.max_length, "
+                f"c.precision, c.scale, c.collation_name FROM {catalog}.columns AS c JOIN {catalog}.types AS t "
+                "ON t.user_type_id = c.user_type_id WHERE c.object_id = OBJECT_ID(?) ORDER BY c.column_id",
                 self.qualified(table),
             )
-            return [(name, kind.lower(), bool(clr), size) for name, kind, clr, size in cursor.fetchall()]
+            return [_Column(name, kind.lower(), bool(clr), *rest) for name, kind, clr, *rest in cursor.fetchall()]
         finally:
             cursor.close()
 
     def column_types(self, conn, table):
+        """E.g. int, nvarchar(50), decimal(10,2), datetime2(0)."""
         types = {}
-        for name, kind, _clr, size in self._columns(conn, table):
-            if kind in ("char", "varchar", "nchar", "nvarchar", "binary", "varbinary"):
-                kind += "(max)" if size == -1 else f"({size // 2 if kind.startswith('n') else size})"
-            types[name] = kind
+        for c in self._columns(conn, table):
+            kind = c.kind
+            if kind in _LENGTH_TYPES:
+                kind += "(max)" if c.size == -1 else f"({c.size // 2 if kind.startswith('n') else c.size})"
+            elif kind in ("decimal", "numeric"):
+                kind += f"({c.precision},{c.scale})"
+            elif kind in _FRACTION_TYPES:
+                kind += f"({c.scale})"
+            types[c.name] = kind
+        return types
+
+    def stage_types(self, conn, table):
+        """The type of each column (an alias type as the one it is based on; texts with their
+        collation), except for types the stage can't have or the driver can't send as they are
+        (sql_variant, xml, CLR types such as geography, text, ntext, image, rowversion)."""
+        types = {}
+        for c in self._columns(conn, table):
+            if c.clr:
+                continue
+            if c.kind in _PLAIN_TYPES:
+                types[c.name] = c.kind.upper()
+            elif c.kind in ("decimal", "numeric"):
+                types[c.name] = f"{c.kind.upper()}({c.precision}, {c.scale})"
+            elif c.kind in _FRACTION_TYPES:
+                types[c.name] = f"{c.kind.upper()}({c.scale})"
+            elif c.kind in _LENGTH_TYPES:
+                length = "MAX" if c.size == -1 else c.size // 2 if c.kind.startswith("n") else c.size
+                collation = f" COLLATE {c.collation}" if c.collation else ""
+                types[c.name] = f"{c.kind.upper()}({length}){collation}"
         return types
 
     def read_table_sql(self, conn, table):
@@ -242,14 +271,14 @@ class SqlServer(Connector):
             columns = self._columns(conn, table)
         except Exception:  # e.g. no access to the catalog of another database: read it as it is
             columns = []
-        if not any(kind == "sql_variant" or clr for _name, kind, clr, _size in columns):
+        if not any(c.kind == "sql_variant" or c.clr for c in columns):
             return super().read_table_sql(conn, table)
         picked = []
-        for name, kind, clr, _size in columns:
-            column = self.quote(name)
-            if kind == "sql_variant":
+        for c in columns:
+            column = self.quote(c.name)
+            if c.kind == "sql_variant":
                 picked.append(f"{_VARIANT_TEXT.format(column=column)} AS {column}")
-            elif clr:
+            elif c.clr:
                 picked.append(f"CAST({column} AS nvarchar(max)) AS {column}")  # e.g. POINT (8.5 47.4), /1/2/
             else:
                 picked.append(column)
@@ -284,40 +313,61 @@ class SqlServer(Connector):
     def prepare_cursor(self, cursor):
         cursor.fast_executemany = True  # sends the rows in batches instead of one by one
 
-    def input_sizes(self, df, temporary=False):
+    def input_sizes(self, df, types=None):
         # The driver can't look up the columns of a #temporary table: it would send texts as 255
         # characters in the Windows code page and date-times without fractions of a second.
-        # Into the database's own tables the driver's own choice fits the column.
-        if not temporary:
+        # Bound as the driver binds the same type in a table of the database, a value arrives as
+        # it does there (e.g. a varchar in the code page, a datetime2(0) without its fraction).
+        # Texts for numbers, dates and other types go as texts, which the server converts, as
+        # before. Into the database's own tables the driver's own choice fits the column.
+        if types is None:
             return None
-        import pyodbc
-
+        codes = _odbc_types()
+        as_text = {codes[kind] for kind in ("char", "varchar", "nchar", "nvarchar", "datetimeoffset")}
         sizes = []
         for name, dtype in df.schema.items():
-            if dtype.is_integer():
-                sizes.append((pyodbc.SQL_BIGINT, 0, 0))
-            elif dtype.is_float():
-                sizes.append((pyodbc.SQL_DOUBLE, 0, 0))
-            elif isinstance(dtype, pl.Decimal):
-                sizes.append((pyodbc.SQL_DECIMAL, min(dtype.precision or 38, 38), dtype.scale))
-            elif dtype == pl.Boolean:
-                sizes.append((pyodbc.SQL_BIT, 0, 0))
-            elif dtype == pl.Date:
-                sizes.append((pyodbc.SQL_TYPE_DATE, 10, 0))
-            elif dtype == pl.Datetime:
-                sizes.append((pyodbc.SQL_TYPE_TIMESTAMP, 27, 7))
-            elif dtype == pl.Time:
-                sizes.append((pyodbc.SQL_SS_TIME2, 16, 7))
-            elif dtype == pl.Binary:
-                longest = df[name].bin.size().max() or 1
-                sizes.append((pyodbc.SQL_VARBINARY, longest if longest <= 8000 else 0, 0))  # 0: as long as needed
-            else:
-                sizes.append((pyodbc.SQL_WVARCHAR, text_length(df[name]), 0))
+            binding = _binding(types.get(name, ""))
+            if binding is None or (dtype == pl.String and binding[0] not in as_text):
+                binding = _data_binding(df[name])
+            sizes.append(binding)
         return sizes
+
+    def fit_frame(self, df, types):
+        """Values as their columns hold them, the same in every mode: date-times and times cut to
+        the digits of a second their datetime2(n), datetimeoffset(n) or time(n) column holds, as
+        the driver cuts date-times (08:00:01.5 is 08:00:01 in time(0)); date-times for a date
+        column: their date. For a datetimeoffset column, a date-time with a time zone gets its
+        zone's offset (08:30 in Berlin in summer: 08:30 +02:00; the driver gives one without a
+        zone the offset of this PC's time zone on its day), and a text the form the driver reads
+        (2026-10-01T08:30:00+02:00, as imports give it, is 2026-10-01 08:30:00 +02:00). Decimals
+        (Decimal) are rounded to the decimal places of a decimal column, and are floats for a
+        float column."""
+        changes = []
+        for name, dtype in df.schema.items():
+            kind, size, scale = _kind(types.get(name, ""))
+            column = pl.col(name)
+            moment = isinstance(dtype, pl.Datetime)
+            if moment and dtype.time_zone and kind == "datetimeoffset":
+                changes.append(_offset_text(column, size))
+            elif moment and kind in ("datetime2", "datetimeoffset") and size < 6:
+                changes.append(column.dt.truncate(f"{10 ** (6 - size)}us"))
+            elif moment and kind == "date":
+                changes.append(column.dt.date())
+            elif dtype == pl.Time and kind == "time" and size < 7:
+                step = 10 ** (9 - size)  # nanoseconds
+                changes.append((column.cast(pl.Int64) // step * step).cast(pl.Time))
+            elif dtype == pl.String and kind == "datetimeoffset":
+                changes.append(_driver_offset_text(column, size))
+            elif isinstance(dtype, pl.Decimal) and kind in ("float", "real"):
+                changes.append(column.cast(pl.Float64))
+            elif isinstance(dtype, pl.Decimal) and kind in _DECIMAL_TYPES and dtype.scale > scale:
+                changes.append(column.cast(pl.Decimal(38, scale)))  # rounds half away from zero, as SQL Server does
+        return df.with_columns(changes)
 
     def prepare_frame(self, df):
         """Also: date-times with a time zone keep their local time and lose the zone, as in the
-        Excel export (08:30 in Berlin stays 08:30); infinite numbers are refused."""
+        Excel export (08:30 in Berlin stays 08:30), unless ``fit_frame`` gave them their offset
+        for a datetimeoffset column; infinite numbers are refused."""
         df = super().prepare_frame(df)
         for name, dtype in df.schema.items():
             if dtype.is_float() and df[name].is_infinite().any():
@@ -335,6 +385,18 @@ class SqlServer(Connector):
     def delete_sql(self, table, stage, keys):
         return f"DELETE x FROM {table} AS x WHERE EXISTS (SELECT 1 FROM {stage} AS s WHERE {self.matching(keys)})"
 
+    def index_sql(self, stage, keys):
+        # Only when SQL Server can index the keys: none of them (n)varchar(max), varbinary(max),
+        # xml, text, ntext, image or a CLR type, and at most 1,700 bytes together (900 before
+        # SQL Server 2016). Without the index, the rows still find each other.
+        listed = ", ".join("N'" + key.replace("'", "''") + "'" for key in keys)
+        columns = f"FROM tempdb.sys.columns WHERE object_id = OBJECT_ID(N'tempdb..{stage}') AND name IN ({listed})"
+        limit = "CASE WHEN CAST(SERVERPROPERTY('ProductMajorVersion') AS int) >= 13 THEN 1700 ELSE 900 END"
+        return (
+            f"IF NOT EXISTS (SELECT 1 {columns} AND (max_length = -1 OR system_type_id IN (34, 35, 99, 240, 241))) "
+            f"AND (SELECT SUM(max_length) {columns}) <= {limit} {super().index_sql(stage, keys)}"
+        )
+
     def run_script(self, conn, sql):
         """T-SQL; batches separated by GO lines (like in SSMS) run one after the other, and
         ``GO 3`` runs the batch before it three times."""
@@ -351,6 +413,132 @@ class SqlServer(Connector):
         finally:
             cursor.close()
         return total if counted else -1
+
+
+class _Column(NamedTuple):
+    """A column of a SQL Server table, from the catalog of its database."""
+
+    name: str
+    kind: str  # in lower case, e.g. nvarchar; for an alias type the type it is based on
+    clr: bool  # a CLR type such as geography or hierarchyid
+    size: int  # in bytes, -1 for max
+    precision: int
+    scale: int
+    collation: str | None
+
+
+_LENGTH_TYPES = ("char", "varchar", "nchar", "nvarchar", "binary", "varbinary")
+_FRACTION_TYPES = ("datetime2", "time", "datetimeoffset")
+_DECIMAL_TYPES = ("decimal", "numeric", "money", "smallmoney")
+_PLAIN_TYPES = (
+    "bit", "tinyint", "smallint", "int", "bigint", "float", "real", "money", "smallmoney", "date", "datetime",
+    "smalldatetime", "uniqueidentifier",
+)  # fmt: skip
+# The size and digits the driver gives a parameter of these types (with n digits of a second, the
+# types with fractions are 1 + n longer)
+_FIXED_SIZES = {
+    "bit": (1, 0), "tinyint": (3, 0), "smallint": (5, 0), "int": (10, 0), "bigint": (19, 0), "float": (53, 0),
+    "real": (24, 0), "money": (19, 4), "smallmoney": (10, 4), "date": (10, 0), "datetime": (23, 3),
+    "smalldatetime": (16, 0), "uniqueidentifier": (36, 0),
+}  # fmt: skip
+_FRACTION_SIZES = {"datetime2": 19, "time": 8, "datetimeoffset": 26}
+_SQL_SS_TIMESTAMPOFFSET = -155  # the driver's own type for datetimeoffset (pyodbc has no name for it)
+_KIND = re.compile(r"\s*([a-z0-9]+)\s*(?:\(\s*(\d+|max)\s*(?:,\s*(\d+)\s*)?\))?", re.IGNORECASE)
+
+
+def _kind(sql_type: str) -> tuple[str, int, int]:
+    """A SQL Server type in parts: name in lower case, size or precision (0 for max), scale.
+    DECIMAL(10, 2) is ("decimal", 10, 2), datetime2(0) ("datetime2", 0, 0); datetime2, time
+    and datetimeoffset without a size have 7 digits, money and smallmoney 4 decimal places."""
+    match = _KIND.match(sql_type)
+    if match is None:
+        return "", 0, 0
+    kind = match[1].lower()
+    if match[2] is None:
+        size = 7 if kind in _FRACTION_TYPES else 0
+    else:
+        size = 0 if match[2].lower() == "max" else int(match[2])
+    return kind, size, 4 if kind in ("money", "smallmoney") else int(match[3] or 0)
+
+
+@functools.cache
+def _odbc_types() -> dict[str, int]:
+    """The ODBC type the driver gives a parameter for a column of each SQL Server type."""
+    import pyodbc
+
+    return {
+        "bit": pyodbc.SQL_BIT, "tinyint": pyodbc.SQL_TINYINT, "smallint": pyodbc.SQL_SMALLINT,
+        "int": pyodbc.SQL_INTEGER, "bigint": pyodbc.SQL_BIGINT, "float": pyodbc.SQL_FLOAT, "real": pyodbc.SQL_REAL,
+        "decimal": pyodbc.SQL_DECIMAL, "numeric": pyodbc.SQL_NUMERIC, "money": pyodbc.SQL_DECIMAL,
+        "smallmoney": pyodbc.SQL_DECIMAL, "date": pyodbc.SQL_TYPE_DATE, "datetime": pyodbc.SQL_TYPE_TIMESTAMP,
+        "smalldatetime": pyodbc.SQL_TYPE_TIMESTAMP, "datetime2": pyodbc.SQL_TYPE_TIMESTAMP,
+        "time": pyodbc.SQL_SS_TIME2, "datetimeoffset": _SQL_SS_TIMESTAMPOFFSET, "uniqueidentifier": pyodbc.SQL_GUID,
+        "char": pyodbc.SQL_CHAR, "varchar": pyodbc.SQL_VARCHAR, "nchar": pyodbc.SQL_WCHAR,
+        "nvarchar": pyodbc.SQL_WVARCHAR, "binary": pyodbc.SQL_BINARY, "varbinary": pyodbc.SQL_VARBINARY,
+    }  # fmt: skip
+
+
+def _binding(sql_type: str) -> tuple[int, int, int] | None:
+    """The type, size and digits the driver gives a parameter for a column of this SQL Server
+    type (``setinputsizes``): bound so, a value is written as into such a column of a table,
+    e.g. a varchar in the code page, a datetime2(0) without its fraction. None for others."""
+    kind, size, scale = _kind(sql_type)
+    code = _odbc_types().get(kind)
+    if code is None:
+        return None
+    if kind in _FRACTION_SIZES:
+        return code, _FRACTION_SIZES[kind] + (size + 1 if size else 0), size
+    if kind in _FIXED_SIZES:
+        return code, *_FIXED_SIZES[kind]
+    if kind in ("decimal", "numeric"):
+        return code, size or 18, scale
+    return code, size, 0  # texts and binary values; 0: max
+
+
+def _data_binding(series: pl.Series) -> tuple[int, int, int]:
+    """The type, size and digits for the driver that fit the values of ``series``."""
+    import pyodbc
+
+    dtype = series.dtype
+    if dtype.is_integer():
+        return pyodbc.SQL_BIGINT, 0, 0
+    if dtype.is_float():
+        return pyodbc.SQL_DOUBLE, 0, 0
+    if isinstance(dtype, pl.Decimal):
+        return pyodbc.SQL_DECIMAL, min(dtype.precision or 38, 38), dtype.scale
+    if dtype == pl.Boolean:
+        return pyodbc.SQL_BIT, 0, 0
+    if dtype == pl.Date:
+        return pyodbc.SQL_TYPE_DATE, 10, 0
+    if dtype == pl.Datetime:
+        return pyodbc.SQL_TYPE_TIMESTAMP, 27, 7
+    if dtype == pl.Time:
+        return pyodbc.SQL_SS_TIME2, 16, 7
+    if dtype == pl.Binary:
+        longest = series.bin.size().max() or 1
+        return pyodbc.SQL_VARBINARY, longest if longest <= 8000 else 0, 0  # 0: as long as needed
+    return pyodbc.SQL_WVARCHAR, text_length(series), 0
+
+
+def _offset_text(column: pl.Expr, digits: int) -> pl.Expr:
+    """Date-times with a time zone as the text the driver reads for a datetimeoffset column
+    with ``digits`` digits of a second, with their zone's offset: 2026-07-01 08:30:00.5 +02:00."""
+    parts = [column.dt.strftime("%Y-%m-%d %H:%M:%S")]
+    if digits:
+        parts += [pl.lit("."), column.dt.strftime("%6f").str.slice(0, digits)]
+    return pl.concat_str([*parts, pl.lit(" "), column.dt.strftime("%:z")])
+
+
+def _driver_offset_text(column: pl.Expr, digits: int) -> pl.Expr:
+    """Texts for a datetimeoffset column in the form the driver reads: 2026-10-01T08:30:00+02:00
+    (as imports give them) is 2026-10-01 08:30:00 +02:00, Z is +00:00, and digits of a second
+    the column doesn't hold are cut, as the driver cuts them from date-times."""
+    text = column.str.strip_chars().str.replace(r"^(\d{4}-\d{2}-\d{2})T", "${1} ")
+    text = text.str.replace(r"(\d)\s*Z$", "${1} +00:00").str.replace(r"(\d)([+-]\d{2}:\d{2})$", "${1} ${2}")
+    time = r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
+    if digits:
+        return text.str.replace(time + rf"(\.\d{{0,{digits}}})\d*", "${1}${2}")
+    return text.str.replace(time + r"\.\d*", "${1}")
 
 
 # As in SSMS: GO, a repeat count (GO 3) and a -- comment may follow
@@ -601,8 +789,10 @@ class SQLite(Connector):
         return "CREATE TEMP TABLE", name
 
     def prepare_frame(self, df):
-        """Dates and times as ISO text, the way SQLite stores them (2025-01-31 08:30:00); a
-        date-time with a time zone in that zone's local time, without the zone."""
+        """Dates and times as ISO text, the way SQLite stores them (2025-01-31 08:30:00, with
+        six digits for a fraction of a second: 08:30:00.500000); a date-time with a time zone in
+        that zone's local time, without the zone. Each value gets the same text in every export,
+        whatever the other values are, so that keys find their rows."""
         df = super().prepare_frame(df)
         changes = []
         for name, dtype in df.schema.items():
@@ -610,8 +800,8 @@ class SQLite(Connector):
             if dtype == pl.Date:
                 changes.append(column.dt.strftime("%Y-%m-%d"))
             elif dtype == pl.Datetime:
-                fraction = bool((df[name].dt.microsecond() != 0).any())
-                changes.append(column.dt.strftime("%Y-%m-%d %H:%M:%S" + ("%.6f" if fraction else "")))
+                whole, fraction = column.dt.strftime("%Y-%m-%d %H:%M:%S"), column.dt.strftime("%Y-%m-%d %H:%M:%S%.6f")
+                changes.append(pl.when(column.dt.microsecond() == 0).then(whole).otherwise(fraction))
             elif dtype == pl.Time:
                 changes.append(column.cast(pl.String))
         return df.with_columns(changes)
@@ -668,7 +858,9 @@ def import_database(df, p, ctx):
     """Reads a whole table or view, or the result of a SQL query written in the database's own
     SQL dialect (T-SQL for SQL Server). What the query changes is rolled back, because imports
     also run while editing, e.g. when a project is opened (a SQL Server query that commits by
-    itself keeps its changes)."""
+    itself keeps its changes). Numbers keep all their digits: a column with numbers of more
+    digits than a decimal number keeps (about 15), or with whole numbers too big for a
+    whole-number column, stays a column of exact decimals."""
     with ctx.database(p.connection) as db:
         try:
             out = db.read_table(p.table) if p.mode == "table" else db.read(p.query)
@@ -762,9 +954,14 @@ def export_database(df, p, ctx):
     Add the rows, replace all of them, or replace just the rows with the same key values (e.g.
     the dates in the data: reloading a day replaces that day). Update rows by key columns, or
     update them and add the new ones. Columns are matched by name; a missing table is created
-    with types that fit the data. Date-times with a time zone are written in that zone's local
-    time, without the zone (08:30 in Berlin stays 08:30), as in the Excel export. Runs only when
-    the project is run.
+    with types that fit the data. Values are stored as their columns hold them, the same way in
+    every mode (08:00:01.5 is 08:00:01 in a SQL Server datetime2(0) column; spaces at the end of
+    a text that don't fit are left out), and key values compare as their columns do (e.g. with
+    their collation). Date-times with a time zone are written in that zone's local time,
+    without the zone (08:30 in Berlin stays 08:30), as in the Excel export; into a SQL Server
+    datetimeoffset column with the zone's offset (08:30 +02:00), and there a date-time without
+    a zone gets the offset of this PC's time zone on its day. Runs only when the project is
+    run.
     """
     if p.skip_empty and df.height == 0:
         ctx.log("Not exported: the table is empty")
@@ -786,13 +983,18 @@ def export_database(df, p, ctx):
         names = _target_names(df.columns, existing, p)
         types = db.connector.column_types(db.raw, p.table)
         _check_whole_numbers(df, names, types, p.table)
-        if p.mode != "delete":  # it writes nothing
-            finding = p.key_columns if p.mode == "update" else []  # key values that only find rows
-            _check_text_lengths(df, {c: n for c, n in names.items() if c not in finding}, types, p.table)
-        data = db.connector.prepare_frame(df.select(list(names)))
         keys = _key_names(p, names) if p.mode in _KEYED else []
+        data = df.select(list(names))
+        if p.mode == "delete":  # it writes nothing: only the key values count
+            data = data.select([c for c, n in names.items() if n in keys])
+        finding = keys if p.mode in ("update", "delete") else []  # key values that only find rows
+        data = _fit_lengths(data, names, types, p.table, finding)
+        kinds = {name.lower(): kind for name, kind in types.items()}
+        fitted = {c: kinds[names[c].lower()] for c in data.columns if names[c].lower() in kinds}
+        data = db.connector.fit_frame(data, fitted)
         if p.mode in ("update", "upsert"):
-            _check_unique(df, p.key_columns)
+            _check_unique(data, p.key_columns)  # as stored: 08:00:01.2 and .7 are one second in datetime2(0)
+        data = db.connector.prepare_frame(data)
 
         added = deleted = updated = 0
         if p.mode == "replace":
@@ -802,10 +1004,11 @@ def export_database(df, p, ctx):
         elif p.mode == "replace_where":
             deleted = db.execute(f"DELETE FROM {table} WHERE {p.condition}")
         elif p.mode in ("replace_keys", "delete"):
-            stage = _stage(db, data.select([c for c, n in names.items() if n in keys]).unique(), names, keys, types, ctx)
+            staged = data.select([c for c, n in names.items() if n in keys]).unique()
+            stage = _stage(db, staged, names, keys, db.connector.stage_types(db.raw, p.table), ctx)
             deleted = db.execute(db.connector.delete_sql(table, stage, keys))
         elif p.mode in ("update", "upsert"):
-            stage = _stage(db, data, names, keys, types, ctx)
+            stage = _stage(db, data, names, keys, db.connector.stage_types(db.raw, p.table), ctx)
             others = [n for n in names.values() if n not in keys]
             if others:
                 updated = db.execute(db.connector.update_sql(table, stage, others, keys))
@@ -849,29 +1052,61 @@ def _check_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[st
 
 
 _TEXT_TYPE = re.compile(r"(n?)(?:var)?char\((\d+)\)")
+_BINARY_TYPE = re.compile(r"(?:var)?binary\((\d+)\)")
+_ASTRAL = r"[\x{10000}-\x{10FFFF}]"  # outside the Basic Multilingual Plane, e.g. an emoji
 
 
-def _check_text_lengths(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str) -> None:
-    """A text too long for its column stops the export with a message that names no column:
-    refuse with the column and an example first."""
+def _fit_lengths(
+    df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, finding: list[str]
+) -> pl.DataFrame:
+    """Texts and binary values for columns of a limited length, such as nvarchar(50). Spaces
+    at the end of a text that don't fit are cut, as SQL Server does (it also leaves them out
+    when it compares texts). A value that is still too long would stop the export with a
+    message that names no column: refuse with the column and an example first. In the key
+    columns ``finding`` (columns of the table), whose values only find rows, such a row is left
+    out instead: no row of the table can have that value."""
     kinds = {name.lower(): kind for name, kind in types.items()}
-    for source, target in names.items():
+    changes, unmatched = [], pl.repeat(False, df.height, eager=True)
+    for source in sorted(df.columns, key=lambda c: names[c] not in finding):  # the rows left out first
+        target, column = names[source], df[source]
         kind = kinds.get(target.lower(), "")
-        size = _TEXT_TYPE.fullmatch(kind)
-        if size is None or df[source].dtype != pl.String:
+        text, binary = _TEXT_TYPE.fullmatch(kind), _BINARY_TYPE.fullmatch(kind)
+        if text and column.dtype == pl.String:
+            size, wide = int(text[2]), bool(text[1])
+            astral = column.str.count_matches(_ASTRAL) if wide else pl.zeros(df.height, pl.UInt32, eager=True)
+            lengths = column.str.len_chars() + astral  # nvarchar counts UTF-16 code units: an emoji takes two
+            kept = column.str.strip_chars_end(" ").str.len_chars() + astral
+            cut = ((lengths > size) & (kept <= size)).fill_null(False)
+            if cut.any():  # the whole text and as many spaces as fit
+                column = column.str.slice(0, (size - astral.cast(pl.Int64)).clip(0)).zip_with(cut, column)
+                changes.append(column)
+                lengths = column.str.len_chars() + astral
+            unit = "characters"
+        elif binary and column.dtype == pl.Binary:
+            size, lengths, unit = int(binary[1]), column.bin.size(), "bytes"
+        else:
             continue
-        texts = df[source]
-        # nvarchar counts UTF-16 code units: an emoji takes two
-        lengths = texts.str.len_chars() + (texts.str.count_matches(r"[\x{10000}-\x{10FFFF}]") if size[1] else 0)
-        too_long = lengths > int(size[2])
-        if too_long.any():
-            example, length = texts.filter(too_long)[0], lengths.filter(too_long)[0]
-            shown = example if len(example) <= 40 else example[:40] + "…"
+        too_long = (lengths > size).fill_null(False)
+        if target in finding:
+            unmatched = unmatched | too_long
+            continue
+        too_long = too_long & ~unmatched
+        if not too_long.any():
+            continue
+        example, length = column.filter(too_long)[0], lengths.filter(too_long)[0]
+        if unit == "bytes":
             raise ActionError(
-                f"The column {target} of {table} holds texts of up to {int(size[2]):,} characters ({kind}), but "
-                f"{source} has longer ones (e.g. “{shown}”, {length:,} characters). Shorten them first, e.g. "
-                f"LEFT([{source}], {size[2]}), or make the column longer in the database."
+                f"The column {target} of {table} holds values of up to {size:,} bytes ({kind}), but {source} has "
+                f"longer ones (e.g. 0x{example[:20].hex().upper()}{'…' if len(example) > 20 else ''}, {length:,} bytes). "
+                "Shorten them first, or make the column longer in the database."
             )
+        shown = example if len(example) <= 40 else example[:40] + "…"
+        raise ActionError(
+            f"The column {target} of {table} holds texts of up to {size:,} characters ({kind}), but {source} has "
+            f"longer ones (e.g. “{shown}”, {length:,} characters). Shorten them first, e.g. LEFT([{source}], {size}), "
+            "or make the column longer in the database."
+        )
+    return df.with_columns(changes).filter(~unmatched)
 
 
 def _target_names(columns: list[str], existing: list[str], p) -> dict[str, str]:
@@ -911,34 +1146,30 @@ def _check_unique(df: pl.DataFrame, keys: list[str]) -> None:
         )
 
 
-def _stage(db, data: pl.DataFrame, names: dict[str, str], keys: list[str], types: dict[str, str], ctx) -> str:
+def _stage(db, data: pl.DataFrame, names: dict[str, str], keys: list[str], own: dict[str, str], ctx) -> str:
     """A temporary table with the data, named like the columns of the database table and
-    indexed on the key columns (then matching rows takes a moment, not minutes). A date-time
-    for a datetime or smalldatetime column (SQL Server) is stored as one, rounded to its steps
-    as it was in the database table (.123 is .1233333 there): otherwise it wouldn't match."""
-    kinds = {name.lower(): kind for name, kind in types.items()}
-
-    def column_type(column: str) -> str:
-        kind = kinds.get(names[column].lower())
-        if data[column].dtype == pl.Datetime and kind in ("datetime", "smalldatetime"):
-            return kind.upper()
-        return db.connector.sql_type(data[column], temporary=True)
-
+    indexed on the key columns (then matching rows takes a moment, not minutes). Its columns
+    have the types of the table's own columns where the database tells them (``own``, from
+    ``stage_types``): values arrive there as they would in the table (a datetime holds steps of
+    1/300 s, a varchar only the characters of its code page), and keys compare as the table's
+    columns do. Otherwise they have types that fit the data."""
+    own = {name.lower(): kind for name, kind in own.items()}
     create, stage = db.connector.temp_table(f"tafl_stage_{uuid.uuid4().hex[:8]}")
-    columns = list(data.columns)
-    definitions = ", ".join(f"{db.quote(names[c])} {column_type(c)}" for c in columns)
+    kinds = {c: own.get(names[c].lower()) or db.connector.sql_type(data[c], temporary=True) for c in data.columns}
+    definitions = ", ".join(f"{db.quote(names[c])} {kind}" for c, kind in kinds.items())
     db.execute(f"{create} {stage} ({definitions})")
-    _insert(db, stage, data, [names[c] for c in columns], ctx, temporary=True)
+    _insert(db, stage, data, [names[c] for c in data.columns], ctx, types=kinds)
     db.execute(db.connector.index_sql(stage, keys))
     return stage
 
 
-def _insert(db, table: str, data: pl.DataFrame, names: list[str], ctx, temporary: bool = False) -> int:
+def _insert(db, table: str, data: pl.DataFrame, names: list[str], ctx, types: dict[str, str] | None = None) -> int:
+    """``types``: those of the columns of a temporary table, by column of ``data``."""
     if data.height == 0:
         return 0
     columns = ", ".join(db.quote(n) for n in names)
     marks = ", ".join("?" for _ in names)
-    sizes = db.connector.input_sizes(data, temporary)
+    sizes = db.connector.input_sizes(data, types)
     sql = f"INSERT INTO {table} ({columns}) VALUES ({marks})"
     return db.execute_many(sql, data.iter_rows(), between=ctx.check_cancelled, sizes=sizes)
 

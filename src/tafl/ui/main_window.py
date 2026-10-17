@@ -293,7 +293,7 @@ class MainWindow(QMainWindow):
             return False
         try:
             saved = self.session.save_project(path)
-        except OSError as e:
+        except (ProjectError, OSError) as e:
             QMessageBox.warning(self, "Save project", f"Could not save {path}:\n\n{e}")
             return False
         self._remember(saved)
@@ -428,7 +428,7 @@ class MainWindow(QMainWindow):
         self.busy_label.setText("Calculating…  " if busy else "")
 
     def _run_finished(self, results: dict) -> None:
-        failed = [r for r in results.values() if not r.ok]
+        failed = [r for r in results.values() if r.failed]  # a table that is off (skipped) is no error
         self.run_dock.show()
         text = "Run finished with errors" if failed else "Run finished"
         self.statusBar().showMessage(f"{text} — see Run results", 10000)
@@ -513,10 +513,21 @@ class MainWindow(QMainWindow):
             self.resize(1500, 900)
             return
         free = screen.availableGeometry()
-        self.resize(min(1500, int(free.width() * 0.9)), min(900, int(free.height() * 0.9)))
+        width = min(1500, int(free.width() * 0.9))
+        self.resize(width, min(900, int(free.height() * 0.9)))
+        self.fit_panels(width)
         frame = self.frameGeometry()
         frame.moveCenter(free.center())
         self.move(frame.topLeft())
+
+    def fit_panels(self, width: int) -> None:
+        """In a window narrower than 1500 pixels, the panels beside the data give up some of
+        their room, so that the data keeps most of it."""
+        if width >= 1500:
+            return
+        left, settings = max(180, width * 280 // 1500), max(260, width * 420 // 1500)
+        self.splitter.setSizes([left, max(width - left - settings, 100), settings])
+        self.map_view.splitter.setSizes([max(width - settings, 100), settings])
 
     def _splitters(self) -> dict[str, QSplitter]:
         return {

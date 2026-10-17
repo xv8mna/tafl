@@ -1,4 +1,5 @@
 import datetime as dt
+from decimal import Decimal as D
 
 import polars as pl
 import pytest
@@ -93,3 +94,44 @@ def test_long_whole_numbers_in_typed_values(act):
     df = pl.DataFrame({"Name": ["a", "b"], "Code": [1234567890123456789, 1234567890123456768]})
     assert names(flt(act, df, ("Code", "=", "1234567890123456789"))) == ["a"]
     assert names(flt(act, df, ("Code", "<", "1234567890123456789"))) == ["b"]
+
+
+def test_typed_values_for_exact_decimals(act):
+    ids = [D("12345678901234567890123"), D("12345678901234567890124"), D("5"), None]
+    amounts = [D("12345678901234.5678"), D("12345678901234.5679"), D("1.10"), None]
+    df = pl.DataFrame(
+        {
+            "Name": ["a", "b", "c", "d"],
+            "ID": pl.Series(ids, dtype=pl.Decimal(30, 0)),
+            "Amount": pl.Series(amounts, dtype=pl.Decimal(18, 4)),
+        }
+    )
+    assert names(flt(act, df, ("ID", "=", "12345678901234567890124"))) == ["b"]
+    assert names(flt(act, df, ("ID", "in", "12345678901234567890123; 5"))) == ["a", "c"]
+    assert names(flt(act, df, ("Amount", "=", "12.345.678.901.234,5679"))) == ["b"]
+    assert names(flt(act, df, ("Amount", "in", "1,1; 2"))) == ["c"]
+    assert names(flt(act, df, ("Amount", "not_in", "1.1"))) == ["a", "b", "d"]
+    assert names(flt(act, df, ("Amount", "<", "1e14"))) == ["a", "b", "c"]
+    filled = act("rows.fill", df, {"columns": ["ID", "Amount"], "method": "value", "value": "0,005"})
+    assert isinstance(filled.schema["Amount"], pl.Decimal) and filled["Amount"][3] == D("0.005")
+    assert filled["Amount"][0] == D("12345678901234.5678")
+
+
+def test_typed_date_times(act):
+    stamps = [dt.datetime(2025, 12, 31, 8, 30), dt.datetime(1945, 1, 1, 8, 30), None]
+    df = pl.DataFrame({"Name": ["a", "b", "c"], "At": stamps})
+    assert names(flt(act, df, ("At", "=", "31.12.25 08:30"))) == ["a"]
+    assert names(flt(act, df, ("At", "<", "01.01.46 00:00:00"))) == ["b"]
+    filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": "1.2.26 9:15"})
+    assert filled["At"][2] == dt.datetime(2026, 2, 1, 9, 15)
+    with pytest.raises(ActionError, match=r"^'soon' is not a date-time \(column 'At'\); use e\.g\. 31\.12\.2025 08:30"):
+        flt(act, df, ("At", "=", "soon"))
+
+
+def test_sort_many_texts_like_excel(act):
+    words = ["Zebra", "apfel", "Äpfel", "Apfel", "Özdemir", "Straße", "Strasse", "élan", "日本", None]
+    df = pl.DataFrame({"Name": words * 5_000, "Nr": range(50_000)})  # many repeated values
+    out = act("rows.sort", df, {"by": [{"column": "Name"}]})
+    first = ["apfel", "Äpfel", "Apfel", "élan", "Özdemir", "Straße", "Strasse", "Zebra", "日本", None]
+    assert out.unique("Name", maintain_order=True)["Name"].to_list() == first
+    assert out["Nr"][:6].to_list() == [1, 2, 3, 11, 12, 13]  # equal values keep their order

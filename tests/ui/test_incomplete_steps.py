@@ -33,7 +33,8 @@ def test_a_new_step_is_incomplete(window, settle, session, demo):
     panel = window.data_panel  # the data going into the step
     assert panel.stack.currentWidget() is panel.view and panel.model.frame is going_in
     assert panel.subtitle.text().startswith("going into step 4: ")
-    assert "step 4 is not complete yet: fill in Condition" in panel.info.text()
+    assert panel.info.text().endswith("   ·   step 4 is not complete yet")  # what to fill in is beside it
+    assert panel.info.toolTip() == "Step 4 is not complete yet: fill in Condition"
 
     tables = window.tables_panel
     entry = next(i for i in tables._table_items() if i.text(0) == "Orders")
@@ -71,3 +72,17 @@ def test_the_map_shows_an_incomplete_table(window, settle, session, demo):
     view.rebuild()
     assert view.nodes[orders.id].status == "incomplete" and view.nodes[orders.id].info == "incomplete"
     assert view.nodes[orders.id]._incomplete() == "\nStep 4 is not complete yet: fill in Condition"
+
+
+def test_a_new_aggregate_step_is_incomplete_too(window, settle, session, demo):
+    window.open_path(demo)
+    orders = session.project.table("Orders")
+    session.select_table(orders.id)
+    step = session.add_step(session.registry.actions["calc.aggregate"])
+    settle(session)
+    assert session.missing_settings(step) == ["Calculate, row 1 – Column"]
+    assert session.table_status(orders.id) == "incomplete" and session.describe(step) == "Aggregate: Sum of ?"
+    revenue = session.project.table("Revenue by customer")
+    session.select_table(revenue.id)
+    settle(session)
+    assert session.table_status(revenue.id) == "waiting"  # for Orders, not an error

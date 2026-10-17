@@ -11,7 +11,8 @@ from tafl.api import Kind
 from tafl.core import Status
 
 from .forms import FormContext, ParamForm
-from .session import Session, first_error, json_ready, missing_settings
+from .labels import ElidedLabel, WrappedLabel
+from .session import Session, first_error, json_ready, missing_settings, waiting_text
 
 _KIND_TEXT = {
     Kind.SOURCE: "first step of a table",
@@ -32,10 +33,9 @@ class SettingsPanel(QWidget):
 
         heading = QLabel("Step settings", self)
         heading.setObjectName("PanelTitle")
-        self.title = QLabel(self)
+        self.title = WrappedLabel(parent=self)
         self.title.setObjectName("Title")
-        self.title.setWordWrap(True)
-        self.subtitle = QLabel(self)
+        self.subtitle = ElidedLabel(self)
         self.subtitle.setObjectName("Dim")
         self.error = _box("ErrorBox", self)
         self.warning = _box("WarningBox", self)
@@ -137,12 +137,18 @@ class SettingsPanel(QWidget):
         result = self.session.step_result(self.session.step)
         error = warning = info = ""
         if result is not None:
+            failed = first_error(self.session.result)
+            waiting = self.session.waits_for(self.session.table_id) if failed is not None else None
             if result.status == Status.ERROR and (needed := missing_settings(result)):
                 info = f"Not complete yet: fill in {', '.join(needed)}."
+            elif result.status == Status.ERROR and waiting is not None:
+                info = f"This step {waiting_text(waiting)} (fill in {', '.join(waiting[2])})."
             elif result.status == Status.ERROR:
                 error = result.error or "Error"
-            elif result.status == Status.BLOCKED and (failed := first_error(self.session.result)) and missing_settings(failed[1]):
+            elif result.status == Status.BLOCKED and failed is not None and missing_settings(failed[1]):
                 info = f"Step {failed[0]} is not complete yet: this step is calculated when it is."
+            elif result.status == Status.BLOCKED and failed is not None and waiting is not None:
+                info = f"Step {failed[0]} {waiting_text(waiting)}: this step is calculated when it is."
             elif result.status == Status.BLOCKED:
                 error = "An earlier step has an error."
             elif result.status == Status.SKIPPED and result.skip_rest:
@@ -218,9 +224,8 @@ def _reflow(text: str) -> str:
 
 
 def _box(name: str, parent: QWidget) -> QLabel:
-    label = QLabel(parent)
+    label = WrappedLabel(parent=parent)  # a long path in a message can't make the panel wider
     label.setObjectName(name)
-    label.setWordWrap(True)
     label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     label.hide()
     return label

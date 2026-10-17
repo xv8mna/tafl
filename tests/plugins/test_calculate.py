@@ -4,6 +4,7 @@ import polars as pl
 import pytest
 
 from tafl.api import ActionError
+from tafl.api.params import ValidationContext
 
 
 def test_calculate_columns(act, people):
@@ -80,6 +81,17 @@ def test_aggregate(act, people):
         {"City": None, "Sum of Age": 58, "Count": 1, "Count values of Score": 1, "Names": "Dieter"},
     ]
     assert out.schema["Count"] == pl.Int64 and out.schema["Count values of Score"] == pl.Int64
+
+
+def test_a_new_aggregate_step_is_incomplete(registry):
+    action = registry.actions["calc.aggregate"]
+    calculations = action.params[1]
+    new = action.resolve({"calculations": [calculations.new_row()]})  # a new step's first row
+    assert new.calculations[0].function == "sum" and new.calculations[0].column == ""
+    assert action.check(new, ValidationContext()) == ["Calculate, row 1 – Column: required"]  # not an error of the run
+    assert action.describe(new) == "Aggregate: Sum of ?"
+    rows = action.resolve({"calculations": [{"function": "count_rows"}]})  # no column to choose
+    assert action.check(rows, ValidationContext()) == [] and action.describe(rows) == "Aggregate: Count"
 
 
 def test_aggregate_totals_and_name_clashes(act, people):

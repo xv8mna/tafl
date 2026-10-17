@@ -24,7 +24,7 @@ from tafl.core import Status, Step
 
 from . import theme
 from .action_menu import fill_action_menu
-from .session import Session
+from .session import Session, waiting_text
 
 _ROLE = Qt.ItemDataRole.UserRole + 1
 
@@ -59,7 +59,7 @@ class StepDelegate(QStyledItemDelegate):
         info = data["info"]
         info_width = QFontMetrics(option.font).horizontalAdvance(info) + 6 if info else 0
         painter.setFont(option.font)
-        painter.setPen(theme.status_color("error") if data["status"] == "error" and not selected else dim_color)
+        painter.setPen(theme.status_text_color("error") if data["status"] == "error" and not selected else dim_color)
         painter.drawText(QRect(right - info_width, top, info_width, line), Qt.AlignmentFlag.AlignRight, info)
 
         painter.setPen(dim_color)
@@ -192,6 +192,8 @@ class StepsPanel(QWidget):
             }[result.status]
             if result.status == Status.ERROR and (needed := self.session.missing_settings(step)):
                 status, info, tooltip = "incomplete", "incomplete", f"Not complete yet: fill in {', '.join(needed)}"
+            elif result.status == Status.ERROR and result.inherited and (waiting := self._waiting(step)) is not None:
+                status, info, tooltip = "waiting", "waiting", f"This step {waiting_text(waiting)}"
             elif result.status == Status.ERROR:
                 info, tooltip = "error", result.error or ""
             elif result.status == Status.SKIPPED and result.skip_rest:
@@ -208,12 +210,20 @@ class StepsPanel(QWidget):
         return {
             "number": number,
             "name": action.name if action else f"Unknown action: {step.action}",
-            "summary": self.session.engine.describe(step) + (f"   — {step.note}" if step.note else ""),
+            "summary": self.session.describe(step) + (f"   — {step.note}" if step.note else ""),
             "status": status,
             "info": info,
             "enabled": step.enabled,
             "tooltip": tooltip,
         }
+
+    def _waiting(self, step: Step) -> tuple[str, int, list[str]] | None:
+        """For the table's first step with an error, when it waits for an incomplete table."""
+        result = self.session.result
+        first = next((r for r in result.steps if r.status == Status.ERROR), None) if result is not None else None
+        if first is None or first.step_id != step.id:
+            return None
+        return self.session.waits_for(self.session.table_id)
 
     # --- interaction -------------------------------------------------------------------------
 
