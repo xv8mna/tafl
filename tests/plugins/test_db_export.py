@@ -1,6 +1,7 @@
 """Exporting into a database table (all modes) and running SQL commands."""
 
 import datetime as dt
+import decimal
 import os
 import sqlite3
 import time
@@ -191,6 +192,47 @@ def test_messages_of_the_sql_server_driver():
     assert connector.error_message(Exception("22018", server)) == "Conversion failed when converting the nvarchar value 'x' to data type int."
 
 
+def test_an_empty_table_can_be_left_out(db, registry, tmp_path):
+    """With "Don't export an empty table", no rows mean no change: no file, no deleted rows."""
+    empty = DATA.clear()
+    db.export(empty, skip_empty=True)
+    assert not (tmp_path / "shop.db").exists()
+    assert db.context.messages == [("info", "Not exported: the table is empty")]
+    db.export(DATA)
+    db.export(empty, mode="replace", skip_empty=True)
+    db.export(pl.DataFrame(), mode="replace", skip_empty=True)  # no columns either: nothing to do
+    assert len(db.rows()) == 3 and db.context.messages[-1] == ("info", "Not exported: the table is empty")
+    db.export(empty, mode="replace")  # without it, as before: all rows are deleted
+    assert db.rows() == [] and db.context.messages[-1] == ("info", "orders: deleted 3 rows")
+    assert registry.actions["db.export"].upgrade({"connection": "shop", "table": "orders"}, 1)["skip_empty"] is False
+
+
+def test_created_table_is_reported_only_when_the_export_succeeds(db):
+    with pytest.raises(ActionError):
+        db.export(DATA, mode="replace_where", condition="no_such_column = 1")
+    assert db.context.messages == []  # the table was created, then rolled back
+    db.export(DATA)
+    assert db.context.messages == [("info", "Created table orders"), ("info", "orders: added 3 rows")]
+
+
+def test_date_times_with_a_time_zone_keep_their_local_time(db):
+    """As in the Excel export, and the same in SQL Server: 08:30 in Berlin stays 08:30."""
+    at = pl.Series("At", [dt.datetime(2026, 10, 1, 8, 30), dt.datetime(2026, 7, 1, 8, 30, 0, 500)])
+    db.export(pl.DataFrame({"OrderNo": [1, 2], "At": at.dt.replace_time_zone("Europe/Berlin")}))
+    assert db.rows("SELECT At FROM orders ORDER BY OrderNo") == [("2026-10-01 08:30:00.000000",), ("2026-07-01 08:30:00.000500",)]
+
+
+def test_sqlite_commands_run_in_one_transaction(db):
+    """BEGIN would fail, and a COMMIT would keep what came before an error: both are refused."""
+    db.export(DATA)
+    for sql in ("BEGIN; DELETE FROM orders; COMMIT;", "DELETE FROM orders WHERE OrderNo = 1; COMMIT; DELETE FROM nope"):
+        with pytest.raises(ActionError, match="runs the command in one transaction.*leave out BEGIN, COMMIT and ROLLBACK"):
+            db.command(sql)
+        assert len(db.rows()) == 3
+    db.command("SAVEPOINT s; DELETE FROM orders WHERE OrderNo = 1; RELEASE s")  # savepoints are fine
+    assert len(db.rows()) == 2 and db.context.messages[-1] == ("info", "Done: 1 row changed")
+
+
 def test_a_failed_command_changes_nothing(db):
     db.export(DATA)
     with pytest.raises(ActionError, match="no such table"):
@@ -305,6 +347,139 @@ def test_sqlserver_export(registry):
             assert read(f"SELECT COUNT(*) AS n FROM {name}").rows() == [(4,)]
         command(data, {"connection": "server", "sql": f"UPDATE {name} SET Net = 1; UPDATE {name} SET Net = 2"}, ctx)
         assert ctx.messages[-1] == ("info", "Done: 8 rows changed")  # both statements counted
+    finally:
+        with ctx.database("server") as db:
+            for table in (name, new):
+                db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")
+
+
+def _sqlserver():
+    """A context with the connection "server" to tempdb, and a new table name there."""
+    from tafl.core import Registry
+
+    connector = Registry.default().connectors["sqlserver"]
+    settings = {"server": os.environ["TAFL_TEST_SQLSERVER"], "database": "tempdb"}
+    return StubContext(mode="run", connections={"server": (connector, settings)}), f"dbo.tafl_test_{uuid.uuid4().hex[:8]}"
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_keyed_modes_store_values_as_add_does(registry):
+    """The keyed modes send the rows into a #temporary table first, whose columns the ODBC driver
+    can't look up. Long texts, parts of a second and characters outside the Windows code page
+    must arrive as they are: otherwise keys find the wrong rows (the decoy: what they became)."""
+    ctx, name = _sqlserver()
+    long_text = "Łódź ẞ " + "x" * 5000
+    data = pl.DataFrame({
+        "Stamp": [dt.datetime(2026, 10, 2, 8, 0, 0, 500000)],
+        "City": ["Łódź"],
+        "Memo": [long_text],
+        "At": [dt.datetime(2026, 10, 2, 23, 59, 59, 123456)],
+        "Clock": [dt.time(8, 30, 15, 123456)],
+        "Bytes": [b"\x00\xff"],
+        "Price": pl.Series([decimal.Decimal("12.34")], dtype=pl.Decimal(10, 2)),
+        "N": [2],
+    })  # fmt: skip
+    new = (dt.datetime(2026, 10, 2, 8, 0, 0, 500000), "Łódź", long_text, dt.datetime(2026, 10, 2, 23, 59, 59, 123456),
+           dt.time(8, 30, 15, 123456), b"\x00\xff", 12.34, 2)  # fmt: skip
+    decoy = (dt.datetime(2026, 10, 2, 8, 0), "Lódz", "decoy", None, None, None, None, 1)
+    expected = {
+        "update": ([decoy, new], "updated 1 row"),
+        "upsert": ([decoy, new], "updated 1 row"),
+        "replace_keys": ([decoy, new], "deleted 1 row, added 1 row"),
+        "delete": ([decoy], "deleted 1 row"),
+    }
+    columns = "Stamp datetime2(3), City nvarchar(50), Memo nvarchar(max), At datetime2(7), Clock time(7), "
+    columns += "Bytes varbinary(max), Price decimal(10, 2), N int"
+    try:
+        for key in ("Stamp", "City"):
+            for mode, (rows, message) in expected.items():
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                    db.execute(f"CREATE TABLE {name} ({columns})")
+                    db.execute(f"INSERT INTO {name} (Stamp, City, Memo, N) VALUES "
+                               "('2026-10-02 08:00:00.500', N'Łódź', N'old', 1), ('2026-10-02 08:00:00', N'Lódz', N'decoy', 1)")  # fmt: skip
+                registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": [key]}, ctx)
+                with ctx.database("server") as db:
+                    assert db.read(f"SELECT * FROM {name} ORDER BY N").rows() == rows, (key, mode)
+                assert ctx.messages[-1] == ("info", f"{name}: {message}"), (key, mode)
+        # A datetime holds steps of 1/300 s: .123 is .1233333 there, and a key read from it must find it
+        with ctx.database("server") as db:
+            db.execute(f"DROP TABLE {name}")
+            db.execute(f"CREATE TABLE {name} (Stamp datetime, Minute smalldatetime, N int)")
+            db.execute(f"INSERT INTO {name} VALUES ('2026-10-02T08:00:00.123', '2026-10-02T08:00:29', 1), "
+                       "('2026-10-02T08:00:00.500', '2026-10-02T08:01:00', 1)")  # fmt: skip
+            stored = db.read(f"SELECT Stamp, Minute FROM {name}")
+        assert stored["Stamp"].to_list() == [dt.datetime(2026, 10, 2, 8, 0, 0, 123000), dt.datetime(2026, 10, 2, 8, 0, 0, 500000)]
+        for key, value in (("Stamp", 2), ("Minute", 3)):
+            changes = stored.with_columns(N=pl.lit(value), Minute=pl.col("Minute").dt.offset_by("29s"))
+            export = {"connection": "server", "table": name, "mode": "update", "key_columns": [key]}
+            registry.actions["db.export"](changes.drop("Minute" if key == "Stamp" else "Stamp"), export, ctx)
+            assert ctx.messages[-1] == ("info", f"{name}: updated 2 rows"), key
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_export_mistakes_are_explained(registry):
+    ctx, name = _sqlserver()
+    new = f"{name}_new"
+
+    def export(df, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
+
+    def command(sql):
+        registry.actions["db.command"](DATA, {"connection": "server", "sql": sql}, ctx)
+
+    try:
+        # A #temporary table would disappear with the connection
+        for table in ("#tafl_orders", "##tafl_orders", "tempdb..#tafl_orders"):
+            with pytest.raises(ActionError, match="would be a temporary table"):
+                export(DATA, table=table)
+        # SQL Server has no infinity; a failed first export leaves no table, and says it made none
+        with pytest.raises(ActionError, match=r"^The column Net has an infinite value .* IIF\(ISINF\(\[Net\]\), NULL, \[Net\]\)\.$"):
+            export(DATA.with_columns(pl.Series("Net", [1.0, float("-inf"), None])), table=new)
+        with ctx.database("server") as db:
+            assert db.read(f"SELECT OBJECT_ID('{new}') AS id").rows() == [(None,)]
+        assert not any("Created" in text for _level, text in ctx.messages)
+        # A text too long for its column: the column, with an example
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (OrderNo int PRIMARY KEY, Customer nvarchar(5), Note nchar(3))")
+        too_long = (
+            rf"^The column Customer of {name} holds texts of up to 5 characters \(nvarchar\(5\)\), but Customer has "
+            r"longer ones \(e.g. “Müller”, 6 characters\)\. Shorten them first, e.g. LEFT\(\[Customer\], 5\), or make "
+            r"the column longer in the database\.$"
+        )
+        orders = DATA.select("OrderNo", "Customer")
+        for mode in ("insert", "upsert", "replace_keys"):
+            with pytest.raises(ActionError, match=too_long):
+                export(orders, mode=mode, key_columns=["OrderNo"])
+        with pytest.raises(ActionError, match=r"holds texts of up to 3 characters \(nchar\(3\)\), but Note .*“a😀b”, 4"):
+            export(pl.DataFrame({"OrderNo": [1], "Note": ["a😀b"]}))  # an emoji counts twice
+        export(pl.DataFrame({"OrderNo": [1], "Note": ["😀b"]}))
+        export(pl.DataFrame({"OrderNo": [1], "Customer": ["Bäcker"]}), mode="delete", key_columns=["Customer"])  # finds rows only
+        # The duplicate key value stays in the message, which says everything once
+        with pytest.raises(ActionError) as error:
+            export(orders.with_columns(Customer=pl.lit("A")))
+        assert str(error.value).endswith(f"Cannot insert duplicate key in object '{name}'. The duplicate key value is (1).")
+        export(orders.head(2).with_columns(Customer=pl.lit("A")), mode="replace")
+        with pytest.raises(ActionError) as error:
+            export(orders.with_columns(Customer=pl.lit("A")))
+        assert str(error.value).endswith("The duplicate key value is (1). 1 more like it.")
+        # Date-times with a time zone: the local time, as in the Excel export and in SQLite
+        at = pl.Series("At", [dt.datetime(2026, 10, 1, 8, 30)]).dt.replace_time_zone("Europe/Berlin")
+        price = pl.Series("Price", [decimal.Decimal("12.345")], dtype=pl.Decimal(12, 3))
+        export(pl.DataFrame({"OrderNo": [7], "At": at, "Price": price}), table=new)
+        with ctx.database("server") as db:
+            assert db.read(f"SELECT At FROM {new}")["At"].to_list() == [dt.datetime(2026, 10, 1, 8, 30)]
+            assert db.read(f"SELECT DATA_TYPE AS t, NUMERIC_PRECISION AS p, NUMERIC_SCALE AS s FROM INFORMATION_SCHEMA.COLUMNS "
+                           f"WHERE TABLE_NAME = '{new.split('.')[1]}' AND COLUMN_NAME = 'Price'").rows() == [("decimal", 12, 3)]  # fmt: skip
+        assert ctx.messages[-2:] == [("info", f"Created table {new}"), ("info", f"{new}: added 1 row")]
+        # GO with a repeat count and a comment, as in SSMS
+        command(f"INSERT INTO {new} (OrderNo) VALUES (8)\nGO -- next\nUPDATE {new} SET OrderNo = OrderNo + 1\nGO 2")
+        assert ctx.messages[-1] == ("info", "Done: 5 rows changed")
+        command(f"DELETE FROM {new} WHERE OrderNo = 9")
+        assert ctx.messages[-1] == ("info", "Done: 1 row changed")
     finally:
         with ctx.database("server") as db:
             for table in (name, new):

@@ -7,12 +7,14 @@ import copy
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -64,8 +66,12 @@ class ConnectionsDialog(QDialog):
         self.form_host = QVBoxLayout()
         self.test_button = QPushButton("Test connection", self)
         self.test_button.clicked.connect(self._test)
-        self.test_result = QLabel(self)
-        self.test_result.setWordWrap(True)
+        # Below the button, all of it, and it can be copied: a driver's error can be long
+        self.test_result = QPlainTextEdit(self)
+        self.test_result.setReadOnly(True)
+        self.test_result.setFrameShape(QFrame.Shape.NoFrame)
+        self.test_result.setFixedHeight(5 * self.fontMetrics().lineSpacing() + 10)
+        self.test_result.hide()
         self.details = QWidget(self)
         right = QVBoxLayout(self.details)
         right.setContentsMargins(10, 0, 0, 0)
@@ -75,8 +81,9 @@ class ConnectionsDialog(QDialog):
         right.addLayout(self.form_host)
         test_row = QHBoxLayout()
         test_row.addWidget(self.test_button)
-        test_row.addWidget(self.test_result, 1)
+        test_row.addStretch(1)
         right.addLayout(test_row)
+        right.addWidget(self.test_result)
         right.addStretch(1)
 
         body = QHBoxLayout()
@@ -117,7 +124,7 @@ class ConnectionsDialog(QDialog):
             self._form = None
         connection = self._current()
         self.details.setEnabled(connection is not None)
-        self.test_result.setText("")
+        self._show_result("")
         if connection is None:
             self.name.setText("")
             self.type_label.setText("Add a connection with “+ Add”.")
@@ -164,7 +171,7 @@ class ConnectionsDialog(QDialog):
             return
         settings, values = dict(connection.settings), self.session.parameter_values
         ctx = Context(project_dir=self.session.project.directory)
-        self.test_result.setText("Connecting…")
+        self._show_result("Connecting…")
         self.test_button.setEnabled(False)
 
         def work(_cancel):
@@ -183,8 +190,12 @@ class ConnectionsDialog(QDialog):
     def _tested(self, outcome: tuple[bool, str]) -> None:
         ok, text = outcome
         self.test_button.setEnabled(True)
-        self.test_result.setText(text)
-        self.test_result.setStyleSheet(f"color: {theme.STATUS_COLORS['ok' if ok else 'error']};")
+        self._show_result(text, theme.STATUS_COLORS["ok" if ok else "error"])
+
+    def _show_result(self, text: str, color: str = theme.TEXT) -> None:
+        self.test_result.setPlainText(text)
+        self.test_result.setStyleSheet(f"QPlainTextEdit {{ color: {color}; background: transparent; }}")
+        self.test_result.setVisible(bool(text))
 
     def _accept(self) -> None:
         self._rename()

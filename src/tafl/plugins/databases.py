@@ -17,6 +17,7 @@ from tafl.api import (
     APP_NAME,
     ActionError,
     Connector,
+    Mode,
     P,
     action,
     all_results,
@@ -27,13 +28,15 @@ from tafl.api import (
     text_length,
 )
 
+# Chosen when the connection names no driver. Not "SQL Server", which comes with Windows: it is
+# too old for date and time columns (it reads them as text).
 _SQLSERVER_DRIVERS = (
     "ODBC Driver 18 for SQL Server",
     "ODBC Driver 17 for SQL Server",
     "ODBC Driver 13 for SQL Server",
     "SQL Server Native Client 11.0",
-    "SQL Server",
 )
+_GET_DRIVER = "install 'ODBC Driver 18 for SQL Server' (or 17) from Microsoft"
 _PYTHON_TYPES = {
     str: pl.String,
     int: pl.Int64,
@@ -82,7 +85,7 @@ _BINDS_TIGHTER = ("*", "/", "%", "~")
     params=[
         P.Text("server", "Server", default=r".\SQLEXPRESS", required=True),
         P.Text("database", "Database", required=True),
-        P.Text("driver", "ODBC driver", placeholder="empty = newest installed"),
+        P.Text("driver", "ODBC driver", placeholder="empty = the newest suitable one"),
         P.Bool("trust_certificate", "Trust the server certificate", default=True),
     ],
 )
@@ -92,9 +95,21 @@ class SqlServer(Connector):
     def connect(self, settings, ctx, *, create=False):
         import pyodbc
 
-        driver = settings.driver or next((d for d in _SQLSERVER_DRIVERS if d in pyodbc.drivers()), "")
+        installed = pyodbc.drivers()
+        driver = (settings.driver or "").strip()
+        if driver and driver.lower() not in (d.lower() for d in installed):
+            others = ", ".join(f"'{d}'" for d in installed if "sql server" in d.lower())
+            hint = f"Installed for SQL Server: {others}" if others else f"To get one, {_GET_DRIVER}"
+            raise ActionError(f"The ODBC driver '{driver}' is not installed. {hint}")
+        driver = driver or next((d for d in _SQLSERVER_DRIVERS if d in installed), "")
         if not driver:
-            raise ActionError("No SQL Server ODBC driver is installed (get 'ODBC Driver 18 for SQL Server' from Microsoft)")
+            old = (
+                " The driver 'SQL Server' that comes with Windows is too old: it reads dates and times as text "
+                "(to use it anyway, enter it as the connection's ODBC driver)."
+                if "SQL Server" in installed
+                else ""
+            )
+            raise ActionError(f"No suitable SQL Server ODBC driver is installed: {_GET_DRIVER}.{old}")
         parts = [
             f"DRIVER={{{driver}}}",
             f"SERVER={settings.server}",
@@ -109,6 +124,10 @@ class SqlServer(Connector):
         except pyodbc.Error as e:
             raise ActionError(f"Could not connect to SQL Server '{settings.server}': {self.error_message(e)}") from None
         connection.add_output_converter(-155, _datetimeoffset)  # DATETIMEOFFSET: not supported by pyodbc
+        # pyodbc misreads a sql_variant (NULL as an empty text, whole numbers not at all) and can't
+        # read CLR types: a query stops with a hint, read_table_sql converts them to text
+        connection.add_output_converter(-150, lambda value: _SQL_VARIANT)
+        connection.add_output_converter(-151, lambda value: _CLR_TYPE)  # geography, geometry, hierarchyid
         return connection
 
     def quote(self, identifier):
@@ -137,9 +156,7 @@ class SqlServer(Connector):
             # Its (localized) text names no column or value
             meaning = _VALUE_ERRORS.get(state, _VALUE_ERRORS["22001"])
             return f"A value doesn't fit its column in the database: {meaning}"
-        text = re.sub(r"\[[^\]]*\]", "", text)
-        text = re.sub(r"\s*\(\d+\)\s*(\(SQL\w+\))?", " ", text)
-        message = re.sub(r"\s+", " ", text).strip(" ;") or str(error)
+        message = _diagnostics(text) or str(error)
         if by_driver and state == "42000":
             # The driver's own syntax error: it reads {…} as ODBC escapes before the server sees the SQL
             return (
@@ -193,13 +210,50 @@ class SqlServer(Connector):
         # 42S02: base table or view not found; (4413): a view whose own tables are missing
         return bool(error.args) and error.args[0] == "42S02" and "(4413)" not in str(error)
 
-    def column_types(self, conn, table):
+    def _columns(self, conn, table):
+        """(name, type, is a CLR type, size in bytes or -1 for max) of each column of a table or
+        view, from the catalog of its database; the type of an alias type is the one it is based on."""
+        parts = split_name(table)
+        if len(parts) > 3:  # on a linked server
+            return []
+        catalog = f"{self.quote(parts[0])}.sys" if len(parts) == 3 else "sys"
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT name, TYPE_NAME(user_type_id) FROM sys.columns WHERE object_id = OBJECT_ID(?)", self.qualified(table))
-            return {name: kind.lower() for name, kind in cursor.fetchall()}
+            cursor.execute(
+                f"SELECT c.name, COALESCE(TYPE_NAME(c.system_type_id), t.name), t.is_assembly_type, c.max_length "
+                f"FROM {catalog}.columns AS c JOIN {catalog}.types AS t ON t.user_type_id = c.user_type_id "
+                "WHERE c.object_id = OBJECT_ID(?) ORDER BY c.column_id",
+                self.qualified(table),
+            )
+            return [(name, kind.lower(), bool(clr), size) for name, kind, clr, size in cursor.fetchall()]
         finally:
             cursor.close()
+
+    def column_types(self, conn, table):
+        types = {}
+        for name, kind, _clr, size in self._columns(conn, table):
+            if kind in ("char", "varchar", "nchar", "nvarchar", "binary", "varbinary"):
+                kind += "(max)" if size == -1 else f"({size // 2 if kind.startswith('n') else size})"
+            types[name] = kind
+        return types
+
+    def read_table_sql(self, conn, table):
+        try:
+            columns = self._columns(conn, table)
+        except Exception:  # e.g. no access to the catalog of another database: read it as it is
+            columns = []
+        if not any(kind == "sql_variant" or clr for _name, kind, clr, _size in columns):
+            return super().read_table_sql(conn, table)
+        picked = []
+        for name, kind, clr, _size in columns:
+            column = self.quote(name)
+            if kind == "sql_variant":
+                picked.append(f"{_VARIANT_TEXT.format(column=column)} AS {column}")
+            elif clr:
+                picked.append(f"CAST({column} AS nvarchar(max)) AS {column}")  # e.g. POINT (8.5 47.4), /1/2/
+            else:
+                picked.append(column)
+        return f"SELECT {', '.join(picked)} FROM {self.qualified(table)}"
 
     def sql_type(self, series, temporary=False):
         dtype = series.dtype
@@ -208,6 +262,8 @@ class SqlServer(Connector):
             return "INT" if low is None or (-(2**31) <= low and high < 2**31) else "BIGINT"
         if dtype.is_float():
             return "FLOAT"
+        if isinstance(dtype, pl.Decimal):
+            return f"DECIMAL({min(dtype.precision or 38, 38)}, {dtype.scale})"
         if dtype == pl.Boolean:
             return "BIT"
         if dtype == pl.Date:
@@ -228,10 +284,49 @@ class SqlServer(Connector):
     def prepare_cursor(self, cursor):
         cursor.fast_executemany = True  # sends the rows in batches instead of one by one
 
+    def input_sizes(self, df, temporary=False):
+        # The driver can't look up the columns of a #temporary table: it would send texts as 255
+        # characters in the Windows code page and date-times without fractions of a second.
+        # Into the database's own tables the driver's own choice fits the column.
+        if not temporary:
+            return None
+        import pyodbc
+
+        sizes = []
+        for name, dtype in df.schema.items():
+            if dtype.is_integer():
+                sizes.append((pyodbc.SQL_BIGINT, 0, 0))
+            elif dtype.is_float():
+                sizes.append((pyodbc.SQL_DOUBLE, 0, 0))
+            elif isinstance(dtype, pl.Decimal):
+                sizes.append((pyodbc.SQL_DECIMAL, min(dtype.precision or 38, 38), dtype.scale))
+            elif dtype == pl.Boolean:
+                sizes.append((pyodbc.SQL_BIT, 0, 0))
+            elif dtype == pl.Date:
+                sizes.append((pyodbc.SQL_TYPE_DATE, 10, 0))
+            elif dtype == pl.Datetime:
+                sizes.append((pyodbc.SQL_TYPE_TIMESTAMP, 27, 7))
+            elif dtype == pl.Time:
+                sizes.append((pyodbc.SQL_SS_TIME2, 16, 7))
+            elif dtype == pl.Binary:
+                longest = df[name].bin.size().max() or 1
+                sizes.append((pyodbc.SQL_VARBINARY, longest if longest <= 8000 else 0, 0))  # 0: as long as needed
+            else:
+                sizes.append((pyodbc.SQL_WVARCHAR, text_length(df[name]), 0))
+        return sizes
+
     def prepare_frame(self, df):
+        """Also: date-times with a time zone keep their local time and lose the zone, as in the
+        Excel export (08:30 in Berlin stays 08:30); infinite numbers are refused."""
         df = super().prepare_frame(df)
+        for name, dtype in df.schema.items():
+            if dtype.is_float() and df[name].is_infinite().any():
+                raise ActionError(
+                    f"The column {name} has an infinite value (e.g. from a division by zero), which SQL Server can't store. "
+                    f"Replace it first, e.g. with IIF(ISINF([{name}]), NULL, [{name}])."
+                )
         zoned = [c for c, t in df.schema.items() if isinstance(t, pl.Datetime) and t.time_zone]
-        return df.with_columns(pl.col(c).dt.convert_time_zone("UTC").dt.replace_time_zone(None) for c in zoned)
+        return df.with_columns(pl.col(c).dt.replace_time_zone(None) for c in zoned)
 
     def update_sql(self, table, stage, columns, keys):
         sets = ", ".join(f"x.{self.quote(c)} = s.{self.quote(c)}" for c in columns)
@@ -241,36 +336,109 @@ class SqlServer(Connector):
         return f"DELETE x FROM {table} AS x WHERE EXISTS (SELECT 1 FROM {stage} AS s WHERE {self.matching(keys)})"
 
     def run_script(self, conn, sql):
-        """T-SQL; batches separated by GO lines (like in SSMS) run one after the other."""
+        """T-SQL; batches separated by GO lines (like in SSMS) run one after the other, and
+        ``GO 3`` runs the batch before it three times."""
         total, counted = 0, False
         cursor = conn.cursor()
         try:
-            for batch in _batches(sql):
+            for batch, count in _batches(sql):
                 if batch.strip():
-                    cursor.execute(batch)
-                    rows = all_results(cursor)  # an error in a later statement of the batch shows up here
-                    if rows >= 0:
-                        total, counted = total + rows, True
+                    for _ in range(count):
+                        cursor.execute(batch)
+                        rows = all_results(cursor)  # an error in a later statement of the batch shows up here
+                        if rows >= 0:
+                            total, counted = total + rows, True
         finally:
             cursor.close()
         return total if counted else -1
 
 
-_GO = re.compile(r"^[ \t]*GO[ \t]*;?[ \t]*\r?$", re.IGNORECASE | re.MULTILINE)
+# As in SSMS: GO, a repeat count (GO 3) and a -- comment may follow
+_GO = re.compile(r"^[ \t]*GO(?:[ \t]+([1-9][0-9]*))?[ \t]*;?[ \t]*(?:--[^\r\n]*)?\r?$", re.IGNORECASE | re.MULTILINE)
 
 
-def _batches(sql: str) -> list[str]:
-    """T-SQL split at its GO lines; a GO line inside a text or a comment doesn't count."""
+def _batches(sql: str) -> list[tuple[str, int]]:
+    """T-SQL split at its GO lines, with how many times each batch runs; a GO line inside a text
+    or a comment doesn't count."""
     quoted = parameters.sql_spans(sql, **_SQLSERVER_SQL)
     starts = [begin for begin, _end, _kind in quoted]
     batches, start = [], 0
     for line in _GO.finditer(sql):
         k = bisect.bisect_right(starts, line.start()) - 1  # the last text or comment that starts before it
         if k < 0 or quoted[k][1] <= line.start():
-            batches.append(sql[start : line.start()])
+            batches.append((sql[start : line.start()], int(line[1] or 1)))
             start = line.end()
-    batches.append(sql[start:])
+    batches.append((sql[start:], 1))
     return batches
+
+
+# SQL Server's messages come in records joined by "; [", each with the driver's prefix and the
+# error's number: "[23000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]… (2627) (SQLExecute)"
+_RECORDS = re.compile(r";\s*(?=\[[0-9A-Z]{5}\])")
+_PREFIX = re.compile(r"^\s*\[[0-9A-Z]{5}\]\s*\[[^\]]*\]\[[^\]]*\](?:\[SQL Server\])?")
+_NUMBER = re.compile(r"\s*\((-?\d+)\)(?:\s*\(SQL\w+\))?\s*$")
+_TERMINATED = 3621  # "The statement has been terminated."
+
+
+def _diagnostics(text: str) -> str:
+    """The records of a SQL Server error message without the driver's prefixes and the error
+    numbers, each once. The same error for many rows (a duplicate key value per row) is shown
+    once, with how many more there are."""
+    shown: list[str] = []
+    first: dict[int, int] = {}  # the number of a server error -> where it is in shown
+    more: dict[int, int] = {}  # where in shown -> how many more records like it
+    for record in _RECORDS.split(text):
+        prefix = _PREFIX.match(record)
+        from_server = prefix is not None and prefix[0].endswith("[SQL Server]")
+        record = record[prefix.end() :] if prefix else record
+        number = _NUMBER.search(record)
+        native = int(number[1]) if number else 0
+        record = re.sub(r"\s+", " ", record[: number.start()] if number else record).strip()
+        if not record or native == _TERMINATED or record in shown:
+            continue
+        if from_server and native > 0:
+            if native in first:
+                more[first[native]] = more.get(first[native], 0) + 1
+                continue
+            first[native] = len(shown)
+        shown.append(record)
+    for index, count in more.items():
+        shown[index] = f"{_sentence(shown[index])} {count:,} more like it."
+    return " ".join([*(_sentence(record) for record in shown[:-1]), *shown[-1:]])
+
+
+def _sentence(text: str) -> str:
+    return text if text.endswith((".", "!", "?")) else text + "."
+
+
+# A sql_variant as text: dates and times in ISO form, numbers without losing digits, binary
+# values as 0x… (CONVERT on its own would give "Oct 15 2026 8:30AM" and six digits of a float)
+_VARIANT_TEXT = " ".join(
+    """CASE CAST(SQL_VARIANT_PROPERTY({column}, 'BaseType') AS sysname)
+    WHEN 'float' THEN FORMAT(CAST({column} AS float), 'R', 'en-US')
+    WHEN 'real' THEN FORMAT(CAST({column} AS real), 'R', 'en-US')
+    WHEN 'money' THEN CONVERT(nvarchar(30), CAST({column} AS money), 2)
+    WHEN 'smallmoney' THEN CONVERT(nvarchar(30), CAST({column} AS money), 2)
+    WHEN 'date' THEN CONVERT(nvarchar(10), CAST({column} AS date), 23)
+    WHEN 'time' THEN CONVERT(nvarchar(16), CAST({column} AS time))
+    WHEN 'datetime' THEN CONVERT(nvarchar(23), CAST({column} AS datetime), 121)
+    WHEN 'smalldatetime' THEN CONVERT(nvarchar(19), CAST({column} AS smalldatetime), 120)
+    WHEN 'datetime2' THEN CONVERT(nvarchar(27), CAST({column} AS datetime2), 121)
+    WHEN 'datetimeoffset' THEN CONVERT(nvarchar(34), CAST({column} AS datetimeoffset))
+    WHEN 'binary' THEN CONVERT(nvarchar(max), CAST({column} AS varbinary(8000)), 1)
+    WHEN 'varbinary' THEN CONVERT(nvarchar(max), CAST({column} AS varbinary(8000)), 1)
+    ELSE CONVERT(nvarchar(4000), {column}) END""".split()
+)
+# What a query gets for the values pyodbc can't read: the import stops with this
+_SQL_VARIANT = ActionError(
+    "The column {column} is a sql_variant, which can't be read as it is: convert it to text in the query, "
+    "e.g. CAST([{column}] AS nvarchar(4000)) AS [{column}]. Importing the whole table converts it by itself."
+)
+_CLR_TYPE = ActionError(
+    "The column {column} has a type such as geography or hierarchyid, which can't be read as it is: convert it "
+    "to text in the query, e.g. CAST([{column}] AS nvarchar(max)) AS [{column}]. Importing the whole table "
+    "converts it by itself."
+)
 
 
 # T-SQL between its texts, names and comments: spaces, values ({Name}, numbers, also signed, 0x…
@@ -391,7 +559,16 @@ class SQLite(Connector):
             path.parent.mkdir(parents=True, exist_ok=True)
         elif not path.is_file():
             raise ActionError(f"SQLite file not found: {path}")
-        return sqlite3.connect(path, autocommit=False)  # one transaction, also for CREATE TABLE and scripts
+        connection = sqlite3.connect(path, autocommit=False)  # one transaction, also for CREATE TABLE and scripts
+        if ctx.mode == Mode.PREVIEW:  # only imports run: an ATTACH would create a missing file
+            connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
+        return connection
+
+    def error_message(self, error):
+        text = str(error)
+        if text == "too many attached databases - max 0":
+            return "An import can ATTACH a database only when the project is run (it could create a file)"
+        return text
 
     def list_tables(self, conn):
         rows = conn.execute(
@@ -424,7 +601,8 @@ class SQLite(Connector):
         return "CREATE TEMP TABLE", name
 
     def prepare_frame(self, df):
-        """Dates and times as ISO text, the way SQLite stores them (2025-01-31 08:30:00)."""
+        """Dates and times as ISO text, the way SQLite stores them (2025-01-31 08:30:00); a
+        date-time with a time zone in that zone's local time, without the zone."""
         df = super().prepare_frame(df)
         changes = []
         for name, dtype in df.schema.items():
@@ -450,9 +628,25 @@ class SQLite(Connector):
         return f"CREATE INDEX temp.{stage}_keys ON {stage} ({', '.join(self.quote(k) for k in keys)})"
 
     def run_script(self, conn, sql):
-        """Several statements separated by ; are allowed."""
+        """Several statements separated by ; are allowed, but not BEGIN, COMMIT and ROLLBACK: the
+        command runs in one transaction (a COMMIT in it would keep what came before an error)."""
+
+        def authorize(action, *_names):
+            return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_TRANSACTION else sqlite3.SQLITE_OK
+
         before = conn.total_changes
-        conn.executescript(sql)
+        conn.set_authorizer(authorize)
+        try:
+            conn.executescript(sql)
+        except sqlite3.DatabaseError as e:
+            if str(e) != "not authorized":
+                raise
+            raise ActionError(
+                f"{APP_NAME} runs the command in one transaction, so that a failed command changes nothing: "
+                "leave out BEGIN, COMMIT and ROLLBACK"
+            ) from None
+        finally:
+            conn.set_authorizer(None)
         return conn.total_changes - before
 
 
@@ -482,7 +676,7 @@ def import_database(df, p, ctx):
             with contextlib.suppress(Exception):  # e.g. a driver in autocommit mode: nothing to roll back
                 db.rollback()
     if p.detect_types:
-        out = dtypes.infer_types(out, decimal=".")
+        out = dtypes.infer_types(out, decimal=".", warn=ctx.warn)
     return out
 
 
@@ -511,6 +705,13 @@ _EXPORT_VERBS = {
 def _export_summary(p) -> str:
     verb = _EXPORT_VERBS.get(p.mode, "Export to").format(keys=", ".join(p.key_columns) or "?")
     return f"{verb} {p.table or '?'} ({p.connection or '?'})"
+
+
+def _migrate_export(params: dict, from_version: int) -> dict:
+    """Version 1 also exported an empty table."""
+    if from_version < 2:
+        params.setdefault("skip_empty", False)
+    return params
 
 
 @action(
@@ -543,7 +744,15 @@ def _export_summary(p) -> str:
             "Columns the database table doesn't have",
             [("error", "Stop with an error"), ("skip", "Leave them out")],
         ),
+        P.Bool(
+            "skip_empty",
+            "Don't export an empty table",
+            default=False,
+            help="When the table has no rows, nothing in the database changes (Replace all rows would delete them all)",
+        ),
     ],
+    version=2,
+    migrate=_migrate_export,
     summary=_export_summary,
 )
 def export_database(df, p, ctx):
@@ -553,13 +762,18 @@ def export_database(df, p, ctx):
     Add the rows, replace all of them, or replace just the rows with the same key values (e.g.
     the dates in the data: reloading a day replaces that day). Update rows by key columns, or
     update them and add the new ones. Columns are matched by name; a missing table is created
-    with types that fit the data. Runs only when the project is run.
+    with types that fit the data. Date-times with a time zone are written in that zone's local
+    time, without the zone (08:30 in Berlin stays 08:30), as in the Excel export. Runs only when
+    the project is run.
     """
+    if p.skip_empty and df.height == 0:
+        ctx.log("Not exported: the table is empty")
+        return df
     if df.width == 0:
         raise ActionError("Nothing to export: the table has no columns")
+    created = False
     with ctx.database(p.connection, create=True) as db:  # a SQLite file is created if needed
-        parts = split_name(p.table)
-        if db.connector.id == "sqlite" and len(parts) > 1 and parts[0].lower() == "temp":
+        if _temporary(db.connector.id, split_name(p.table)):
             raise ActionError(f"{p.table} would be a temporary table: it disappears when the export ends. Choose another name.")
         table = db.qualified(p.table)
         existing = db.columns(p.table)
@@ -568,10 +782,13 @@ def export_database(df, p, ctx):
                 raise ActionError(f"Table {p.table} not found in {p.connection}")
             definitions = ", ".join(f"{db.quote(c)} {db.connector.sql_type(df[c])}" for c in df.columns)
             db.execute(f"CREATE TABLE {table} ({definitions})")
-            ctx.log(f"Created table {p.table}")
-            existing = list(df.columns)
+            created, existing = True, list(df.columns)
         names = _target_names(df.columns, existing, p)
-        _check_whole_numbers(df, names, db.connector.column_types(db.raw, p.table), p.table)
+        types = db.connector.column_types(db.raw, p.table)
+        _check_whole_numbers(df, names, types, p.table)
+        if p.mode != "delete":  # it writes nothing
+            finding = p.key_columns if p.mode == "update" else []  # key values that only find rows
+            _check_text_lengths(df, {c: n for c, n in names.items() if c not in finding}, types, p.table)
         data = db.connector.prepare_frame(df.select(list(names)))
         keys = _key_names(p, names) if p.mode in _KEYED else []
         if p.mode in ("update", "upsert"):
@@ -585,10 +802,10 @@ def export_database(df, p, ctx):
         elif p.mode == "replace_where":
             deleted = db.execute(f"DELETE FROM {table} WHERE {p.condition}")
         elif p.mode in ("replace_keys", "delete"):
-            stage = _stage(db, data.select([c for c, n in names.items() if n in keys]).unique(), names, keys, ctx)
+            stage = _stage(db, data.select([c for c, n in names.items() if n in keys]).unique(), names, keys, types, ctx)
             deleted = db.execute(db.connector.delete_sql(table, stage, keys))
         elif p.mode in ("update", "upsert"):
-            stage = _stage(db, data, names, keys, ctx)
+            stage = _stage(db, data, names, keys, types, ctx)
             others = [n for n in names.values() if n not in keys]
             if others:
                 updated = db.execute(db.connector.update_sql(table, stage, others, keys))
@@ -596,10 +813,19 @@ def export_database(df, p, ctx):
                 added = db.execute(db.connector.insert_missing_sql(table, stage, list(names.values()), keys))
         if p.mode in ("insert", "replace", "replace_keys", "replace_where"):
             added = _insert(db, table, data, list(names.values()), ctx)
+    if created:  # only now: a failed export creates no table
+        ctx.log(f"Created table {p.table}")
     parts = [f"{what} {count:,} row{'s' if count != 1 else ''}" for what, count in (
         ("deleted", deleted), ("updated", updated), ("added", added)) if count > 0]
     ctx.log(f"{p.table}: " + (", ".join(parts) if parts else "nothing changed"))
     return df
+
+
+def _temporary(connector_id: str, parts: list[str]) -> bool:
+    """A table that disappears with the connection: temp.x in SQLite, #x (and ##x) in SQL Server."""
+    if connector_id == "sqlite":
+        return len(parts) > 1 and parts[0].lower() == "temp"
+    return connector_id == "sqlserver" and bool(parts) and parts[-1].startswith("#")
 
 
 _WHOLE_NUMBER_TYPES = {"tinyint", "smallint", "int", "integer", "bigint", "bit"}
@@ -620,6 +846,32 @@ def _check_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[st
                     f"decimals (e.g. {example}): they would be cut off. Round them first, e.g. ROUND([{source}]), "
                     "or change the column's type in the database."
                 )
+
+
+_TEXT_TYPE = re.compile(r"(n?)(?:var)?char\((\d+)\)")
+
+
+def _check_text_lengths(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str) -> None:
+    """A text too long for its column stops the export with a message that names no column:
+    refuse with the column and an example first."""
+    kinds = {name.lower(): kind for name, kind in types.items()}
+    for source, target in names.items():
+        kind = kinds.get(target.lower(), "")
+        size = _TEXT_TYPE.fullmatch(kind)
+        if size is None or df[source].dtype != pl.String:
+            continue
+        texts = df[source]
+        # nvarchar counts UTF-16 code units: an emoji takes two
+        lengths = texts.str.len_chars() + (texts.str.count_matches(r"[\x{10000}-\x{10FFFF}]") if size[1] else 0)
+        too_long = lengths > int(size[2])
+        if too_long.any():
+            example, length = texts.filter(too_long)[0], lengths.filter(too_long)[0]
+            shown = example if len(example) <= 40 else example[:40] + "…"
+            raise ActionError(
+                f"The column {target} of {table} holds texts of up to {int(size[2]):,} characters ({kind}), but "
+                f"{source} has longer ones (e.g. “{shown}”, {length:,} characters). Shorten them first, e.g. "
+                f"LEFT([{source}], {size[2]}), or make the column longer in the database."
+            )
 
 
 def _target_names(columns: list[str], existing: list[str], p) -> dict[str, str]:
@@ -659,24 +911,36 @@ def _check_unique(df: pl.DataFrame, keys: list[str]) -> None:
         )
 
 
-def _stage(db, data: pl.DataFrame, names: dict[str, str], keys: list[str], ctx) -> str:
+def _stage(db, data: pl.DataFrame, names: dict[str, str], keys: list[str], types: dict[str, str], ctx) -> str:
     """A temporary table with the data, named like the columns of the database table and
-    indexed on the key columns (then matching rows takes a moment, not minutes)."""
+    indexed on the key columns (then matching rows takes a moment, not minutes). A date-time
+    for a datetime or smalldatetime column (SQL Server) is stored as one, rounded to its steps
+    as it was in the database table (.123 is .1233333 there): otherwise it wouldn't match."""
+    kinds = {name.lower(): kind for name, kind in types.items()}
+
+    def column_type(column: str) -> str:
+        kind = kinds.get(names[column].lower())
+        if data[column].dtype == pl.Datetime and kind in ("datetime", "smalldatetime"):
+            return kind.upper()
+        return db.connector.sql_type(data[column], temporary=True)
+
     create, stage = db.connector.temp_table(f"tafl_stage_{uuid.uuid4().hex[:8]}")
     columns = list(data.columns)
-    definitions = ", ".join(f"{db.quote(names[c])} {db.connector.sql_type(data[c], temporary=True)}" for c in columns)
+    definitions = ", ".join(f"{db.quote(names[c])} {column_type(c)}" for c in columns)
     db.execute(f"{create} {stage} ({definitions})")
-    _insert(db, stage, data, [names[c] for c in columns], ctx)
+    _insert(db, stage, data, [names[c] for c in columns], ctx, temporary=True)
     db.execute(db.connector.index_sql(stage, keys))
     return stage
 
 
-def _insert(db, table: str, data: pl.DataFrame, names: list[str], ctx) -> int:
+def _insert(db, table: str, data: pl.DataFrame, names: list[str], ctx, temporary: bool = False) -> int:
     if data.height == 0:
         return 0
     columns = ", ".join(db.quote(n) for n in names)
     marks = ", ".join("?" for _ in names)
-    return db.execute_many(f"INSERT INTO {table} ({columns}) VALUES ({marks})", data.iter_rows(), between=ctx.check_cancelled)
+    sizes = db.connector.input_sizes(data, temporary)
+    sql = f"INSERT INTO {table} ({columns}) VALUES ({marks})"
+    return db.execute_many(sql, data.iter_rows(), between=ctx.check_cancelled, sizes=sizes)
 
 
 @action(
@@ -692,8 +956,9 @@ def _insert(db, table: str, data: pl.DataFrame, names: list[str], ctx) -> int:
 )
 def run_sql(df, p, ctx):
     """Runs SQL in a database, e.g. a stored procedure after an export, or DELETE / UPDATE
-    statements. SQL Server: separate batches with GO lines, as in SSMS. Runs only when the
-    project is run; if it fails, its changes are rolled back. The table passes through unchanged."""
+    statements. SQL Server: separate batches with GO lines, as in SSMS (GO 3 runs a batch three
+    times). Runs only when the project is run, in one transaction: if it fails, its changes are
+    rolled back (so leave out BEGIN and COMMIT). The table passes through unchanged."""
     with ctx.database(p.connection) as db:
         try:
             count = db.connector.run_script(db.raw, p.sql)
@@ -701,7 +966,7 @@ def run_sql(df, p, ctx):
             raise
         except Exception as e:
             raise ActionError(db.connector.error_message(e)) from e
-    ctx.log("Done" + (f": {count:,} rows changed" if count >= 0 else ""))
+    ctx.log("Done" + (f": {count:,} row{'s' if count != 1 else ''} changed" if count >= 0 else ""))
     return df
 
 

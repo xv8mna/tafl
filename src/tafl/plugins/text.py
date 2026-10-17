@@ -41,6 +41,9 @@ def replace(df, p, ctx):
     pairs = [(r.find, r.replace) for r in p.replacements]
     if p.match != "whole" and any(find == "" for find, _ in pairs):
         raise ActionError("'Find' can't be empty here")
+    if p.match == "regex":
+        for find, _ in pairs:
+            _check_regex(find)
     updates = []
     for name in p.columns:
         dtype = df.schema[name]
@@ -60,7 +63,20 @@ def replace(df, p, ctx):
     try:
         return df.with_columns(updates)
     except pl.exceptions.ComputeError as e:
-        raise ActionError(f"Invalid regular expression: {str(e).splitlines()[0]}") from None
+        raise ActionError(f"Invalid regular expression: {_regex_problem(e)}") from None
+
+
+def _check_regex(pattern: str) -> None:
+    try:
+        pl.select(pl.lit("").str.contains(pattern))
+    except pl.exceptions.ComputeError as e:
+        raise ActionError(f"Invalid regular expression '{pattern}': {_regex_problem(e)}") from None
+
+
+def _regex_problem(error: Exception) -> str:
+    """The reason in an error of the regex library, e.g. "unclosed group"."""
+    found = re.search(r"^error: (.+)$", str(error), re.MULTILINE)
+    return found.group(1).strip() if found else str(error).splitlines()[0]
 
 
 def _replace_whole(name: str, dtype: pl.DataType, pairs, case_sensitive: bool, ctx) -> pl.Expr:
@@ -100,9 +116,10 @@ def _typed_pairs(pairs, dtype: pl.DataType):
                 continue
             series = pl.Series([text.strip()])
             if dtype.is_numeric():
-                value = dtypes.parse_numbers(series, "," if "," in text else ".")[0]
-                if value is not None and dtype.is_integer():
-                    value = int(value) if float(value).is_integer() else None
+                decimal = "," if "," in text else "."
+                value = dtypes.parse_numbers(series, decimal)[0]
+                if value is not None and dtype.is_integer():  # all digits, also beyond 15
+                    value = dtypes.parse_integers(series, decimal)[0] if value.is_integer() else None
             elif dtype == pl.Date:
                 value = dtypes.parse_dates(series)[0]
             elif dtype == pl.Datetime:
@@ -151,7 +168,7 @@ def clean(df, p, ctx):
             "none": text,
         }[p.trim]
         text = {
-            "upper": text.str.to_uppercase(),
+            "upper": text.str.to_uppercase().str.replace_all("ẞ", "SS", literal=True),  # as UPPER() in formulas
             "lower": text.str.to_lowercase(),
             "title": text.str.to_titlecase(),
             "keep": text,

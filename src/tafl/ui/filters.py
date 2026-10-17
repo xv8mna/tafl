@@ -16,7 +16,8 @@ A filter is stored with its table in the project file:
 ``{"column": "Date", "facet": "period", "options": {"by": "month"}, "values": ["2025-01"]}``.
 Values are JSON (dates as ISO text) and are converted to the column's type when the filter is
 used, so a filter keeps working when a step changes a column's type. No values = the filter is
-shown but doesn't filter.
+shown but doesn't filter. ``"except": true`` turns it around: all values except these. That
+keeps a selection of most of many values short (all of them: ``"values": []``).
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import polars as pl
 
 VALUE, COUNT = "value", "count"  # the columns of a facet
 MATCH, NO_MATCH = "match", "no match"
+_LONG = 500  # more chosen values are stored as the ones left out, if those are fewer
 FACETS = {
     "values": "Values",
     "period": "Time periods",
@@ -58,6 +60,7 @@ class Filter:
     values: list[Any] = field(default_factory=list)  # the applied values, as JSON
     facet: str = "values"
     options: dict[str, Any] = field(default_factory=dict)
+    excluded: bool = False  # the values are the ones left out: all others are applied
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"column": self.column}
@@ -65,6 +68,8 @@ class Filter:
             data["facet"] = self.facet
         if self.options:
             data["options"] = dict(self.options)
+        if self.excluded:
+            data["except"] = True
         data["values"] = list(self.values)
         return data
 
@@ -76,7 +81,32 @@ class Filter:
             list(data.get("values") or []),
             facet if facet in FACETS else "values",
             dict(data.get("options") or {}),
+            data.get("except") is True,
         )
+
+    def picker(self) -> Callable[[Any], bool]:
+        """A function: whether a value (as stored) is one the filter lets through."""
+        chosen = {value_key(v) for v in self.values}
+        if self.excluded:
+            return lambda stored: value_key(stored) not in chosen
+        return lambda stored: value_key(stored) in chosen
+
+
+def value_key(value: Any) -> Any:
+    """A stored value in a form that can be looked up in a set (NaN never equals itself)."""
+    return ("NaN",) if isinstance(value, float) and math.isnan(value) else value
+
+
+def selection(chosen: list[Any], offered: list[Any]) -> tuple[list[Any], bool]:
+    """How a filter stores ``chosen`` of the ``offered`` values (all as stored): the values, or
+    the values left out (then the second item is True) when all are chosen or the list would be
+    long: a value that isn't there yet (e.g. after another step) passes then."""
+    picked = {value_key(v) for v in chosen}
+    left_out = [v for v in offered if value_key(v) not in picked]
+    everything = bool(chosen) and not left_out
+    if everything or (len(chosen) > _LONG and len(left_out) < len(chosen)):
+        return left_out, True
+    return list(chosen), False
 
 
 def facets_for(dtype: pl.DataType) -> list[str]:
@@ -278,7 +308,7 @@ def condition(f: Filter, schema: pl.Schema) -> pl.Expr | None:
         found = pl.lit(False)
     if None in f.values:
         found = found | picked.is_null()
-    return found.fill_null(False)
+    return ~found.fill_null(False) if f.excluded else found.fill_null(False)
 
 
 def apply(df: pl.DataFrame, filters: list[Filter]) -> pl.DataFrame:
@@ -321,6 +351,13 @@ def formula(f: Filter, dtype: pl.DataType) -> str:
         parts += [test if value == MATCH else f"NOT {test}" for value in values if value in (MATCH, NO_MATCH)]
     elif values:
         parts.append(f"{_picked_sql(f, name)} IN ({', '.join(_sql(v) for v in values)})")
+    if f.excluded:  # empty cells pass unless they are left out too
+        if len(parts) > 1:
+            parts = [f"({p})" if " AND " in p else p for p in parts]
+        left_out = f"NOT coalesce({' OR '.join(parts)}, FALSE)" if parts else ""
+        if None in f.values:
+            return f"{name} IS NOT NULL" + (f" AND {left_out}" if left_out else "")
+        return left_out or "TRUE"
     if None in f.values:
         parts.append(f"{name} IS NULL")
     if len(parts) > 1:

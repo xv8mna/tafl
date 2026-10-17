@@ -62,3 +62,64 @@ def test_same_column_converted_twice(act):
 def test_excel_day_numbers_to_dates(act):
     df = pl.DataFrame({"serial": [45658, 45659]})
     assert change(act, df, "serial", "date").to_list() == [dt.date(2025, 1, 1), dt.date(2025, 1, 2)]
+
+
+def test_long_numbers_keep_all_their_digits(act):
+    df = pl.DataFrame(
+        {
+            "Code": ["1234567890123456789", "1111111111111111111"],
+            "Big": ["9223372036854775807", "-9223372036854775808"],
+            "ID": ["98765432109876543210", "7"],
+        }
+    )
+    assert change(act, df, "Code", "integer").to_list() == [1234567890123456789, 1111111111111111111]
+    assert change(act, df, "Big", "integer").to_list() == [2**63 - 1, -(2**63)]
+    ctx = StubContext()
+    assert change(act, df, "ID", "integer", ctx=ctx).to_list() == [None, 7]
+    assert ctx.warnings == [
+        "ID: 1 value(s) could not be converted to Whole number, e.g. '98765432109876543210' (now empty). "
+        "Whole numbers go up to 9,223,372,036,854,775,807: keep longer IDs as text"
+    ]
+    with pytest.raises(ActionError, match="keep longer IDs as text"):
+        change(act, df, "ID", "integer", on_error="fail")
+    numbers = pl.DataFrame({"n": [2**63 - 1, 2**53 + 1], "f": [2.5, -2.5]})
+    assert change(act, numbers, "n", "integer").to_list() == [2**63 - 1, 2**53 + 1]
+    assert change(act, numbers, "f", "integer").to_list() == [3, -3]
+    assert change(act, numbers, "n", "text", "0").to_list() == ["9223372036854775807", "9007199254740993"]
+
+
+def test_long_numbers_to_decimal_numbers_warn(act):
+    df = pl.DataFrame({"Code": ["1234567890123456789", "12,5"]})
+    ctx = StubContext()
+    assert change(act, df, "Code", "number", ctx=ctx).to_list() == [1.2345678901234568e18, 12.5]
+    assert ctx.warnings == [
+        "Code: 1 value(s) were rounded, e.g. '1234567890123456789': a decimal number keeps about 15 digits "
+        "(Whole number and Text keep them all)"
+    ]
+
+
+def test_two_digit_years_without_a_format(act):
+    df = pl.DataFrame({"Short": ["31.12.25", "01.01.26", "29.02.24", "01.01.30"]})
+    expected = [dt.date(2025, 12, 31), dt.date(2026, 1, 1), dt.date(2024, 2, 29), dt.date(1930, 1, 1)]
+    assert change(act, df, "Short", "date").to_list() == expected
+    assert change(act, df, "Short", "date", "dd.mm.yy").to_list() == expected
+    assert change(act, df, "Short", "datetime").to_list()[0] == dt.datetime(2025, 12, 31)
+
+
+def test_numbers_to_text_with_percent_and_text(act):
+    df = pl.DataFrame({"Rate": [0.05, 0.1], "Price": [1234.5, -2.0]})
+    assert change(act, df, "Rate", "text", "0%").to_list() == ["5%", "10%"]
+    assert change(act, df, "Price", "text", "#,##0.00 €").to_list() == ["1.234,50 €", "-2,00 €"]
+    assert change(act, df, "Price", "text", '"EUR "0.00', decimal=".").to_list() == ["EUR 1234.50", "-EUR 2.00"]
+    with pytest.raises(ActionError, match="exponent"):
+        change(act, df, "Price", "text", "0.0E+0")
+
+
+def test_dates_to_text_with_month_names(act):
+    df = pl.DataFrame({"d": [dt.date(2025, 12, 31)]})
+    assert change(act, df, "d", "text", "d. mmmm yyyy (dddd)").to_list() == ["31. December 2025 (Wednesday)"]
+
+
+def test_binary_to_text_as_hex(act):
+    df = pl.DataFrame({"raw": [b"\x01\x02\xff", b"", None]})
+    assert change(act, df, "raw", "text").to_list() == ["0x0102FF", "0x", None]

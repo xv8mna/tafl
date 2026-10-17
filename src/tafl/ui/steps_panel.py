@@ -190,12 +190,18 @@ class StepsPanel(QWidget):
                 Status.DISABLED: "disabled",
                 Status.BLOCKED: "blocked",
             }[result.status]
-            if result.status == Status.ERROR:
+            if result.status == Status.ERROR and (needed := self.session.missing_settings(step)):
+                status, info, tooltip = "incomplete", "incomplete", f"Not complete yet: fill in {', '.join(needed)}"
+            elif result.status == Status.ERROR:
                 info, tooltip = "error", result.error or ""
+            elif result.status == Status.SKIPPED and result.skip_rest:
+                info, tooltip = "skipped", f"Skipped: {result.skip_reason}"
             elif result.status == Status.SKIPPED:
                 info = "on run"
             elif result.df is not None:
                 info = f"{result.df.height:,} × {result.df.width}"
+            if result.status == Status.OK and result.skip_rest:
+                tooltip = f"The steps after this one are skipped: {result.skip_reason}"
             if any(level == "warning" for level, _ in result.messages):
                 status = "warning" if status == "ok" else status
                 tooltip = "\n".join(text for _, text in result.messages)

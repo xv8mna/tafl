@@ -1,3 +1,5 @@
+import datetime as dt
+
 import polars as pl
 import pytest
 
@@ -90,3 +92,22 @@ def test_aggregate_totals_and_name_clashes(act, people):
 def test_errors_name_the_new_column(act, people):
     with pytest.raises(ActionError, match=r"Formula error in \[Gross\]: column \[Agee\] not found"):
         act("calc.columns", people, {"columns": [{"name": "Double", "formula": "[Age] * 2"}, {"name": "Gross", "formula": "[Agee] * 2"}]})
+
+
+def test_aggregate_names_columns_of_the_wrong_type(act, people):
+    with pytest.raises(ActionError, match="^Sum needs a number column; City is text$"):
+        act("calc.aggregate", people, {"calculations": [{"function": "sum", "column": "City"}]})
+    days = pl.DataFrame({"Day": [dt.date(2025, 1, 1), dt.date(2025, 1, 3)]})
+    with pytest.raises(ActionError, match="^Sum needs a number column; Day is a date column$"):
+        act("calc.aggregate", days, {"calculations": [{"function": "sum", "column": "Day"}]})
+    with pytest.raises(ActionError, match="^Median needs a number or date column; City is text$"):
+        act("calc.aggregate", people, {"calculations": [{"function": "median", "column": "City"}]})
+    average = act("calc.aggregate", days, {"calculations": [{"function": "mean", "column": "Day"}]})
+    assert average["Average of Day"].to_list() == [dt.datetime(2025, 1, 2)]
+    assert act("calc.aggregate", people, {"calculations": [{"function": "max", "column": "City"}]}).item() == "Köln"
+
+
+def test_number_rows_in_text_order_like_sort(act):
+    df = pl.DataFrame({"Name": ["Zebra", "Äpfel", "apfel", "Peter"]})
+    out = act("calc.enumerate", df, {"order_by": [{"column": "Name"}]})
+    assert out["No"].to_list() == [4, 1, 2, 3]

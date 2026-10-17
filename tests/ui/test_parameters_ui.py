@@ -16,16 +16,22 @@ def _cell(dialog, row, column):
     return dialog.table.item(row, column).text()
 
 
+def _now(dialog, qtbot, row):
+    """The value now of a row, once the formulas are worked out (in the background)."""
+    qtbot.waitUntil(lambda: not dialog.calculating, timeout=10_000)
+    return _cell(dialog, row, 2)
+
+
 def _ok(dialog):
     return dialog.box.button(QDialogButtonBox.StandardButton.Ok)
 
 
-def test_the_dialog_shows_values_and_problems(session):
+def test_the_dialog_shows_values_and_problems(session, qtbot):
     session.project.parameters = [Parameter("Day", "=DATE '2026-10-15' - 1"), Parameter("Month", "=strftime({Day}, '%Y-%m')")]
     dialog = ParametersDialog(session)
-    assert [_cell(dialog, row, 2) for row in range(2)] == ["2026-10-14   (date)", "2026-10   (text)"]
-    dialog.table.item(0, 1).setText("=1 +")  # typing a value shows what it is at once
-    assert _cell(dialog, 0, 2).startswith("Error: the formula ends too early")
+    assert [_now(dialog, qtbot, row) for row in range(2)] == ["2026-10-14   (date)", "2026-10   (text)"]
+    dialog.table.item(0, 1).setText("=1 +")  # typing a value shows what it is
+    assert _now(dialog, qtbot, 0).startswith("Error: the formula ends too early")
     assert _cell(dialog, 1, 2).startswith("Error: The parameter {Day} has an error")
     dialog.table.item(1, 0).setText("day")
     assert dialog.problem.text() == "There are two parameters named 'day'" and _ok(dialog).isEnabled()
@@ -47,7 +53,7 @@ def test_add_move_delete_and_undo(session):
     dialog.table.setCurrentCell(1, 1)
     dialog.move(-1)
     assert [(p.name, p.value) for p in dialog.parameters()] == [("Parameter2", "2026-10-01"), ("Parameter1", "")]
-    assert _cell(dialog, 0, 2) == "2026-10-01   (date)" and dialog.table.currentRow() == 0
+    assert _cell(dialog, 0, 2) == "2026-10-01   (date)" and dialog.table.currentRow() == 0  # a fixed value at once
     dialog.table.setCurrentCell(1, 0)
     dialog.remove()
     dialog._accept()
@@ -128,21 +134,22 @@ def test_a_slow_formula_is_stopped(session, qtbot, monkeypatch):
     session.project.connections = [Connection("shop", "sqlite", {"file": "{Slow}.db"})]
     started = time.perf_counter()
     dialog = ParametersDialog(session)
-    assert time.perf_counter() - started < 4
-    assert _cell(dialog, 0, 2) == "Error: the formula took longer than 0.5 seconds"
+    qtbot.addWidget(dialog)
+    assert time.perf_counter() - started < 0.4  # worked out in the background: the window goes on working
+    assert [_cell(dialog, row, 2) for row in range(2)] == ["…", "…"]
+    assert _now(dialog, qtbot, 0) == "Error: the formula took longer than 0.5 seconds"
     assert _cell(dialog, 1, 2) == "2   (whole number)"  # the next formula on this thread works
     dialog.table.item(0, 1).setText("=40 + 2")
-    assert _cell(dialog, 0, 2) == "42   (whole number)"
+    assert _now(dialog, qtbot, 0) == "42   (whole number)"
     dialog.reject()
-    dialog.deleteLater()
 
     session.reload_sources()  # worked out again: by the connection test, in the background
     connections = ConnectionsDialog(session)
     qtbot.addWidget(connections)
     connections._test()
-    assert connections.test_result.text() == "Connecting…"
+    assert connections.test_result.toPlainText() == "Connecting…"
     qtbot.waitUntil(lambda: connections.test_button.isEnabled(), timeout=10_000)
-    assert connections.test_result.text() == "The parameter {Slow} has an error: the formula took longer than 0.5 seconds"
+    assert connections.test_result.toPlainText() == "The parameter {Slow} has an error: the formula took longer than 0.5 seconds"
 
 
 def test_the_window_has_the_dialog(window):

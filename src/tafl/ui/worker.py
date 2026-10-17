@@ -34,8 +34,10 @@ class _Job(QRunnable):
             self.signals.cancelled.emit(self.job_id)
         except Exception:
             self.signals.failed.emit(self.job_id, traceback.format_exc())
-        except BaseException as e:  # a crash inside Polars (Rust): report it instead of going silent
-            if not is_panic(e):
+        except BaseException as e:
+            # A crash inside Polars (Rust), or plugin code that tries to end the program
+            # (sys.exit, KeyboardInterrupt): report it instead of going silent
+            if not (is_panic(e) or isinstance(e, SystemExit | KeyboardInterrupt)):
                 raise
             self.signals.failed.emit(self.job_id, traceback.format_exc())
         else:
@@ -48,6 +50,7 @@ class Worker(QObject):
 
     finished = Signal(object)  # result of the latest job
     failed = Signal(str)  # traceback of the latest job
+    cancelled = Signal()  # the latest job stopped because it was cancelled
     busy_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -99,6 +102,7 @@ class Worker(QObject):
     def _on_cancelled(self, job_id: int) -> None:
         if job_id == self._latest:
             self._set_busy(False)
+            self.cancelled.emit()
 
     def _set_busy(self, busy: bool) -> None:
         if busy != self._busy:

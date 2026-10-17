@@ -18,10 +18,10 @@ from PySide6.QtWidgets import (
     QStyleOptionGraphicsItem,
 )
 
-from tafl.core import Group, Link, Table
+from tafl.core import Group, Link, Status, Table
 
 from .. import theme
-from ..session import Session
+from ..session import Session, first_error, missing_settings
 from .layout import GROUP_TITLE, HEADER, NODE_WIDTH, PADDING, ROW, frame_rect
 
 if TYPE_CHECKING:
@@ -164,16 +164,16 @@ class Box(QGraphicsObject):
         number_width = metrics.horizontalAdvance("00") + 8 if numbers else 14
         for index, row in enumerate(self.rows):
             top = HEADER + PADDING / 2 + index * ROW
-            dim = row.kind == "gap" or not row.enabled
             if row.number:
-                painter.setPen(QColor(theme.TEXT_DIM))
+                painter.setPen(QColor(theme.MAP_TEXT_DIM))
                 painter.drawText(QRectF(16, top, number_width, ROW), Qt.AlignmentFlag.AlignVCenter, str(row.number))
             left = 16 + number_width
             if row.kind == "table":  # status dot of the table
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(theme.status_color(self.view.session.table_status(row.key)))
                 painter.drawEllipse(QPointF(20, top + ROW / 2), 3.5, 3.5)
-            painter.setPen(QColor(theme.TEXT_DISABLED if dim else theme.TEXT))
+            color = theme.TEXT_DISABLED if not row.enabled else theme.MAP_TEXT_DIM if row.kind == "gap" else theme.TEXT
+            painter.setPen(QColor(color))
             text = metrics.elidedText(row.text, Qt.TextElideMode.ElideRight, int(NODE_WIDTH - left - 12))
             painter.drawText(QRectF(left, top, NODE_WIDTH - left - 12, ROW), Qt.AlignmentFlag.AlignVCenter, text)
 
@@ -227,7 +227,7 @@ class TableNode(Box):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(theme.status_color(self.status))
         painter.drawRoundedRect(QRectF(0, 0, 5, self.height), 2.5, 2.5)
-        self._paint_header(painter, self.name, self.info, QColor(theme.TEXT), QColor(theme.TEXT_DIM))
+        self._paint_header(painter, self.name, self.info, QColor(theme.TEXT), QColor(theme.MAP_TEXT_DIM))
         self._paint_rows(painter, numbers=True)
         for index, row in enumerate(self.rows):
             if row.kind == "link":
@@ -281,9 +281,31 @@ class TableNode(Box):
             hint = "\nRight-click → Turn table on" if self.status == "disabled" else ""
             self.setToolTip(f"{self.name}: not calculated ({why}){hint}")
         elif row is not None and row.kind != "gap":
-            self.setToolTip(f"Step {row.number}: {row.text}\nDouble-click to open this step")
+            self.setToolTip(f"Step {row.number}: {row.text}{self._skipped(row.key)}\nDouble-click to open this step")
         else:
-            self.setToolTip(f"{self.name}\nDouble-click to open this table · right-click for more")
+            self.setToolTip(
+                f"{self.name}{self._skipped()}{self._incomplete()}\nDouble-click to open this table · right-click for more"
+            )
+
+    def _incomplete(self) -> str:
+        """A line for the tooltip when a step is not filled in yet."""
+        failed = first_error(self.view.session.results.get(self.table_id)) if self.status == "incomplete" else None
+        if failed is None:
+            return ""
+        return f"\nStep {failed[0]} is not complete yet: fill in {', '.join(missing_settings(failed[1]))}"
+
+    def _skipped(self, step_id: str = "") -> str:
+        """A line for the tooltip when a step skipped the rest of the table (SkipRest)."""
+        result = self.view.session.results.get(self.table_id)
+        if result is None:
+            return ""
+        if not step_id:
+            ended = result.skipped_from
+            return f"\nRest skipped: {ended.skip_reason}" if ended is not None else ""
+        outcome = next((s for s in result.steps if s.step_id == step_id), None)
+        if outcome is None or outcome.status != Status.SKIPPED or not outcome.skip_rest:
+            return ""
+        return f"\nSkipped: {outcome.skip_reason}"
 
     def hoverLeaveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
         if self._port_hover:
@@ -309,7 +331,7 @@ class GroupNode(Box):
         self.color = group.color
         self.members = members
         self.summary = ""
-        self.summary_color = QColor(theme.TEXT_DIM)
+        self.summary_color = QColor(theme.MAP_TEXT_DIM)
 
     def in_anchor(self, table_id: str) -> QPointF:
         return self.mapToScene(QPointF(0, self.row_offset(table_id)))

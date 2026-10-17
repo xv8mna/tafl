@@ -53,13 +53,20 @@ class Registry:
         self.actions: dict[str, Action] = {}
         self.connectors: dict[str, Connector] = {}
         self.plugins: list[PluginInfo] = []
+        self.warnings: list[str] = []  # e.g. a plugin folder that was given but doesn't exist
 
     @classmethod
     def default(cls, extra_folders: Iterable[str | Path] = ()) -> Registry:
-        """Built-in plugins plus the user's plugin folders."""
+        """Built-in plugins plus the user's plugin folders. The folders given in ``TAFL_PLUGINS``
+        and ``extra_folders`` should exist (a warning otherwise); the one in APPDATA may not."""
         registry = cls()
         registry.load_builtin()
-        for folder in [*default_plugin_folders(), *map(Path, extra_folders)]:
+        extra = [Path(folder) for folder in extra_folders]
+        given = {*_env_plugin_folders(), *extra}
+        for folder in [*default_plugin_folders(), *extra]:
+            if folder in given and not folder.is_dir():
+                problem = "is not a folder" if folder.exists() else "does not exist"
+                registry.warnings.append(f"The plugin folder {folder} {problem}")
             registry.load_folder(folder)
         return registry
 
@@ -122,7 +129,7 @@ class Registry:
         self.plugins.append(info)
         try:
             module = importer()
-        except Exception as e:
+        except BaseException as e:  # also a plugin that calls sys.exit(): the app keeps running
             error = "Could not load:\n" + traceback.format_exc(limit=-4).strip()
             # Also an ImportError: in a folder updated from 0.1.0, left-over etl_tool folders with only
             # __pycache__ in them can make etl_tool importable (without anything in it)
@@ -155,10 +162,14 @@ class Registry:
 
 
 def default_plugin_folders() -> list[Path]:
-    folders = [Path(p) for p in os.environ.get(ENV_VAR, "").split(os.pathsep) if p.strip()]
+    folders = _env_plugin_folders()
     if appdata := os.environ.get("APPDATA"):
         folders.append(Path(appdata) / APP_FOLDER / "plugins")
     return folders
+
+
+def _env_plugin_folders() -> list[Path]:
+    return [Path(p) for p in os.environ.get(ENV_VAR, "").split(os.pathsep) if p.strip()]
 
 
 def _import_file(module_name: str, file: Path, search: list[str] | None) -> ModuleType:

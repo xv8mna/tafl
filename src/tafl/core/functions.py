@@ -94,7 +94,8 @@ CURATED: tuple[Function, ...] = (
        "use FLOOR(a / b) or TRUNC(a / b) there."),
     _f("%", OPERATORS, "a % b", "The remainder of a division: 7 % 2 = 1", "[Amount] % 7", " % "),
     # Text
-    _f("UPPER", TEXT, "UPPER(text)", "The text in uppercase", "UPPER([Name])", aliases=("UCASE",), instead_of=("PROPER", "INITCAP"),
+    _f("UPPER", TEXT, "UPPER(text)", "The text in uppercase (ß becomes SS)", "UPPER([Name])", aliases=("UCASE",),
+       instead_of=("PROPER", "INITCAP"),
        note="A capital first letter only (like PROPER for one word): UPPER(LEFT([Name], 1)) || LOWER(SUBSTRING([Name], 2))."),
     _f("LOWER", TEXT, "LOWER(text)", "The text in lowercase", "LOWER([Name])", aliases=("LCASE",)),
     _f("TRIM", TEXT, "TRIM(text [, characters])", "Removes spaces (or the given characters) from both ends", "TRIM([Name])"),

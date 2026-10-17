@@ -11,7 +11,7 @@
         {
           "id": "s1",
           "action": "csv.import",
-          "version": 2,
+          "version": 3,
           "params": {
             "file": "data/orders.csv"
           }
@@ -58,7 +58,7 @@
         {
           "id": "s4",
           "action": "excel.export",
-          "version": 2,
+          "version": 3,
           "params": {
             "file": "output/excel-check.xlsx",
             "sheet": "Data",

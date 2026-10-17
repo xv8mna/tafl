@@ -74,6 +74,15 @@ def report(tmp_path):
     return path
 
 
+def test_the_log_names_the_sheet_as_the_workbook_has_it(act, report):
+    ctx = StubContext()
+    act("excel.export", DATA.head(1), {"file": str(report), "sheet": "data", "existing": "sheet"}, ctx=ctx)
+    assert ctx.messages[-1] == ("info", f"Wrote 1 row to sheet 'Data' of {report} (sheet replaced, the other sheets are kept)")
+    for name in ("'Data", "Data'"):  # Excel doesn't allow these
+        with pytest.raises(ActionError, match="no ' at the start or end"):
+            act("excel.export", DATA, {"file": str(report), "sheet": name, "existing": "sheet"})
+
+
 def test_only_the_data_sheet_is_replaced(act, report):
     before = _parts(report)
     params = {"file": str(report), "sheet": "data", "existing": "sheet", "table_style": "Table Style Medium 2"}
@@ -179,7 +188,7 @@ def test_dates_in_a_workbook_with_1904_dates(act, tmp_path):
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows locks open files")
 def test_an_open_workbook_is_left_alone(act, report):
     before = report.read_bytes()
-    with open(report, "rb"), pytest.raises(ActionError, match="open in Excel"):
+    with open(report, "rb"), pytest.raises(ActionError, match="open in another program"):
         act("excel.export", DATA, {"file": str(report), "sheet": "Data", "existing": "sheet"})
     assert report.read_bytes() == before
     assert [p.name for p in report.parent.iterdir()] == ["report.xlsx"]  # no temporary file left

@@ -10,8 +10,8 @@ from pathlib import Path
 import duckdb
 import polars as pl
 from PySide6 import __version__ as pyside_version
-from PySide6.QtCore import QSettings, Qt, QUrl, qVersion
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QKeySequence
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, qVersion
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -75,6 +75,8 @@ class MainWindow(QMainWindow):
         self.map_view = MapView(session, self.edit_connections, self)
         self.map_view.open_table.connect(self.open_from_map)
         self.map_view.message.connect(lambda text: self.statusBar().showMessage(text, 10000))
+        self.data_panel.status_message.connect(lambda text: self.statusBar().showMessage(text, 10000))
+        self._close_after_run = False  # closing waits for the run to end
         self.views = QStackedWidget(self)
         self.views.addWidget(self.splitter)
         self.views.addWidget(self.map_view)
@@ -101,6 +103,7 @@ class MainWindow(QMainWindow):
         session.run_busy_changed.connect(self._run_busy)
         session.busy_changed.connect(self._calc_busy)
         session.run_finished.connect(self._run_finished)
+        session.run_stopped.connect(self._run_stopped)
         session.error.connect(self._show_error)
         self._restore_layout()
         self._update_title()
@@ -133,7 +136,9 @@ class MainWindow(QMainWindow):
             "Run this table", self.run_current_table, QKeySequence("Shift+F5"),
             "Calculate the selected table and the tables it uses, and execute their exports and commands (Shift+F5)",
         )
-        self.stop_action = self._action("■  Stop", self.session.cancel_run, tip="Stop the running project")
+        self.stop_action = self._action(
+            "■  Stop", self.stop_run, tip="Stop the running project after the step that is running"
+        )
         self.reload_action = self._action(
             "⟳  Reload data", self.session.reload_sources, QKeySequence("Ctrl+R"),
             "Read files and databases again (Ctrl+R)",
@@ -228,7 +233,7 @@ class MainWindow(QMainWindow):
         self.run_action.setEnabled(has_tables and not running)
         self.reload_action.setEnabled(has_tables)
         self.run_table_action.setEnabled(self.session.table is not None and not running)
-        self.stop_action.setEnabled(running)
+        self.stop_action.setEnabled(running and not self.session.stopping)
 
     def _update_title(self) -> None:
         self.setWindowTitle(f"{self._project_name()}{' •' if self.session.dirty else ''}  —  {APP_NAME}")
@@ -284,6 +289,8 @@ class MainWindow(QMainWindow):
 
     def _save_to(self, path: Path) -> bool:
         self.apply_typing()
+        if self.session.changed_on_disk(path) and not self.confirm_overwrite(path):
+            return False
         try:
             saved = self.session.save_project(path)
         except OSError as e:
@@ -316,6 +323,21 @@ class MainWindow(QMainWindow):
         box.setEscapeButton(cancel)
         box.exec()
         return "save" if box.clickedButton() is save else "discard" if box.clickedButton() is discard else "cancel"
+
+    def confirm_overwrite(self, path: Path) -> bool:
+        """The project file changed since this window opened or saved it: save over it?"""
+        box = QMessageBox(QMessageBox.Icon.Warning, "Save project", "", parent=self)
+        box.setText(f"“{path.name}” has changed since it was opened or saved here, for example in another window.")
+        box.setInformativeText(
+            "Saving replaces those changes with the project as it is in this window. "
+            "To keep both, cancel and use Save as…"
+        )
+        save = box.addButton("Save anyway", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        return box.clickedButton() is save
 
     def confirm(self, title: str, text: str, ok: str) -> bool:
         box = QMessageBox(QMessageBox.Icon.Question, title, text, parent=self)
@@ -371,6 +393,16 @@ class MainWindow(QMainWindow):
         if self.session.table_id:
             self.session.run_project([self.session.table_id])
 
+    def stop_run(self) -> None:
+        """Stop the run after the step that is running (an export of a big table may take a while)."""
+        if not self.session.running:
+            return
+        self.session.cancel_run()
+        self.statusBar().showMessage(
+            "Stopping after the current step…" + ("  The window closes then." if self._close_after_run else "")
+        )
+        self._update_actions()
+
     # --- views -------------------------------------------------------------------------------
 
     def show_map(self, on: bool) -> None:
@@ -389,6 +421,8 @@ class MainWindow(QMainWindow):
         self._update_actions()
         if running:
             self.statusBar().showMessage("Running the project…")
+        elif self._close_after_run:
+            QTimer.singleShot(0, self.close)  # after the results are shown
 
     def _calc_busy(self, busy: bool) -> None:
         self.busy_label.setText("Calculating…  " if busy else "")
@@ -399,6 +433,10 @@ class MainWindow(QMainWindow):
         text = "Run finished with errors" if failed else "Run finished"
         self.statusBar().showMessage(f"{text} — see Run results", 10000)
 
+    def _run_stopped(self) -> None:
+        self.run_dock.show()
+        self.statusBar().showMessage("Run stopped — the steps after the stop did not run", 10000)
+
     def edit_connections(self) -> None:
         ConnectionsDialog(self.session, self).exec()
 
@@ -408,6 +446,10 @@ class MainWindow(QMainWindow):
     # --- dialogs -----------------------------------------------------------------------------
 
     def show_plugins(self) -> None:
+        _text_dialog(self, "Plugins", self.plugins_text())
+
+    def plugins_text(self) -> str:
+        """The plugins with their actions and problems, and the plugin folders (Help → Plugins)."""
         lines = []
         for info in self.session.registry.plugins:
             lines.append(f"{info.name}   ({'built-in' if info.builtin else info.path})")
@@ -421,7 +463,8 @@ class MainWindow(QMainWindow):
             lines.append("")
         folders = "\n".join(f"    {f}" for f in default_plugin_folders()) or "    (none)"
         lines.append(f"Plugin folders:\n{folders}")
-        _text_dialog(self, "Plugins", "\n".join(lines))
+        lines += [f"    WARNING: {warning}" for warning in self.session.registry.warnings]
+        return "\n".join(lines)
 
     def show_about(self) -> None:
         licenses = "."
@@ -454,7 +497,7 @@ class MainWindow(QMainWindow):
         if geometry is not None:
             self.restoreGeometry(geometry)
         else:
-            self.resize(1500, 900)
+            self._first_size()
         for key, splitter in self._splitters().items():
             state = self.settings.value(key)
             if state is not None:
@@ -462,6 +505,18 @@ class MainWindow(QMainWindow):
         state = self.settings.value("window_state")
         if state is not None:
             self.restoreState(state)
+
+    def _first_size(self) -> None:
+        """1500 × 900 on the first start, at most 90 % of the screen, in the middle of it."""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(1500, 900)
+            return
+        free = screen.availableGeometry()
+        self.resize(min(1500, int(free.width() * 0.9)), min(900, int(free.height() * 0.9)))
+        frame = self.frameGeometry()
+        frame.moveCenter(free.center())
+        self.move(frame.topLeft())
 
     def _splitters(self) -> dict[str, QSplitter]:
         return {
@@ -472,7 +527,36 @@ class MainWindow(QMainWindow):
             "map_right": self.map_view.right,
         }
 
+    def ask_close_while_running(self) -> str:
+        """Closing during a run: "wait" (close when it is finished), "stop" (stop it, then close)
+        or "cancel" (keep the window open)."""
+        box = QMessageBox(QMessageBox.Icon.Question, "Close", "The project is running.", parent=self)
+        box.setInformativeText(
+            "Wait until the run is finished, or stop it after the step that is running? The window closes then."
+        )
+        wait = box.addButton("Wait, then close", QMessageBox.ButtonRole.AcceptRole)
+        stop = box.addButton("Stop the run", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(wait)
+        box.setEscapeButton(cancel)
+        box.exec()
+        return "wait" if box.clickedButton() is wait else "stop" if box.clickedButton() is stop else "cancel"
+
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.session.running:  # closes when the run is over: it may be writing files
+            event.ignore()
+            if self._close_after_run:
+                return
+            answer = self.ask_close_while_running()
+            if answer == "cancel":
+                return
+            self._close_after_run = True
+            if answer == "stop" or self.session.stopping:
+                self.stop_run()
+            else:
+                self.statusBar().showMessage("The window closes when the run is finished…")
+            return
+        self._close_after_run = False
         if not self.maybe_save("before closing"):
             event.ignore()
             return

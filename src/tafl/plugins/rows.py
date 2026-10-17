@@ -104,9 +104,12 @@ def filter_formula(df, p, ctx):
     summary=lambda p: "Sort by " + ", ".join(b.column + (" ↓" if b.order == "desc" else "") for b in p.by),
 )
 def sort(df, p, ctx):
-    """Sorts the rows. Rows with equal values keep their order."""
+    """Sorts the rows. Text is sorted like in Excel: upper and lower case count the same, letters
+    with accents sort with their base letter (ä with a), ß like ss. Rows with equal values keep
+    their order."""
+    text = {name for name, dtype in df.schema.items() if dtype == pl.String}
     return df.sort(
-        [b.column for b in p.by],
+        [dtypes.text_sort_key(pl.col(b.column)) if b.column in text else pl.col(b.column) for b in p.by],
         descending=[b.order == "desc" for b in p.by],
         nulls_last=p.empty_last,
         maintain_order=True,
@@ -220,7 +223,10 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
         number = dtypes.parse_numbers(pl.Series([value]), _decimal_of(value))[0]
         if number is None:
             raise ActionError(f"'{text}' is not a number (column '{column}')")
-        return int(number) if dtype.is_integer() and number.is_integer() else number
+        if dtype.is_integer() and number.is_integer():  # all digits, also beyond 15
+            whole = dtypes.parse_integers(pl.Series([value]), _decimal_of(value))[0]
+            return number if whole is None else whole
+        return number
     if dtype == pl.Date or dtype == pl.Datetime:
         if value.lower() in ("today", "heute"):
             day = dt.date.today()

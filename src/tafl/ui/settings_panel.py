@@ -11,7 +11,7 @@ from tafl.api import Kind
 from tafl.core import Status
 
 from .forms import FormContext, ParamForm
-from .session import Session, json_ready
+from .session import Session, first_error, json_ready, missing_settings
 
 _KIND_TEXT = {
     Kind.SOURCE: "first step of a table",
@@ -65,7 +65,9 @@ class SettingsPanel(QWidget):
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setWidget(content)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Forms shrink to the panel's width; a panel narrower than a form can be scrolled.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll = scroll
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(3, 0, 6, 6)
@@ -135,12 +137,20 @@ class SettingsPanel(QWidget):
         result = self.session.step_result(self.session.step)
         error = warning = info = ""
         if result is not None:
-            if result.status == Status.ERROR:
+            if result.status == Status.ERROR and (needed := missing_settings(result)):
+                info = f"Not complete yet: fill in {', '.join(needed)}."
+            elif result.status == Status.ERROR:
                 error = result.error or "Error"
+            elif result.status == Status.BLOCKED and (failed := first_error(self.session.result)) and missing_settings(failed[1]):
+                info = f"Step {failed[0]} is not complete yet: this step is calculated when it is."
             elif result.status == Status.BLOCKED:
                 error = "An earlier step has an error."
+            elif result.status == Status.SKIPPED and result.skip_rest:
+                info = f"This step is skipped: {result.skip_reason}."
             elif result.status == Status.SKIPPED:
                 info = "This step runs when you run the project (F5). Nothing is written while you edit."
+            elif result.skip_rest:
+                info = f"The steps after this one are skipped: {result.skip_reason}."
             warning = "\n".join(text for level, text in result.messages if level == "warning")
         for box, text in ((self.error, error), (self.warning, warning), (self.info, info)):
             box.setText(text)

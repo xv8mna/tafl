@@ -24,7 +24,6 @@ import contextlib
 import copy
 import html
 import io
-import os
 import posixpath
 import re
 import shutil
@@ -40,6 +39,7 @@ from lxml import etree
 from xlsxwriter import Workbook
 
 from .errors import ActionError
+from .files import read_error, replace_file
 
 _MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _PACKAGE = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -80,9 +80,10 @@ _BEFORE_CALC = (
 
 def replace_sheet(
     target: Path, sheet: str, write: Callable[[Workbook], object], warn: Callable[[str], None] | None = None
-) -> bool:
+) -> str | None:
     """Writes a sheet into the existing workbook ``target`` (see the module's description).
-    True if it replaced a sheet, False if it added one.
+    Returns the name of the sheet it replaced, as the workbook has it (upper and lower case may
+    differ from ``sheet``; the sheet keeps that name), or None if it added the sheet.
 
     What the old sheet holds of its own (charts, pictures, shapes, comments, controls, embedded
     objects, conditional formats, data validation, header and footer pictures) goes with it:
@@ -92,15 +93,17 @@ def replace_sheet(
     ``write`` gets an empty xlsxwriter workbook (with the target's date system; text that
     starts with = stays text) and adds one sheet to it, e.g. with
     ``df.write_excel(workbook=book, worksheet=sheet)``. The target is replaced only when all
-    is written; until then the new file is next to it, with a name starting with ~$.
+    is written (see ``files.replace_file``); until then the new file is next to it, with a name
+    starting with ~$.
     """
-    try:
-        archive = zipfile.ZipFile(target)
-    except zipfile.BadZipFile:
-        raise ActionError(f"{target.name} is not an Excel workbook, or it is protected with a password") from None
-    temporary = target.with_name(f"~${target.stem}.{os.getpid()}{target.suffix}")
-    try:
-        with archive, tempfile.TemporaryDirectory(prefix="tafl-") as folder:
+    with replace_file(target) as temporary:
+        try:
+            archive = zipfile.ZipFile(target)
+        except zipfile.BadZipFile:
+            raise ActionError(f"{target.name} is not an Excel workbook, or it is protected with a password") from None
+        except OSError as error:
+            raise read_error(error, target) from None
+        with archive, tempfile.TemporaryDirectory(prefix="tafl-") as folder:  # closed before the file is replaced
             book = _Package(archive)
             replacement = _Replacement(book, sheet)
             written = Path(folder) / "sheet.xlsx"
@@ -116,18 +119,12 @@ def replace_sheet(
             with zipfile.ZipFile(written) as source:
                 replacement.run(_Package(source))
             book.save(temporary)
-        try:
-            os.replace(temporary, target)
-        except PermissionError:
-            raise ActionError(f"Can't write {target.name}. Is it open in Excel?") from None
-    finally:
-        temporary.unlink(missing_ok=True)
     if replacement.lost and warn is not None:
         warn(
             f"The old sheet '{replacement.name}' had its own {_listed(replacement.lost)}, and they were removed "
             "with it (the other sheets keep theirs). To keep such things, put them on another sheet."
         )
-    return replacement.replaced
+    return replacement.name if replacement.replaced else None
 
 
 class _Replacement:

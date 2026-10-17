@@ -1,6 +1,7 @@
 import datetime as dt
 import os
 import sqlite3
+import uuid
 
 import polars as pl
 import pytest
@@ -60,6 +61,15 @@ def test_an_import_never_changes_the_database(project, registry, tmp_path):
 def test_detect_types_turns_iso_text_into_dates(project, registry):
     result = import_table(project, registry, table="main.orders", detect_types=True)
     assert result.df["day"].to_list() == [dt.date(2025, 1, 1), dt.date(2025, 1, 2)]
+
+
+def test_detect_types_says_why_long_numbers_stay_text(project, registry):
+    query = "SELECT '98765432109876543210' AS id, '12' AS n"
+    result = import_table(project, registry, mode="query", query=query, detect_types=True)
+    assert result.df.schema == pl.Schema({"id": pl.String, "n": pl.Int64})
+    assert result.steps[0].messages == [
+        ("warning", "id stays text: its numbers are too long to be kept exactly, e.g. '98765432109876543210'")
+    ]
 
 
 def test_column_with_mixed_values_becomes_text(project, registry):
@@ -450,3 +460,193 @@ def test_sqlserver_arithmetic_with_a_negative_value(registry):
             bound = db.read("SELECT " + columns.replace("{X}", "?"), [x] * len(terms)).row(0)
             assert db.read(connector.fill_sql("SELECT " + columns, {"X": x})).row(0) == bound, x
         assert db.read(connector.fill_sql("SELECT 200 * {X} / 100 AS a", {"X": -10})).row(0) == (-20,)
+
+
+def test_sqlite_import_attaches_no_database_while_the_project_is_looked_at(project, registry, tmp_path, monkeypatch):
+    """An ATTACH creates a missing file: while a project is only looked at, imports change nothing."""
+    monkeypatch.chdir(tmp_path)
+    made = tmp_path / "made.db"
+    table = project.add_table("Attach")
+    project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": f"ATTACH DATABASE '{made}' AS o"})
+    result = Engine(project, registry).evaluate(table.id)
+    assert result.first_error == "An import can ATTACH a database only when the project is run (it could create a file)"
+    assert not made.exists()
+    assert Engine(project, registry).run([table.id])[table.id].ok and made.exists()
+
+
+def test_a_value_the_driver_cant_read_names_its_column():
+    """A driver's output converter gives an ActionError for a value it can't read."""
+    from tafl.api import make_series
+
+    with pytest.raises(ActionError, match=r"^Convert Value first, e.g. CAST\(\[Value\] AS text\)$"):
+        make_series("Value", [None, 1, ActionError("Convert {column} first, e.g. CAST([{column}] AS text)")])
+
+
+def test_text_sizes_count_utf16_code_units():
+    """SQL Server counts an emoji as two characters: NVARCHAR(50) can't hold 50 of them."""
+    from tafl.api import text_length
+
+    assert text_length(pl.Series(["a" * 50, None])) == 50
+    assert text_length(pl.Series(["😀" * 25 + "a"])) == 100
+
+
+_SERVER = "[23000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]"
+
+
+def test_sqlserver_messages_keep_their_values_and_say_things_once(registry):
+    """The driver's records: without the prefixes and error numbers, the duplicate key value kept,
+    each message once (the driver repeats some), and the same error for more rows counted."""
+    error_message = registry.connectors["sqlserver"].error_message
+    duplicate = (
+        f"{_SERVER}Violation of PRIMARY KEY constraint 'PK__t__C3907C74'. Cannot insert duplicate key in object "
+        "'dbo.t'. The duplicate key value is ({value}). (2627)"
+    )
+    terminated = f"{_SERVER}The statement has been terminated. (3621)"
+    records = [duplicate.format(value=1) + " (SQLExecute)", terminated, duplicate.format(value=2), terminated]
+    assert error_message(Exception("23000", "; ".join(records))) == (
+        "Violation of PRIMARY KEY constraint 'PK__t__C3907C74'. Cannot insert duplicate key in object 'dbo.t'. "
+        "The duplicate key value is (1). 1 more like it."
+    )
+    nulls = (
+        f"{_SERVER}Cannot insert the value NULL into column 'Txt', table 'tempdb.dbo.t'; column does not allow nulls. "
+        f"INSERT fails. (515) (SQLExecDirectW); {terminated}"
+    )
+    assert error_message(Exception("23000", nulls)) == (
+        "Cannot insert the value NULL into column 'Txt', table 'tempdb.dbo.t'; column does not allow nulls. INSERT fails."
+    )
+    login = (
+        "[28000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]Login failed for user 'PC\\me'. (18456) "
+        "(SQLDriverConnect); [28000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]Cannot open database "
+        '"x" requested by the login. The login failed. (4060)'
+    )
+    twice = f"{login}; {login.replace(' (SQLDriverConnect)', '')}"
+    assert error_message(Exception("28000", twice)) == (
+        "Login failed for user 'PC\\me'. Cannot open database \"x\" requested by the login. The login failed."
+    )
+    driver = "[08001] [Microsoft][ODBC Driver 17 for SQL Server]"
+    server = (
+        f"{driver}SQL Server Network Interfaces: Fehler beim Suchen des angegebenen Servers/der angegebenen Instanz "
+        f"[xFFFFFFFF].  (-1) (SQLDriverConnect); {driver}Anmeldungstimeout abgelaufen (0); {driver}Netzwerkbezogener "
+        "oder instanzspezifischer Fehler beim Herstellen einer Verbindung mit SQL Server. (-1)"
+    )
+    assert error_message(Exception("08001", server)) == (
+        "SQL Server Network Interfaces: Fehler beim Suchen des angegebenen Servers/der angegebenen Instanz [xFFFFFFFF]. "
+        "Anmeldungstimeout abgelaufen. Netzwerkbezogener oder instanzspezifischer Fehler beim Herstellen einer "
+        "Verbindung mit SQL Server."
+    )
+    raised = "[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]check (1) failed; really (50000) (SQLExecDirectW)"
+    assert error_message(Exception("42000", raised)) == "check (1) failed; really"
+
+
+def test_sqlserver_uses_windows_own_driver_only_when_chosen(registry, monkeypatch):
+    """The driver "SQL Server" that comes with Windows reads dates and times as text."""
+    pyodbc = pytest.importorskip("pyodbc")
+    connector = registry.connectors["sqlserver"]
+    used = []
+
+    class Connection:
+        def add_output_converter(self, sql_type, convert):
+            pass
+
+    def connect(text, **options):
+        used.append(text)
+        return Connection()
+
+    def open_with(drivers, driver=""):
+        monkeypatch.setattr(pyodbc, "drivers", lambda: drivers)
+        connector.open({"server": ".", "database": "db", "driver": driver}, Context())
+        return used[-1].split(";")[0]
+
+    monkeypatch.setattr(pyodbc, "connect", connect)
+    windows = ["SQL Server", "Microsoft Access Driver (*.mdb, *.accdb)"]
+    with pytest.raises(ActionError) as error:
+        open_with(windows)
+    assert str(error.value) == (
+        "No suitable SQL Server ODBC driver is installed: install 'ODBC Driver 18 for SQL Server' (or 17) from "
+        "Microsoft. The driver 'SQL Server' that comes with Windows is too old: it reads dates and times as text "
+        "(to use it anyway, enter it as the connection's ODBC driver)."
+    )
+    with pytest.raises(ActionError, match=r"^No suitable SQL Server ODBC driver is installed: install .* Microsoft\.$"):
+        open_with([])
+    assert open_with(windows, "SQL Server") == "DRIVER={SQL Server}"
+    assert open_with([*windows, "ODBC Driver 17 for SQL Server"]) == "DRIVER={ODBC Driver 17 for SQL Server}"
+    with pytest.raises(ActionError) as error:
+        open_with(windows, "ODBC Driver 99 for SQL Server")
+    assert str(error.value) == (
+        "The ODBC driver 'ODBC Driver 99 for SQL Server' is not installed. Installed for SQL Server: 'SQL Server'"
+    )
+
+
+def test_sqlserver_go_with_a_repeat_count_and_a_comment(registry):
+    """As in SSMS: GO 3 runs the batch before it three times, and a -- comment may follow GO."""
+    connector = registry.connectors["sqlserver"]
+    conn = _Recorder()
+    sql = "INSERT INTO #t VALUES (1)\nGO 3\nSELECT 2\ngo -- the next one\r\nSELECT 3 -- GO 5\nGO 2 -- twice\nSELECT 4"
+    assert connector.run_script(conn, sql) == 7
+    assert [batch.strip() for batch in conn.batches] == [
+        *["INSERT INTO #t VALUES (1)"] * 3, "SELECT 2", *["SELECT 3 -- GO 5"] * 2, "SELECT 4",
+    ]  # fmt: skip
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_reads_sql_variant_and_clr_columns(registry):
+    """pyodbc can't read them: a whole table gets them as text, a query stops with a hint."""
+    connector = registry.connectors["sqlserver"]
+    settings = {"server": os.environ["TAFL_TEST_SQLSERVER"], "database": "tempdb"}
+    name = f"dbo.tafl_test_{uuid.uuid4().hex[:8]}"
+    values = {
+        "CAST(5 AS int)": "5",
+        "CAST(3000000000 AS bigint)": "3000000000",
+        "CAST(1.23456789012 AS float)": "1.23456789012",
+        "CAST(12.3456 AS money)": "12.3456",
+        "CAST(12.345 AS decimal(10, 3))": "12.345",
+        "N'Łódź'": "Łódź",
+        "CAST('2026-10-15' AS date)": "2026-10-15",
+        "CAST('2026-10-15T08:30:15.123' AS datetime)": "2026-10-15 08:30:15.123",
+        "CAST('2026-10-15 08:30:15.1234567' AS datetime2)": "2026-10-15 08:30:15.1234567",
+        "CAST('08:30:15.1234567' AS time)": "08:30:15.1234567",
+        "CAST(0x01FF AS varbinary(10))": "0x01FF",
+        "CAST(1 AS bit)": "1",
+        "N''": "",
+        "NULL": None,
+    }
+    with connector.open(settings, Context()) as db:
+        db.execute(f"CREATE TABLE {name} (n int, v sql_variant, g geography, h hierarchyid)")
+        for n, value in enumerate(values):
+            db.execute(f"INSERT INTO {name} (n, v) VALUES ({n}, {value})")
+        db.execute(f"UPDATE {name} SET g = geography::Point(47.4, 8.5, 4326), h = hierarchyid::Parse('/1/2/') WHERE n = 0")
+    try:
+        project = Project(name="SqlServer")
+        project.add_connection("server", "sqlserver", **settings)
+        table = project.add_table("Variant")
+        project.add_step(table, "db.import", {"connection": "server", "table": name})
+        result = Engine(project, registry).evaluate(table.id)
+        assert result.ok, result.first_error
+        rows = result.df.sort("n")
+        assert rows.schema == {"n": pl.Int64, "v": pl.String, "g": pl.String, "h": pl.String}
+        assert rows["v"].to_list() == list(values.values())
+        assert rows.row(0) == (0, "5", "POINT (8.5 47.4)", "/1/2/")
+        queries = {
+            f"SELECT n, v FROM {name}": "The column v is a sql_variant, which can't be read as it is: convert it to text "
+            "in the query, e.g. CAST([v] AS nvarchar(4000)) AS [v]. Importing the whole table converts it by itself.",
+            f"SELECT h, n FROM {name}": "The column h has a type such as geography or hierarchyid, which can't be read "
+            "as it is: convert it to text in the query, e.g. CAST([h] AS nvarchar(max)) AS [h]. Importing the whole "
+            "table converts it by itself.",
+        }
+        for query, message in queries.items():
+            table.steps[0].params.update(mode="query", query=query)
+            assert Engine(project, registry).evaluate(table.id).first_error == message
+        table.steps[0].params["query"] = f"SELECT CAST(v AS nvarchar(4000)) AS v FROM {name} WHERE n = 5"
+        assert Engine(project, registry).evaluate(table.id).df["v"].to_list() == ["Łódź"]
+        # A value of a later row that the server can't convert: its message, not the driver's error
+        query = (
+            "SELECT CAST(CASE WHEN n = 9000 THEN 'x' ELSE '1' END AS int) AS v FROM (SELECT TOP 10000 ROW_NUMBER() "
+            "OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects AS a CROSS JOIN sys.all_objects AS b) AS t"
+        )
+        table.steps[0].params["query"] = query
+        assert Engine(project, registry).evaluate(table.id).first_error == (
+            "Conversion failed when converting the varchar value 'x' to data type int."
+        )
+    finally:
+        with connector.open(settings, Context()) as db:
+            db.execute(f"DROP TABLE {name}")

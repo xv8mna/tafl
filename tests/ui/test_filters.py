@@ -6,7 +6,7 @@ import time
 import polars as pl
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from tafl.api.testing import StubContext
 from tafl.core import Project
@@ -18,8 +18,10 @@ from tafl.ui.filters import (
     facet,
     facets_for,
     formula,
+    from_json,
     parse_thresholds,
     range_labels,
+    selection,
     to_json,
     unusable,
 )
@@ -144,9 +146,9 @@ def test_quick_selection_search_and_clear(window, settle, session, demo):
     panel.filter_by("Status")
     (card,) = panel.filter_pane.cards
     statuses = set(listed(card))
-    card.search.setText("E")  # geliefert, offen (not case sensitive)
+    card.search.setText("L")  # geliefert (not case sensitive)
     visible = set(listed(card))
-    assert visible == {s for s in statuses if "e" in s}
+    assert visible == {s for s in statuses if "l" in s} == {"geliefert"}
     card.quick_select("all")
     card.apply()
     assert set(session.filters(orders.id)[0]["values"]) == visible
@@ -156,6 +158,12 @@ def test_quick_selection_search_and_clear(window, settle, session, demo):
     card.apply()
     assert set(session.filters(orders.id)[0]["values"]) == statuses - visible
     (card,) = panel.filter_pane.cards
+    card.quick_select("all")  # all values: stored as "all except none", it doesn't filter
+    card.apply()
+    assert session.filters(orders.id) == [{"column": "Status", "except": True, "values": []}]
+    (card,) = panel.filter_pane.cards
+    assert len(card.pending()) == len(statuses) and not card.apply_button.isEnabled()
+    assert "filtered" not in panel.info.text() and panel.filter_button.text() == "Filters"
     card.clear_button.click()
     assert session.filters(orders.id) == [{"column": "Status", "values": []}]
     assert "filtered" not in panel.info.text()
@@ -198,6 +206,18 @@ def test_double_click_filters_by_one_value(window, settle, session, demo):
     assert list(listed(card)) == ["large", "normal"]  # applied values come first
     assert card.view.selectionModel().isRowSelected(0)
     assert card.model.data(card.model.index(1, 0), Qt.ItemDataRole.ForegroundRole) is not None  # "normal" is grey
+
+
+def test_texts_are_listed_in_the_order_of_sort(session):
+    df = pl.DataFrame({"Name": ["Zebra", "apfel", "Äpfel", "Apfel", "Özdemir", None, "zebra", "Peter", "Straße", "Strasse"]})
+    table = session.project.add_table("Names")
+    session.set_filters(table.id, [{"column": "Name", "values": []}])
+    pane = FilterPane(session)
+    pane.show_data(table.id, df)
+    model = pane.cards[0].model
+    assert [row[0] for row in model.rows] == [
+        None, "Apfel", "apfel", "Äpfel", "Özdemir", "Peter", "Strasse", "Straße", "Zebra", "zebra",
+    ]
 
 
 def test_many_different_values_stay_fast(session):
@@ -356,3 +376,61 @@ def test_number_ranges_text_length_and_patterns(window, settle, session, demo):
 
     pane.add_filter("Net", again=True)  # a second filter on the same column
     assert [c.column for c in pane.cards] == ["Net", "CustomerNo", "Name", "Net"]
+
+
+@pytest.mark.parametrize(
+    "chosen",
+    [
+        Filter("City", ["Berlin", None], excluded=True),
+        Filter("City", ["Köln"], excluded=True),  # empty cells stay
+        Filter("Net", [10.5], excluded=True),
+        Filter("Date", [], excluded=True),  # all values: doesn't filter
+    ],
+)
+def test_all_values_except_some(registry, chosen):
+    expected = DATA.filter(~pl.col(chosen.column).is_in(from_json(chosen.values, DATA.schema[chosen.column])).fill_null(False))
+    if None in chosen.values:
+        expected = expected.filter(pl.col(chosen.column).is_not_null())
+    assert apply(DATA, [chosen]).equals(expected)
+    action = registry.actions["rows.filter_formula"]
+    condition = formula(chosen, DATA.schema[chosen.column])
+    assert action.run(DATA, action.resolve({"condition": condition}), StubContext()).equals(expected)
+    assert Filter.from_dict(chosen.to_dict()) == chosen
+
+
+def test_a_long_selection_is_stored_as_the_values_left_out():
+    offered = [f"C{i}" for i in range(2000)]
+    assert selection(offered[:3], offered) == (offered[:3], False)
+    assert selection(offered, offered) == ([], True)  # all of them
+    assert selection(offered[:1900], offered) == (offered[1900:], True)
+    assert selection(offered[:900], offered) == (offered[:900], False)  # the values left out are more
+    assert selection([], offered) == ([], False)
+
+
+def test_all_values_then_apply_is_fast_and_short(session, qtbot):
+    """100,000 different values: All, then Apply (once took 8 s and stored every value)."""
+    df = pl.DataFrame({"Customer": [f"C{i}" for i in range(100_000)], "Net": range(100_000)})
+    table = session.project.add_table("Big")
+    session.set_filters(table.id, [{"column": "Customer", "values": []}])
+    pane = FilterPane(session)
+    qtbot.addWidget(pane)
+    pane.resize(300, 700)
+    pane.show()
+    pane.show_data(table.id, df)
+    (card,) = pane.cards
+    QApplication.processEvents()
+    started = time.perf_counter()
+    card.quick_select("all")
+    QApplication.processEvents()  # drawing the selection
+    card.apply()
+    pane.show_data(table.id, df)
+    (card,) = pane.cards
+    QApplication.processEvents()
+    assert time.perf_counter() - started < 2
+    assert session.filters(table.id) == [{"column": "Customer", "except": True, "values": []}]
+    assert len(card.pending()) == 100_000 and not card.apply_button.isEnabled()
+
+    card._select_rows([row for row in range(100_000) if row != 5])  # all but one
+    card.apply()
+    assert session.filters(table.id) == [{"column": "Customer", "except": True, "values": [card.model.rows[5][2]]}]
+    assert apply(df, [Filter.from_dict(f) for f in session.filters(table.id)]).height == 99_999

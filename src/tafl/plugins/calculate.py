@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, expressions
+from tafl.api import ActionError, P, action, dtypes, expressions
 
 _ROW = "__etl_row__"
 _ORDER = [("asc", "Ascending"), ("desc", "Descending")]
@@ -49,7 +49,7 @@ def calculate_columns(df, p, ctx):
     Examples: [Price] * [Quantity] · ROUND([Net] * 1.19, 2) · UPPER(TRIM([Name])) ·
     [First name] || ' ' || [Last name] · IIF([Amount] > 1000, 'big', 'small') ·
     CASE WHEN [Country] = 'DE' THEN 'Germany' ELSE 'Other' END · YEAR([Date]) ·
-    [Date] + INTERVAL 30 DAY · SUM([Amount]) OVER (PARTITION BY [Customer])
+    [Date] + 30 (days) · SUM([Amount]) OVER (PARTITION BY [Customer])
     """
     names = [c.name.strip() for c in p.columns]
     for number, name in enumerate(names, start=1):
@@ -99,8 +99,9 @@ def enumerate_rows(df, p, ctx):
     partition = p.group_by if p.mode == "rows" else []
     work = df.with_row_index(_ROW)
     if p.order_by:
+        text = {name for name, dtype in df.schema.items() if dtype == pl.String}  # in the order of Sort
         work = work.sort(
-            [*partition, *(o.column for o in p.order_by)],
+            [*partition, *(dtypes.text_sort_key(pl.col(o.column)) if o.column in text else o.column for o in p.order_by)],
             descending=[*([False] * len(partition)), *(o.order == "desc" for o in p.order_by)],
             nulls_last=True,
             maintain_order=True,
@@ -154,6 +155,7 @@ def aggregate(df, p, ctx):
     for calc in p.calculations:
         if calc.function != "count_rows" and not calc.column:
             raise ActionError(f"Choose a column for '{_FUNCTION_LABELS[calc.function]}'")
+        _check_type(calc, df.schema.get(calc.column))
         aggregations.append(_aggregation(calc, p.separator).alias(_result_name(calc)))
     names = [*p.group_by, *(a.meta.output_name() for a in aggregations)]
     if duplicates := sorted({n for n in names if names.count(n) > 1}):
@@ -161,6 +163,19 @@ def aggregate(df, p, ctx):
     if p.group_by:
         return df.group_by(p.group_by, maintain_order=True).agg(aggregations)
     return df.select(aggregations)
+
+
+def _check_type(calc, dtype: pl.DataType | None) -> None:
+    """Sum needs numbers; average and median also take dates."""
+    if dtype is None or calc.function not in ("sum", "mean", "median"):
+        return
+    if dtype.is_numeric() or dtype in (pl.Boolean, pl.Duration):
+        return
+    if calc.function != "sum" and dtype.is_temporal():
+        return
+    kind = "text" if dtype == pl.String else f"a {dtypes.type_label(dtype)} column"
+    needs = "a number column" if calc.function == "sum" else "a number or date column"
+    raise ActionError(f"{_FUNCTION_LABELS[calc.function]} needs {needs}; {calc.column} is {kind}")
 
 
 def _aggregation(calc, separator: str) -> pl.Expr:

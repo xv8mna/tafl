@@ -71,3 +71,25 @@ def test_fill_empty_values(act):
     assert act("rows.fill", df, {"columns": ["Group"]})["Group"].to_list() == ["A", "A", "A", "B", "B"]
     assert act("rows.fill", df, {"columns": ["n"], "method": "up"})["n"].to_list() == [1, 3, 3, 5, 5]
     assert act("rows.fill", df, {"columns": ["n"], "method": "value", "value": "0"})["n"].to_list() == [1, 0, 3, 0, 5]
+
+
+def test_sort_text_like_excel(act):
+    df = pl.DataFrame({"Name": ["Zebra", "apfel", "Äpfel", "Apfel", "Özdemir", "zebra", "Peter", None, "Straße", "Strasse"]})
+    ascending = act("rows.sort", df, {"by": [{"column": "Name"}]})
+    assert names(ascending) == ["apfel", "Äpfel", "Apfel", "Özdemir", "Peter", "Straße", "Strasse", "Zebra", "zebra", None]
+    descending = act("rows.sort", df, {"by": [{"column": "Name", "order": "desc"}], "empty_last": False})
+    assert names(descending) == [None, "Zebra", "zebra", "Straße", "Strasse", "Peter", "Özdemir", "apfel", "Äpfel", "Apfel"]
+
+
+def test_two_digit_years_in_typed_values(act):
+    df = pl.DataFrame({"Name": ["a", "b", "c"], "Day": [dt.date(2025, 12, 31), dt.date(1975, 1, 1), None]})
+    assert names(flt(act, df, ("Day", "=", "31.12.25"))) == ["a"]
+    assert names(flt(act, df, ("Day", "in", "01.01.75; 1.1.2000"))) == ["b"]
+    filled = act("rows.fill", df, {"columns": ["Day"], "method": "value", "value": "01.02.26"})
+    assert filled["Day"][2] == dt.date(2026, 2, 1)
+
+
+def test_long_whole_numbers_in_typed_values(act):
+    df = pl.DataFrame({"Name": ["a", "b"], "Code": [1234567890123456789, 1234567890123456768]})
+    assert names(flt(act, df, ("Code", "=", "1234567890123456789"))) == ["a"]
+    assert names(flt(act, df, ("Code", "<", "1234567890123456789"))) == ["b"]

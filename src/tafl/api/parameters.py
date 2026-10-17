@@ -1,5 +1,5 @@
 """Project parameters: values that the settings of steps and connections use, written as
-``{Name}``.
+``{Name}``. Names have only letters A-Z, digits, _ and spaces, and start with a letter or _.
 
 A parameter's value is either fixed (``2026-10-01``, ``D:\\Data``, ``500``) or a formula
 (``=TODAY() - 1``) that can use the parameters above it. Fixed values get a type as on import: a

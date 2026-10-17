@@ -3,66 +3,162 @@
     tafl run PROJECT [--table NAME ...] [--preview] [--set NAME=VALUE ...]
     tafl show PROJECT --table NAME [--step N] [--rows 20] [--set NAME=VALUE ...]
     tafl plugins
+
+Exit codes: 0 done, 1 a table has an error (plugins: a plugin failed to load), 2 the project or
+the command line can't be used, 130 stopped with Ctrl+C.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import signal
 import sys
+import threading
 import time
+from collections.abc import Iterator
+from pathlib import Path
 
 import polars as pl
 
 from tafl import APP_NAME, COMMAND, __version__
-from tafl.api import Mode
+from tafl.api import Cancelled, Mode
 from tafl.api.parameters import Failed, as_text
-from tafl.core import Engine, Project, ProjectError, Registry, Status, StepResult, parameters
+from tafl.core import EXTENSION, Engine, Project, ProjectError, Registry, Status, StepResult, parameters
+
+STOPPED = 130  # Ctrl+C
+
+
+def _codes(*codes: tuple[int, str]) -> str:
+    """The exit codes, for the end of a help text."""
+    return "exit codes:\n" + "\n".join(f"  {code:<5}{meaning}" for code, meaning in codes)
+
+
+_USAGE = ((2, "the project or the command line can't be used"), (STOPPED, "stopped with Ctrl+C"))
+_RUN_CODES = _codes((0, "done (tables that are turned off are skipped)"), (1, "a table has an error"), *_USAGE)
+_SHOW_CODES = _codes((0, "done (also for a table that is turned off)"), (1, "the table has an error"), *_USAGE)
+_PLUGIN_CODES = _codes((0, "all plugins loaded"), (1, "a plugin failed to load"))
+_CODES = (
+    _codes((0, "done"), (1, "a table has an error (plugins: a plugin failed to load)"), *_USAGE)
+    + f"\n\n'{COMMAND} COMMAND --help' tells more about a command."
+)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog=COMMAND, description=f"{APP_NAME}: run and inspect projects.")
+    args = _parser().parse_args(argv)
+    console = Console()
+    stop = threading.Event()
+    try:
+        with _ctrl_c(stop):
+            return _main(args, console, stop)
+    except (KeyboardInterrupt, Cancelled):
+        console.error("Stopped")
+        return STOPPED
+
+
+def _parser() -> argparse.ArgumentParser:
+    lines = argparse.RawDescriptionHelpFormatter
+    parser = argparse.ArgumentParser(
+        prog=COMMAND, description=f"{APP_NAME}: run and inspect projects.", epilog=_CODES, formatter_class=lines
+    )
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
     parser.add_argument("--plugins", action="append", default=[], metavar="FOLDER", help="load plugins from FOLDER too")
-    commands = parser.add_subparsers(dest="command", required=True)
+    commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
+    project = f"the project file (*{EXTENSION})"
+    values = "a value for the project's parameter NAME (a fixed value, or =formula)"
 
-    run = commands.add_parser("run", help="calculate all tables and execute exports and commands")
-    run.add_argument("project")
+    run = commands.add_parser(
+        "run", help="calculate all tables and execute exports and commands", epilog=_RUN_CODES, formatter_class=lines
+    )
+    run.add_argument("project", help=project)
     run.add_argument("--table", action="append", metavar="NAME", help="only this table (and the tables it uses)")
     run.add_argument("--preview", action="store_true", help="calculate only; skip exports and commands")
-    run.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", dest="values",
-                     help="a value for the project's parameter NAME (a fixed value, or =formula)")  # fmt: skip
+    run.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", dest="values", help=values)
 
-    show = commands.add_parser("show", help="show the steps of a table and its data")
-    show.add_argument("project")
-    show.add_argument("--table", required=True, metavar="NAME")
+    show = commands.add_parser(
+        "show", help="show the steps of a table and its data", epilog=_SHOW_CODES, formatter_class=lines
+    )
+    show.add_argument("project", help=project)
+    show.add_argument("--table", required=True, metavar="NAME", help="the table to show")
     show.add_argument("--step", type=int, metavar="N", help="show the data after step N (default: the last step)")
-    show.add_argument("--rows", type=int, default=20, metavar="N", help="rows to show (default 20)")
-    show.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", dest="values",
-                      help="a value for the project's parameter NAME (a fixed value, or =formula)")  # fmt: skip
+    show.add_argument("--rows", type=_at_least_one, default=20, metavar="N", help="rows to show (default 20)")
+    show.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", dest="values", help=values)
 
-    commands.add_parser("plugins", help="list plugins, their actions and load errors")
+    commands.add_parser(
+        "plugins", help="list plugins, their actions and load errors", epilog=_PLUGIN_CODES, formatter_class=lines
+    )
+    return parser
 
-    args = parser.parse_args(argv)
-    console = Console()
+
+def _at_least_one(text: str) -> int:
+    try:
+        number = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{text}' is not a whole number") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"needs at least 1, not {number}")
+    return number
+
+
+@contextlib.contextmanager
+def _ctrl_c(stop: threading.Event) -> Iterator[None]:
+    """Ctrl+C sets ``stop`` before it interrupts: the engine then stops the calculation, instead
+    of taking the interruption for an error of the step it came in."""
+    if threading.current_thread() is not threading.main_thread():  # signals reach only the main thread
+        yield
+        return
+
+    def interrupt(signum: int, frame: object) -> None:
+        stop.set()
+        raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGINT, interrupt)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous if previous is not None else signal.default_int_handler)
+
+
+def _main(args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
     registry = Registry.default(args.plugins)
+    if stop.is_set():  # Ctrl+C while a plugin was loading: that plugin has it as its error
+        raise Cancelled()
+    for warning in registry.warnings:
+        console.warn(warning)
     if args.command == "plugins":
         return _plugins(registry, console)
     try:
-        engine = Engine(Project.load(args.project), registry)
+        engine = Engine(_load(args.project), registry)
         for name, error in registry.errors:
             console.warn(f"Plugin '{name}' failed to load: {error.splitlines()[-1]}")
         if (code := _parameters(engine, args.values, console)) is not None:
             return code
         if args.command == "run":
-            return _run(engine, args, console)
-        return _show(engine, args, console)
-    except (ProjectError, OSError) as e:
+            return _run(engine, args, console, stop)
+        return _show(engine, args, console, stop)
+    except ProjectError as e:
         console.error(str(e))
+        return 2
+    except OSError as e:
+        console.error(f"{e.strerror or e}: {e.filename}" if e.filename else str(e))
         return 2
 
 
+def _load(name: str) -> Project:
+    path = Path(name).resolve()
+    if path.is_dir():
+        raise ProjectError(f"{path} is a folder, not a project file")
+    if not path.exists():
+        raise ProjectError(f"There is no project file {path}")
+    try:
+        return Project.load(path)
+    except OSError as e:  # e.g. no permission
+        raise ProjectError(f"The project file {path} can't be read: {e.strerror or e}") from e
+
+
 def _parameters(engine: Engine, given: list[str], console: Console) -> int | None:
-    """Takes the --set values. 2 if a value is given for no parameter, or a name can't be used."""
+    """Takes the --set values. 2 if a value is given for no parameter, or a name can't be used
+    (a name that nothing uses only gets a warning)."""
     overrides = {}
     for item in given:
         name, sign, value = item.partition("=")
@@ -70,11 +166,13 @@ def _parameters(engine: Engine, given: list[str], console: Console) -> int | Non
             console.error(f"--set needs NAME=VALUE, not '{item}'")
             return 2
         overrides[name.strip()] = value
-    found = parameters.problems(engine.project, overrides)
+    found = parameters.problems(engine.project, overrides, ignore_unused=True)
     for problem in found:
         console.error(problem)
     if found:
         return 2
+    for warning in parameters.ignored(engine.project):
+        console.warn(warning)
     engine.parameter_overrides = overrides
     return None
 
@@ -88,9 +186,9 @@ def _list_parameters(engine: Engine, console: Console) -> None:
             console.print(f"  {{{name}}} = {shown}")
 
 
-def _run(engine: Engine, args: argparse.Namespace, console: Console) -> int:
+def _run(engine: Engine, args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
     started = time.perf_counter()
-    results = engine.run(args.table, mode=Mode.PREVIEW if args.preview else Mode.RUN)
+    results = engine.run(args.table, mode=Mode.PREVIEW if args.preview else Mode.RUN, cancel=stop)
     _list_parameters(engine, console)
     failed = False
     for table_id, result in results.items():
@@ -109,33 +207,28 @@ def _run(engine: Engine, args: argparse.Namespace, console: Console) -> int:
     return 1 if failed else 0
 
 
-def _show(engine: Engine, args: argparse.Namespace, console: Console) -> int:
+def _show(engine: Engine, args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
     table = engine.project.table(args.table)
     if args.step is not None and not 1 <= args.step <= len(table.steps):
         console.error(f"Table '{table.name}' has steps 1 to {len(table.steps)}")
         return 2
-    result = engine.evaluate(table.id, until=None if args.step is None else args.step - 1)
+    result = engine.evaluate(table.id, until=None if args.step is None else args.step - 1, cancel=stop)
     _list_parameters(engine, console)
     console.print(table.name)
+    if result.skipped:
+        console.print(f"  {console.symbol(Status.DISABLED)} skipped: {result.skipped}")
     if result.error:
         console.print(f"  {console.symbol(Status.ERROR)} {result.error}")
     for number, step in enumerate(table.steps, start=1):
         step_result = result.steps[number - 1] if number <= len(result.steps) else None
         console.step(number, engine.describe(step), step_result, selected=number == len(result.steps))
+    if result.skipped:
+        return 0
     shown = result.steps[-1] if result.steps else None
     if shown is None or shown.df is None:
         return 1
-    df = shown.df
-    console.print(f"\n{df.height:,} rows × {df.width} columns")
-    with pl.Config(
-        tbl_rows=args.rows,
-        tbl_cols=-1,
-        tbl_width_chars=250,
-        fmt_str_lengths=40,
-        tbl_hide_dataframe_shape=True,
-        tbl_formatting="UTF8_FULL_CONDENSED" if console.unicode else "ASCII_FULL_CONDENSED",
-    ):
-        console.print(str(df.head(args.rows)))
+    console.print(f"\n{_size(shown.df)}")
+    console.table(shown.df, args.rows)
     return 0 if result.ok else 1
 
 
@@ -153,6 +246,15 @@ def _plugins(registry: Registry, console: Console) -> int:
     return 1 if registry.errors else 0
 
 
+def _size(df: pl.DataFrame) -> str:
+    """"1 row × 3 columns"."""
+    return f"{_count(df.height, 'row')} × {_count(df.width, 'column')}"
+
+
+def _count(number: int, word: str) -> str:
+    return f"{number:,} {word}{'' if number == 1 else 's'}"
+
+
 class Console:
     """Prints with Unicode symbols when the terminal can show them, plain ASCII otherwise."""
 
@@ -163,6 +265,7 @@ class Console:
         Status.DISABLED: ("○", "OFF "),
         Status.BLOCKED: ("·", "--  "),
     }
+    _WORDS = {"×": "x", "→": "->", "↓": "desc", "…": "...", "–": "-"}  # without Unicode
 
     def __init__(self) -> None:
         encoding = getattr(sys.stdout, "encoding", None) or "ascii"
@@ -180,10 +283,35 @@ class Console:
         unicode, ascii_ = self._SYMBOLS[status]
         return unicode if self.unicode else ascii_
 
-    def print(self, text: str = "") -> None:
+    def plain(self, text: str) -> str:
+        """``text`` as it is printed: without Unicode, the symbols as words."""
         if not self.unicode:
-            text = text.replace("×", "x").replace("→", "->").replace("↓", "desc").replace("…", "...").replace("–", "-")
-        print(text)
+            for symbol, word in self._WORDS.items():
+                text = text.replace(symbol, word)
+        return text
+
+    def print(self, text: str = "") -> None:
+        print(self.plain(text))
+
+    def table(self, df: pl.DataFrame, rows: int) -> None:
+        """The first ``rows`` rows of ``df``. Without Unicode the symbols in the data become words
+        before Polars lines up the columns."""
+        shown = df.head(rows)
+        if not self.unicode:
+            symbols, words = list(self._WORDS), list(self._WORDS.values())
+            shown = shown.with_columns(pl.col(pl.String).str.replace_many(symbols, words))
+            names = [self.plain(name) for name in shown.columns]
+            if len(set(names)) == len(names):
+                shown.columns = names
+        with pl.Config(
+            tbl_rows=rows,
+            tbl_cols=-1,
+            tbl_width_chars=250,
+            fmt_str_lengths=40,
+            tbl_hide_dataframe_shape=True,
+            tbl_formatting="UTF8_FULL_CONDENSED" if self.unicode else "ASCII_FULL_CONDENSED",
+        ):
+            self.print(str(shown))
 
     def warn(self, text: str) -> None:
         print(f"Warning: {text}", file=sys.stderr)
@@ -198,10 +326,12 @@ class Console:
             return
         details = ""
         if result.status == Status.OK and result.df is not None:
-            details = f"   {result.df.height:,} rows × {result.df.width} columns"
+            details = f"   {_size(result.df)}"
             details += "   (cached)" if result.cached else f"   {result.seconds:.2f}s"
+        elif result.status == Status.ERROR and result.seconds:  # it ran, then failed
+            details = f"   {result.seconds:.2f}s"
         elif result.status == Status.SKIPPED:
-            details = "   (runs only when the project is run)"
+            details = f"   (skipped: {result.skip_reason})" if result.skip_rest else "   (runs only when the project is run)"
         self.print(f" {marker}{self.symbol(result.status)} {number}. {description}{details}")
         if result.error and result.status == Status.ERROR:
             for line in result.error.splitlines():

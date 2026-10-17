@@ -39,6 +39,10 @@ def window(qapp, session):
     window = MainWindow(session)
     yield window
     session._set_dirty(False)  # closing must not ask about unsaved changes
+    if session.running:  # closing would ask whether to wait for the run
+        session.cancel_run()
+        session.wait()
+        qapp.processEvents()
     window.close()
     window.deleteLater()
 

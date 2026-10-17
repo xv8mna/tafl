@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -15,6 +16,7 @@ from tafl.api.parameters import (
     NAME,
     PLACE,
     Failed,
+    as_text,
     fill_formula,
     fill_sql,
     fill_text,
@@ -39,25 +41,33 @@ def values(project: Project, overrides: Mapping[str, str] | None = None, *, limi
     """Name -> value of each parameter, in their order: fixed values typed (a ``Fixed``),
     formulas calculated (a formula can use the parameters above it, and may take ``limit``
     seconds). ``overrides`` (e.g. from ``tafl run --set``) replace the values written in the
-    project; a value that can't be worked out is a Failed."""
+    project; a value that can't be worked out is a Failed. A formula that fails with an
+    override of another type than the project's value says so."""
     given = {name.strip().lower(): value for name, value in (overrides or {}).items()}
     names = [parameter.name.strip().lower() for parameter in project.parameters]
     found: dict[str, Any] = {}
+    own: dict[str, Any] | None = None  # the values without the overrides, worked out when needed
     for index, parameter in enumerate(project.parameters):
         text = given.get(names[index], parameter.value)
-        found[parameter.name] = _value(text, found, names[index:], limit)
+        value = _value(text, found, names[index:], limit)
+        if isinstance(value, Failed) and given and text.lstrip().startswith("="):
+            if own is None:
+                own = values(project, limit=limit)
+            value = _override_hint(value, text.lstrip()[1:], found, own, given)
+        found[parameter.name] = value
     return found
 
 
-def problems(project: Project, overrides: Mapping[str, str] | None = None) -> list[str]:
-    """Names that can't be used, twice the same name, and overrides for no parameter."""
+def problems(project: Project, overrides: Mapping[str, str] | None = None, *, ignore_unused: bool = False) -> list[str]:
+    """Names that can't be used, twice the same name, and overrides for no parameter. With
+    ``ignore_unused``, a name that can't be used is no problem as long as nothing uses it
+    (see ``ignored``)."""
     found, seen = [], set()
     for parameter in project.parameters:
         name = parameter.name
-        if name != name.strip() and name.strip():
-            found.append(f"The parameter name '{name}' can't be used: it starts or ends with a space")
-        elif not NAME.fullmatch(name):
-            found.append(f"The parameter name '{name}' can't be used: letters, digits, _ and spaces, starting with a letter")
+        if (problem := _name_problem(name)) is not None:
+            if not (ignore_unused and not used(project, name)):
+                found.append(problem)
         elif name.strip().lower() in seen:
             found.append(f"There are two parameters named '{name}'")
         seen.add(name.strip().lower())
@@ -66,6 +76,28 @@ def problems(project: Project, overrides: Mapping[str, str] | None = None) -> li
             listed = ", ".join(p.name for p in project.parameters) or "none"
             found.append(f"The project has no parameter '{name}' (its parameters: {listed})")
     return found
+
+
+def ignored(project: Project) -> list[str]:
+    """Warnings for the parameters whose names can't be used, but that nothing uses: a
+    calculation can do without them."""
+    return [
+        f"{problem}. Nothing uses it, so it is ignored"
+        for parameter in project.parameters
+        if (problem := _name_problem(parameter.name)) is not None and not used(project, parameter.name)
+    ]
+
+
+def used(project: Project, name: str) -> bool:
+    """Whether a step, a connection or a parameter's value has ``{name}`` (upper and lower case
+    and the spaces around the name don't matter)."""
+    place = re.compile(r"\{\s*" + re.escape(name.strip()) + r"\s*\}", re.IGNORECASE)
+    found = [
+        *(step.params for table in project.tables for step in table.steps),
+        *(connection.settings for connection in project.connections),
+        *(parameter.value for parameter in project.parameters),
+    ]
+    return any(place.search(text) for text in _strings(found))
 
 
 def fill(params: Sequence[Param], raw: Mapping[str, Any], values: Mapping[str, Any], sql: SqlFill = fill_sql) -> dict[str, Any]:
@@ -126,6 +158,47 @@ def value_label(value: Any) -> str:
     if value is None:
         return "empty"
     return "text"
+
+
+def _name_problem(name: str) -> str | None:
+    if name != name.strip() and name.strip():
+        return f"The parameter name '{name}' can't be used: it starts or ends with a space"
+    if not NAME.fullmatch(name):
+        rule = "only letters A-Z, digits, _ and spaces, starting with a letter or _"
+        return f"The parameter name '{name}' can't be used: {rule}"
+    return None
+
+
+def _strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            yield from _strings(item)
+
+
+def _override_hint(
+    failed: Failed, formula: str, found: Mapping[str, Any], own: Mapping[str, Any], given: Mapping[str, str]
+) -> Failed:
+    """The error of a formula, saying which override it uses has another type than the
+    project's own value of that parameter (e.g. --set Day=yesterday for a date)."""
+    for _start, _end, name, place in formula_places(formula):
+        key = next((k for k in found if k.strip().lower() == name.strip().lower()), None)
+        if place != "formula" or key is None or key.strip().lower() not in given:
+            continue
+        value, before = found[key], own.get(key)
+        if isinstance(value, Failed) or isinstance(before, Failed) or value_label(value) == value_label(before):
+            continue
+        hint = f"{{{key}}} was given as '{as_text(value)}', {_a(value_label(value))}"
+        return Failed(f"{failed.message.rstrip('.')} ({hint}, but the project's value is {_a(value_label(before))})")
+    return failed
+
+
+def _a(label: str) -> str:
+    return {"true/false": "true or false", "empty": "empty"}.get(label, f"a {label}")
 
 
 def _shown(params: Sequence[Param], raw: Mapping[str, Any]) -> Mapping[str, Any]:

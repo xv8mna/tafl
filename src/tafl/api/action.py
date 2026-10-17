@@ -81,7 +81,7 @@ class Action:
                 text = self.summary.format_map(_Lenient(params))
             else:
                 text = self.summary(params)
-        except Exception:  # a broken summary must never break the step list
+        except (Exception, SystemExit):  # a broken summary must never break the step list
             return self.name
         return text or self.name
 

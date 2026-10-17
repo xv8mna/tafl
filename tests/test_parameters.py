@@ -349,6 +349,22 @@ def test_a_formula_with_an_error():
     assert found["Below"].message.startswith("there is no parameter {Later2}")
 
 
+def test_a_formula_that_fails_with_a_given_value_names_it():
+    """E.g. tafl run --set Day=yesterday, for a parameter whose own value is a date."""
+    project = _project(("Day", "=TODAY() - 1"), ("Month", "=strftime({Day}, '%Y-%m')"), ("Label", "='Month ' || {Month}"))
+    found = parameters.values(project, {"day": "yesterday"})
+    hint = "({Day} was given as 'yesterday', a text, but the project's value is a date)"
+    assert found["Month"].message.endswith(hint) and "strftime" in found["Month"].message
+    assert found["Label"].message.endswith(hint)  # it uses {Month}
+    assert parameters.values(project, {"Day": "2026-10-01"})["Month"] == "2026-10"
+
+    broken = _project(("Day", "=TODAY() - 1"), ("Month", "=strftime({Day}, '%Y-%m') +"))
+    alone = parameters.values(broken)["Month"]
+    assert parameters.values(broken, {"Day": "2026-10-01"})["Month"] == alone  # the same type: no hint
+    quoted = _project(("Day", "=TODAY() - 1"), ("Month", "='{Day}' + 1"))
+    assert "given" not in parameters.values(quoted, {"Day": "yesterday"})["Month"].message  # in a text
+
+
 def test_a_formula_can_only_use_the_parameters_above_it():
     found = parameters.values(_project(
         ("Month", "=strftime({day}, '%Y-%m')"), ("Day", "=TODAY()"), ("Next", "={Next} + 1"), ("Name", "='{Later}'"), ("Later", "x"),
@@ -383,11 +399,35 @@ def test_problems_with_names_and_overrides():
     project = _project(("Day", "1"), ("day", "2"), ("2nd", "3"), ("Run date", "4"), ("Month ", "5"), (" Year", "6"))
     assert parameters.problems(project, {"Month": "x", "RUN DATE": "5", "Week": "1"}) == [
         "There are two parameters named 'day'",
-        "The parameter name '2nd' can't be used: letters, digits, _ and spaces, starting with a letter",
+        "The parameter name '2nd' can't be used: only letters A-Z, digits, _ and spaces, starting with a letter or _",
         "The parameter name 'Month ' can't be used: it starts or ends with a space",
         "The parameter name ' Year' can't be used: it starts or ends with a space",
         "The project has no parameter 'Week' (its parameters: Day, day, 2nd, Run date, Month ,  Year)",
     ]
+
+
+def test_names_that_cant_be_used_but_nothing_uses_can_be_ignored():
+    project = _project(("Größe", "5"), ("_x", "1"), (" Year", "2026"), ("Day", "1"), ("day", "2"))
+    project.add_step(project.add_table("Orders"), "csv.import", {"file": "orders_{x}.csv"})
+    assert parameters.problems(project, ignore_unused=True) == ["There are two parameters named 'day'"]
+    assert parameters.ignored(project) == [
+        "The parameter name 'Größe' can't be used: only letters A-Z, digits, _ and spaces, starting with a letter or _. "
+        "Nothing uses it, so it is ignored",
+        "The parameter name ' Year' can't be used: it starts or ends with a space. Nothing uses it, so it is ignored",
+    ]
+
+    uses = [
+        lambda: project.tables[0].steps[0].params.update(file="orders_{ GRÖßE }.csv"),
+        lambda: project.connections.append(Connection("db", "sqlite", {"file": ["{größe}.db"]})),
+        lambda: project.parameters.append(Parameter("Size", "={Größe} * 2")),
+    ]
+    for use in uses:
+        before = (dict(project.tables[0].steps[0].params), list(project.connections), list(project.parameters))
+        use()
+        assert parameters.used(project, "Größe")
+        assert "The parameter name 'Größe' can't be used" in parameters.problems(project, ignore_unused=True)[0]
+        project.tables[0].steps[0].params, project.connections, project.parameters = before
+    assert not parameters.used(project, "Größe")
 
 
 def test_names_are_found_without_the_spaces_around_them():
@@ -686,7 +726,7 @@ def test_an_unknown_name_in_a_text_gives_a_warning(project, registry):
         assert result.steps[2].cached is cached and result.df.columns[-1] == "Label {Mni}"
         assert result.steps[2].messages == [("warning", "{Mni} is not a parameter of the project: it was left as it is")]
         assert result.steps[3].messages[0] == ("warning", "{Dya} is not a parameter of the project: it was left as it is")
-    assert engine.evaluate("Orders").steps[0].messages == []
+    assert [level for level, _ in engine.evaluate("Orders").steps[0].messages] == ["info"]  # {Day} is known
     plain_project = Project(name="Plain")  # without parameters, braces are just text
     plain_project.path = project.path
     table = plain_project.add_table("Orders")

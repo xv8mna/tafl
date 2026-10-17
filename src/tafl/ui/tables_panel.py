@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .action_menu import fill_action_menu
-from .session import Session
+from .session import Session, first_error, missing_settings, size_text
 
 _KIND = Qt.ItemDataRole.UserRole  # "table" or "group"
 _ID = Qt.ItemDataRole.UserRole + 1
@@ -168,8 +168,14 @@ class TablesPanel(QWidget):
                 item.setToolTip(0, "Turned off: not calculated, its exports don't run (right-click → Turn on)")
             elif result is not None and result.skipped:
                 item.setToolTip(0, f"Not calculated: it {result.skipped}")
+            elif status == "incomplete" and (failed := first_error(result)) is not None:
+                needed = ", ".join(missing_settings(failed[1]))
+                item.setToolTip(0, f"Step {failed[0]} is not complete yet: fill in {needed}")
             elif result is not None and result.df is not None:
-                item.setToolTip(0, f"{result.df.height:,} rows × {result.df.width} columns")
+                text = size_text(result.df)
+                if (ended := result.skipped_from) is not None:
+                    text += f"\nRest skipped: {ended.skip_reason}"
+                item.setToolTip(0, text)
             elif result is not None:
                 item.setToolTip(0, result.first_error or "")
             else:
@@ -190,14 +196,30 @@ class TablesPanel(QWidget):
 
     def _renamed(self, item: QTreeWidgetItem) -> None:
         kind, ident = item.data(0, _KIND), item.data(0, _ID)
+        # A rename rebuilds the tree (the item is gone then); a name that is refused or the same
+        # as before (an empty one, or with spaces around it) leaves it, showing the name as it is.
         if kind == "group":
+            group = self.session.project.group(ident)
+            old = group.name if group is not None else ""
             self.session.rename_group(ident, item.text(0))
+            if group is not None and group.name == old:
+                self._show_name(item, old)
             return
+        old = self.session.project.table(ident).name
         try:
             self.session.rename_table(ident, item.text(0))
         except ValueError as e:
+            self._show_name(item, old)
             QMessageBox.warning(self, "Rename table", str(e))
-            self.rebuild()
+            return
+        if self.session.project.table(ident).name == old:
+            self._show_name(item, old)
+
+    def _show_name(self, item: QTreeWidgetItem, name: str) -> None:
+        if item.text(0) != name:
+            self.tree.blockSignals(True)
+            item.setText(0, name)
+            self.tree.blockSignals(False)
 
     def drop_place(self, target: QTreeWidgetItem | None, indicator: Any) -> tuple[str | None, str | None, str | None]:
         """Where a dropped table goes: (group, before this table, after this table)."""

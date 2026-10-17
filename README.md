@@ -11,7 +11,8 @@ for "table".
   folder), SQL Server and SQLite tables or queries.
 - **Transform** with steps: filter, sort, remove duplicates, fill empty values, rename and
   reorder columns, change types and formats, replace and clean text, calculated columns with SQL
-  formulas, numbering rows, aggregating, merging (lookup and joins) and appending tables.
+  formulas, numbering rows, aggregating, merging (lookup and joins) and appending tables, and
+  ending a table early when it is empty.
 - **Export** to CSV, formatted Excel files (or one sheet of an existing workbook) and databases
   (insert, replace, update, upsert, delete by key), and run file commands and SQL commands.
 - **Project map**: all tables and how they use each other, with groups for big projects.
@@ -27,7 +28,8 @@ tested on Windows; [CHANGELOG.md](CHANGELOG.md) lists the versions.
 
 Tafl runs on Windows 10 and 11. For SQL Server connections you also need Microsoft's "ODBC
 Driver 18 for SQL Server" (17 works too); Tafl signs in with your Windows account, so no
-passwords are stored.
+passwords are stored. The driver "SQL Server" that comes with Windows is too old (it reads
+dates and times as text): Tafl uses it only when you enter it as a connection's ODBC driver.
 
 **Download** (no Python needed): get `Tafl-<version>-windows.zip` from the
 [latest release](https://github.com/xv8mna/tafl/releases/latest) and unzip it into a folder of
@@ -65,24 +67,35 @@ paths above (`.venv/bin/…` elsewhere).
 ## Try the demo
 
 `.venv\Scripts\tafl-app examples\demo.tafl` opens the demo project (or **File → Open** in the
-app). The download has it in its `examples` folder; there, use `tafl-app.exe` and `tafl.exe`
-instead of `.venv\Scripts\tafl-app` and `.venv\Scripts\tafl`. On the command line:
+app). The download has it in the `examples` folder next to the programs: start `tafl-app.exe`
+and open it with **File → Open** (Ctrl+O), or drag `demo.tafl` onto `tafl-app.exe` in Explorer
+(`.tafl` files are not linked to Tafl, so a double-click doesn't open them). On the command line:
 
 ```
 .venv\Scripts\tafl run examples\demo.tafl
 .venv\Scripts\tafl show examples\demo.tafl --table Orders --step 4
 ```
 
+In the download's folder, write `tafl.exe` instead of `.venv\Scripts\tafl` (in PowerShell:
+`.\tafl.exe`).
+
 - `run` calculates all tables and executes the exports and commands (the demo writes to
   `examples\output`).
   With `--preview` it only calculates and writes nothing; `--table NAME` runs only that table and
   the tables it uses (with their exports and commands); `--set Day=2026-10-01` gives a
   [parameter](#parameters) another value for this run (the demo has none). For a project with
-  parameters it lists the values the run used. It exits with 0 when everything worked,
-  1 when a step failed and 2 when the project can't be opened or has no such table or
-  parameter.
+  parameters it lists the values the run used. It exits with 0 when everything worked (tables
+  that are turned off or skip their rest count as working), 1 when a step failed, 2 when the
+  project can't be opened or has no such table or parameter, and 130 when Ctrl+C stopped it.
 - `show` prints the steps of a table and the data after one step (also with `--set`).
 - `plugins` lists all actions and shows plugins that failed to load.
+- `--help` lists the commands; `run --help` (and `show`, `plugins`) shows the options and exit
+  codes of one.
+- The command line writes no log file: what it prints is all there is. To keep it, send it to a
+  file (the download's `README.txt` shows a batch file for the Task Scheduler).
+
+Only in a source install (they need Python):
+
 - `.venv\Scripts\python examples\make_examples.py` recreates the demo data and project.
 - `.venv\Scripts\python tools\make_big_project.py` creates `examples\big500.tafl`, a big project
   for trying the map: 75 tables, 460 steps, 7 groups with links between them (press Ctrl+2, then
@@ -96,7 +109,10 @@ instead of `.venv\Scripts\tafl-app` and `.venv\Scripts\tafl`. On the command lin
   drag to reorder, right-click for more.
 - **Steps** (bottom left): the steps of the selected table. Click a step to see the data after it.
   **+ Add step** adds a step after the selected one. Drag or Ctrl+↑/↓ to move, Del to delete,
-  right-click to turn a step off or duplicate it.
+  right-click to turn a step off or duplicate it. A step that still needs a setting is
+  *incomplete* (grey-blue), not an error: its summary shows a `?` for what is missing, the data
+  panel shows the data going into it, and the steps after it are calculated once it is filled
+  in. A run counts it as an error.
 - **Settings** (right): the selected step's settings. Changes apply when you press Enter or leave
   the field (in SQL fields: Ctrl+Enter); the data updates in the background. Formula fields:
   Enter applies, Shift+Enter starts a new line. Typing **[** (or the **[ ]** button) lists the
@@ -121,9 +137,12 @@ instead of `.venv\Scripts\tafl-app` and `.venv\Scripts\tafl`. On the command lin
   Ctrl+Enter applies, Esc cancels (twice if you changed something).
 - **Run project** (F5) calculates all tables and executes the exports and commands; **Run this
   table** (Shift+F5) does the same for the selected table and the tables it uses. While you edit,
-  exports and commands never run. **Reload data** (Ctrl+R) reads files and databases again; a
-  changed file is also read again by itself the next time the data is calculated, e.g. when you
-  select a step.
+  exports and commands never run. **Run results** list every table and step, with how long the
+  run took. **Stop** lets the step that is running finish (an export can take a while), then
+  stops; the run results say what ran. Closing the window during a run asks whether to wait or
+  to stop. **Reload data** (Ctrl+R) reads files and databases again. A
+  changed file is also read again by itself when the table is calculated again: when you select
+  the table again, change a step, or run. Selecting a step only shows what was calculated.
 - **Map** (Ctrl+2): the project map, a full workspace: the selected table's steps and settings
   are on the right, its data below the map. **Tables** (Ctrl+1) switches back.
   - Every table is a box; arrows run from a table to the step that uses it (merge, append, start
@@ -138,17 +157,19 @@ instead of `.venv\Scripts\tafl-app` and `.venv\Scripts\tafl`. On the command lin
     Boxes never pile up: what is in the way of a box or a growing group moves down.
   - **Groups**: select tables (Ctrl+click, or Shift+drag a rectangle) and press Ctrl+G or
     **+ Group**. The group bar above the map has a numbered chip per group: click it or press
-    1–9 to jump there, 0 shows everything. Right-click a chip (or a frame's title) to collapse
-    it, add the selected tables, select its tables, rename, change the color, turn all its tables
-    off, or ungroup. Drag a box into a frame (or onto a collapsed group) to add it, out of the
-    frame to remove it; drag a frame's title to move the whole group. In the table view, groups
-    are folders: drag tables between them.
+    1–9 to jump there, 0 shows everything (anywhere on the map, also in its steps and settings;
+    a text field keeps the digits typed into it). When not all chips fit, ◀ ▶ beside them show
+    the others. Right-click a chip (or a frame's title) to collapse it, add the selected tables,
+    select its tables, rename, change the color, turn all its tables off, or ungroup. Drag a box
+    into a frame (or onto a collapsed group) to add it, out of the frame to remove it; drag a
+    frame's title to move the whole group. In the table view, groups are folders: drag tables
+    between them.
   - **Collapsed groups**: ▾ in a frame's title (or double-click a collapsed box) switches between
     the tables and one compact box. The box lists the group's tables that are connected to the
     outside, and arrows go to exactly those rows. **Collapse all** gives an overview of a big
     project.
-  - **Find** (Ctrl+F): matching tables get an orange border; Enter jumps to the next one (a
-    collapsed group opens for it).
+  - **Find** (Ctrl+F, anywhere on the map): matching tables get an orange border; Enter jumps to
+    the next one (a collapsed group opens for it).
   - **Turn a table off** (right-click a box, a table in the list, or a whole group): it is not
     calculated and its exports don't run; tables that use it show as *skipped* (grey), not as
     errors. The run results list them as skipped.
@@ -161,7 +182,8 @@ instead of `.venv\Scripts\tafl-app` and `.venv\Scripts\tafl`. On the command lin
     Ctrl+click, Shift+click) and press **Apply** (or Enter); double-click a value to filter by it
     alone. **Revert** goes back to the applied values, **Clear** stops filtering by the column.
   - Quick selection: **All** · **Possible** · **Excluded** · **None** (of the values shown, if you
-    searched). **Excluded** inverts a selection. Click **Value** or **Count** to sort.
+    searched). **Excluded** inverts a selection. Click **Value** or **Count** to sort (texts in
+    the order of *Sort*, see [Sort order](#sort-order)).
   - Colors: selected values blue, values that are possible with the other filters white,
     excluded ones grey. The counts are rows that pass the *other* filters.
   - **Modes** (the button next to the column name): *Values*; *Time periods* for dates (group by
@@ -175,12 +197,20 @@ instead of `.venv\Scripts\tafl-app` and `.venv\Scripts\tafl`. On the command lin
     they are saved with the project but are not edits (undo doesn't touch them). They never
     change the data, a run or an export. **⋯ → Add as step** turns a filter into a real
     *Filter rows by formula* step after the selected one.
-- **Undo / redo**: Ctrl+Z / Ctrl+Y for every change. Ctrl+C in the grid copies cells for Excel.
+- **Undo / redo**: Ctrl+Z / Ctrl+Y for every change. Ctrl+C in the grid copies the selected
+  cells for Excel, up to 2,000,000 cells (for more, the status bar says so: export the table
+  instead).
 - **Errors**: an unexpected error shows a dialog (the same error only once) and goes to the log
-  file: **Help → Open log folder**.
+  file, `%LOCALAPPDATA%\Tafl\tafl.log`: **Help → Open log folder**.
 - **Connections** (toolbar): SQL Server and SQLite connections of the project, with a test button.
 - Before a new project replaces the open one, or the app closes, you're asked to save unsaved
   changes. **New project** also asks when nothing changed, so it never switches by surprise.
+  Saving over a project file that was changed since it was opened (e.g. in a second window)
+  asks first.
+- **Save as** into another folder keeps every file path pointing at the same files: paths in
+  the new folder (or below it) are stored relative to the project file, others in full. A copy
+  saved elsewhere therefore still writes its exports where the original does; a path that starts
+  with a parameter (`{Folder}\orders.csv`) stays as it was written.
 
 ## Importing many files
 
@@ -190,11 +220,16 @@ folder** ("Read: All files in a folder"), with all subfolder levels if you like:
 
 - **File names**: a pattern such as `*.csv` or `orders_*.csv` (several with `;`, not case
   sensitive). Files are read in name order, with numbers in natural order (day2 before day10).
-  Excel's lock files (`~$…`) are skipped.
+  Files whose names start with `~$` are skipped: Excel's lock files, and files an export is
+  still writing.
+- **When there are no files** that match: stop with an error (the default), continue with an
+  empty table (with a warning), or skip the rest of the table (its exports and commands too,
+  see [File commands](#file-commands)). A folder that doesn't exist is always an error.
 - All files become **one table**: columns are matched by name, a column missing in a file stays
   empty there, and a column whose type differs between files gets a type that fits all of them
   (often text). CSV: delimiter and encoding are detected per file; the decimal separator,
-  numbers and dates once for all files.
+  numbers and dates once for all files. A value like `1.000` can be one thousand or one: it
+  follows the other numbers, and without any it is one thousand in files with semicolons.
 - Optional columns **File** (file name) and **Path** (below the folder, e.g.
   `2025\01\orders_2025-01-02.csv`) show where each row came from. Calculated columns take
   what you need from them:
@@ -220,25 +255,57 @@ project runs (F5), never while you edit, and the table passes through unchanged.
 - Copy / move: into a folder (created when needed), optionally keeping the subfolders. If a file
   of that name is there already: keep both (`name (2).csv`), replace it, skip it, or stop.
 - Rename: the new names come from a column, e.g. a calculated `REPLACE([File], '.csv', '.done')`.
+  A file that already has its new name stays as it is; a new name that differs only in upper and
+  lower case renames the file.
 - Delete: to the Recycle Bin (can be restored), or for good.
 - Files that don't exist stop the run, or are skipped if you choose.
+- All files are checked before the first one is changed: a missing file, a name that Windows
+  doesn't allow (`:`, `..`, `CON`, …) or a folder where a file belongs stops the step with
+  nothing changed.
+- Two listed files that would get the same name, e.g. `2025\01\b.csv` and `2025\02\b.csv` moved
+  into one folder: **Keep both** numbers them, **Replace it** and **Stop with an error** stop the
+  step (keeping the subfolders keeps them apart). A step never replaces a file it has just
+  written, nor one that is listed in its column.
 
-Example, daily exports: a table imports all files in `inbox` (*All files in a folder*, `*.csv`)
-and exports them. Its last step, **Move files** (column *File*, or *Path* with subfolders; "Paths
-in the column are below": `inbox`; to the folder `archive`), moves exactly the files it has
-read, after the exports. Keep the move in the importing table: a separate table might run before
-the import and move the files away first.
+Example, daily exports: a table imports all files in `inbox` (*All files in a folder*, `*.csv`,
+**When there are no files**: *Skip the rest of the table*) and exports them. Its last step,
+**Move files** (column *File*, or *Path* with subfolders; "Paths in the column are below":
+`inbox`; to the folder `archive`), moves exactly the files it has read, after the exports. Keep
+the move in the importing table: a separate table might run before the import and move the files
+away first. On a day without files, the import skips the exports and the move: the run succeeds
+(Run results: *ok, rest skipped*), and the table has no error, also right after a run that
+emptied the inbox. If a step between import and exports can leave no rows (a filter), switch on
+**Don't export an empty table** in the exports rather than adding *Skip the rest if a table is
+empty*: the move still runs, so the files aren't read again the next day.
 
 Before you run a project you got from someone else, look at its exports and commands: *Delete
 files* can delete for good, and *Run SQL command* runs any SQL (see also
 [Project files from other people](#project-files-from-other-people)).
 
+## Exports and empty tables
+
+Exports (CSV, Excel, database) run only when you run the project (F5, or **Run this table**),
+never while you edit.
+
+- A CSV or Excel export writes the new file next to the old one (named `~$…`) and replaces the
+  old file only when the new one is complete: if the export fails, the old file stays as it was.
+  A file that is open in another program, such as Excel, gives a message that says so: close it
+  and run again.
+- Binary values (e.g. from a `varbinary` column) are written as hex text, `0x0102FF`.
+- **Don't export an empty table** (in every export, off by default): when the table has no rows,
+  the file or the database table is left as it is, and the step says "Not exported: the table is
+  empty".
+- **Skip the rest if a table is empty** (a step, under *Rows*): when the table at this step, or
+  another table, has no rows, the steps after it are skipped, e.g. the exports and file commands
+  on a day without new data. That is not an error: the table's result is the data at this step,
+  the run succeeds, and the skipped steps say why. Folder imports can do the same when there are
+  no files ([Importing many files](#importing-many-files)).
+
 ## Exporting to a database
 
 Add the step **Export to database** (SQL Server or SQLite; define connections with
-**Connections** in the toolbar). Like every export it runs only when you run the project (F5, or
-**Run this table**), never while you edit, and always in one transaction: if anything fails, the
-database stays as it was.
+**Connections** in the toolbar). Like every export it runs only when you run the project, and
+always in one transaction: if anything fails, the database stays as it was.
 
 | What to do | What happens in the database table |
 |---|---|
@@ -253,27 +320,47 @@ database stays as it was.
 - Columns are matched by name (not case sensitive). Columns the database table doesn't have stop
   the export, or are left out if you choose. Empty key values match empty ones.
 - A missing table is created with fitting types (SQL Server: `INT`/`BIGINT`, `FLOAT`,
-  `NVARCHAR(n)`, `DATE`, `DATETIME2`, `BIT`). For other types, create the table yourself first.
+  `DECIMAL(p, s)`, `NVARCHAR(n)`, `DATE`, `DATETIME2`, `TIME`, `BIT`, `VARBINARY(MAX)`). For
+  other types, create the table yourself first. A temporary table (`#name` in SQL Server,
+  `temp.name` in SQLite) can't be the target: it would disappear when the export ends.
+- Date-times with a time zone are written in that zone's local time, without the zone (08:30 in
+  Berlin stays 08:30), as in the Excel export.
 - Updating needs one row per key value; duplicates stop the export with an example.
+- SQL Server: values that don't fit stop the export with a message that names the column: a
+  text longer than its column (e.g. `nvarchar(50)`), a decimal for a whole-number column, an
+  infinite number (e.g. from a division by zero).
 - 100,000 rows take a second or two with a local SQL Server, less with SQLite.
 
 **Run SQL command** runs any SQL when the project runs, e.g. `EXEC dbo.RefreshReport` after an
-export, or a `DELETE` / `UPDATE`. For SQL Server, separate batches with `GO` lines as in SQL
-Server Management Studio.
+export, or a `DELETE` / `UPDATE`. It runs in one transaction, so leave out `BEGIN` and `COMMIT`
+(SQLite refuses them). For SQL Server, separate batches with `GO` lines as in SQL Server
+Management Studio: `GO 3` runs the batch before it three times, and a `-- comment` may follow.
+
+SQL Server connections need ODBC Driver 18 or 17 ([Install](#install)): without one, a
+connection says what to install. Windows' own driver "SQL Server" is used only when you enter it
+as the connection's ODBC driver; a driver name that isn't installed gets a list of the ones that
+are.
+
+Database imports: a whole SQL Server table reads `sql_variant`, `geography`, `geometry` and
+`hierarchyid` columns as text; a query needs a `CAST` for them (the message shows it). In
+SQLite, an import's `ATTACH` works only when the project is run, as it could create a file.
 
 ## Exporting to Excel
 
 **Export to Excel file** writes the table as an Excel table (filter buttons, and banded rows if
 you pick a table style) with formats for dates and numbers. The Excel table is named after the
 sheet (sheet *Sales* → table `Sales`). Empty and not-a-number values become empty cells;
-date-times with a time zone are written in that zone's local time. If the file exists:
+date-times with a time zone are written in that zone's local time. A sheet holds 1,048,575 rows
+below its header: a bigger table stops the export (filter it, or export to CSV). A cell holds
+32,767 characters: longer texts are cut, with a warning. If the file exists:
 
 - **Replace the whole file**, or
 - **Replace only this sheet, keep the other sheets**: for a report workbook whose other sheets
   have formulas, charts or pivot tables built on the data sheet. Everything else in the workbook
   is kept, including shapes, slicers, data connections and macros (`.xlsm` workbooks too; a new
   `.xlsm` can't be created). A sheet that doesn't exist yet is added as the last sheet.
-  - The sheet keeps its place, tab color and visibility, and its Excel table keeps its name. Use
+  - The sheet keeps its name (upper and lower case as in the workbook), place, tab color and
+    visibility, and its Excel table keeps its name. Use
     the table in formulas (`=SUM(Sales[Net])`) and as the source of pivot tables: it always has
     all the rows.
   - Charts, named ranges and pivot tables that covered the old rows (from row 1 or 2 down to the
@@ -288,7 +375,8 @@ date-times with a time zone are written in that zone's local time. If the file e
   - Excel calculates the formulas when it opens the file, and refreshes the pivot tables built on
     the sheet (their option "Refresh data when opening the file" gets switched on). Other
     programs show the old results until the file has been saved in Excel.
-  - The workbook must not be open in Excel while the project runs.
+  - The workbook must not be open in Excel while the project runs: then the export stops with a
+    message, and the workbook stays as it was.
   - So far this has been tested with LibreOffice only, not with Excel itself. If Excel offers to
     repair a workbook written this way, please open an issue. [docs/excel-check.md](docs/excel-check.md)
     is a ten-minute check in Excel, with a project for it in `examples`.
@@ -382,12 +470,29 @@ connections.
 
 For one run with other values: `tafl run daily.tafl --set Day=2026-10-01` (several `--set`
 for several parameters; a value can be a formula, `--set "Day==TODAY() - 7"`; `tafl show` takes
-`--set` too). The run lists the values it used.
+`--set` too). The run lists the values it used. In a batch file (`.bat`, e.g. for the Task
+Scheduler), write every `%` as `%%`: `--set "Month==STRFTIME(TODAY(), '%%Y-%%m')"`. With a
+single `%`, the Windows command processor takes `%Y-%` for a variable of its own, and the
+parameter gets a wrong value without an error.
+
+A parameter's name has letters A–Z, digits, `_` and spaces, and starts with a letter or `_`.
+On the command line, a name that breaks this rule but that nothing uses only gets a warning.
 
 ## Formats
 
 Formats use Excel's codes everywhere: dates `dd.mm.yyyy`, `dd.mm.yyyy hh:mm`; numbers `0`,
-`0.00`, `#,##0.00`, `00000` (pads with zeros); in Excel exports also `0%` or `#,##0.00 €`.
+`0.00`, `#,##0.00`, `00000` (pads with zeros), `0%`, `#,##0.00 €`, `"No. "0`, and sections for
+positive and negative numbers and zero, e.g. `#,##0.00;(#,##0.00);"–"`. *Change type* stops
+with a message at a number code it can't write (e.g. `0.00E+00`), and writes month and day
+names (`mmmm`, `dddd`) in English. Dates with two-digit years are read as in Excel: `31.12.25`
+is 2025, `01.01.75` is 1975 (00–29 are 20xx, 30–99 are 19xx).
+
+## Sort order
+
+*Sort* orders text as Excel does: upper and lower case count the same, letters with accents sort
+with their base letter (`Äpfel` next to `apfel`, `Özdemir` between O and P), and `ß` like `ss`.
+Rows with equal values keep their order. *Number rows* and the value lists of the filter pane
+use the same order.
 
 ## Project files from other people
 
@@ -409,9 +514,10 @@ file paths can be read there.
 Every action (import, step, export, command) is a plugin. Put a `.py` file into
 `%APPDATA%\Tafl\plugins` (create the folder if needed), or into a folder listed in the
 `TAFL_PLUGINS` environment variable (several separated by `;`, or `:` on Linux and macOS), and
-restart Tafl; **Help → Plugins…** shows what was loaded and any errors. For a command line run,
-`tafl --plugins FOLDER run PROJECT` adds a folder (the option goes before `run`). Built-in
-plugins live in `src\tafl\plugins`; the Python package is called `tafl`.
+restart Tafl; **Help → Plugins…** shows what was loaded and any errors (also a folder in
+`TAFL_PLUGINS` that doesn't exist). For a command line run, `tafl --plugins FOLDER run PROJECT`
+adds a folder (the option goes before `run`). Built-in plugins live in `src\tafl\plugins`; the
+Python package is called `tafl`.
 
 ```python
 import polars as pl
@@ -443,7 +549,11 @@ The settings form is built from `params`. Rules for plugins:
   `(params, old_version) -> params` that converts settings saved by older versions, so old
   projects keep working.
 - Exports and commands (`kind="export"` / `"command"`) only run when a project is run, never in
-  preview.
+  preview. An export writes its file with `tafl.api.files.replace_file(path)`, which keeps the
+  old file until the new one is complete.
+- `raise ActionError("...")` for a problem the user can fix. To end the table at this step
+  without an error, e.g. when there is nothing to do, `raise SkipRest("No new orders")`: the
+  steps after it are skipped with that message.
 - Test actions with `tafl.api.testing.StubContext` (see `tests/plugins`).
 
 Plugins are ordinary Python code that runs with your rights when Tafl starts: only add plugins

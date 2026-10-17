@@ -40,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     registry = Registry.default()
     for name, error in registry.errors:
         log.warning("Plugin %s failed to load: %s", name, error)
+    for warning in registry.warnings:
+        log.warning("%s", warning)
     session = Session(registry)
     if check:
         session.set_overview(True)  # all tables, as for the project map, not only the selected one
@@ -63,8 +65,8 @@ def main(argv: list[str] | None = None) -> int:
                 window.open_path(argv[1])
         except Exception:
             hook(*sys.exc_info())
-    if registry.errors:
-        window.statusBar().showMessage(f"{len(registry.errors)} plugin problem(s): see Help → Plugins", 15000)
+    if problems := len(registry.errors) + len(registry.warnings):
+        window.statusBar().showMessage(f"{problems} plugin problem(s): see Help → Plugins", 15000)
     if check:
 
         def finish() -> None:

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import threading
+from collections.abc import Callable
 from typing import Any
 
 import polars as pl
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QItemSelectionModel, QPoint, Qt, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -22,18 +24,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tafl.api import Cancelled
 from tafl.core import Status
 
 from . import theme
 from .filter_pane import FilterPane
 from .filters import Filter, apply, to_json
 from .frame_model import FrameModel
-from .session import Session
+from .session import Session, count, first_error, missing_settings, size_text
+from .worker import Worker
 
-_MAX_COPY_CELLS = 200_000
+MAX_COPY_CELLS = 2_000_000  # more is a case for an export
+_COPY_AT_ONCE = 20_000  # more cells are copied in the background
+
+Ranges = list[tuple[int, int, int, int]]  # selected cells: (top, bottom, left, right), inclusive
 
 
 class DataPanel(QWidget):
+    status_message = Signal(str)  # for the status bar
+
     def __init__(self, session: Session, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.session = session
@@ -75,11 +84,18 @@ class DataPanel(QWidget):
         horizontal.setMinimumHeight(2 * self.fontMetrics().height() + 10)
         horizontal.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         horizontal.customContextMenuRequested.connect(self._header_menu)
+        # The headers get a selection of their own (always empty): to show the selected columns,
+        # a header asks the model about every row, which takes seconds after Ctrl+A on big data.
+        for header in (horizontal, vertical):
+            header.setSelectionModel(QItemSelectionModel(self.model, header))
         self.copy_action = QAction("Copy", self.view)
         self.copy_action.setShortcut(QKeySequence.StandardKey.Copy)
         self.copy_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
         self.copy_action.triggered.connect(self.copy_selection)
         self.view.addAction(self.copy_action)
+        self._copier = Worker(self)
+        self._copier.finished.connect(self._copied)
+        self._copier.failed.connect(lambda text: self.status_message.emit("Copying failed: " + text.strip().splitlines()[-1]))
 
         self.message = QLabel(self)
         self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -154,13 +170,23 @@ class DataPanel(QWidget):
             if self.model.frame is None or not session.busy:  # while calculating, the old data stays
                 self._no_data(table.id, "Calculating…" if session.busy else "Not calculated yet.")
             return
-        if result.status == Status.ERROR:
+        needed = missing_settings(result)
+        failed = first_error(session.result) if result.status == Status.BLOCKED else None
+        if failed is not None and missing_settings(failed[1]):
+            self._no_data(table.id, f"Step {failed[0]} is not complete yet: the steps after it are calculated when it is.")
+            return
+        if result.status == Status.ERROR and not needed:
             self._no_data(table.id, f"Step {number} has an error:\n\n{result.error}", error=True)
             return
         if result.status == Status.BLOCKED:
             self._no_data(table.id, "An earlier step has an error. Click the red step to see it.", error=True)
             return
-        df = result.df
+        df = session.input_frame(step) if needed else result.df
+        if needed and df is None:
+            self._no_data(table.id, f"Step {number} is not complete yet: fill in {', '.join(needed)}.")
+            return
+        if needed:  # the data before the step, until it is filled in
+            self.subtitle.setText(f"going into step {number}: {session.engine.describe(step)}")
         if df is None:
             self._no_data(table.id, "No data.")
             return
@@ -170,15 +196,21 @@ class DataPanel(QWidget):
             self._show_frame(df, shown)
         self.stack.setCurrentWidget(self.view)
         timing = "cached" if result.cached else f"{result.seconds:.2f} s"
-        if result.status == Status.SKIPPED:
+        if needed:
+            timing = f"step {number} is not complete yet: fill in {', '.join(needed)}"
+        elif result.status == Status.SKIPPED and result.skip_rest:
+            timing = f"skipped: {result.skip_reason}"
+        elif result.status == Status.SKIPPED:
             timing = "runs when the project is run"
         elif result.status == Status.DISABLED:
             timing = "step is off"
         if shown is df:
-            self.info.setText(f"{df.height:,} rows × {df.width} columns   ·   {timing}")
+            self.info.setText(f"{size_text(df)}   ·   {timing}")
             self.info.setStyleSheet("")
         else:
-            self.info.setText(f"{shown.height:,} of {df.height:,} rows × {df.width} columns  ·  filtered   ·   {timing}")
+            self.info.setText(
+                f"{shown.height:,} of {count(df.height, 'row')} × {count(df.width, 'column')}  ·  filtered   ·   {timing}"
+            )
             self.info.setStyleSheet(f"color: {theme.ACCENT};")
 
     def _filtered(self, table_id: str, df: pl.DataFrame) -> pl.DataFrame:
@@ -264,14 +296,55 @@ class DataPanel(QWidget):
         menu.exec(header.mapToGlobal(pos))
 
     def copy_selection(self) -> None:
-        """Copy the selected cells as tab-separated text (pastes into Excel)."""
-        indexes = self.view.selectedIndexes()
-        if not indexes or len(indexes) > _MAX_COPY_CELLS:
+        """Copy the selected cells as tab-separated text (pastes into Excel). Many cells are
+        copied in the background; too many are refused with a message."""
+        frame, texts = self.model.frame, self.model.copier()
+        ranges = [(r.top(), r.bottom(), r.left(), r.right()) for r in self.view.selectionModel().selection()]
+        if frame is None or texts is None or not ranges:
             return
-        rows = sorted({i.row() for i in indexes})
-        columns = sorted({i.column() for i in indexes})
-        selected = {(i.row(), i.column()) for i in indexes}
-        lines = [
-            "\t".join(self.model.text(r, c) if (r, c) in selected else "" for c in columns) for r in rows
-        ]
-        QGuiApplication.clipboard().setText("\r\n".join(lines))
+        cells = sum((bottom - top + 1) * (right - left + 1) for top, bottom, left, right in ranges)
+        if cells > MAX_COPY_CELLS:
+            self.status_message.emit(
+                f"{cells:,} cells are too many to copy (at most {MAX_COPY_CELLS:,}): select fewer, or export the table"
+            )
+            return
+        if cells <= _COPY_AT_ONCE:
+            QGuiApplication.clipboard().setText(selection_text(frame, ranges, texts))
+            return
+        self.status_message.emit(f"Copying {cells:,} cells…")
+        self._copier.start(lambda cancel: (selection_text(frame, ranges, texts, cancel), cells))
+
+    @property
+    def copying(self) -> bool:
+        return self._copier.busy
+
+    def _copied(self, outcome: tuple[str, int]) -> None:
+        text, cells = outcome
+        QGuiApplication.clipboard().setText(text)
+        self.status_message.emit(f"Copied {cells:,} cells")
+
+
+def selection_text(
+    frame: pl.DataFrame, ranges: Ranges, texts: Callable[[pl.Series], list[str]], cancel: threading.Event | None = None
+) -> str:
+    """Selected cells as lines of tab-separated texts: the rows and columns that have a selected
+    cell, in order, with the cells between that aren't selected left empty."""
+    if len(ranges) == 1:
+        top, bottom, left, right = ranges[0]
+        rows = None
+        block = frame.slice(top, bottom - top + 1)
+        columns = list(range(left, right + 1))
+    else:
+        rows = sorted(set().union(*(range(top, bottom + 1) for top, bottom, _, _ in ranges)))
+        block = frame.select(pl.all().gather(rows))
+        columns = sorted(set().union(*(range(left, right + 1) for _, _, left, right in ranges)))
+    cells = []
+    for column in columns:
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+        shown = texts(block.to_series(column))
+        if rows is not None:
+            spans = [(top, bottom) for top, bottom, left, right in ranges if left <= column <= right]
+            shown = [text if any(top <= row <= bottom for top, bottom in spans) else "" for row, text in zip(rows, shown)]
+        cells.append(shown)
+    return "\r\n".join(map("\t".join, zip(*cells)))

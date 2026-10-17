@@ -132,6 +132,12 @@ class Connector:
     def prepare_cursor(self, cursor: Any) -> None:
         """Called before writing many rows with one cursor (e.g. to switch on bulk mode)."""
 
+    def input_sizes(self, df: pl.DataFrame, temporary: bool = False) -> Sequence[Any] | None:
+        """The type and size of each column's values for the driver (DB-API ``setinputsizes``)
+        when the rows of ``df`` are written, or None to let the driver find them. ``temporary``:
+        into a table made by ``temp_table``, whose columns a driver may not be able to look up."""
+        return None
+
     def matching(self, keys: Sequence[str], left: str = "x", right: str = "s") -> str:
         """Rows ``left`` and ``right`` have the same values in the key columns (empty = empty)."""
         return " AND ".join(self.same(f"{left}.{self.quote(k)}", f"{right}.{self.quote(k)}") for k in keys)
@@ -169,9 +175,14 @@ class Connector:
             cursor.close()
 
     def column_types(self, conn: Any, table: str) -> dict[str, str]:
-        """The type of each column of an existing table, in lower case (e.g. ``"int"``), as far as
-        the database tells; the default tells nothing."""
+        """The type of each column of an existing table, in lower case (e.g. ``"int"`` or
+        ``"nvarchar(50)"``), as far as the database tells; the default tells nothing."""
         return {}
+
+    def read_table_sql(self, conn: Any, table: str) -> str:
+        """The SQL that reads a whole table or view: ``SELECT *`` from it. Override it to convert
+        columns the driver can't read."""
+        return f"SELECT * FROM {self.qualified(table)}"
 
     def open(self, settings: Mapping[str, Any], ctx: Context, *, create: bool = False) -> Database:
         params = resolve(self.params, settings)
@@ -214,12 +225,17 @@ class Database:
             self._execute(cursor, sql, params)
             while cursor.description is None and self._next_result(cursor):
                 pass
-            return frame_from_cursor(cursor, self.connector.dtype_for)
+            try:
+                return frame_from_cursor(cursor, self.connector.dtype_for)
+            except ActionError:
+                raise
+            except Exception as e:  # e.g. a value of a later row that the server can't convert
+                raise ActionError(self.connector.error_message(e)) from e
         finally:
             cursor.close()
 
     def read_table(self, name: str) -> pl.DataFrame:
-        return self.read(f"SELECT * FROM {self.qualified(name)}")
+        return self.read(self.connector.read_table_sql(self.raw, name))
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         """Run a statement; returns the number of affected rows (-1 if unknown)."""
@@ -258,13 +274,18 @@ class Database:
         rows: Iterable[Sequence[Any]],
         batch_size: int = 10_000,
         between: Callable[[], None] | None = None,
+        sizes: Sequence[Any] | None = None,
     ) -> int:
         """Run one statement for many rows of values, in batches; ``between`` is called after
-        each batch (e.g. ``ctx.check_cancelled``). Returns the number of rows."""
+        each batch (e.g. ``ctx.check_cancelled``). ``sizes``: the type and size of each value for
+        the driver (``setinputsizes``), e.g. from ``connector.input_sizes``. Returns the number
+        of rows."""
         cursor = self.raw.cursor()
-        self.connector.prepare_cursor(cursor)
         total = 0
         try:
+            self.connector.prepare_cursor(cursor)
+            if sizes is not None:
+                cursor.setinputsizes(sizes)
             batch: list[Sequence[Any]] = []
             for row in rows:
                 batch.append(tuple(row))
@@ -353,9 +374,14 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
     """Build a Series from Python values as a database driver returns them.
 
     Decimals become Float64 (or Int64 when asked for); columns holding several kinds of values
-    (possible in SQLite) become text instead of losing values.
+    (possible in SQLite) become text instead of losing values. A value that is an
+    ``ActionError`` (what a driver's output converter gives for a value it can't read) stops
+    the reading with its message, where ``{column}`` stands for the column's name.
     """
     kinds = {type(v) for v in values if v is not None}
+    if any(issubclass(kind, ActionError) for kind in kinds):
+        problem = next(v for v in values if isinstance(v, ActionError))
+        raise ActionError(str(problem).replace("{column}", name))
     if decimal.Decimal in kinds:
         convert = int if dtype == pl.Int64 else float
         values = [None if v is None else convert(v) for v in values]
@@ -380,8 +406,11 @@ _NATIVE = {str, int, float, bool, dt.date, dt.datetime, dt.time, dt.timedelta}
 
 def text_length(series: pl.Series) -> int:
     """A text column's size for ``CREATE TABLE``: the longest value, with room to grow
-    (50, 100, 255, 1000 or 4000 characters; 0 when longer, for "as long as needed")."""
-    longest = series.cast(pl.String).str.len_chars().max() or 0
+    (50, 100, 255, 1000 or 4000 characters; 0 when longer, for "as long as needed"). A
+    character outside the Basic Multilingual Plane, such as an emoji, counts twice: SQL Server
+    counts the UTF-16 code units."""
+    texts = series.cast(pl.String)
+    longest = (texts.str.len_chars() + texts.str.count_matches(r"[\x{10000}-\x{10FFFF}]")).max() or 0
     for size in (50, 100, 255, 1000, 4000):
         if longest <= size:
             return size

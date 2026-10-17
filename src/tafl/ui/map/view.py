@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, QStringListModel, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QCompleter,
     QGraphicsScene,
@@ -80,6 +80,12 @@ QToolButton#Chip:hover {{ background: {theme.BORDER_LIGHT}; border-color: {theme
 QToolButton#Chip[error="true"] {{ border-color: {theme.STATUS_COLORS["error"]}; }}
 QToolButton#Plain {{ border: none; padding: 2px 8px; color: {theme.TEXT_DIM}; }}
 QToolButton#Plain:hover {{ color: {theme.TEXT}; }}
+QToolButton#Arrow {{
+    border: 1px solid {theme.BORDER_LIGHT}; border-radius: 11px; padding: 1px 7px; background: {theme.RAISED};
+    font-size: 11pt;
+}}
+QToolButton#Arrow:hover {{ background: {theme.BORDER_LIGHT}; border-color: {theme.MAP_EDGE}; }}
+QToolButton#Arrow:disabled {{ color: {theme.TEXT_DISABLED}; background: transparent; }}
 """
 
 
@@ -150,7 +156,8 @@ class _Canvas(QGraphicsView):
 
 
 class _ChipStrip(QScrollArea):
-    """The chips of the group bar; when there are more than fit, the mouse wheel scrolls them."""
+    """The chips of the group bar; when there are more than fit, the arrows beside them and the
+    mouse wheel scroll them."""
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
@@ -163,6 +170,11 @@ class _ChipStrip(QScrollArea):
         bar = self.horizontalScrollBar()
         delta = event.angleDelta()
         bar.setValue(bar.value() - (delta.y() or delta.x()) // 2)
+
+    def scroll_by(self, direction: int) -> None:
+        """One page to the left (-1) or right (1)."""
+        bar = self.horizontalScrollBar()
+        bar.setValue(bar.value() + direction * max(bar.pageStep() * 3 // 4, 60))
 
 
 class GroupBar(QWidget):
@@ -177,6 +189,14 @@ class GroupBar(QWidget):
         self.chips: dict[str, QToolButton] = {}
         self._texts: dict[str, str] = {}
         self._expanded = True
+        # Shown when not all chips fit: they say that there are more, and scroll to them
+        self.back = self._button(self, "Arrow", "◀", lambda _=False: self.strip.scroll_by(-1))
+        self.more = self._button(self, "Arrow", "▶", lambda _=False: self.strip.scroll_by(1))
+        self.back.setToolTip("The groups before these")
+        self.more.setToolTip("More groups")
+        bar = self.strip.horizontalScrollBar()
+        bar.rangeChanged.connect(lambda *_: self._update_arrows())
+        bar.valueChanged.connect(lambda *_: self._update_arrows())
         add = self._button(self, "Chip", "+ Group", lambda _=False: self.view.group_selected())
         add.setToolTip("Make a group of the selected tables (Ctrl+G).\nSelect tables with Ctrl+click or Shift+drag.")
         self.collapse_all = self._button(self, "Plain", "Collapse all", lambda _=False: self._collapse_all())
@@ -185,11 +205,27 @@ class GroupBar(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 3, 6, 3)
         layout.setSpacing(6)
+        layout.addWidget(self.back)
         layout.addWidget(self.strip, 1)
+        layout.addWidget(self.more)
         layout.addWidget(add)
         layout.addWidget(self.collapse_all)
         layout.addWidget(show_all)
         self.setFixedHeight(36)
+        self._update_arrows()
+
+    def _update_arrows(self) -> None:
+        bar = self.strip.horizontalScrollBar()
+        overflow = bar.maximum() > 0
+        for arrow, possible in ((self.back, bar.value() > 0), (self.more, bar.value() < bar.maximum())):
+            arrow.setVisible(overflow)
+            arrow.setEnabled(possible)
+
+    def show_chip(self, group_id: str) -> None:
+        """Scroll the chips so that this group's chip is in sight."""
+        chip = self.chips.get(group_id)
+        if chip is not None:
+            self.strip.ensureWidgetVisible(chip, 30, 0)
 
     def rebuild(self) -> None:
         old = self.strip.takeWidget()
@@ -354,6 +390,16 @@ class MapView(QWidget):
         layout.addLayout(header)
         layout.addWidget(self.splitter, 1)
 
+        self.data.status_message.connect(self.message)
+        # Wherever the focus is on the map (also in its steps, settings and data); a field being
+        # typed in keeps its digits.
+        keys: list[tuple[str, Callable[[], Any]]] = [("Ctrl+F", self.focus_search), ("Ctrl+G", self.group_selected)]
+        keys += [(str(number), lambda n=number: self.number_key(n)) for number in range(10)]
+        for sequence, slot in keys:
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(slot)
+
         session.project_changed.connect(self._project_changed)
         session.structure_changed.connect(self.schedule_rebuild)
         session.layout_changed.connect(self._layout_changed)
@@ -458,7 +504,7 @@ class MapView(QWidget):
         for table_id, node in self.nodes.items():
             node.status = session.table_status(table_id)
             result = session.results.get(table_id)
-            node.info = {"disabled": "off", "skipped": "skipped"}.get(node.status, "")
+            node.info = {"disabled": "off", "skipped": "skipped", "incomplete": "incomplete"}.get(node.status, "")
             if not node.info and result is not None:
                 node.info = f"{result.df.height:,} × {result.df.width}" if result.df is not None else "error"
             node.update()
@@ -469,11 +515,13 @@ class MapView(QWidget):
             if errors:
                 box.summary = f"{errors} error{'s' if errors > 1 else ''}"
                 box.summary_color = theme.status_color("error")
+            elif "incomplete" in statuses:
+                box.summary, box.summary_color = f"{statuses.count('incomplete')} incomplete", QColor(theme.MAP_TEXT_DIM)
             elif off:
                 box.summary = "all off" if off == len(statuses) else f"{off} off"
-                box.summary_color = QColor(theme.TEXT_DIM)
+                box.summary_color = QColor(theme.MAP_TEXT_DIM)
             elif "pending" in statuses:
-                box.summary, box.summary_color = "", QColor(theme.TEXT_DIM)
+                box.summary, box.summary_color = "", QColor(theme.MAP_TEXT_DIM)
             else:
                 box.summary, box.summary_color = "all ok", theme.status_color("ok")
             box.update()
@@ -876,6 +924,7 @@ class MapView(QWidget):
             self._flash(frame)
         else:
             box.setSelected(True)
+        self.group_bar.show_chip(group_id)
         self.message.emit(f"Group “{group.name}”: {count} table{'s' if count != 1 else ''}")
         self.canvas.setFocus()
 
@@ -1175,16 +1224,10 @@ class MapView(QWidget):
             self.group_selected()
             return True
         if control and key == Qt.Key.Key_F:
-            self.search.setFocus()
-            self.search.selectAll()
+            self.focus_search()
             return True
         if not control and len(text) == 1 and text.isdigit():
-            number = int(text)
-            groups = self.session.project.groups
-            if number == 0:
-                self.fit()
-            elif number <= len(groups):
-                self.jump_to_group(groups[number - 1].id)
+            self.number_key(int(text))
             return True
         if key == Qt.Key.Key_F2 and self.session.table_id:
             self.rename_table(self.session.table_id)
@@ -1194,6 +1237,18 @@ class MapView(QWidget):
             self.search.clear()
             return True
         return False
+
+    def number_key(self, number: int) -> None:
+        """1–9 jump to a group, 0 shows the whole project."""
+        groups = self.session.project.groups
+        if number == 0:
+            self.fit()
+        elif number <= len(groups):
+            self.jump_to_group(groups[number - 1].id)
+
+    def focus_search(self) -> None:
+        self.search.setFocus()
+        self.search.selectAll()
 
 
 def _top_left(points: list[tuple[float, float]]) -> tuple[float, float] | None:

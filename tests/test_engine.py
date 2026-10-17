@@ -1,12 +1,13 @@
 import os
 import threading
+import time
 import types
 
 import polars as pl
 import pytest
 
-from tafl.api import Cancelled, P, action
-from tafl.core import Engine, Project, Registry, Status
+from tafl.api import ActionError, Cancelled, P, action
+from tafl.core import Engine, Project, Registry, ResultCache, Status
 
 CSV = "Id;Customer;Amount;Date\n1;A;10,5;01.01.2025\n2;B;20;02.01.2025\n3;A;5;03.01.2025\n"
 
@@ -62,6 +63,50 @@ def test_only_changed_steps_are_recalculated(project, registry):
     changed = engine.evaluate("Orders")
     assert [s.cached for s in changed.steps[:3]] == [True, True, False]
     assert changed.df["Gross"].to_list() == [21.0, 40.0]
+
+
+def test_a_cached_step_keeps_its_messages(project):
+    module = types.ModuleType("talking")
+
+    @action("demo.talk", "Talk")
+    def talk(df, p, ctx):
+        ctx.warn("Something to know")
+        return df.with_columns(pl.lit(1).alias("one"))
+
+    @action("demo.check", "Check")
+    def check(df, p, ctx):
+        ctx.log("Looked at it")
+        return df  # passed through: the result stays the one of the step before
+
+    module.talk, module.check = talk, check
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    project.add_step("Orders", "demo.talk", {}, index=1)
+    project.add_step("Orders", "demo.check", {}, index=2)
+    engine = Engine(project, registry)
+    first = engine.evaluate("Orders")
+    again = engine.evaluate("Orders")
+    assert again.steps[1].cached and again.steps[1].messages == first.steps[1].messages == [("warning", "Something to know")]
+    assert again.steps[2].messages == [("info", "Looked at it")]
+    assert again.steps[0].cached and again.steps[0].messages == first.steps[0].messages  # the import's own message
+    assert first.steps[0].messages
+
+
+def test_summaries_show_what_is_still_to_fill_in(project, registry):
+    engine = Engine(project, registry)
+
+    def summary(action_id, params):
+        return engine.describe(project.add_step("Orders", registry.actions[action_id], params))
+
+    assert summary("rows.filter_formula", {"condition": ""}) == "Keep rows where ?"
+    assert summary("calc.columns", {"columns": [{"name": "", "formula": ""}]}) == "Calculate ?"
+    assert summary("calc.columns", {"columns": [{"name": "Net", "formula": ""}]}) == "Calculate Net"
+    assert summary("table.merge", {"how": "lookup"}) == "Lookup ? on ?"
+    assert summary("table.merge", {"how": "lookup", "other": "t1", "match": [{"column": "Id"}]}) == "Lookup Orders on Id"
+    assert summary("columns.select", {"columns": []}) == "Keep ?"
+    assert summary("csv.export", {"file": ""}) == "Export to ?"
+    assert summary("rows.sort", {"by": [{"column": "Id", "order": "desc"}]}) == "Sort by Id ↓"
 
 
 def test_source_file_change_is_picked_up(project, registry, tmp_path):
@@ -310,3 +355,141 @@ def test_a_crash_inside_polars_becomes_a_step_error(project):
     project.add_step("Orders", "demo.crash", {})
     result = Engine(project, registry).evaluate("Orders")
     assert result.steps[-1].status == Status.ERROR and "PanicException" in result.steps[-1].error
+
+
+@pytest.fixture
+def quitting_registry() -> Registry:
+    """The built-in actions plus ones that try to end the program, and a slow one that fails."""
+    module = types.ModuleType("quitting")
+
+    @action("demo.exit", "Exit")
+    def exit_(df, p, ctx):
+        raise SystemExit("bye")
+
+    @action("demo.interrupt", "Interrupt")
+    def interrupt(df, p, ctx):
+        raise KeyboardInterrupt
+
+    @action("demo.slow_failure", "Slow failure", params=[P.Bool("unexpected", "Unexpected")])
+    def slow_failure(df, p, ctx):
+        time.sleep(0.2)
+        if p.unexpected:
+            raise RuntimeError("the connection timed out")
+        raise ActionError("The server did not answer")
+
+    module.exit_, module.interrupt, module.slow_failure = exit_, interrupt, slow_failure
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    return registry
+
+
+def test_a_step_that_tries_to_end_the_program_is_a_step_error(project, quitting_registry):
+    """sys.exit() or KeyboardInterrupt in a plugin's step used to end the app."""
+    project.add_step("Orders", "demo.exit", {})
+    result = Engine(project, quitting_registry).evaluate("Orders")
+    assert result.steps[-1].status == Status.ERROR
+    assert result.steps[-1].error == "The plugin 'quitting' tried to end the program (SystemExit: bye)"
+    assert "SystemExit" in result.steps[-1].details
+
+    project.tables[0].steps[-1].action = "demo.interrupt"
+    result = Engine(project, quitting_registry).evaluate("Orders")
+    assert result.steps[-1].error == "The plugin 'quitting' tried to end the program (KeyboardInterrupt)"
+
+
+def test_plugin_code_besides_run_that_tries_to_end_the_program(project):
+    """A migrate, summary or fingerprint function that calls sys.exit() fails like other broken code."""
+
+    def bye(*_):
+        raise SystemExit("bye")
+
+    module = types.ModuleType("leaving")
+    module.old = action("demo.old", "Old", version=2, migrate=bye, summary=bye)(lambda df, p, ctx: df)
+    module.source = action("demo.source", "Source", kind="source", fingerprint=bye)(lambda df, p, ctx: pl.DataFrame({"a": [1]}))
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    project.add_step("Orders", "demo.old", {})
+    project.tables[0].steps[-1].version = 1
+    engine = Engine(project, registry)
+    assert engine.describe(project.tables[0].steps[-1]) == "Old"
+    assert project.tables[0].steps[-1] not in engine.upgrade_steps() and engine.links() == []
+    failed = engine.evaluate("Orders").steps[-1]
+    assert failed.status == Status.ERROR and failed.error == "Could not read the step settings: bye"
+
+    project.add_step(project.add_table("Other"), "demo.source", {})
+    assert engine.evaluate("Other").df.to_dicts() == [{"a": 1}]  # without a fingerprint: read every time
+    assert not engine.evaluate("Other").steps[0].cached
+
+
+def test_an_interruption_after_cancelling_stops_the_calculation(project):
+    """Ctrl+C on the command line sets the cancel event first, then interrupts the step."""
+    cancel = threading.Event()
+    module = types.ModuleType("interrupted")
+
+    @action("demo.ctrl_c", "Ctrl+C")
+    def ctrl_c(df, p, ctx):
+        cancel.set()
+        raise KeyboardInterrupt
+
+    module.ctrl_c = ctrl_c
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    project.add_step("Orders", "demo.ctrl_c", {})
+    with pytest.raises(Cancelled):
+        Engine(project, registry).evaluate("Orders", cancel=cancel)
+
+
+def test_a_failed_step_has_the_time_it_ran(project, quitting_registry):
+    project.add_step("Orders", "demo.slow_failure", {})
+    for unexpected in (False, True):
+        project.tables[0].steps[-1].params["unexpected"] = unexpected
+        failed = Engine(project, quitting_registry).evaluate("Orders").steps[-1]
+        assert failed.status == Status.ERROR and failed.seconds >= 0.2
+    project.add_step("Orders", "rows.sort", {"by": [{"column": "amount"}]}, index=1)  # doesn't run
+    assert Engine(project, quitting_registry).evaluate("Orders").steps[1].seconds == 0
+
+
+def test_the_cache_keeps_the_last_two_settings_of_a_step(project, registry):
+    engine = Engine(project, registry, ResultCache())
+    calculate = project.tables[0].steps[2]
+    keys = []
+    for factor in (2, 3, 4):
+        calculate.params["columns"][0]["formula"] = f"[Amount] * {factor}"
+        keys.append(engine.evaluate("Orders").steps[2].key)
+    assert engine.cache.get(keys[0]) is None  # two edits ago
+    assert engine.cache.get(keys[1]) is not None and engine.cache.get(keys[2]) is not None
+
+    calculate.params["columns"][0]["formula"] = "[Amount] * 3"  # undo
+    assert engine.evaluate("Orders").steps[2].cached
+    calculate.params["columns"][0]["formula"] = "[Amount] * 5"  # a new edit: the one undone is dropped
+    engine.evaluate("Orders")
+    assert engine.cache.get(keys[2]) is None and engine.cache.get(keys[1]) is not None
+    assert engine.evaluate("Orders").steps[0].cached  # the steps before it keep theirs
+
+
+def test_a_result_that_another_step_still_has_stays():
+    cache = ResultCache()
+    df = pl.DataFrame({"a": [1]})
+    cache.put("shared", df, step="s1")
+    cache.put("shared", df, step="s2")
+    cache.put("k2", df, step="s2")
+    cache.put("k3", df, step="s2")
+    assert cache.get("shared") is df  # still the result of s1
+    cache.put("k4", df, step="s1")
+    cache.put("k5", df, step="s1")
+    assert cache.get("shared") is None and len(cache) == 4
+
+
+def test_the_cache_limit_follows_the_installed_memory(monkeypatch):
+    from tafl.core import engine
+
+    assert engine.installed_memory() > 1024**3  # this computer
+    monkeypatch.setattr(engine, "installed_memory", lambda: 16 * 1024**3)
+    assert ResultCache().max_bytes == 4 * 1024**3
+    monkeypatch.setattr(engine, "installed_memory", lambda: 1024**3)
+    assert ResultCache().max_bytes == 512 * 1024**2
+    monkeypatch.setattr(engine, "installed_memory", lambda: None)
+    assert ResultCache().max_bytes == 2 * 1024**3
+    assert ResultCache(100).max_bytes == 100

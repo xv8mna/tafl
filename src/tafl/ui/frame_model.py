@@ -139,6 +139,28 @@ class FrameModel(QAbstractTableModel):
         value = self.value(row, column)
         return "" if value is None else self._formatters[column](value)
 
+    def copier(self) -> Callable[[pl.Series], list[str]] | None:
+        """A function that turns a column of the frame (or part of it) into the texts the grid
+        shows, for copying cells: texts in full, in quotes as Excel writes them when they have
+        tabs or line breaks. It can run in another thread."""
+        if self._df is None:
+            return None
+        full = {
+            name: (_excel_text if dtype == pl.String else self.display.formatter(dtype)) for name, dtype in self._df.schema.items()
+        }
+
+        def texts(column: pl.Series) -> list[str]:
+            show = full[column.name]
+            return ["" if value is None else show(value) for value in column.to_list()]
+
+        return texts
+
+
+def _excel_text(text: str) -> str:
+    if "\t" in text or "\n" in text or "\r" in text or text.startswith('"'):
+        return '"' + text.replace('"', '""') + '"'
+    return text
+
 
 def _strftime_date(qt_format: str) -> str:
     """Qt's short date format (e.g. dd.MM.yy) as strftime, always with a four-digit year."""

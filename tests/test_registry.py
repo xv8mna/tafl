@@ -1,3 +1,4 @@
+import sys
 import textwrap
 
 from tafl.core import Registry
@@ -91,6 +92,34 @@ def test_the_hint_also_with_left_over_folders_and_the_old_error_name(tmp_path, m
         error = next(p for p in registry.plugins if p.name == name).errors[0]
         assert error.splitlines()[-1].startswith("Since Tafl 0.2.0, plugins import from tafl.api"), error
         assert "EtlError is called TaflError now" in error
+
+
+def test_a_plugin_that_ends_the_program_while_loading_is_a_load_error(tmp_path):
+    """sys.exit() at the top of a plugin used to end the app before it started."""
+    write(tmp_path, "exits.py", "import sys\nsys.exit('plugin says bye')\n")
+    write(tmp_path, "interrupts.py", "raise KeyboardInterrupt\n")
+    write(tmp_path, "good.py", GOOD)
+    registry = Registry()
+    registry.load_folder(tmp_path)
+
+    plugins = {p.name: p for p in registry.plugins}
+    assert plugins["exits"].errors[0].splitlines()[-1] == "SystemExit: plugin says bye"
+    assert plugins["interrupts"].errors[0].splitlines()[-1] == "KeyboardInterrupt"
+    assert registry.actions["demo.upper"].plugin == "good"
+    assert "tafl_ext_exits" not in sys.modules
+
+
+def test_plugin_folders_that_dont_exist_get_a_warning(tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))  # its plugin folder may be missing
+    monkeypatch.setenv("TAFL_PLUGINS", str(tmp_path / "from_env"))
+    write(tmp_path, "a_file.py", GOOD)
+    registry = Registry.default([tmp_path / "given", tmp_path / "a_file.py", tmp_path])
+    assert registry.warnings == [
+        f"The plugin folder {tmp_path / 'from_env'} does not exist",
+        f"The plugin folder {tmp_path / 'given'} does not exist",
+        f"The plugin folder {tmp_path / 'a_file.py'} is not a folder",
+    ]
+    assert "demo.upper" in registry.actions
 
 
 def test_actions_grouped_by_category(registry):

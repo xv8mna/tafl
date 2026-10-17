@@ -95,9 +95,12 @@ def select(df, p, ctx):
 def change_type(df, p, ctx):
     """Converts columns to another type.
 
-    Format examples — dates: dd.mm.yyyy, yyyy-mm-dd, dd.mm.yyyy hh:mm; numbers as text:
-    0.00, #,##0.00, 00000 (pads with zeros, e.g. postal codes). Without a date format, common
-    formats are detected. Numbers become dates as Excel day numbers (45658 = 01.01.2025).
+    Format examples — dates: dd.mm.yyyy, yyyy-mm-dd, dd.mm.yyyy hh:mm, d. mmmm yyyy; numbers as
+    text: 0.00, #,##0.00, 00000 (pads with zeros, e.g. postal codes), 0%, #,##0.00 €. Without a
+    date format, common formats are detected; two-digit years are read like in Excel (25 = 2025,
+    75 = 1975). Month and day names (mmm, mmmm, ddd, dddd) are English. Numbers become dates as
+    Excel day numbers (45658 = 01.01.2025). Whole numbers keep all their digits (up to
+    9,223,372,036,854,775,807); decimal numbers keep about 15.
     """
     for c in p.columns:  # one after the other, so a column can be converted twice
         source = df[c.column]
@@ -108,11 +111,32 @@ def change_type(df, p, ctx):
         if count := failed.sum():
             examples = ", ".join(f"'{v}'" for v in source.filter(failed).head(3).to_list())
             message = f"{c.column}: {count:,} value(s) could not be converted to {_TYPE_LABELS[c.type]}, e.g. {examples}"
+            hint = ""
+            if c.type == "integer" and _numbers(source, p.decimal).filter(failed).is_finite().any():
+                hint = ". Whole numbers go up to 9,223,372,036,854,775,807: keep longer IDs as text"
             if p.on_error == "fail":
-                raise ActionError(message)
-            ctx.warn(message + " (now empty)")
+                raise ActionError(message + hint)
+            ctx.warn(message + " (now empty)" + hint)
+        if c.type == "number":
+            _warn_rounded(source, converted, p.decimal, ctx)
         df = df.with_columns(converted.alias(c.column))
     return df
+
+
+def _warn_rounded(source: pl.Series, converted: pl.Series, decimal: str, ctx) -> None:
+    """A decimal number keeps about 15 digits: say which values lost some."""
+    rounded = dtypes.float_loses_digits(source, decimal) & converted.is_not_null()
+    if rounded.any():
+        examples = ", ".join(f"'{v}'" for v in source.filter(rounded).head(3).to_list())
+        ctx.warn(
+            f"{source.name}: {rounded.sum():,} value(s) were rounded, e.g. {examples}: a decimal number keeps "
+            "about 15 digits (Whole number and Text keep them all)"
+        )
+
+
+def _numbers(s: pl.Series, decimal: str) -> pl.Series:
+    """The values as decimal numbers (empty where they aren't numbers)."""
+    return dtypes.parse_numbers(s, decimal) if s.dtype == pl.String else s.cast(pl.Float64, strict=False)
 
 
 def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
@@ -126,17 +150,21 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
             return dtypes.format_dates(s, fmt or "dd.mm.yyyy hh:mm:ss")
         if source.is_numeric():
             return dtypes.format_numbers(s, fmt, decimal)
+        if source == pl.Binary:  # as hex digits, like SQL Server shows them: 0x0102FF
+            return ("0x" + s.bin.encode("hex").str.to_uppercase()).alias(s.name)
         return s.cast(pl.String)
     if target in ("number", "integer"):
         if source == pl.String:
-            number = dtypes.parse_numbers(s, decimal)
-        elif source.is_numeric() or source == pl.Boolean:
-            number = s.cast(pl.Float64)
-        else:
+            if target == "integer":
+                return dtypes.parse_integers(s, decimal)  # exact, also beyond 15 digits
+            return dtypes.parse_numbers(s, decimal)
+        if not (source.is_numeric() or source == pl.Boolean):
             raise ActionError(f"{s.name}: a {source} column can't become a number")
         if target == "number":
-            return number
-        return number.round(0, mode="half_away_from_zero").cast(pl.Int64, strict=False)
+            return s.cast(pl.Float64)
+        if source.is_float() or isinstance(source, pl.Decimal):
+            s = s.round(0, mode="half_away_from_zero")
+        return s.cast(pl.Int64, strict=False)
     if target in ("date", "datetime"):
         if source == pl.String:
             parsed = dtypes.parse_dates(s, fmt) if target == "date" else dtypes.parse_datetimes(s, fmt)

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -35,6 +35,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QStyle,
+    QStyleOptionComboBox,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -95,6 +97,45 @@ class Editor(QWidget):
     def set_placeholder(self, text: str) -> None:
         """Grey hint shown while the field is empty (used where there is no label)."""
 
+    def allow_narrow(self) -> None:
+        """In a row of a list, next to other fields: drop-down lists may get narrow (their texts
+        are cut off), so that the row fits a narrow settings panel."""
+        for combo in self.findChildren(_Combo):
+            combo.make_narrow()
+
+
+class _Combo(QComboBox):
+    """A drop-down list; ``make_narrow`` lets it be as wide as its text where there is room, and
+    narrower where there isn't."""
+
+    narrow = False
+
+    def make_narrow(self) -> None:
+        if not self.narrow:
+            self.narrow = True
+            self.currentTextChanged.connect(lambda _text: self.updateGeometry())
+            self.updateGeometry()
+
+    def _width(self, text: str) -> int:
+        """The width for ``text``, with the arrow and the frame."""
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        metrics = self.fontMetrics()
+        content = QSize(metrics.horizontalAdvance(text) + 4, metrics.height())
+        return self.style().sizeFromContents(QStyle.ContentsType.CT_ComboBox, option, content, self).width()
+
+    def sizeHint(self) -> Any:
+        hint = super().sizeHint()
+        if self.narrow:
+            hint.setWidth(self._width(self.currentText() or "MMMM"))
+        return hint
+
+    def minimumSizeHint(self) -> Any:
+        hint = super().minimumSizeHint()
+        if self.narrow:
+            hint.setWidth(min(hint.width(), self._width("MM")))
+        return hint
+
 
 def _shown(param: Param, value: Any) -> Any:
     """What the editor shows: the default for a value of the wrong kind (e.g. a number for a
@@ -151,6 +192,7 @@ class TextEditor(Editor):
             self._edit.setPlainText(text)
         else:
             self._edit.setText(text)
+            self._edit.setCursorPosition(0)  # a narrow field shows the beginning of the text
         self._last = text
 
     def set_placeholder(self, text: str) -> None:
@@ -620,7 +662,7 @@ class BoolEditor(Editor):
 class ChoiceEditor(Editor):
     def __init__(self, param: Param, ctx: FormContext, parent: QWidget | None = None) -> None:
         super().__init__(param, ctx, parent)
-        self._combo = QComboBox(self)
+        self._combo = _Combo(self)
         self._combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self._combo.setMinimumContentsLength(8)
         for value, label in getattr(param, "options", ()):
@@ -639,6 +681,7 @@ class ChoiceEditor(Editor):
             index = self._combo.count() - 1
         self._combo.setCurrentIndex(max(index, 0))
         self._combo.blockSignals(False)
+        self._combo.updateGeometry()  # a narrow one is as wide as its text
 
 
 class ColumnEditor(Editor):
@@ -646,7 +689,7 @@ class ColumnEditor(Editor):
 
     def __init__(self, param: Param, ctx: FormContext, parent: QWidget | None = None) -> None:
         super().__init__(param, ctx, parent)
-        self._combo = QComboBox(self)
+        self._combo = _Combo(self)
         self._combo.setEditable(True)
         self._combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -666,6 +709,7 @@ class ColumnEditor(Editor):
         self._combo.blockSignals(True)
         self._combo.setCurrentText(self._last)
         self._combo.blockSignals(False)
+        self._combo.updateGeometry()
         self._mark()
 
     def set_placeholder(self, text: str) -> None:
@@ -817,7 +861,8 @@ class PathEditor(Editor):
 class TableEditor(Editor):
     def __init__(self, param: Param, ctx: FormContext, parent: QWidget | None = None) -> None:
         super().__init__(param, ctx, parent)
-        self._combo = QComboBox(self)
+        self._combo = _Combo(self)
+        self._combo.make_narrow()  # a long table name doesn't make the form wider than the panel
         self._combo.currentIndexChanged.connect(self.changed)
         self._value: str = ""
         self.setLayout(_row(self._combo))
@@ -892,7 +937,8 @@ class TablesEditor(Editor):
 class ConnectionEditor(Editor):
     def __init__(self, param: Param, ctx: FormContext, parent: QWidget | None = None) -> None:
         super().__init__(param, ctx, parent)
-        self._combo = QComboBox(self)
+        self._combo = _Combo(self)
+        self._combo.make_narrow()
         self._combo.currentIndexChanged.connect(self.changed)
         edit = QToolButton(self)
         edit.setText("Edit…")
@@ -947,9 +993,9 @@ class ListEditor(Editor):
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setHorizontalSpacing(4)
         self._grid.setVerticalSpacing(4)
-        if not self._wide:
+        if not self._wide:  # a choice is as wide as its text, the other fields share the rest
             for column, f in enumerate(self._fields):
-                self._grid.setColumnStretch(column, 2 if f.kind == "text" else 1)
+                self._grid.setColumnStretch(column, 2 if f.kind == "text" else 0 if f.kind == "choice" else 1)
         add = QPushButton("+ Add", self)
         add.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         add.clicked.connect(self._add_clicked)
@@ -979,7 +1025,7 @@ class ListEditor(Editor):
         if len(self._fields) < 2:
             return
         for column, f in enumerate(self._fields):
-            label = QLabel(f.label, self)
+            label = _ShortLabel(f.label, self)
             label.setObjectName("Dim")
             self._grid.addWidget(label, 0, column)
 
@@ -998,6 +1044,7 @@ class ListEditor(Editor):
         editors: dict[str, Editor] = {}
         for f in self._fields:
             editor = create_editor(f, self.ctx, self)
+            editor.allow_narrow()
             editor.refresh(self.ctx, self._values)
             editor.set_value(_shown(f, values.get(f.key, f.initial())))
             editor.changed.connect(self._child_changed)
@@ -1009,14 +1056,14 @@ class ListEditor(Editor):
                 editor.creates_name = editors[creates].value
                 editor.creates = True
         tools = QWidget(self)
-        tools.setLayout(
-            _row(
-                _tool(tools, "▲", "Move up", lambda: self._move(number, -1)),
-                _tool(tools, "▼", "Move down", lambda: self._move(number, 1)),
-                _tool(tools, "✕", "Remove", lambda: self._remove(number)),
-                stretch_first=False,
-            )
+        buttons = _row(
+            _tool(tools, "▲", "Move up", lambda: self._move(number, -1)),
+            _tool(tools, "▼", "Move down", lambda: self._move(number, 1)),
+            _tool(tools, "✕", "Remove", lambda: self._remove(number)),
+            stretch_first=False,
         )
+        buttons.setSpacing(0)
+        tools.setLayout(buttons)
         if self._wide:
             card = QFrame(self)
             card.setObjectName("ListCard")
@@ -1072,11 +1119,39 @@ class ListEditor(Editor):
                 row[f.key].setVisible(is_visible(f, values))
 
 
+class _ShortLabel(QLabel):
+    """A label that can be narrower than its text: then it ends with "…", and the tooltip has
+    all of it."""
+
+    def __init__(self, text: str, parent: QWidget) -> None:
+        super().__init__(text, parent)
+        self._full = text
+        self.setToolTip(text)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def minimumSizeHint(self) -> Any:
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def sizeHint(self) -> Any:
+        hint = super().sizeHint()
+        hint.setWidth(self.fontMetrics().horizontalAdvance(self._full) + 4)
+        return hint
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, self.contentsRect().width())
+        if shown != self.text():
+            self.setText(shown)
+
+
 def _tool(parent: QWidget, text: str, tip: str, slot: Callable[[], None]) -> QToolButton:
     button = QToolButton(parent)
     button.setText(text)
     button.setToolTip(tip)
     button.setAutoRaise(True)
+    button.setFixedWidth(button.fontMetrics().horizontalAdvance(text) + 10)  # narrow: rows fit a narrow panel
     button.clicked.connect(slot)
     return button
 
@@ -1128,6 +1203,7 @@ class ParamForm(QWidget):
             label = None
             if param.kind != "bool":
                 label = QLabel(param.label + (" *" if param.required else ""), self)
+                label.setWordWrap(True)  # a long label doesn't make the form wider than the panel
                 label.setToolTip(param.help)
                 layout.addSpacing(4)
                 layout.addWidget(label)

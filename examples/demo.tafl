@@ -11,7 +11,7 @@
         {
           "id": "s1",
           "action": "excel.import",
-          "version": 2,
+          "version": 3,
           "params": {
             "file": "data/customers.xlsx",
             "sheet": "Kunden",
@@ -55,7 +55,7 @@
         {
           "id": "s4",
           "action": "csv.import",
-          "version": 2,
+          "version": 3,
           "params": {
             "file": "data/orders.csv"
           }
@@ -188,7 +188,7 @@
         {
           "id": "s12",
           "action": "excel.export",
-          "version": 2,
+          "version": 3,
           "params": {
             "file": "output/orders.xlsx",
             "sheet": "Orders",
@@ -208,7 +208,7 @@
         {
           "id": "s13",
           "action": "csv.export",
-          "version": 1,
+          "version": 2,
           "params": {
             "file": "output/orders.csv"
           }
@@ -283,7 +283,7 @@
         {
           "id": "s18",
           "action": "excel.export",
-          "version": 2,
+          "version": 3,
           "params": {
             "file": "output/revenue.xlsx",
             "sheet": "Revenue",

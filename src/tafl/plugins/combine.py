@@ -88,25 +88,25 @@ def merge(df, p, ctx):
     Lookup (the default, like a lookup in a spreadsheet) adds columns from the first matching row, so
     the row count never changes. Left, inner and full join work like in SQL: every matching row
     is used, so a row repeats when the other table has several matches. Keep rows with or
-    without a match filters this table without adding columns. Empty keys never match.
+    without a match filters this table without adding columns. Empty keys never match. Keys of
+    different types (a number and a text) are compared as text; the key columns keep their type.
     """
     other = ctx.table(p.other)
-    left_on = [m.column for m in p.match]
     right_on = [m.other_column for m in p.match]
-    df, other = _align_key_types(df, other, left_on, right_on, ctx)
+    left, right, left_on, right_keys, compared = _compared_keys(df, other, [m.column for m in p.match], right_on, ctx)
 
     if p.how in ("matching", "non_matching"):
-        keys = other.select(right_on).unique()
-        return df.join(
-            keys, left_on=left_on, right_on=right_on, how="semi" if p.how == "matching" else "anti", maintain_order="left"
-        )
+        keys = right.select(right_keys).unique()
+        how = "semi" if p.how == "matching" else "anti"
+        out = left.join(keys, left_on=left_on, right_on=right_keys, how=how, maintain_order="left")
+        return out.drop([key for _, key in compared])
 
     columns = [c for c in (p.columns or other.columns) if c not in right_on]
     if missing := [c for c in columns if c not in other.columns]:
         raise ActionError(f"Columns not in the other table: {', '.join(missing)}")
-    right = other.select([*right_on, *columns])
+    right = right.select([*right_keys, *columns])
     if p.how == "lookup" or p.multiple == "first":
-        right = right.unique(subset=right_on, keep="first", maintain_order=True)
+        right = right.unique(subset=right_keys, keep="first", maintain_order=True)
     taken = {*df.columns, *columns}
     renames = {}
     for column in columns:
@@ -114,15 +114,24 @@ def merge(df, p, ctx):
             renames[column] = _free_name(column, p.suffix, taken)
             taken.add(renames[column])
     right = right.rename(renames)
-    return df.join(
+    out = left.join(
         right,
         left_on=left_on,
-        right_on=right_on,
+        right_on=right_keys,
         how={"lookup": "left", "left": "left", "inner": "inner", "full": "full"}[p.how],
         suffix=p.suffix,
         coalesce=True,
         maintain_order="left_right" if p.how == "full" else "left",
     )
+    if p.how == "full":  # rows only in the other table get its key, in this table's type if it fits
+        for name, key in compared:
+            back = pl.col(key).cast(df.schema[name], strict=False)
+            fits = pl.col(name).is_not_null() | pl.col(key).is_null() | (back.cast(out.schema[key], strict=False) == pl.col(key))
+            if out.select(fits.all()).item():
+                out = out.with_columns(pl.coalesce(name, back).alias(name))
+            else:
+                out = out.with_columns(pl.coalesce(pl.col(name).cast(out.schema[key]), key).alias(name))
+    return out.drop([key for _, key in compared])
 
 
 @action(
@@ -159,19 +168,32 @@ def _free_name(name: str, suffix: str, taken: set[str]) -> str:
     return candidate
 
 
-def _align_key_types(left, right, left_on, right_on, ctx):
-    """Join keys must have the same type; compare differing ones as numbers or text."""
-    for left_name, right_name in zip(left_on, right_on):
+def _compared_keys(left, right, left_on, right_on, ctx):
+    """Join keys must have the same type: keys of different types are compared as numbers or
+    text, in copies of the key columns, so that the columns themselves keep their type.
+
+    Returns both tables with the copies, the key columns to join on, and the copies of this
+    table's key columns as (key column, copy).
+    """
+    left_keys, right_keys, compared = list(left_on), list(right_on), []
+    taken = {*left.columns, *right.columns}
+    for index, (left_name, right_name) in enumerate(zip(left_on, right_on)):
         left_type, right_type = left.schema[left_name], right.schema[right_name]
         if left_type == right_type:
             continue
         if left_type.is_numeric() and right_type.is_numeric():
-            target = pl.Float64 if left_type.is_float() or right_type.is_float() else pl.Int64
+            target = pl.Int64 if left_type.is_integer() and right_type.is_integer() else pl.Float64
         elif left_type.is_temporal() and right_type.is_temporal():
             target = pl.Datetime("us")
         else:
             target = pl.String
             ctx.warn(f"'{left_name}' ({left_type}) and '{right_name}' ({right_type}) are compared as text")
-        left = left.with_columns(pl.col(left_name).cast(target))
-        right = right.with_columns(pl.col(right_name).cast(target))
-    return left, right
+        key = f"__key{index}__"
+        while key in taken:
+            key = f"_{key}_"
+        taken.add(key)
+        left = left.with_columns(pl.col(left_name).cast(target, strict=False).alias(key))
+        right = right.with_columns(pl.col(right_name).cast(target, strict=False).alias(key))
+        left_keys[index] = right_keys[index] = key
+        compared.append((left_name, key))
+    return left, right, left_keys, right_keys, compared

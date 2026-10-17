@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import codecs
 import io
+from collections.abc import Callable
 from pathlib import Path
 
 import polars as pl
@@ -14,6 +15,7 @@ from tafl.api import (
     action,
     combine,
     dtypes,
+    files,
     source_files,
     source_params,
     source_summary,
@@ -22,13 +24,26 @@ from tafl.api import (
 )
 
 _DELIMITERS = [(";", "Semicolon ;"), (",", "Comma ,"), ("tab", "Tab"), ("|", "Pipe |")]
-_BOMS = ((codecs.BOM_UTF8, "utf-8-sig"), (codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16"))
+_ENCODINGS = {"utf-8": "UTF-8", "cp1252": "Windows (ANSI)", "latin-1": "Latin-1", "utf-16": "UTF-16"}
+_CHUNK = 1 << 20
+
+# Numbers as text: 1.234,56 or 1234,56 (decimal comma) and 1,234.56 or 1234.56 (decimal point)
+_NUMBER = {
+    ",": r"([0-9]+|[0-9]{1,3}(\.[0-9]{3})+)(,[0-9]+)?",
+    ".": r"([0-9]+|[0-9]{1,3}(,[0-9]{3})+)(\.[0-9]+)?",
+}
+_WHOLE = {",": r"^[+-]?([0-9]+|[0-9]{1,3}(\.[0-9]{3})+)$", ".": r"^[+-]?([0-9]+|[0-9]{1,3}(,[0-9]{3})+)$"}
+_SPACES = "[   ]"
+_CURRENCY = "€$£"
 
 
 def _migrate_import(params: dict, from_version: int) -> dict:
-    """Version 1 read one file; version 2 can also read all files of a folder."""
+    """Version 1 read one file; version 2 can also read all files of a folder; version 3 can
+    go on without files in the folder."""
     if from_version < 2:
         params.setdefault("source", "file")
+    if from_version < 3:
+        params.setdefault("no_files", "error")
     return params
 
 
@@ -61,7 +76,7 @@ def _migrate_import(params: dict, from_version: int) -> dict:
             visible_if={"detect_types": True},
         ),
     ],
-    version=2,
+    version=3,
     migrate=_migrate_import,
     summary=lambda p: f"Import {source_summary(p)}",
     fingerprint=sources_fingerprint,
@@ -72,51 +87,55 @@ def import_csv(df, p, ctx):
 
     Delimiter, encoding and decimal separator are detected automatically unless chosen (for
     each file). Numbers and dates are recognized when every value of a column fits, in all
-    files together; columns with leading zeros (customer numbers, postal codes) stay text.
-    Files are matched by column names; a column missing in a file stays empty there.
+    files together: also amounts like 1.234,50 € or 123,45- and percentages like 12,5% (read
+    as 0.125). Columns with leading zeros (customer numbers, postal codes) stay text. A value
+    like 1.000 can be one thousand or one: it follows the other numbers of the file, and
+    without any it is one thousand in files with semicolons. Files are matched by column
+    names; a column missing in a file stays empty there.
     """
-    files, folder = source_files(p, ctx)
+    paths, folder = source_files(p, ctx)
     parts, separators, encodings = [], [], []
-    for path in files:
+    for path in paths:
         ctx.check_cancelled()
-        frame, separator, encoding = _read_text_file(path, p)
+        frame, separator, encoding = _read_text_file(path, p, ctx.warn)
         parts.append((path, None, frame))
         separators.append(separator)
         encodings.append(encoding)
+    decimals = []
 
     def detect_types(data: pl.DataFrame) -> pl.DataFrame:
         if not p.detect_types:
             return data
         decimal = p.decimal if p.decimal != "auto" else _guess_decimal(data, separators[0])
-        return dtypes.infer_types(data, decimal)
+        decimals.append(decimal)
+        return _detect_types(data, decimal, ctx.warn)
 
     out = combine(parts, p, folder, prepare=detect_types)
-    if len(files) == 1:
-        ctx.log(f"Encoding {encodings[0]}, delimiter {_describe_separator(separators[0])}")
-    else:
+    decimal = [f"decimal {'comma' if decimals[0] == ',' else 'point'}"] if decimals else []
+    if len(paths) == 1:
+        ctx.log(", ".join([f"Encoding {encodings[0]}", f"delimiter {_describe_separator(separators[0])}", *decimal]))
+    elif paths:
         kinds = ", ".join(sorted({_describe_separator(s) for s in separators}))
-        ctx.log(f"{len(files)} files; encodings {', '.join(sorted(set(encodings)))}; delimiters {kinds}")
+        ctx.log("; ".join([f"{len(paths)} files", f"encodings {', '.join(sorted(set(encodings)))}", f"delimiters {kinds}", *decimal]))
     return out
 
 
-def _read_text_file(path: Path, p) -> tuple[pl.DataFrame, str, str]:
+def _read_text_file(path: Path, p, warn: Callable[[str], None]) -> tuple[pl.DataFrame, str, str]:
     """One file as text columns named after its header: (data, delimiter, encoding)."""
     raw = path.read_bytes()
-    data, encoding = _to_utf8(raw, p.encoding)
+    data, encoding = _to_utf8(raw, p.encoding, path.name, warn)
     sample = data[:65536].decode("utf-8", errors="ignore")
     separator = _detect_delimiter(sample, p.skip_lines) if p.delimiter == "auto" else _separator(p.delimiter)
+    options = dict(separator=separator, has_header=False, skip_lines=p.skip_lines, raise_if_empty=False, encoding="utf8-lossy")
     try:
-        out = pl.read_csv(
-            io.BytesIO(data),
-            separator=separator,
-            has_header=False,
-            infer_schema=False,
-            skip_lines=p.skip_lines,
-            truncate_ragged_lines=True,
-            raise_if_empty=False,
-            encoding="utf8-lossy",
-        )
-    except pl.exceptions.ComputeError as e:
+        try:
+            out = pl.read_csv(io.BytesIO(data), infer_schema=False, **options)
+        except pl.exceptions.ComputeError:  # rows longer than the first one ("found more fields")
+            out, cut = _read_long_rows(data, options)
+            if cut:
+                rows = "1 row has" if cut == 1 else f"{cut:,} rows have" if cut > 1 else "some rows have"
+                warn(f"In {path.name}, {rows} more values than the first row: the extra values were left out")
+    except pl.exceptions.PolarsError as e:
         raise ActionError(f"Could not read {path.name}: {str(e).splitlines()[0]}") from None
 
     names: list[str] = []
@@ -128,6 +147,25 @@ def _read_text_file(path: Path, p) -> tuple[pl.DataFrame, str, str]:
     return out.rename(dict(zip(out.columns, names))), separator, encoding
 
 
+def _read_long_rows(data: bytes, options: dict) -> tuple[pl.DataFrame, int]:
+    """A file with rows longer than its first row: the data cut to the first row's columns, and
+    the number of rows that lost values (-1: unknown). Empty values at the end don't count."""
+    width = pl.read_csv(io.BytesIO(data), infer_schema=False, n_rows=1, truncate_ragged_lines=True, **options).width
+    schema = {f"column_{i}": pl.String for i in range(width + 1)}
+    try:
+        wide = pl.read_csv(io.BytesIO(data), schema=schema, missing_columns="insert", truncate_ragged_lines=True, **options)
+    except (pl.exceptions.PolarsError, TypeError):  # a Polars without these options
+        return pl.read_csv(io.BytesIO(data), infer_schema=False, truncate_ragged_lines=True, **options), -1
+    return wide.drop(wide.columns[-1]), wide[:, -1].is_not_null().sum()
+
+
+def _migrate_export(params: dict, from_version: int) -> dict:
+    """Version 1 always wrote the file, also for an empty table."""
+    if from_version < 2:
+        params.setdefault("skip_empty", False)
+    return params
+
+
 @action(
     "csv.export",
     "Export to CSV / text file",
@@ -135,6 +173,9 @@ def _read_text_file(path: Path, p) -> tuple[pl.DataFrame, str, str]:
     kind="export",
     params=[
         P.File("file", "File", mode="save", filter="CSV files (*.csv);;Text files (*.txt);;All files (*.*)"),
+        P.Bool(
+            "skip_empty", "Don't export an empty table", default=False, help="When the table has no rows, the file is left as it is."
+        ),
         P.Choice("delimiter", "Delimiter", _DELIMITERS),
         P.Choice(
             "encoding",
@@ -147,14 +188,24 @@ def _read_text_file(path: Path, p) -> tuple[pl.DataFrame, str, str]:
         P.Bool("header", "Write column names", default=True),
         P.Bool("quote_all", "Put every value in quotes", default=False),
     ],
+    version=2,
+    migrate=_migrate_export,
     summary=lambda p: f"Export to {Path(p.file).name}",
 )
 def export_csv(df, p, ctx):
-    """Writes the table to a delimited text file. Existing files are replaced."""
+    """Writes the table to a delimited text file. An existing file is replaced when the new
+    one is complete: if the export fails, the old file stays as it was.
+
+    Binary values are written as hex text (0x0102FF); infinite and not-a-number values as
+    empty, as in Excel.
+    """
     path = ctx.resolve_path(p.file)
     separator = _separator(p.delimiter)
     if separator == "," and p.decimal == ",":
         raise ActionError("The delimiter and the decimal separator can't both be a comma")
+    if p.skip_empty and df.height == 0:
+        ctx.log("Not exported: the table is empty")
+        return
     options = dict(
         separator=separator,
         include_header=p.header,
@@ -162,50 +213,97 @@ def export_csv(df, p, ctx):
         decimal_comma=p.decimal == ",",
         date_format=dtypes.to_strftime(p.date_format) or None,
         datetime_format=dtypes.to_strftime(p.datetime_format) or None,
+        time_format="%H:%M:%S",
         quote_style="always" if p.quote_all else "necessary",
         float_scientific=False,
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
+    data = df.with_columns(
+        *(pl.when(pl.col(c).is_finite()).then(pl.col(c)).alias(c) for c, t in df.schema.items() if t.is_float()),
+        *((pl.lit("0x") + pl.col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
+    )
+    with files.replace_file(path) as temporary:
         if p.encoding in ("utf-8", "utf-8-sig"):
-            df.write_csv(path, include_bom=p.encoding == "utf-8-sig", **options)
+            data.write_csv(temporary, include_bom=p.encoding == "utf-8-sig", **options)
         else:
-            text = df.write_csv(None, **options)
+            text = data.write_csv(None, **options)
             try:
                 encoded = text.encode(p.encoding)
             except UnicodeEncodeError:
                 encoded = text.encode(p.encoding, errors="replace")
                 ctx.warn(f"Some characters don't exist in {p.encoding} and were written as '?'")
-            path.write_bytes(encoded)
-    except PermissionError:
-        raise ActionError(f"Can't write {path.name}. Is it open in another program?") from None
-    ctx.log(f"Wrote {df.height:,} rows to {path}")
+            temporary.write_bytes(encoded)
+    ctx.log(f"Wrote {df.height:,} row{'s' if df.height != 1 else ''} to {path}")
 
 
-def _to_utf8(raw: bytes, encoding: str) -> tuple[bytes, str]:
-    """The file content as UTF-8 bytes, and the encoding it was read with."""
-    for bom, name in _BOMS:
-        if raw.startswith(bom):
-            if name == "utf-8-sig":
-                return raw[len(bom) :], name
-            return raw.decode("utf-16").encode("utf-8"), name
+def _to_utf8(raw: bytes, encoding: str, name: str, warn: Callable[[str], None]) -> tuple[bytes, str]:
+    """The file content as UTF-8 bytes, and the encoding it was read with (a byte order mark
+    decides it). Characters that don't fit the encoding are shown as �, with a warning."""
+    if raw.startswith(codecs.BOM_UTF8):
+        raw = raw[len(codecs.BOM_UTF8) :]
+        if not _is_utf8(raw):
+            warn(f"{name}: {_are(_utf8_counts(raw)[1], 'character')} not UTF-8, shown as �")
+        return raw, "utf-8-sig"
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return _decoded(raw, "utf-16", name, warn), "utf-16"
     if encoding == "auto":
-        encoding = "utf-8" if _is_utf8(raw) else "cp1252"
+        if _is_utf8(raw):
+            return raw, "utf-8"
+        valid, invalid = _utf8_counts(raw)
+        if valid > invalid:  # mostly UTF-8: a few wrong bytes don't make it a Windows file
+            warn(f"{name}: {_are(invalid, 'character')} not UTF-8, shown as �")
+            return raw, "utf-8"
+        if valid:
+            warn(f"{name} was read as Windows (ANSI), but it has UTF-8 characters too: they look wrong, e.g. Ã¼ for ü")
+        return _decoded(raw, "cp1252", name, warn), "cp1252"
     if encoding == "utf-8":
+        if not _is_utf8(raw):
+            warn(
+                f"{name} is not UTF-8: {_are(_utf8_counts(raw)[1], 'character')} shown as �. "
+                "Choose another encoding (e.g. Windows (ANSI)) or Detect automatically"
+            )
         return raw, encoding
-    return raw.decode(encoding, errors="replace").encode("utf-8"), encoding
+    if encoding in ("cp1252", "latin-1") and not raw.isascii() and _is_utf8(raw):
+        warn(
+            f"{name} looks like UTF-8, not {_ENCODINGS[encoding]}: characters like ü look wrong (Ã¼). "
+            "Choose UTF-8 or Detect automatically"
+        )
+    return _decoded(raw, encoding, name, warn), encoding
+
+
+def _decoded(raw: bytes, codec: str, name: str, warn: Callable[[str], None]) -> bytes:
+    text = raw.decode(codec, errors="replace")
+    if replaced := text.count("�"):
+        warn(f"{name}: {_are(replaced, 'character')} not {_ENCODINGS.get(codec, codec)}, shown as �")
+    return text.encode("utf-8")
+
+
+def _are(count: int, word: str) -> str:
+    return f"1 {word} is" if count == 1 else f"{count:,} {word}s are"
 
 
 def _is_utf8(raw: bytes) -> bool:
     decoder = codecs.getincrementaldecoder("utf-8")()
     view = memoryview(raw)
     try:
-        for start in range(0, len(raw), 1 << 20):
-            decoder.decode(view[start : start + (1 << 20)])
+        for start in range(0, len(raw), _CHUNK):
+            decoder.decode(view[start : start + _CHUNK])
         decoder.decode(b"", final=True)
     except UnicodeDecodeError:
         return False
     return True
+
+
+def _utf8_counts(raw: bytes) -> tuple[int, int]:
+    """Read as UTF-8: about how many characters are UTF-8 beyond ASCII (the bytes they take
+    beyond one each: ü takes 2, € 3), and how many characters aren't UTF-8."""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    view = memoryview(raw)
+    characters = replaced = 0
+    for start in range(0, len(raw) + 1, _CHUNK):
+        text = decoder.decode(view[start : start + _CHUNK], final=start + _CHUNK > len(raw))
+        characters += len(text)
+        replaced += text.count("�")
+    return len(raw) - characters, replaced - raw.count("�".encode())  # a � in the file is a character like any other
 
 
 def _detect_delimiter(sample: str, skip_lines: int) -> str:
@@ -233,17 +331,91 @@ def _count_outside_quotes(line: str, char: str) -> int:
 
 
 def _guess_decimal(df: pl.DataFrame, separator: str) -> str:
-    """Count values that look like 1.234,56 / 12,5 versus 1,234.56 / 12.5 in a sample."""
+    """Count values that are only numbers with a decimal comma (1.234,56 / 12,5 / 1.234.567)
+    versus a decimal point (1,234.56 / 12.5) in a sample. Values like 1.000 and 1,000 fit both
+    and count for neither. Without a difference: comma in files with semicolons, else point."""
     comma = point = 0
     sample = df.head(2000)
     for name, dtype in sample.schema.items():
         if dtype == pl.String:
-            values = sample[name].str.strip_chars()
-            comma += values.str.contains(r"^[+-]?([0-9]+|[0-9]{1,3}(\.[0-9]{3})+),[0-9]+$").sum()
-            point += values.str.contains(r"^[+-]?([0-9]+|[0-9]{1,3}(,[0-9]{3})+)\.[0-9]+$").sum()
+            values = _bare(sample[name])
+            values = values.filter(~values.str.contains(r"^[+-]?[0-9]+$"))
+            fits_comma, fits_point = values.str.contains(f"^[+-]?{_NUMBER[',']}$"), values.str.contains(f"^[+-]?{_NUMBER['.']}$")
+            comma += (fits_comma & ~fits_point).sum()
+            point += (fits_point & ~fits_comma).sum()
     if comma != point:
         return "," if comma > point else "."
     return "," if separator == ";" else "."
+
+
+def _detect_types(data: pl.DataFrame, decimal: str, warn: Callable[[str], None]) -> pl.DataFrame:
+    """``dtypes.infer_types``, and also: numbers with thousands separators only (1.000) become
+    whole numbers (exact, up to 19 digits); amounts (1.234,50 €, 123,45-) and percentages (12,5%
+    is 0.125) become numbers when every value of the column is one."""
+    notes: dict[str, list[str]] = {}  # the warnings of infer_types, by column
+    typed = data.with_columns(
+        [dtypes.infer_series(data[name], decimal, notes.setdefault(name, []).append) for name in data.columns]
+    )
+    number = _NUMBER[decimal]
+    whole, percent, amount = _WHOLE[decimal], f"^[+-]?{number}%$", f"^[{_CURRENCY}]?[+-]?{number}-?[{_CURRENCY}]?$"
+    updates = []
+    for name, dtype in data.schema.items():
+        kind = typed[name].dtype
+        if dtype != pl.String or kind not in (pl.Float64, pl.String):
+            continue
+        sample = _clean(data[name].drop_nulls().head(1000)).drop_nulls()  # most columns end here, quickly
+        if kind == pl.Float64 or _fit(sample, whole):  # text: numbers too long for a decimal number
+            pattern = whole
+        else:
+            pattern = percent if _fit(sample, percent) else amount
+        if not _fit(sample, pattern) or (pattern == amount and not _amounts(sample)):
+            continue
+        text = _clean(data[name])
+        values = text.drop_nulls()
+        if not values.str.contains(pattern).all():
+            continue
+        if pattern == whole:
+            if kind == pl.String and values.str.contains(r"^[+-]?0[0-9.,]").any():
+                continue  # codes like 0815
+            integers = dtypes.parse_integers(text, decimal)
+            if integers.null_count() == text.null_count():  # else beyond Int64: the text stays
+                updates.append(integers)
+                notes.pop(name, None)
+            continue
+        lost = dtypes.float_loses_digits(_bare(values), decimal)
+        if lost.any():
+            notes[name].append(f"{name} stays text: its numbers are too long to be kept exactly, e.g. '{values.filter(lost)[0]}'")
+        elif pattern == percent:
+            updates.append((dtypes.parse_numbers(text.str.strip_suffix("%"), decimal) / 100).alias(name))
+        elif _amounts(values):
+            parsed = dtypes.parse_numbers(text, decimal)
+            if parsed.null_count() == text.null_count():
+                updates.append(parsed)
+    for messages in notes.values():
+        for message in messages:
+            warn(message)
+    return typed.with_columns(updates)
+
+
+def _fit(values: pl.Series, pattern: str) -> bool:
+    return values.len() > 0 and values.str.contains(pattern).all()
+
+
+def _amounts(values: pl.Series) -> bool:
+    """Amounts with a currency sign or a minus at the end (else they would be numbers already),
+    without leading zeros (codes like 0815 stay text)."""
+    return values.str.contains(f"[{_CURRENCY}]|-$").any() and not values.str.contains(f"^[{_CURRENCY}]?[+-]?0[0-9]").any()
+
+
+def _clean(s: pl.Series) -> pl.Series:
+    """Text without spaces (also in 1 234,50 €); empty values as null."""
+    text = s.str.replace_all(_SPACES, "")
+    return pl.select(pl.when(pl.lit(text) == "").then(None).otherwise(pl.lit(text)).alias(s.name)).to_series()
+
+
+def _bare(s: pl.Series) -> pl.Series:
+    """The numbers in amounts and percentages, for counting decimal separators."""
+    return _clean(s).drop_nulls().str.strip_chars(_CURRENCY + "%").str.strip_suffix("-")
 
 
 def _separator(choice: str) -> str:

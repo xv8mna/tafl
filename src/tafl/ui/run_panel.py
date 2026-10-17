@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QHeaderView, QLabel, QTreeWidget, QTreeWidgetItem,
 from tafl.core import Status, TableResult
 
 from . import theme
-from .session import Session
+from .session import Session, size_text
 
 _STATUS = {
     Status.OK: "ok",
@@ -27,6 +27,7 @@ class RunPanel(QWidget):
         self.session = session
         self.summary = QLabel("No run yet. Press F5 to run the project.", self)
         self.summary.setObjectName("Dim")
+        self.summary.setWordWrap(True)
         self.tree = QTreeWidget(self)
         self.tree.setHeaderLabels(["Step", "Result", "Time"])
         self.tree.setRootIsDecorated(True)
@@ -39,9 +40,21 @@ class RunPanel(QWidget):
         layout.setContentsMargins(6, 4, 6, 6)
         layout.addWidget(self.summary)
         layout.addWidget(self.tree, 1)
-        session.run_finished.connect(self.show_results)
+        session.run_finished.connect(self._run_finished)
+        session.run_stopped.connect(self.show_stopped)
 
-    def show_results(self, results: dict[str, TableResult]) -> None:
+    def _run_finished(self, results: dict[str, TableResult]) -> None:
+        self.show_results(results, self.session.run_seconds)
+
+    def show_stopped(self) -> None:
+        """A run that was stopped has no results: what ran before the stop is done (exports too)."""
+        self.tree.clear()
+        stopped = dt.datetime.now().strftime("%H:%M:%S")
+        self.summary.setText(f"Run stopped at {stopped}: what ran before the stop is done (exports too), the rest did not run.")
+        self.summary.setStyleSheet(f"color: {theme.STATUS_COLORS['warning']};")
+
+    def show_results(self, results: dict[str, TableResult], seconds: float | None = None) -> None:
+        """``seconds``: how long the run took (without it, the time of its steps added up)."""
         self.tree.clear()
         failed = skipped = 0
         total = 0.0
@@ -63,7 +76,11 @@ class RunPanel(QWidget):
             total += seconds
             ok = result.ok
             failed += not ok
-            top = QTreeWidgetItem([table.name, "ok" if ok else (result.first_error or "error"), f"{seconds:.2f} s"])
+            text = "ok" if ok else (result.first_error or "error")
+            if ok and (ended := result.skipped_from) is not None:
+                text = f"ok, rest skipped: {ended.skip_reason}"
+            top = QTreeWidgetItem([table.name, text, f"{seconds:.2f} s"])
+            top.setToolTip(1, text)
             top.setIcon(0, theme.status_icon("ok" if ok else "error"))
             top.setData(0, Qt.ItemDataRole.UserRole, (table_id, None))
             for step_result in result.steps:
@@ -76,6 +93,8 @@ class RunPanel(QWidget):
                 child.setToolTip(1, step_result.error or text)
                 child.setData(0, Qt.ItemDataRole.UserRole, (table_id, step.id))
                 for level, message in step_result.messages:
+                    if step_result.status == Status.SKIPPED and message == step_result.skip_rest:  # in its result
+                        continue
                     note = QTreeWidgetItem([("⚠ " if level == "warning" else "") + message, "", ""])
                     note.setForeground(0, theme.status_color("warning" if level == "warning" else "skipped"))
                     child.addChild(note)
@@ -87,6 +106,7 @@ class RunPanel(QWidget):
         problems = f"{failed} with errors" if failed else "no errors"
         if skipped:
             problems += f", {skipped} skipped (off)"
+        total = seconds if seconds is not None else total
         self.summary.setText(f"Run finished at {finished}: {tables} table{'s' if tables != 1 else ''}, {problems}, {total:.2f} s")
         self.summary.setStyleSheet(f"color: {theme.STATUS_COLORS['error' if failed else 'ok']};")
 
@@ -107,6 +127,8 @@ def _result_text(result) -> str:
         return "not run (earlier error)"
     if result.status == Status.DISABLED:
         return "off"
+    if result.status == Status.SKIPPED and result.skip_rest:
+        return f"skipped: {result.skip_reason}"
     if result.df is not None:
-        return f"{result.df.height:,} rows × {result.df.width} columns"
+        return size_text(result.df)
     return ""

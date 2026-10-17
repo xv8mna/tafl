@@ -1,4 +1,8 @@
 import datetime as dt
+import decimal
+import logging
+import sys
+from pathlib import Path
 
 import openpyxl
 import polars as pl
@@ -6,6 +10,7 @@ import pytest
 import xlsxwriter
 
 from tafl.api import ActionError
+from tafl.api.testing import StubContext
 
 
 @pytest.fixture
@@ -73,3 +78,109 @@ def test_export_checks_file_and_sheet_names(act, tmp_path):
         act("excel.export", df, {"file": str(tmp_path / "out.xls")})
     with pytest.raises(ActionError, match="31 characters"):
         act("excel.export", df, {"file": str(tmp_path / "out.xlsx"), "sheet": "a/b"})
+
+
+@pytest.fixture
+def edges(tmp_path):
+    """A workbook as other programs write it: merged cells, formulas without saved results,
+    cells with only a time."""
+    path = tmp_path / "edges.xlsx"
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "S"
+    sheet.append(["Region", "Name", "Summe", "Zeit"])
+    for row in (["Nord", "a", "=1+1", dt.time(9, 30)], [None, "b", "=1/0", dt.time(10, 0)], ["Süd", "c", "=2+2", dt.time(11, 15)]):
+        sheet.append(row)
+    sheet.merge_cells("A2:A3")
+    book.save(path)
+    return path
+
+
+def test_import_cells_with_only_a_time(act, edges, caplog):
+    with caplog.at_level(logging.WARNING):
+        df = act("excel.import", None, {"file": str(edges)})
+    assert df.schema["Zeit"] == pl.Time
+    assert df["Zeit"].to_list() == [dt.time(9, 30), dt.time(10, 0), dt.time(11, 15)]
+    assert df["Region"].to_list() == ["Nord", None, "Süd"]  # merged cells: the value is in the first cell only
+    assert df["Summe"].to_list() == [None, None, None]  # formulas without saved results
+    assert not [r for r in caplog.records if r.name.startswith("fastexcel")]  # its note on the console about them
+
+
+def test_a_header_row_below_the_data(act, edges):
+    ctx = StubContext()
+    df = act("excel.import", None, {"file": str(edges), "header_row": 100}, ctx)
+    assert df.shape == (0, 0)
+    assert ctx.warnings == ["Sheet 'S' of edges.xlsx has nothing in row 100 (the row with the column names) or below"]
+
+
+def test_export_binary_values_decimals_and_long_texts(act, tmp_path):
+    df = pl.DataFrame(
+        {
+            "data": [b"\x01\x02\xff", None],
+            "price": pl.Series([decimal.Decimal("1.50"), decimal.Decimal("2.25")], dtype=pl.Decimal(10, 2)),
+            "text": ["x" * 40_000, "short"],
+        }
+    )
+    ctx = StubContext()
+    path = tmp_path / "out.xlsx"
+    act("excel.export", df, {"file": str(path)}, ctx)
+    ws = openpyxl.load_workbook(path).active
+    assert [ws["A2"].value, ws["A3"].value] == ["0x0102FF", None]
+    assert ws["B2"].value == 1.5 and ws["B2"].number_format == "#,##0.00"
+    assert len(ws["C2"].value) == 32_767
+    assert ctx.warnings == ["1 text was cut to 32,767 characters, the most an Excel cell holds"]
+
+
+def test_export_more_rows_than_a_sheet_holds(act, tmp_path):
+    with pytest.raises(ActionError, match=r"The table has 1,048,576 rows, but an Excel sheet holds at most 1,048,575"):
+        act("excel.export", pl.DataFrame({"a": range(1_048_576)}), {"file": str(tmp_path / "big.xlsx")})
+    assert not list(tmp_path.iterdir())
+
+
+def test_the_help_fits_both_choices_for_an_existing_file(registry):
+    existing = next(p for p in registry.actions["excel.export"].params if p.key == "existing")
+    assert existing.help.startswith("Replace the whole file: a new workbook with only this sheet. Replace only this sheet:")
+
+
+def test_dont_export_an_empty_table(act, registry, tmp_path):
+    path, empty = tmp_path / "out.xlsx", pl.DataFrame(schema={"a": pl.Int64})
+    act("excel.export", pl.DataFrame({"a": [1]}), {"file": str(path)})
+    before = path.read_bytes()
+    for existing in ("file", "sheet"):
+        ctx = StubContext()
+        act("excel.export", empty, {"file": str(path), "existing": existing, "skip_empty": True}, ctx)
+        assert path.read_bytes() == before and ctx.messages == [("info", "Not exported: the table is empty")]
+    act("excel.export", empty, {"file": str(tmp_path / "new.xlsx"), "skip_empty": True})
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out.xlsx"]
+    act("excel.export", empty, {"file": str(path)})  # off: as before, the header only
+    assert [[c.value for c in row] for row in openpyxl.load_workbook(path).active] == [["a"]]
+    export = registry.actions["excel.export"]
+    assert export.version == 3 and export.upgrade({"file": "a.xlsx"}, 2) == {"file": "a.xlsx", "skip_empty": False}
+    assert export.upgrade({"file": "a.xlsx"}, 1) == {"file": "a.xlsx", "existing": "file", "skip_empty": False}
+
+
+def test_a_failed_export_leaves_the_old_file(act, tmp_path, monkeypatch):
+    path = tmp_path / "out.xlsx"
+    act("excel.export", pl.DataFrame({"a": [1]}), {"file": str(path)})
+    before = path.read_bytes()
+
+    def broken(self, workbook=None, **options):
+        Path(workbook).write_bytes(b"PK")
+        raise pl.exceptions.InvalidOperationError("broken")
+
+    monkeypatch.setattr(pl.DataFrame, "write_excel", broken)
+    with pytest.raises(pl.exceptions.InvalidOperationError):
+        act("excel.export", pl.DataFrame({"a": [2]}), {"file": str(path)})
+    assert path.read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["out.xlsx"]  # no temporary file left
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows locks open files")
+def test_export_to_a_workbook_that_is_open(act, tmp_path):
+    path = tmp_path / "out.xlsx"
+    act("excel.export", pl.DataFrame({"a": [1]}), {"file": str(path)})
+    before = path.read_bytes()
+    with open(path, "rb"), pytest.raises(ActionError, match=r"out.xlsx is open in another program \(e.g. Excel\)"):
+        act("excel.export", pl.DataFrame({"a": [2]}), {"file": str(path)})
+    assert path.read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["out.xlsx"]

@@ -13,8 +13,10 @@ RAISED = "#4a4d50"  # buttons, headers
 BORDER = "#26282a"
 BORDER_LIGHT = "#55595c"
 TEXT = "#d6d6d6"
-TEXT_DIM = "#9a9da0"
-TEXT_DISABLED = "#6f7275"
+# Hints and secondary text: at least 4.5 : 1 against WINDOW, BASE and ALTERNATE (WCAG AA)
+TEXT_DIM = "#adb0b3"
+PLACEHOLDER = "#9a9da0"  # grey text in empty fields: 4.8 : 1 against BASE
+TEXT_DISABLED = "#6f7275"  # what is off or not possible now
 SELECTION = "#3d6185"
 ACCENT = "#4f9ee3"
 ERROR_TEXT = "#f2caca"  # messages about an error, on the dark background
@@ -24,6 +26,7 @@ SELECTED_DIM = "#c5d4e3"  # secondary text on a selected row
 MAP_CANVAS = "#2b2d2f"
 MAP_DOT = "#3a3d40"  # the dot grid
 MAP_BOX = "#45494a"  # table boxes
+MAP_TEXT_DIM = "#b4b7ba"  # secondary text in the boxes ("⋯ 3 steps"): 4.5 : 1 against MAP_BOX
 MAP_EDGE = "#7a7f84"  # arrows
 
 GROUP_COLORS = {
@@ -57,6 +60,7 @@ STATUS_COLORS = {
     "disabled": "#5a5d60",
     "blocked": "#8c7a5a",
     "pending": "#5f7f9f",
+    "incomplete": "#8fa3b8",  # a step that is not filled in yet
 }
 
 STYLE_SHEET = f"""
@@ -115,7 +119,7 @@ def palette() -> QPalette:
         QPalette.ColorRole.AlternateBase: ALTERNATE,
         QPalette.ColorRole.ToolTipBase: "#4b4e51",
         QPalette.ColorRole.ToolTipText: "#e6e6e6",
-        QPalette.ColorRole.PlaceholderText: TEXT_DISABLED,
+        QPalette.ColorRole.PlaceholderText: PLACEHOLDER,
         QPalette.ColorRole.Text: TEXT,
         QPalette.ColorRole.Button: RAISED,
         QPalette.ColorRole.ButtonText: TEXT,

@@ -46,6 +46,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tafl.api import dtypes
+
 from . import theme
 from .filters import (
     COUNT,
@@ -60,9 +62,11 @@ from .filters import (
     formula,
     parse_thresholds,
     range_labels,
+    selection,
     thresholds,
     to_json,
     unusable,
+    value_key,
 )
 from .frame_model import DisplayFormat
 from .session import Session
@@ -73,11 +77,6 @@ _BAR = Qt.ItemDataRole.UserRole + 1  # share of the rows (0..1), for the bar beh
 _LIST_ROWS = 8  # rows a card shows before it scrolls
 
 
-def _key(value: Any) -> Any:
-    """A stored value in a form that can be looked up in a set (NaN never equals itself)."""
-    return ("NaN",) if isinstance(value, float) and math.isnan(value) else value
-
-
 class _Values(QAbstractTableModel):
     """The values of one card: applied ones first, then sorted by value (empty first) or count,
     narrowed down by the search. Sorting and searching are done on Python lists here: a sorting
@@ -86,24 +85,35 @@ class _Values(QAbstractTableModel):
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
-        self.all: list[list[Any]] = []  # [value, count, stored value, text, lower-case text]
+        # [value, count, stored value, text, lower-case text, applied, sort key of a text]
+        self.all: list[list[Any]] = []
         self.rows: list[list[Any]] = []  # the ones shown, in order
-        self.applied: set[Any] = set()  # keys of the applied values
+        self.filtering = False  # the filter leaves values out (else every value counts as applied)
         self.total = 0  # rows that pass the other filters
         self.search = ""
         self.sort_column, self.descending = 0, False
         self._format: Callable[[Any], str] = str
 
-    def set_values(self, table: pl.DataFrame, total: int, applied: list[Any], label: Callable[[Any], str]) -> None:
+    def set_values(self, table: pl.DataFrame, total: int, f: Filter, label: Callable[[Any], str]) -> None:
         self._format = label
-        self.all = [[value, count, to_json(value), None, None] for value, count in table.select(VALUE, COUNT).iter_rows()]
-        self.applied = {_key(v) for v in applied}
+        applies = f.picker()
+        self.all = []
+        texts = table.schema[VALUE] == pl.String
+        keys = table.select(dtypes.text_sort_key(pl.col(VALUE))).to_series().to_list() if texts else [None] * table.height
+        for (value, count), key in zip(table.select(VALUE, COUNT).iter_rows(), keys, strict=True):
+            stored = to_json(value)
+            self.all.append([value, count, stored, None, None, applies(stored), key])
+        self.filtering = bool(f.values)
         self.total = total
         self._arrange()
 
     def clear(self) -> None:
-        self.all, self.applied, self.total = [], set(), 0
+        self.all, self.filtering, self.total = [], False, 0
         self._arrange()
+
+    def applied(self) -> list[Any]:
+        """The applied values (as stored)."""
+        return [item[2] for item in self.all if item[5]]
 
     def set_search(self, text: str) -> None:
         self.search = text.strip().lower()
@@ -119,8 +129,8 @@ class _Values(QAbstractTableModel):
         if self.search:
             items = [item for item in items if self.search in self._lower(item)]
         key = _by_count if self.sort_column == 1 else _by_value
-        applied = [item for item in items if _key(item[2]) in self.applied]
-        others = [item for item in items if _key(item[2]) not in self.applied]
+        applied = [item for item in items if item[5]] if self.filtering else []
+        others = [item for item in items if not item[5]] if self.filtering else list(items)
         try:
             applied.sort(key=key, reverse=self.descending)
             others.sort(key=key, reverse=self.descending)
@@ -142,11 +152,11 @@ class _Values(QAbstractTableModel):
         return item[4]
 
     def is_applied(self, row: int) -> bool:
-        return _key(self.rows[row][2]) in self.applied
+        return self.rows[row][5]
 
     def is_excluded(self, row: int) -> bool:
         """Not among the rows shown now: not selected in a filtered column, or not possible."""
-        return not self.is_applied(row) if self.applied else self.rows[row][1] == 0
+        return not self.is_applied(row) if self.filtering else self.rows[row][1] == 0
 
     def rowCount(self, parent: Index = _ROOT) -> int:
         return 0 if parent.isValid() else len(self.rows)
@@ -181,21 +191,22 @@ class _Values(QAbstractTableModel):
         return None
 
 
-def _value_key(value: Any) -> tuple[int, Any]:
-    """Sort key of a value: empty first, NaN last."""
+def _value_key(item: list[Any]) -> tuple:
+    """Sort key of a value: empty first, NaN last; texts in the order of Sort (like Excel)."""
+    value = item[0]
     if value is None:
         return (0, 0)
     if isinstance(value, float) and math.isnan(value):
         return (2, 0)
-    return (1, value)
+    return (1, value) if item[6] is None else (1, item[6], value)
 
 
-def _by_value(item: list[Any]) -> tuple[int, Any]:
-    return _value_key(item[0])
+def _by_value(item: list[Any]) -> tuple:
+    return _value_key(item)
 
 
-def _by_count(item: list[Any]) -> tuple[int, tuple[int, Any]]:
-    return item[1], _value_key(item[0])
+def _by_count(item: list[Any]) -> tuple:
+    return item[1], _value_key(item)
 
 
 class _CountBar(QStyledItemDelegate):
@@ -232,7 +243,7 @@ class FilterCard(QFrame):
         self.facet = f.facet
         self.index = 0
         self._dtype: pl.DataType | None = None
-        self._applied: list[Any] = []
+        self._filter = f
         self.setObjectName("FilterCard")
         self.title = QLabel(f.column, self)
         font = QFont(self.title.font())
@@ -308,6 +319,9 @@ class FilterCard(QFrame):
         horizontal.sortIndicatorChanged.connect(
             lambda column, order: self._keeping_selection(lambda: self.model.sort(column, order))
         )
+        # The header gets a selection of its own (always empty): to show a selected column, it
+        # asks the model about every row, which takes long with many values (as in the grid)
+        horizontal.setSelectionModel(QItemSelectionModel(self.model, horizontal))
         rows = _LIST_ROWS if f.facet in ("values", "period", "length") else 4
         self.view.setFixedHeight(horizontal.sizeHint().height() + rows * row_height + 4)
         self.view.doubleClicked.connect(self.apply_only)
@@ -426,7 +440,7 @@ class FilterCard(QFrame):
     def update_values(self, df: pl.DataFrame | None, filters: list[Filter], index: int, display: DisplayFormat) -> None:
         f = filters[index]
         self.index = index
-        self._applied = list(f.values)
+        self._filter = f
         self._dtype = df.schema[f.column] if df is not None and f.column in df.columns else None
         self._sync_options(f)
         if df is None:
@@ -448,13 +462,13 @@ class FilterCard(QFrame):
             self.status.setText(why or "")
         else:
             table, total = result
-            self.model.set_values(table, total, self._applied, self._labeler(f, display))
+            self.model.set_values(table, total, f, self._labeler(f, display))
             self._select_applied()
             count = len(self.model.all)
             noun = {"period": "period", "ranges": "range", "length": "length", "regex": "group"}.get(f.facet, "value")
             text = f"{count:,} {noun}{'s' if count != 1 else ''}"
-            if self._applied:
-                text += f" · {len(self._applied):,} selected"
+            if f.values or f.excluded:
+                text += f" · {len(self.model.applied()):,} selected"
             self.status.setText(text)
         self._selection_changed()
 
@@ -475,11 +489,11 @@ class FilterCard(QFrame):
         return display.formatter(self._dtype) if self._dtype is not None else str
 
     def _select_applied(self) -> None:
-        self._select(self._applied)
+        self._select_rows([row for row, item in enumerate(self.model.rows) if item[5]])
 
     def _select(self, values: list[Any]) -> None:
-        keys = {_key(v) for v in values}
-        self._select_rows([row for row, item in enumerate(self.model.rows) if _key(item[2]) in keys])
+        keys = {value_key(v) for v in values}
+        self._select_rows([row for row, item in enumerate(self.model.rows) if value_key(item[2]) in keys])
 
     def _select_rows(self, rows: list[int]) -> None:
         """Select these rows (ascending), in as few ranges as possible."""
@@ -503,21 +517,33 @@ class FilterCard(QFrame):
 
     def pending(self) -> list[Any]:
         """The stored form of the selected values, in list order."""
-        rows = sorted(i.row() for i in self.view.selectionModel().selectedRows())
-        return [self.model.rows[row][2] for row in rows]
+        return [self.model.rows[row][2] for row in self._selected_rows()]
+
+    def _selected_rows(self) -> list[int]:
+        rows: set[int] = set()
+        for selected in self.view.selectionModel().selection():  # not selectedRows(): fast with many values
+            rows.update(range(selected.top(), selected.bottom() + 1))
+        return sorted(rows)
+
+    def _stored(self, chosen: list[Any]) -> tuple[list[Any], bool]:
+        """How the filter stores these chosen values: ``filters.selection``."""
+        return selection(chosen, [item[2] for item in self.model.all])
 
     def _selection_changed(self, *_: Any) -> None:
-        changed = {_key(v) for v in self.pending()} != {_key(v) for v in self._applied}
+        # Applied, the selected values would be the ones applied: is that what is applied now?
+        selected = {id(self.model.rows[row]) for row in self._selected_rows()}
+        changed = selected != {id(item) for item in self.model.all if item[5]}
+        filtering = bool(self._filter.values)
         self.apply_button.setEnabled(changed and self.view.isEnabled())
         self.revert_button.setEnabled(changed and self.view.isEnabled())
-        self.clear_button.setEnabled(bool(self._applied))
-        self.as_step.setEnabled(bool(self._applied) and self.view.isEnabled())
+        self.clear_button.setEnabled(filtering or self._filter.excluded)
+        self.as_step.setEnabled(filtering and self.view.isEnabled())
 
     # --- choosing values -----------------------------------------------------------------------
 
     def apply(self) -> None:
         if self.view.isEnabled():
-            self.pane.set_values(self.index, self.pending())
+            self.pane.set_values(self.index, *self._stored(self.pending()))
 
     def apply_only(self, index: QModelIndex) -> None:
         self.pane.set_values(self.index, [self.model.rows[index.row()][2]])
@@ -637,7 +663,7 @@ class FilterPane(QWidget):
         if existing is None or again:
             filters.append(Filter(column, list(values or [])))
         elif values is not None:
-            existing.values = list(values)
+            existing.values, existing.excluded = list(values), False
         self._save(filters)
 
     def set_facet(self, index: int, facet_name: str) -> None:
@@ -655,13 +681,14 @@ class FilterPane(QWidget):
             merged = {**filters[index].options, **options}
             if merged != filters[index].options:
                 filters[index].options = merged
-                filters[index].values = []
+                filters[index].values, filters[index].excluded = [], False
                 self._save(filters)
 
-    def set_values(self, index: int, values: list[Any]) -> None:
+    def set_values(self, index: int, values: list[Any], excluded: bool = False) -> None:
+        """Apply values of a filter; ``excluded``: all values except these."""
         filters = self.filters()
         if 0 <= index < len(filters):
-            filters[index].values = list(values)
+            filters[index].values, filters[index].excluded = list(values), excluded
             self._save(filters)
 
     def remove(self, index: int) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -19,11 +21,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tafl.api.parameters import Failed, as_text
+from tafl.api.parameters import Failed, as_text, fixed
 from tafl.core import Parameter, Project, parameters
 
 from . import theme
 from .session import Session
+from .worker import Worker
 
 HELP = (
     "Use a parameter as <b>{Name}</b> in the settings you type: file names, folders, texts, formulas, SQL "
@@ -58,6 +61,11 @@ class ParametersDialog(QDialog):
         for parameter in session.project.parameters:
             self._append(parameter.name, parameter.value, parameter.name)
         self.table.itemChanged.connect(lambda _item: self._update())
+        # Formulas are worked out in the background: one may take seconds (see parameters.TIME_LIMIT)
+        self._worker = Worker(self)
+        self._worker.finished.connect(self._show_values)
+        self._worker.failed.connect(self.session.error)
+        self._calculated: list[Parameter] | None = None  # the parameters the values shown are for
 
         add = QPushButton("+ Add", self)
         add.clicked.connect(self.add)
@@ -143,28 +151,51 @@ class ParametersDialog(QDialog):
         item = self.table.item(row, column)
         return item.text() if item is not None else ""
 
+    @property
+    def calculating(self) -> bool:
+        return self._worker.busy
+
     def _update(self) -> None:
-        """Show what each value is now, and what is wrong."""
+        """Show what each value is now (fixed values at once, formulas when they are worked out
+        in the background), and what is wrong."""
         found = self.parameters()
-        if [p.to_dict() for p in found] == [p.to_dict() for p in self.session.project.parameters]:
-            worked_out = self.session.parameter_values()  # as the calculation uses them
+        self._show_problems(found)
+        if self._calculated is not None and _same(found, self._calculated):
+            return
+        if _same(found, self.session.project.parameters):
+            engine = self.session.engine  # the values as the calculation uses them
+            self._worker.start(lambda _cancel: (found, engine.parameter_values()))
         else:
-            worked_out = parameters.values(Project(parameters=found))
-        values = {name.strip().lower(): value for name, value in worked_out.items()}
+            self._worker.start(lambda _cancel: (found, parameters.values(Project(parameters=found))))
+        self._calculated = found
         self.table.blockSignals(True)
         for row, parameter in enumerate(found):
-            item = self.table.item(row, _NOW)
+            if parameter.value.lstrip().startswith("="):
+                self._show(row, "…", theme.TEXT_DIM)
+            else:
+                self._show(row, _label(fixed(parameter.value)), theme.TEXT_DIM)
+        self.table.blockSignals(False)
+
+    def _show_values(self, outcome: tuple[list[Parameter], dict[str, Any]]) -> None:
+        found, worked_out = outcome
+        current = self.parameters()
+        if not _same(found, current):
+            return
+        values = {name.strip().lower(): value for name, value in worked_out.items()}
+        self.table.blockSignals(True)
+        for row, parameter in enumerate(current):
             value = values.get(parameter.name.lower())
             if isinstance(value, Failed):
-                item.setText(f"Error: {value.message}")
-                item.setForeground(QColor(theme.STATUS_COLORS["error"]))
+                self._show(row, f"Error: {value.message}", theme.STATUS_COLORS["error"])
             else:
-                shown = as_text(value)
-                item.setText(f"{shown}   ({parameters.value_label(value)})" if shown else f"({parameters.value_label(value)})")
-                item.setForeground(QColor(theme.TEXT_DIM))
-            item.setToolTip(item.text())
+                self._show(row, _label(value), theme.TEXT_DIM)
         self.table.blockSignals(False)
-        self._show_problems(found)
+
+    def _show(self, row: int, text: str, color: str) -> None:
+        item = self.table.item(row, _NOW)
+        item.setText(text)
+        item.setForeground(QColor(color))
+        item.setToolTip(text)
 
     def _show_problems(self, found: list[Parameter]) -> list[str]:
         problems = parameters.problems(Project(parameters=[p for p in found if p.name]))
@@ -203,3 +234,12 @@ class ParametersDialog(QDialog):
                 renames[original] = parameter.name
         self.session.set_parameters(found, renames)
         self.accept()
+
+
+def _label(value: Any) -> str:
+    shown = as_text(value)
+    return f"{shown}   ({parameters.value_label(value)})" if shown else f"({parameters.value_label(value)})"
+
+
+def _same(a: list[Parameter], b: list[Parameter]) -> bool:
+    return [p.to_dict() for p in a] == [p.to_dict() for p in b]

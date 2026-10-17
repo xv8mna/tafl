@@ -17,6 +17,12 @@ A minimal plugin::
     def upper(df, p, ctx):
         \"\"\"Turns all text in the column into capital letters.\"\"\"
         return df.with_columns(pl.col(p.column).str.to_uppercase())
+
+An action raises ``ActionError("...")`` for a problem the user can fix: the step shows the
+message as an error. To end its table at this step without an error, e.g. when there is nothing
+to do, it raises ``SkipRest("No new orders")``: the step shows the message, the steps after it
+are skipped, and the table's result is the table that went into the step (or the table given as
+``SkipRest(message, df)``; for an import without one, an empty table).
 """
 
 from tafl import APP_NAME
@@ -36,7 +42,7 @@ from .database import (
     text_length,
     unique_names,
 )
-from .errors import ActionError, Cancelled, TaflError
+from .errors import ActionError, Cancelled, SkipRest, TaflError
 from .files import combine, find_files, source_files, source_params, source_summary, sources_fingerprint
 from .params import Params, ValidationContext
 
@@ -55,6 +61,7 @@ __all__ = [
     "Mode",
     "P",
     "Params",
+    "SkipRest",
     "TaflError",
     "ValidationContext",
     "action",

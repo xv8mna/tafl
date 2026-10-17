@@ -27,7 +27,7 @@ def test_lookup_keeps_rows_and_takes_first_match(act, ctx):
     out = merge(act, ctx, columns=["Name"])
     assert out.columns == ["Order", "Customer", "City", "Name"]
     assert out["Name"].to_list() == ["Anna", "Ben", None, None]
-    assert out.schema["Customer"] == pl.String  # number vs text key: compared as text
+    assert out.schema["Customer"] == pl.Int64  # compared as text, but the column keeps its type
     assert ctx.warnings == ["'Customer' (Int64) and 'CustNo' (String) are compared as text"]
 
 
@@ -46,7 +46,7 @@ def test_inner_and_full_join(act, ctx):
     assert merge(act, ctx, how="inner", columns=["Name"], multiple="first")["Order"].to_list() == [10, 11]
     full = merge(act, ctx, how="full", columns=["Name"])
     assert full["Order"].to_list() == [10, 11, 11, 12, 13, None]
-    assert full["Customer"].to_list() == ["1", "2", "2", "3", None, "4"]
+    assert full["Customer"].to_list() == [1, 2, 2, 3, None, 4]  # "4" of the other table fits
     assert full["Name"].to_list() == ["Anna", "Ben", "Ben B.", None, None, "Dora"]
 
 
@@ -94,3 +94,27 @@ def test_append(act):
 
 def test_derive(act):
     assert act("table.derive", None, {"table": "c"}, StubContext(tables={"c": CUSTOMERS})).equals(CUSTOMERS)
+
+
+def test_keys_of_different_types_keep_their_type(act):
+    numbers = pl.DataFrame({"Nr": [1.0, 2.0], "Status": ["open", "done"]})
+    ctx = StubContext(tables={"other": numbers})
+    df = pl.DataFrame({"Nr": [1, 2, 3]})
+    out = act("table.merge", df, {"other": "other", "match": [{"column": "Nr", "other_column": "Nr"}], "columns": ["Status"]}, ctx)
+    assert out.schema == {"Nr": pl.Int64, "Status": pl.String}
+    assert out.to_dicts() == [{"Nr": 1, "Status": "open"}, {"Nr": 2, "Status": "done"}, {"Nr": 3, "Status": None}]
+    assert not ctx.warnings
+    matching = act("table.merge", df, {"other": "other", "match": [{"column": "Nr", "other_column": "Nr"}], "how": "matching"}, ctx)
+    assert matching.schema == {"Nr": pl.Int64} and matching["Nr"].to_list() == [1, 2]
+
+
+def test_full_join_takes_the_other_type_when_its_keys_dont_fit(act):
+    ctx = StubContext(tables={"cust": pl.DataFrame({"CustNo": ["1", "04"], "Name": ["Anna", "Olga"]})})
+    df = pl.DataFrame({"Customer": [1, 2]})
+    params = {"other": "cust", "match": [{"column": "Customer", "other_column": "CustNo"}], "how": "full"}
+    out = act("table.merge", df, params, ctx)
+    assert out.to_dicts() == [
+        {"Customer": "1", "Name": "Anna"},
+        {"Customer": "2", "Name": None},
+        {"Customer": "04", "Name": "Olga"},  # as a number it would be 4
+    ]

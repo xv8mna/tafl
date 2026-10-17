@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ from .worker import Worker
 _DEFAULT_TABLE_NAME = re.compile(r"Table \d+")
 _UNDO_LIMIT = 100
 _KEY_NAME = re.compile(r"(?i)(id|nr|no|number|key|code|nummer)$")
+_REQUIRED = ": required"  # how the check of a setting says that it is empty (tafl.api.params)
 
 # How one table can use another, as created from the project map: kind -> (action, preset).
 LINK_KINDS: dict[str, tuple[str, dict[str, Any]]] = {
@@ -63,6 +65,7 @@ class Session(QObject):
     run_busy_changed = Signal(bool)
     dirty_changed = Signal(bool)
     run_finished = Signal(object)  # {table id: TableResult}
+    run_stopped = Signal()  # a run was stopped before it finished (no results)
     undo_changed = Signal()
     layout_changed = Signal()  # table positions on the project map changed
     filters_changed = Signal(str)  # the instant filters of a table changed: table id
@@ -80,6 +83,9 @@ class Session(QObject):
         self.overview = False  # True while the project map is shown: calculate every table
         self._undo: list[dict[str, Any]] = []
         self._redo: list[dict[str, Any]] = []
+        self._stamp: tuple[int, int] | None = None  # the project file as it was opened or saved
+        self._stopping = False
+        self.run_seconds: float | None = None  # how long the last run took
 
         self._worker = Worker(self)
         self._worker.finished.connect(self._on_results)
@@ -88,6 +94,7 @@ class Session(QObject):
         self._runner = Worker(self)
         self._runner.finished.connect(self._on_run_finished)
         self._runner.failed.connect(self.error)
+        self._runner.cancelled.connect(self.run_stopped)
         self._runner.busy_changed.connect(self.run_busy_changed)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -102,7 +109,9 @@ class Session(QObject):
     def open_project(self, path: str | Path) -> list[Step]:
         """Open a project; returns the steps that were upgraded to newer action versions."""
         project = Project.load(path)
+        stamp = _stamp(project.path)
         self._set_project(project)
+        self._stamp = stamp
         upgraded = self.engine.upgrade_steps()
         if upgraded:
             self._set_dirty(True)
@@ -116,12 +125,23 @@ class Session(QObject):
         if old_dir != target.parent:
             self._rebase_paths(old_dir, target.parent)
         saved = self.project.save(target)
+        self._stamp = _stamp(saved)
         self._set_dirty(False)
         self.structure_changed.emit()
         return saved
 
+    def changed_on_disk(self, path: str | Path | None = None) -> bool:
+        """Whether the project file (or ``path``, if it is the project file) was changed since
+        this window opened or saved it, e.g. by another window with the same project."""
+        current = self.project.path
+        if current is None or self._stamp is None or (path is not None and Path(path).resolve() != current):
+            return False
+        now = _stamp(current)
+        return now is not None and now != self._stamp
+
     def _set_project(self, project: Project) -> None:
         self._worker.cancel()
+        self._stamp = None
         self.project = project
         self.engine = Engine(project, self.registry, self.engine.cache)
         self.results = {}
@@ -196,6 +216,8 @@ class Session(QObject):
         for outcome in reversed(result.steps[: len(before)]):
             if outcome.status in (Status.ERROR, Status.BLOCKED):
                 return None
+            if outcome.skip_rest is not None and outcome.df is not None and outcome.df.width == 0:
+                return None  # an import that skipped the rest without data: its columns are unknown
             if outcome.df is not None:
                 return outcome.df
         return None
@@ -212,7 +234,14 @@ class Session(QObject):
             return f"“{table.name}” is not calculated: it {result.skipped}."
         if index == 0:
             return "This is the first step of the table: there is no data going into it."
+        before = result.steps[:index] if result is not None else []
+        for number, outcome in enumerate(before, start=1):
+            if outcome.skip_rest is not None and outcome.status == Status.OK:
+                return f"Step {number} skips the rest of the table ({outcome.skip_reason}): no data goes into this step."
         if result is not None and any(r.status in (Status.ERROR, Status.BLOCKED) for r in result.steps[:index]):
+            failed = first_error(result)
+            if failed is not None and (needed := missing_settings(failed[1])):
+                return f"Step {failed[0]} is not complete yet (fill in {', '.join(needed)}): the preview follows when it is."
             return "A step before this one has an error: fix it to see a preview here."
         return "The steps before this one are still being calculated: the preview follows."
 
@@ -232,8 +261,9 @@ class Session(QObject):
         return self.engine.parameter_values()
 
     def table_status(self, table_id: str) -> str:
-        """The table's status: "ok", "error", "disabled" (turned off), "skipped" (uses a table
-        that is off) or "pending" (not calculated yet)."""
+        """The table's status: "ok", "error", "incomplete" (a step is not filled in yet),
+        "disabled" (turned off), "skipped" (uses a table that is off) or "pending" (not
+        calculated yet)."""
         table = self.project.find_table(table_id)
         if table is not None and not table.enabled:
             return "disabled"
@@ -242,7 +272,15 @@ class Session(QObject):
             return "pending"
         if result.skipped:
             return "skipped"
-        return "ok" if result.ok else "error"
+        if result.ok:
+            return "ok"
+        failed = first_error(result)
+        return "incomplete" if result.error is None and failed is not None and missing_settings(failed[1]) else "error"
+
+    def missing_settings(self, step: Step | None) -> list[str]:
+        """The settings the selected table's ``step`` still needs, when that is all that is
+        wrong with it (see ``missing_settings``)."""
+        return missing_settings(self.step_result(step))
 
     def dependents(self, table_id: str) -> list[Table]:
         """Tables whose steps use ``table_id``."""
@@ -284,13 +322,23 @@ class Session(QObject):
         engine = self.engine.snapshot()
 
         def work(cancel):
+            started = time.perf_counter()
             results = engine.run(table_ids, cancel=cancel)
-            return results, engine.reload_token
+            return results, engine.reload_token, time.perf_counter() - started
 
+        self._stopping = False
         self._runner.start(work)
 
     def cancel_run(self) -> None:
+        """Stop the run after the step that is running."""
+        if self._runner.busy:
+            self._stopping = True
         self._runner.cancel()
+
+    @property
+    def stopping(self) -> bool:
+        """Stop was pressed, and the run is finishing the step it is in."""
+        return self._stopping and self._runner.busy
 
     @property
     def busy(self) -> bool:
@@ -311,8 +359,8 @@ class Session(QObject):
         if scope == "table" and self.overview:  # the selected table first, then everything else
             self._calculate("all", None)
 
-    def _on_run_finished(self, outcome: tuple[dict[str, TableResult], int]) -> None:
-        results, reload_token = outcome
+    def _on_run_finished(self, outcome: tuple[dict[str, TableResult], int, float]) -> None:
+        results, reload_token, self.run_seconds = outcome
         self.engine.reload_token = max(self.engine.reload_token, reload_token)  # previews reuse the run
         self.results.update(results)
         self.results_changed.emit()
@@ -342,7 +390,9 @@ class Session(QObject):
     def rename_table(self, table_id: str, name: str) -> None:
         name = name.strip()
         table = self.project.table(table_id)
-        if not name or name == table.name:
+        if not name:
+            raise ValueError("A table needs a name")
+        if name == table.name:
             return
         other = self.project.find_table(name)
         if other is not None and other is not table:
@@ -811,6 +861,42 @@ class Session(QObject):
             connector = self.registry.connectors.get(connection.type)
             if connector is not None:
                 _rebase(connection.settings, connector.params, old_dir, new_dir)
+
+
+def _stamp(path: Path | None) -> tuple[int, int] | None:
+    """When a file was last written, and its size (None if it isn't there)."""
+    try:
+        info = path.stat() if path is not None else None
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size) if info is not None else None
+
+
+def count(number: int, word: str) -> str:
+    """"1 row", "2,500 rows"."""
+    return f"{number:,} {word}{'' if number == 1 else 's'}"
+
+
+def size_text(df: pl.DataFrame) -> str:
+    """"1 row × 3 columns"."""
+    return f"{count(df.height, 'row')} × {count(df.width, 'column')}"
+
+
+def first_error(result: TableResult | None) -> tuple[int, StepResult] | None:
+    """The number and the result of the table's first step with an error."""
+    steps = result.steps if result is not None else []
+    return next(((n, r) for n, r in enumerate(steps, start=1) if r.status == Status.ERROR), None)
+
+
+def missing_settings(result: StepResult | None) -> list[str]:
+    """The settings a step still needs (e.g. "File", "Columns, row 2 – Name") when that is all
+    that is wrong with it: a step just added and not filled in yet. Empty for anything else."""
+    if result is None or result.status != Status.ERROR or result.inherited or not result.error:
+        return []
+    lines = [line.strip() for line in result.error.splitlines() if line.strip()]
+    if not lines or not all(line.endswith(_REQUIRED) for line in lines):
+        return []
+    return list(dict.fromkeys(line.removesuffix(_REQUIRED) for line in lines))
 
 
 def _rounded(position: tuple[float, float] | None) -> tuple[float, float] | None:

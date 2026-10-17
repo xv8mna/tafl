@@ -7,6 +7,9 @@ step and everything after it (and of tables using it), so only those are recalcu
 
 Modes: in Preview, exports and commands are skipped (the table passes through unchanged). In Run
 they execute, and sources are re-read.
+
+An action that raises SkipRest ends its table there: the step is OK, the steps after it are
+skipped, and the table's result is the data of that step.
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import sys
 import threading
 import time
 import traceback
@@ -22,7 +27,7 @@ from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, NamedTuple
 
 import polars as pl
 
@@ -37,6 +42,7 @@ from tafl.api import (
     Mode,
     P,
     Params,
+    SkipRest,
     ValidationContext,
 )
 from tafl.api.expressions import is_panic
@@ -50,7 +56,7 @@ from .registry import Registry
 class Status(StrEnum):
     OK = "ok"
     ERROR = "error"
-    SKIPPED = "skipped"  # export or command in preview mode
+    SKIPPED = "skipped"  # export or command in preview mode, or after a step that raised SkipRest
     DISABLED = "disabled"
     BLOCKED = "blocked"  # an earlier step of the table failed
 
@@ -63,14 +69,24 @@ class StepResult:
     error: str | None = None
     details: str | None = None  # traceback, for unexpected errors
     messages: list[tuple[str, str]] = field(default_factory=list)
-    seconds: float = 0.0
+    seconds: float = 0.0  # how long the action ran (also when it failed)
     cached: bool = False
     key: str = ""
     inherited: bool = False  # the error is in a table this step uses
+    # The message of a SkipRest: on the step that raised it (OK) and on the steps after it (SKIPPED)
+    skip_rest: str | None = None
 
     @property
     def ok(self) -> bool:
         return self.status in (Status.OK, Status.SKIPPED, Status.DISABLED)
+
+    @property
+    def skip_reason(self) -> str:
+        """``skip_rest`` to follow a colon, as in "skipped: the table is empty"."""
+        text = (self.skip_rest or "").rstrip(".")
+        if len(text) > 1 and text[0].isupper() and text[1].islower():  # "SQL …" and "“Orders” …" stay
+            return text[0].lower() + text[1:]
+        return text
 
 
 @dataclass
@@ -104,6 +120,11 @@ class TableResult:
             return self.error
         return next((s.error for s in self.steps if s.status == Status.ERROR), None)
 
+    @property
+    def skipped_from(self) -> StepResult | None:
+        """The step that skipped the rest of the table (SkipRest), if one did."""
+        return next((s for s in self.steps if s.skip_rest is not None and s.status == Status.OK), None)
+
 
 @dataclass(frozen=True)
 class Link:
@@ -116,30 +137,70 @@ class Link:
     enabled: bool
 
 
-class ResultCache:
-    """Step results by key; the least recently used are dropped beyond ``max_bytes``."""
+class Cached(NamedTuple):
+    """A cached step result: the table, the message of a SkipRest the step raised (None if it
+    raised none), and the messages of the step itself (without the parameter warnings)."""
 
-    def __init__(self, max_bytes: int = 4 * 1024**3) -> None:
-        self.max_bytes = max_bytes
-        self._items: OrderedDict[str, tuple[pl.DataFrame, int]] = OrderedDict()
+    df: pl.DataFrame
+    skip_rest: str | None = None
+    messages: tuple[tuple[str, str], ...] = ()
+
+
+class ResultCache:
+    """Step results by key; the least recently used are dropped beyond ``max_bytes`` (by default
+    a quarter of the installed memory). Of each step only the results of its last two settings
+    are kept: the current ones, and those an undo goes back to. A result keeps the step's
+    messages and the message of a SkipRest, so that a cached step shows the same messages and
+    skips the rest of its table too."""
+
+    KEEP = 2  # results kept per step
+
+    def __init__(self, max_bytes: int | None = None) -> None:
+        self.max_bytes = max_bytes if max_bytes is not None else default_cache_bytes()
+        self._items: OrderedDict[str, tuple[Cached, int]] = OrderedDict()
         self._bytes = 0
+        self._steps: dict[str, list[str]] = {}  # step id -> the keys of its results, the latest last
         self._lock = threading.Lock()
 
     def get(self, key: str) -> pl.DataFrame | None:
+        found = self.lookup(key)
+        return found.df if found is not None else None
+
+    def lookup(self, key: str, *, step: str | None = None) -> Cached | None:
+        """The result with its messages. ``step``: the id of the step that uses it, which makes
+        it that step's latest result."""
         with self._lock:
             item = self._items.get(key)
             if item is None:
                 return None
             self._items.move_to_end(key)
+            if step is not None:
+                self._remember(step, key)
             return item[0]
 
-    def put(self, key: str, df: pl.DataFrame) -> None:
+    def put(
+        self,
+        key: str,
+        df: pl.DataFrame,
+        skip_rest: str | None = None,
+        *,
+        step: str | None = None,
+        messages: Iterable[tuple[str, str]] | None = None,
+    ) -> None:
+        """Keep a result; ``step``: the id of the step whose result it is, whose results of older
+        settings are dropped. Without ``messages``, a result that is there already keeps its
+        messages (a step that passed its table through unchanged)."""
         size = df.estimated_size()
         with self._lock:
-            if key in self._items:
-                self._bytes -= self._items.pop(key)[1]
-            self._items[key] = (df, size)
+            old = self._items.pop(key, None)
+            if old is not None:
+                self._bytes -= old[1]
+            if messages is None:
+                messages = old[0].messages if old is not None else ()
+            self._items[key] = (Cached(df, skip_rest, tuple(messages)), size)
             self._bytes += size
+            if step is not None:
+                self._remember(step, key)
             while self._bytes > self.max_bytes and len(self._items) > 1:
                 _, (_, dropped) = self._items.popitem(last=False)
                 self._bytes -= dropped
@@ -147,10 +208,54 @@ class ResultCache:
     def clear(self) -> None:
         with self._lock:
             self._items.clear()
+            self._steps.clear()
             self._bytes = 0
 
     def __len__(self) -> int:
         return len(self._items)
+
+    def _remember(self, step: str, key: str) -> None:
+        keys = self._steps.setdefault(step, [])
+        if key in keys:
+            keys.remove(key)
+        keys.append(key)
+        while len(keys) > self.KEEP:
+            old = keys.pop(0)
+            if old in self._items and not any(old in other for other in self._steps.values()):
+                self._bytes -= self._items.pop(old)[1]
+
+
+def default_cache_bytes() -> int:
+    """A quarter of the installed memory (2 GB if it can't be told), at least 512 MB."""
+    installed = installed_memory()
+    return max(installed // 4, 512 * 1024**2) if installed else 2 * 1024**3
+
+
+def installed_memory() -> int | None:
+    """The bytes of memory the computer has, or None if it can't be told."""
+    if sys.platform == "win32":
+        import ctypes
+
+        class MemoryStatus(ctypes.Structure):  # MEMORYSTATUSEX
+            _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [
+                (name, ctypes.c_ulonglong)
+                for name in ("total", "free", "page_total", "page_free", "virtual_total", "virtual_free", "extended")
+            ]
+
+        status = MemoryStatus()
+        status.length = ctypes.sizeof(MemoryStatus)
+        try:
+            return int(status.total) if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)) else None
+        except OSError:
+            return None
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+# Below, `except (Exception, SystemExit)`: a plugin's migrate or fingerprint function that calls
+# sys.exit() fails like any other broken plugin code, without ending the program.
 
 
 class Engine:
@@ -247,7 +352,7 @@ class Engine:
                     continue
                 try:
                     params = action.resolve(action.upgrade(step.params, step.version))
-                except Exception:
+                except (Exception, SystemExit):
                     continue
                 for ref in action.table_refs(params):
                     if (source := self.project.find_table(ref)) is not None:
@@ -290,7 +395,7 @@ class Engine:
                     continue
                 try:
                     step.params = action.upgrade(step.params, step.version)
-                except Exception:  # left as it is; calculating the table shows the error
+                except (Exception, SystemExit):  # left as it is; calculating the table shows the error
                     continue
                 step.version = action.version
                 changed.append(step)
@@ -303,17 +408,22 @@ class Engine:
             return f"Unknown action '{step.action}'"
         try:
             params = action.resolve(action.upgrade(step.params, step.version))
-        except Exception:
+        except (Exception, SystemExit):
             return action.name
         shown = Params(params)
         for param in action.params:
             value = params.get(param.key)
-            if not param.accepts(value):  # e.g. a number from a project file written by hand
+            # A value of the wrong kind (e.g. a number from a project file written by hand) stays
+            if not param.accepts(value) or not P.is_visible(param, params):
                 continue
             if param.kind == "table" and value:
                 shown[param.key] = self.table_name(value)
             elif param.kind == "tables" and value:
                 shown[param.key] = [self.table_name(v) for v in value]
+            elif isinstance(param, P.List):
+                shown[param.key] = _unfilled_rows(param, value)
+            else:
+                shown[param.key] = _unfilled(param, value)
         return action.describe(shown)
 
     def table_name(self, ref: str) -> str:
@@ -357,16 +467,25 @@ class _Evaluation:
             df: pl.DataFrame | None = None
             key = ""
             failed = False
+            skip_rest: str | None = None
             for index, step in enumerate(table.steps if full else table.steps[: until + 1]):
                 if failed:
                     result.steps.append(StepResult(step.id, Status.BLOCKED, error="An earlier step has an error"))
+                    continue
+                if skip_rest is not None:  # an earlier step raised SkipRest
+                    if step.enabled:
+                        skipped = StepResult(step.id, Status.SKIPPED, df=df, key=key, skip_rest=skip_rest)
+                        skipped.messages.append(("info", skip_rest))
+                    else:
+                        skipped = StepResult(step.id, Status.DISABLED, df=df, key=key)
+                    result.steps.append(skipped)
                     continue
                 step_result = self._step(table, index, step, df, key)
                 result.steps.append(step_result)
                 if step_result.status == Status.ERROR:
                     failed = True
                 else:
-                    df, key = step_result.df, step_result.key
+                    df, key, skip_rest = step_result.df, step_result.key, step_result.skip_rest
         finally:
             self.stack.pop()
         if full:
@@ -415,7 +534,7 @@ class _Evaluation:
             params = action.resolve(raw)
         except ActionError as e:
             return _error(step, str(e))
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             return _error(step, f"Could not read the step settings: {e}", traceback.format_exc())
         warnings = [
             ("warning", f"{{{name}}} is not a parameter of the project: it was left as it is") for name in unknown
@@ -442,9 +561,14 @@ class _Evaluation:
         # token first, so it never gets old data from the cache.
         use_cache = not action.side_effects
         if use_cache:
-            cached = self.engine.cache.get(key)
-            if cached is not None:
-                return StepResult(step.id, Status.OK, df=cached, key=key, cached=True, messages=list(warnings))
+            found = self.engine.cache.lookup(key, step=step.id)
+            if found is not None:
+                messages = [*warnings, *found.messages]
+                if found.skip_rest is not None:
+                    messages.append(("info", found.skip_rest))
+                return StepResult(
+                    step.id, Status.OK, df=found.df, key=key, cached=True, messages=messages, skip_rest=found.skip_rest
+                )
 
         problems = action.check(params, self._validation_context(df, deps))
         if problems:
@@ -456,24 +580,42 @@ class _Evaluation:
             out = action.run(df.clone() if df is not None else None, params, ctx)
         except Cancelled:
             raise
+        except SkipRest as e:  # cached under this step's own key: the key of the data going in has no SkipRest
+            seconds = time.perf_counter() - started
+            data = e.df if e.df is not None else df if df is not None else pl.DataFrame()
+            if not isinstance(data, pl.DataFrame):
+                return _error(step, f"'{action.name}' did not return a table", messages=ctx.messages, seconds=seconds)
+            message = str(e.message).strip() or f"Step {index + 1} skips the rest of the table"
+            if use_cache:
+                self.engine.cache.put(key, data, message, step=step.id, messages=ctx.messages[len(warnings) :])
+            ctx.messages.append(("info", message))
+            return StepResult(step.id, Status.OK, df=data, key=key, messages=ctx.messages, seconds=seconds, skip_rest=message)
         except ActionError as e:
-            return _error(step, str(e), messages=ctx.messages)
+            return _error(step, str(e), messages=ctx.messages, seconds=time.perf_counter() - started)
         except Exception as e:
-            return _error(step, _friendly(e), traceback.format_exc(), ctx.messages)
-        except BaseException as e:  # a crash inside Polars (Rust) is not an Exception
-            if not is_panic(e):
+            seconds = time.perf_counter() - started
+            return _error(step, _friendly(e), traceback.format_exc(), ctx.messages, seconds=seconds)
+        except BaseException as e:
+            # Not an Exception: a crash inside Polars (Rust), and an action that tries to end the
+            # program (sys.exit, KeyboardInterrupt). Ctrl+C on the command line sets the cancel
+            # event before it interrupts: then the calculation stops.
+            if self.cancel is not None and self.cancel.is_set():
+                raise Cancelled() from None
+            if not (is_panic(e) or isinstance(e, SystemExit | KeyboardInterrupt)):
                 raise
-            return _error(step, _friendly(e), traceback.format_exc(), ctx.messages)
+            message = _friendly(e) if is_panic(e) else f"{_owner(action)} tried to end the program ({_friendly(e)})"
+            return _error(step, message, traceback.format_exc(), ctx.messages, seconds=time.perf_counter() - started)
         seconds = time.perf_counter() - started
 
         if out is None and action.side_effects:
             out = df
         if not isinstance(out, pl.DataFrame):
-            return _error(step, f"'{action.name}' did not return a table", messages=ctx.messages)
+            return _error(step, f"'{action.name}' did not return a table", messages=ctx.messages, seconds=seconds)
+        own = ctx.messages[len(warnings) :]
         if out is df:  # passed the table through unchanged: later steps keep their cache keys
-            key = prev_key
+            key, own = prev_key, None  # the result stays the previous step's, with its messages
         if use_cache:
-            self.engine.cache.put(key, out)
+            self.engine.cache.put(key, out, step=step.id, messages=own)
         return StepResult(step.id, Status.OK, df=out, key=key, messages=ctx.messages, seconds=seconds)
 
     def _connector(self, action: Action, raw: Mapping[str, Any]) -> Connector | None:
@@ -494,7 +636,7 @@ class _Evaluation:
             if action.fingerprint is not None:
                 try:
                     parts.append(repr(action.fingerprint(params, ctx)))
-                except Exception:
+                except (Exception, SystemExit):
                     parts.append(f"no-fingerprint={time.time_ns()}")  # can't tell: read again
         if action.side_effects:
             parts.append(f"run={self.run_id}")
@@ -564,10 +706,44 @@ def _error(
     messages: list[tuple[str, str]] | None = None,
     *,
     inherited: bool = False,
+    seconds: float = 0.0,
 ) -> StepResult:
     return StepResult(
-        step.id, Status.ERROR, error=message, details=details, messages=list(messages or []), inherited=inherited
+        step.id,
+        Status.ERROR,
+        error=message,
+        details=details,
+        messages=list(messages or []),
+        seconds=seconds,
+        inherited=inherited,
     )
+
+
+def _unfilled(param: P.Param, value: Any) -> Any:
+    """"?" for a setting that must be filled in and is still empty (for the step's summary)."""
+    if not (param.required and param.is_empty(value)):
+        return value
+    return ["?"] if param.kind in ("columns", "tables") else "?"
+
+
+def _unfilled_rows(param: P.List, rows: list) -> list:
+    """The rows of a list setting with "?" for their empty fields that must be filled in; a
+    list that needs rows and has none gets one."""
+    if not rows and (param.min_items or param.required):
+        rows = [param.new_row()]
+    shown = []
+    for row in rows:
+        row = Params(row) if isinstance(row, Mapping) else row
+        if isinstance(row, Params):
+            for field_ in param.fields:
+                if P.is_visible(field_, row) and field_.accepts(row.get(field_.key)):
+                    row[field_.key] = _unfilled(field_, row.get(field_.key))
+        shown.append(row)
+    return shown
+
+
+def _owner(action: Action) -> str:
+    return f"The plugin '{action.plugin}'" if action.plugin else f"'{action.name}'"
 
 
 def _dependency_error(name: str, dependency: TableResult) -> str:
@@ -578,7 +754,7 @@ def _dependency_error(name: str, dependency: TableResult) -> str:
     return failed.error if failed.inherited else f"Table '{name}' has an error: {failed.error}"
 
 
-def _friendly(error: Exception) -> str:
+def _friendly(error: BaseException) -> str:
     """First paragraph of an unexpected error; Polars/DuckDB append long query plans."""
     text = str(error).strip()
     for marker in ("\n\nResolved plan", "\n\nThis error occurred", "\n\nLINE "):

@@ -1,3 +1,5 @@
+import datetime as dt
+
 import polars as pl
 import pytest
 
@@ -45,3 +47,27 @@ def test_clean_text(act):
     assert out["s"].to_list() == ["Müller Gmbh", "A B", None]
     padded = act("text.clean", df, {"columns": ["zip"], "pad_length": 5})
     assert padded["zip"].to_list() == ["01067", "80331", None]
+
+
+def test_invalid_regular_expressions_say_why(act):
+    df = pl.DataFrame({"s": ["abc"]})
+    with pytest.raises(ActionError, match=r"^Invalid regular expression '\(abc': unclosed group$"):
+        replace(act, df, ["s"], [("a", "b"), ("(abc", "x")], match="regex")
+    with pytest.raises(ActionError, match=r"'a\{2,1\}': invalid repetition count range"):
+        replace(act, df, ["s"], [("a{2,1}", "x")], match="regex", case_sensitive=False)
+
+
+def test_replace_typed_values(act):
+    df = pl.DataFrame({"d": [dt.date(2025, 12, 31), None], "n": [1234567890123456789, 1234567890123456768]})
+    out = replace(act, df, ["d"], [("31.12.25", "01.01.26")])
+    assert out["d"].to_list() == [dt.date(2026, 1, 1), None]
+    out = replace(act, df, ["n"], [("1234567890123456789", "1")])
+    assert out["n"].to_list() == [1, 1234567890123456768]
+
+
+def test_upper_case_writes_sharp_s_as_ss_like_formulas(act):
+    df = pl.DataFrame({"s": ["Größe", "ẞ"]})
+    out = act("text.clean", df, {"columns": ["s"], "case": "upper"})
+    assert out["s"].to_list() == ["GRÖSSE", "SS"]
+    formula = act("calc.columns", df, {"columns": [{"name": "s", "formula": "UPPER([s])"}]})
+    assert formula["s"].to_list() == out["s"].to_list()

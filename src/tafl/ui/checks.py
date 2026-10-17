@@ -85,8 +85,10 @@ class _Job(QRunnable):
             self.signals.cancelled.emit(self.client, self.version)
         except Exception:
             self.signals.failed.emit(self.client, self.version, traceback.format_exc())
-        except BaseException as e:  # a crash inside Polars (Rust): report it instead of going silent
-            if not is_panic(e):
+        except BaseException as e:
+            # A crash inside Polars (Rust), or plugin code that tries to end the program
+            # (sys.exit, KeyboardInterrupt): report it instead of going silent
+            if not (is_panic(e) or isinstance(e, SystemExit | KeyboardInterrupt)):
                 raise
             self.signals.failed.emit(self.client, self.version, traceback.format_exc())
         else:

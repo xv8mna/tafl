@@ -46,6 +46,15 @@ def test_tsql_helpers(people):
     assert out.schema["now"] == pl.Datetime("us")
 
 
+def test_upper_writes_sharp_s_as_ss():
+    df = pl.DataFrame({"s": ["Größe", "ẞ", None]})
+    out = expressions.add_columns(df, [("u", "UPPER([s])"), ("c", "UCASE([s])"), ("m", "[s].upper()"), ("l", "LOWER('ẞ')")])
+    assert out["u"].to_list() == out["c"].to_list() == out["m"].to_list() == ["GRÖSSE", "SS", None]
+    assert out["l"][0] == "ß"
+    with pytest.raises(ActionError, match="UPPER"):
+        expressions.evaluate(df, "UPPER(1)")
+
+
 def test_window_function_keeps_row_order():
     df = pl.DataFrame({"g": [i % 7 for i in range(50_000)], "v": list(range(50_000))})
     out = expressions.add_columns(df, [("total", "SUM([v]) OVER (PARTITION BY [g])"), ("same", "[v]")])

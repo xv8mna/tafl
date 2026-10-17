@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import fnmatch
+import logging
 import re
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from tafl.api import (
     action,
     combine,
     dtypes,
+    files,
     source_files,
     source_params,
     source_summary,
@@ -22,6 +25,9 @@ from tafl.api import (
     unique_names,
     xlsx,
 )
+
+# fastexcel says on the console when a column holds different kinds of values (it becomes text)
+logging.getLogger("fastexcel").setLevel(logging.ERROR)
 
 _TABLE_STYLES = [
     ("none", "None"),
@@ -32,14 +38,19 @@ _TABLE_STYLES = [
     ("Table Style Medium 7", "Medium orange"),
 ]
 _INTEGER_TYPES = (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
+# Cells with only a time are date-times on Excel's day 0
+_DAY_ZERO = [dt.date(1899, 12, 30), dt.date(1899, 12, 31), dt.date(1904, 1, 1)]
+_MAX_ROWS, _MAX_COLUMNS, _MAX_TEXT = 1_048_575, 16_384, 32_767  # below the header row; characters in a cell
 
 
 def _migrate_import(params: dict, from_version: int) -> dict:
     """Version 1 read one sheet of one file; version 2 can also read all files of a folder
-    and several sheets."""
+    and several sheets; version 3 can go on without files in the folder."""
     if from_version < 2:
         params.setdefault("source", "file")
         params.setdefault("sheets", "one")
+    if from_version < 3:
+        params.setdefault("no_files", "error")
     return params
 
 
@@ -71,7 +82,7 @@ _SEVERAL_SHEETS = ("all", "matching")
         P.Bool("whole_numbers", "Whole numbers as integers", default=True),
         P.Bool("dates_without_time", "Date-times at midnight as dates", default=True),
     ],
-    version=2,
+    version=3,
     migrate=_migrate_import,
     summary=lambda p: f"Import {source_summary(p)}" + _sheets_summary(p),
     fingerprint=sources_fingerprint,
@@ -82,21 +93,26 @@ def import_excel(df, p, ctx):
     match, into one table.
 
     Rows above the header row are skipped. Excel stores every number as a decimal number;
-    columns that only hold whole numbers become integers. Sheets and files are matched by
-    column names; a column missing in one stays empty there.
+    columns that only hold whole numbers become integers, cells with only a time become
+    times. Sheets and files are matched by column names; a column missing in one stays empty
+    there.
+
+    Merged cells keep their value in the first cell only: 'Fill empty values' fills the
+    others. Formulas give the results Excel saved with the file; a file written by another
+    program may have none (the column stays empty): open it in Excel and save it.
     """
-    files, folder = source_files(p, ctx)
+    paths, folder = source_files(p, ctx)
     parts = []
-    for path in files:
+    for path in paths:
         try:
             reader = fastexcel.read_excel(str(path))
         except Exception as e:
             raise ActionError(f"Could not open {path.name}: {e}") from None
         for sheet in _chosen_sheets(list(reader.sheet_names), p, path, several_files=folder is not None):
             ctx.check_cancelled()
-            parts.append((path, sheet, _read_sheet(reader, sheet, p, path)))
-    if not parts:
-        raise ActionError(f"No sheet named {p.sheet_pattern} in {len(files)} file{'s' if len(files) != 1 else ''}")
+            parts.append((path, sheet, _read_sheet(reader, sheet, p, path, ctx.warn)))
+    if not parts and paths:
+        raise ActionError(f"No sheet named {p.sheet_pattern} in {len(paths)} file{'s' if len(paths) != 1 else ''}")
 
     def convert(data: pl.DataFrame) -> pl.DataFrame:
         if p.whole_numbers:
@@ -108,8 +124,8 @@ def import_excel(df, p, ctx):
     out = combine(parts, p, folder, sheet_column=p.sheets in _SEVERAL_SHEETS and p.sheet_column, prepare=convert)
     if len(parts) == 1:
         ctx.log(f"Sheet '{parts[0][1]}'")
-    else:
-        ctx.log(f"{len(parts)} sheets from {len(files)} file{'s' if len(files) != 1 else ''}")
+    elif parts:
+        ctx.log(f"{len(parts)} sheets from {len(paths)} file{'s' if len(paths) != 1 else ''}")
     return out
 
 
@@ -141,7 +157,7 @@ def _chosen_sheets(names: list[str], p, path: Path, several_files: bool) -> list
     return [sheet]
 
 
-def _read_sheet(reader, sheet: str, p, path: Path) -> pl.DataFrame:
+def _read_sheet(reader, sheet: str, p, path: Path, warn) -> pl.DataFrame:
     try:
         loaded = reader.load_sheet(
             sheet,
@@ -153,6 +169,8 @@ def _read_sheet(reader, sheet: str, p, path: Path) -> pl.DataFrame:
         out = loaded.to_polars()
     except Exception as e:
         raise ActionError(f"Could not read sheet '{sheet}' of {path.name}: {e}") from None
+    if not out.width and p.header_row > 1:
+        warn(f"Sheet '{sheet}' of {path.name} has nothing in row {p.header_row} (the row with the column names) or below")
 
     # Header cells without text get "Column N"; such columns are dropped when they are empty.
     generated = [name.startswith("__UNNAMED__") or not name.strip() for name in out.columns]
@@ -161,13 +179,22 @@ def _read_sheet(reader, sheet: str, p, path: Path) -> pl.DataFrame:
     out = out.drop([name for name, gen in zip(out.columns, generated) if gen and out[name].null_count() == out.height])
     if out.width:
         out = out.filter(~pl.all_horizontal(pl.all().is_null()))
-    return out.with_columns([dtypes.normalize(out[c]) for c in out.columns])
+    return out.with_columns([_time_only(dtypes.normalize(out[c])) for c in out.columns])
+
+
+def _time_only(s: pl.Series) -> pl.Series:
+    """Date-times that are all on Excel's day 0 were cells with only a time: they become times."""
+    if s.dtype == pl.Datetime and s.null_count() < len(s) and s.dt.date().is_in(_DAY_ZERO).all():
+        return s.dt.time()
+    return s
 
 
 def _migrate_export(params: dict, from_version: int) -> dict:
-    """Version 1 always replaced the whole file."""
+    """Version 1 always replaced the whole file; versions 1 and 2 also wrote an empty table."""
     if from_version < 2:
         params.setdefault("existing", "file")
+    if from_version < 3:
+        params.setdefault("skip_empty", False)
     return params
 
 
@@ -183,8 +210,12 @@ def _migrate_export(params: dict, from_version: int) -> dict:
             "existing",
             "If the file exists",
             [("file", "Replace the whole file"), ("sheet", "Replace only this sheet, keep the other sheets")],
-            help="Everything else in the workbook stays as it is: the other sheets with their formulas, formatting, "
-            "charts, pivot tables and macros. They show the new data when Excel opens the file.",
+            help="Replace the whole file: a new workbook with only this sheet. Replace only this sheet: everything "
+            "else in the workbook stays as it is (the other sheets with their formulas, formatting, charts, pivot "
+            "tables and macros) and shows the new data when Excel opens the file.",
+        ),
+        P.Bool(
+            "skip_empty", "Don't export an empty table", default=False, help="When the table has no rows, the file is left as it is."
         ),
         P.Bool("bold_header", "Bold header row", default=True),
         P.Bool("freeze_header", "Freeze the header row", default=True),
@@ -204,7 +235,7 @@ def _migrate_export(params: dict, from_version: int) -> dict:
             ],
         ),
     ],
-    version=2,
+    version=3,
     migrate=_migrate_export,
     summary=lambda p: f"Export to {Path(p.file).name} ({p.sheet}"
     + (", other sheets kept)" if p.get("existing") == "sheet" else ")"),
@@ -213,20 +244,33 @@ def export_excel(df, p, ctx):
     """Writes the table to an .xlsx file, as an Excel table with formats. An existing file is
     replaced, or only the sheet is: in a workbook with reports, charts and pivot tables built
     on the sheet, also in one with macros (.xlsm). The Excel table keeps its name; charts,
-    named ranges and pivot tables that covered the old rows cover the new rows.
+    named ranges and pivot tables that covered the old rows cover the new rows. The file is
+    replaced when the new one is complete: if the export fails, the old file stays as it was.
 
     Formats use Excel's codes: #,##0.00 for numbers with thousands separators, 0% for
-    percentages, dd.mm.yyyy for dates. Excel shows them in your regional style.
+    percentages, dd.mm.yyyy for dates. Excel shows them in your regional style. Binary values
+    are written as hex text (0x0102FF). A sheet holds up to 1,048,575 rows below its header
+    and 32,767 characters in a cell.
     """
     path = ctx.resolve_path(p.file)
     suffix = path.suffix.lower()
     if suffix not in (".xlsx", ".xlsm"):
         raise ActionError("The file name must end with .xlsx (or .xlsm for a workbook with macros)")
     sheet = (p.sheet or "Sheet1").strip()
-    if len(sheet) > 31 or re.search(r"[\[\]:*?/\\]", sheet):
-        raise ActionError("Sheet names have at most 31 characters and no [ ] : * ? / \\")
+    if len(sheet) > 31 or re.search(r"[\[\]:*?/\\]", sheet) or sheet.startswith("'") or sheet.endswith("'"):
+        raise ActionError("Sheet names have at most 31 characters, no [ ] : * ? / \\ and no ' at the start or end")
+    if p.skip_empty and df.height == 0:
+        ctx.log("Not exported: the table is empty")
+        return
     if df.width == 0:
         raise ActionError("Nothing to export: the table has no columns")
+    if df.height > _MAX_ROWS:
+        raise ActionError(
+            f"The table has {df.height:,} rows, but an Excel sheet holds at most {_MAX_ROWS:,} below its header row: "
+            "filter the table, or export it to a CSV file"
+        )
+    if df.width > _MAX_COLUMNS:
+        raise ActionError(f"The table has {df.width:,} columns, but an Excel sheet holds at most {_MAX_COLUMNS:,}")
     into_sheet = p.existing == "sheet" and path.is_file()
     if suffix == ".xlsm" and not into_sheet:
         raise ActionError(
@@ -234,27 +278,34 @@ def export_excel(df, p, ctx):
             "the file must exist, and 'If the file exists' must be 'Replace only this sheet'"
         )
     data = _excel_values(df)
+    long = sum(int((data[c].str.len_chars() > _MAX_TEXT).sum()) for c, t in data.schema.items() if t == pl.String)
+    rows = f"{df.height:,} row{'s' if df.height != 1 else ''}"
     if into_sheet:
         replaced = xlsx.replace_sheet(path, sheet, lambda book: _write(data, book, sheet, p), ctx.warn)
         what = "replaced" if replaced else "added"
-        ctx.log(f"Wrote {df.height:,} rows to sheet '{sheet}' of {path} (sheet {what}, the other sheets are kept)")
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        _write(data, path, sheet, p)
-    except Exception as e:
-        if isinstance(e, PermissionError) or isinstance(e.__context__, PermissionError) or "Permission denied" in str(e):
-            raise ActionError(f"Can't write {path.name}. Is it open in Excel?") from None
-        raise
-    ctx.log(f"Wrote {df.height:,} rows to {path} (sheet '{sheet}')")
+        ctx.log(f"Wrote {rows} to sheet '{replaced or sheet}' of {path} (sheet {what}, the other sheets are kept)")
+    else:
+        with files.replace_file(path) as temporary:
+            try:
+                _write(data, temporary, sheet, p)
+            except Exception as e:
+                if isinstance(e.__context__, OSError):  # xlsxwriter's FileCreateError
+                    raise e.__context__ from None
+                raise
+        ctx.log(f"Wrote {rows} to {path} (sheet '{sheet}')")
+    if long:
+        texts = "1 text was" if long == 1 else f"{long:,} texts were"
+        ctx.warn(f"{texts} cut to {_MAX_TEXT:,} characters, the most an Excel cell holds")
 
 
 def _excel_values(df: pl.DataFrame) -> pl.DataFrame:
     """Not-a-number and infinite values become empty cells (in Excel they would be errors that
-    break every sum). Date-times lose their time zone (Excel has none) and keep the local time."""
+    break every sum). Date-times lose their time zone (Excel has none) and keep the local time.
+    Binary values become hex text (0x0102FF)."""
     return df.with_columns(
         *(pl.when(pl.col(c).is_finite()).then(pl.col(c)).alias(c) for c, t in df.schema.items() if t.is_float()),
         *(pl.col(c).dt.replace_time_zone(None) for c, t in df.schema.items() if isinstance(t, pl.Datetime) and t.time_zone),
+        *((pl.lit("0x") + pl.col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
     )
 
 
@@ -262,7 +313,7 @@ def _write(df: pl.DataFrame, workbook, sheet: str, p) -> None:
     """Writes the table to a new workbook (a file, or an xlsxwriter workbook) as an Excel table."""
     dtype_formats: dict = {pl.Date: p.date_format, pl.Datetime: p.datetime_format, pl.Duration: "[h]:mm:ss"}
     dtype_formats |= {t: p.integer_format for t in _INTEGER_TYPES}
-    dtype_formats |= {pl.Float32: p.number_format, pl.Float64: p.number_format}
+    dtype_formats |= {pl.Float32: p.number_format, pl.Float64: p.number_format, pl.Decimal: p.number_format}
     column_formats = {row.column: row.format for row in p.column_formats if row.column and row.format}
     df.write_excel(
         workbook=workbook,

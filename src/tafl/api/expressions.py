@@ -37,6 +37,9 @@ _MACROS = (
     "CREATE MACRO len(s) AS length(rtrim(CAST(s AS VARCHAR)))",
     "CREATE MACRO getdate() AS current_localtimestamp()",
     "CREATE MACRO charindex(find, s) AS instr(s, find)",
+    # ß becomes SS, as in Clean text (DuckDB writes the rare capital ẞ)
+    "CREATE MACRO upper(s) AS replace(system.main.upper(s), 'ẞ', 'SS')",
+    "CREATE MACRO ucase(s) AS replace(system.main.upper(s), 'ẞ', 'SS')",
 )
 # Reserved words in DuckDB that cannot be macros; rewritten when called as functions.
 _REWRITES = {"isnull": "coalesce"}

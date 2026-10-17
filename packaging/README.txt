@@ -11,38 +11,74 @@ Unzip the download into a folder of your choice, e.g. into C:\Tools (which gives
 C:\Tools\Tafl) or into your user folder. Keep the folder Tafl together (the programs need the
 files next to them), and start:
 
-  tafl-app.exe    the window; drag a .tafl project file onto it to open it
+  tafl-app.exe    the window. Open a project with File > Open (Ctrl+O), or drag the .tafl
+                  file onto tafl-app.exe in Explorer (not onto the open window)
   tafl.exe        the command line, e.g. for the Windows Task Scheduler:
                   tafl.exe run C:\Projects\report.tafl
-                  (tafl.exe --help lists all commands)
+                  (tafl.exe --help lists all commands; in PowerShell, write .\tafl.exe)
 
-To try it: open examples\demo.tafl.
+.tafl files are not linked to Tafl: a double-click on one doesn't open it.
+
+To try it: start tafl-app.exe, choose File > Open and open examples\demo.tafl in this folder.
+On the command line, in this folder:
+
+  tafl.exe run examples\demo.tafl
+  tafl.exe show examples\demo.tafl --table Orders --step 4
+
+The first command calculates the demo and writes its exports to examples\output; the second
+shows the data after step 4 of the table Orders. The README on GitHub has more commands: there,
+write tafl.exe for .venv\Scripts\tafl. The commands that start with .venv\Scripts\python (e.g.
+examples\make_examples.py) need a source install with Python.
 
 The programs are not signed. When Windows shows "Windows protected your PC", click
 "More info", then "Run anyway". Your organization's settings may not allow programs from
 the internet at all: then ask your IT department.
 
-Settings and the log file: %LOCALAPPDATA%\Tafl (log) and the registry key
-HKEY_CURRENT_USER\Software\Tafl. To remove Tafl, delete the folder Tafl.
+Settings, log and removing Tafl
+-------------------------------
+- Settings (window layout, recent projects): the registry key HKEY_CURRENT_USER\Software\Tafl
+- The log of tafl-app.exe: %LOCALAPPDATA%\Tafl\tafl.log (Help > Open log folder)
+- Your plugins, if any: %APPDATA%\Tafl\plugins
+
+To remove Tafl, delete the folder Tafl. That leaves the three places above: delete the folders
+%LOCALAPPDATA%\Tafl and %APPDATA%\Tafl too, and the registry key with regedit, if you like.
+
+Scheduled runs
+--------------
+tafl.exe writes no log file: what it prints is all there is. To keep it, send its output to a
+file. A batch file for the Task Scheduler (the folder C:\Logs must exist):
+
+  @echo off
+  set PYTHONIOENCODING=utf-8
+  echo ===== %date% %time% report.tafl >> C:\Logs\report.log
+  C:\Tools\Tafl\tafl.exe run C:\Projects\report.tafl >> C:\Logs\report.log 2>&1
+
+The echo line puts the date and time before each run's output. The last line's exit code is
+the batch file's: 0 when the run worked, 1 when a step failed, 2 when the project can't be
+used (e.g. the file isn't there).
 
 When its output goes to a file, tafl.exe writes in the Windows code page: characters outside
-it become "?" in the output, and codes like \u2192 in error and warning messages. For a log in
-UTF-8, set PYTHONIOENCODING=utf-8 first, e.g. in a batch file for the Task Scheduler:
+it become "?" in the output, and codes like \u2192 in error and warning messages. The line
+"set PYTHONIOENCODING=utf-8" makes it write UTF-8 instead.
 
-  set PYTHONIOENCODING=utf-8
-  C:\Tools\Tafl\tafl.exe run C:\Projects\report.tafl >> C:\Logs\report.log 2>&1
+In a batch file, write every % of a --set value as %%, e.g.
+  --set "Month==STRFTIME(TODAY(), '%%Y-%%m')"
+With a single %, the Windows command processor takes %Y-% for a variable of its own, and the
+parameter gets a wrong value without an error.
 
 Needed for some features
 ------------------------
 SQL Server: Microsoft's "ODBC Driver 18 for SQL Server" (17 works too). Tafl signs in with
-your Windows account.
+your Windows account. The driver "SQL Server" that comes with Windows is too old (it reads
+dates and times as text): Tafl uses it only when you enter it as a connection's ODBC driver.
 
 Plugins
 -------
 Your own plugins go into %APPDATA%\Tafl\plugins (or into the folders named in the environment
 variable TAFL_PLUGINS). Both programs load them, and a plugin can import:
-- Tafl's plugin API, tafl.api (before version 0.2.0: etl_tool.api), and tafl.api.testing for
-  tests: see "Writing a plugin" at https://github.com/xv8mna/tafl#writing-a-plugin
+- Tafl's plugin API, tafl.api (before version 0.2.0: etl_tool.api): see "Writing a plugin" at
+  https://github.com/xv8mna/tafl#writing-a-plugin. Its helpers for tests, tafl.api.testing,
+  need a source install with Python and pytest to run the tests.
 - the Python standard library, without tkinter, turtle and turtledemo, IDLE, curses,
   ensurepip, venv, antigravity and the texts of help() (pydoc_data)
 - the libraries Tafl uses: Polars, DuckDB, PyArrow (without Flight, Substrait, ORC and the

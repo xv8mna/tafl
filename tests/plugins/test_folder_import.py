@@ -1,14 +1,16 @@
 """Importing all files of a folder (and its subfolders), several Excel sheets, Parquet files."""
 
 import datetime as dt
+import re
 
 import polars as pl
 import pytest
 import xlsxwriter
 
-from tafl.api import ActionError, find_files, sources_fingerprint
+from tafl.api import ActionError, Mode, SkipRest, find_files, sources_fingerprint
 from tafl.api.params import resolve
 from tafl.api.testing import StubContext
+from tafl.core import Engine, Project, Status
 
 
 @pytest.fixture
@@ -75,9 +77,12 @@ def test_new_files_are_noticed(registry, lake):
 def test_old_import_steps_are_upgraded(registry):
     for action_id in ("csv.import", "excel.import"):
         action = registry.actions[action_id]
-        assert action.version == 2
+        assert action.version == 3
         assert action.upgrade({"file": "a"}, 1)["source"] == "file"
+        assert action.upgrade({"source": "folder", "folder": "in"}, 2)["no_files"] == "error"
     assert registry.actions["excel.import"].upgrade({"file": "a", "sheet": "X"}, 1)["sheets"] == "one"
+    parquet = registry.actions["parquet.import"]
+    assert parquet.version == 2 and parquet.upgrade({"source": "folder", "folder": "in"}, 1)["no_files"] == "error"
 
 
 @pytest.fixture
@@ -141,3 +146,52 @@ def test_source_columns_never_replace_data_columns(act, tmp_path):
     (tmp_path / "x.csv").write_text("File;Wert\nmine;1\n", encoding="utf-8")
     out = act("csv.import", None, folder(tmp_path))
     assert out.columns == ["File (source)", "File", "Wert"] and out["File"][0] == "mine"
+
+
+@pytest.mark.parametrize(
+    ("action_id", "pattern"), [("csv.import", "*.csv"), ("excel.import", "*.xlsx"), ("parquet.import", "*.parquet")]
+)
+def test_a_folder_without_files_as_chosen(act, tmp_path, action_id, pattern):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    message = f"No files named {pattern} in {inbox}"
+    with pytest.raises(ActionError, match=re.escape(message)):  # the default, as before
+        act(action_id, None, folder(inbox, pattern=pattern))
+    ctx = StubContext()
+    empty = act(action_id, None, folder(inbox, pattern=pattern, no_files="empty", path_column=True), ctx)
+    assert empty.schema == {"File": pl.String, "Path": pl.String} and empty.height == 0
+    assert ctx.warnings == [f"{message}: the table is empty"]
+    with pytest.raises(SkipRest) as skipped:
+        act(action_id, None, folder(inbox, pattern=pattern, no_files="skip"))
+    assert skipped.value.message == message and skipped.value.df.schema == {"File": pl.String}
+    with pytest.raises(ActionError, match="Folder not found"):  # a folder that isn't there is still an error
+        act(action_id, None, folder(tmp_path / "missing", no_files="empty"))
+
+
+@pytest.mark.parametrize("no_files", ["empty", "skip"])
+def test_daily_exports_on_a_day_without_files(registry, tmp_path, no_files):
+    """Import the inbox, export, move the files to an archive: a run on a day without files is
+    no error, and the export of the last day stays."""
+    (tmp_path / "inbox" / "2026").mkdir(parents=True)
+    (tmp_path / "inbox" / "2026" / "a.csv").write_text("Nr;Netto\n1;2,5\n", encoding="utf-8")
+    project = Project(name="Daily")
+    project.path = tmp_path / "daily.tafl"
+    table = project.add_table("Daily")
+    source = folder("inbox", pattern="*.csv", subfolders=True, path_column=True, no_files=no_files)
+    project.add_step(table, registry.actions["csv.import"], source)
+    project.add_step(table, registry.actions["csv.export"], {"file": "out/daily.csv", "skip_empty": True})
+    project.add_step(table, registry.actions["files.move"], {"column": "Path", "base": "inbox", "target": "archive"})
+    first = Engine(project, registry).run(mode=Mode.RUN)[table.id]
+    assert first.ok and (tmp_path / "archive" / "a.csv").exists()
+    exported = (tmp_path / "out" / "daily.csv").read_bytes()
+
+    for mode in (Mode.RUN, Mode.PREVIEW):  # the inbox is empty now
+        result = Engine(project, registry).run(mode=mode)[table.id]
+        assert result.ok and result.df.columns == ["File", "Path"] and result.df.height == 0
+        if no_files == "empty":
+            assert result.steps[0].messages[0][0] == "warning"
+            if mode == Mode.RUN:
+                assert result.steps[1].messages == [("info", "Not exported: the table is empty")]
+        else:
+            assert [s.status for s in result.steps] == [Status.OK, Status.SKIPPED, Status.SKIPPED]
+    assert (tmp_path / "out" / "daily.csv").read_bytes() == exported
