@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import operator
 import re
+from decimal import ROUND_FLOOR, Context, Decimal
 from typing import Any
 
 import polars as pl
@@ -28,6 +30,16 @@ _OPERATORS = [
 ]
 _LABELS = dict(_OPERATORS)
 _KEEP = [("keep", "Keep matching rows"), ("remove", "Remove matching rows")]
+_COMPARE = {
+    "=": operator.eq,
+    "!=": operator.ne,
+    ">": operator.gt,
+    ">=": operator.ge,
+    "<": operator.lt,
+    "<=": operator.le,
+}
+_DECIMAL_DIGITS = 38  # an exact decimal (Decimal) holds 38 digits, decimal places included
+_CONTEXT = Context(prec=2 * _DECIMAL_DIGITS)  # room for all of them (the default context keeps 28)
 
 
 @action(
@@ -161,7 +173,18 @@ def fill(df, p, ctx):
         if df.schema[name] == pl.String:
             column = pl.when(column.str.strip_chars() == "").then(None).otherwise(column)
         if p.method == "value":
-            updates.append(column.fill_null(_literal(p.value, df.schema[name], name)).alias(name))
+            value = _literal(p.value, df.schema[name], name)
+            if isinstance(value, Decimal) and not _fits_decimal(value, df.schema[name].scale):
+                raise ActionError(
+                    f"'{p.value}' has too many digits for column '{name}': "
+                    f"an exact decimal holds {_DECIMAL_DIGITS}, decimal places included"
+                )
+            if isinstance(value, Decimal) and (example := _too_long_with(df[name], value)) is not None:
+                raise ActionError(
+                    f"'{p.value}' has too many decimal places for the values of column '{name}' (e.g. {example}): "
+                    f"an exact decimal holds {_DECIMAL_DIGITS} digits, decimal places included"
+                )
+            updates.append(column.fill_null(value).alias(name))
         else:
             updates.append(column.fill_null(strategy="forward" if p.method == "down" else "backward").alias(name))
     return df.with_columns(updates)
@@ -196,6 +219,8 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
     if op in ("in", "not_in"):
         items = [item.strip() for item in re.split(r"[;\n]", c.value) if item.strip()]
         values = [i.lower() if text_column and not case_sensitive else _literal(i, dtype, c.column) for i in items]
+        if isinstance(dtype, pl.Decimal):  # values the column can't hold aren't in it
+            values = [v for v in (_on_scale(v, dtype.scale) for v in values) if v is not None]
         found = column.is_in(values) if values else pl.lit(False)
         return found if op == "in" else (~found).fill_null(True)
 
@@ -203,15 +228,54 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
         value: Any = c.value if case_sensitive else c.value.lower()
     else:
         value = _literal(c.value, dtype, c.column)
-    compared = {
-        "=": column == value,
-        "!=": column != value,
-        ">": column > value,
-        ">=": column >= value,
-        "<": column < value,
-        "<=": column <= value,
-    }[op]
+    if isinstance(value, Decimal):
+        compared = _decimal_comparison(column, op, value, dtype.scale)
+    else:
+        compared = _COMPARE[op](column, value)
     return compared.fill_null(True) if op == "!=" else compared
+
+
+def _decimal_comparison(column: pl.Expr, op: str, value: Decimal, scale: int) -> pl.Expr:
+    """An exact decimal column with ``scale`` decimal places compared with a typed value, with
+    all its digits, also when the value has more digits than the column can hold."""
+    limit = Decimal(1).scaleb(_DECIMAL_DIGITS - scale)  # the column's values are smaller
+    floor = value
+    if value.copy_abs() < limit:
+        floor = value.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_FLOOR, context=_CONTEXT)
+    if floor.copy_abs() >= limit:  # beyond all values of the column
+        below = value > 0  # all of them are below it
+        answer = {"=": False, "!=": True, ">": not below, ">=": not below, "<": below, "<=": below}[op]
+        return pl.when(column.is_not_null()).then(pl.lit(answer))
+    if floor != value:  # more decimal places than the column has: between two of its values
+        if op in ("=", "!="):
+            return pl.when(column.is_not_null()).then(pl.lit(op == "!="))
+        op = ">" if op in (">", ">=") else "<="
+    return _COMPARE[op](column, pl.lit(floor, dtype=pl.Decimal(_DECIMAL_DIGITS, scale)))
+
+
+def _on_scale(value: Any, scale: int) -> Decimal | None:
+    """A typed value with the decimal places of an exact decimal column, or None when no value of
+    such a column equals it."""
+    if not isinstance(value, Decimal) or value.copy_abs() >= Decimal(1).scaleb(_DECIMAL_DIGITS - scale):
+        return None
+    exact = value.quantize(Decimal(1).scaleb(-scale), context=_CONTEXT)
+    return exact if exact == value else None
+
+
+def _fits_decimal(value: Decimal, scale: int) -> bool:
+    """Whether a column of exact decimals with ``scale`` decimal places can take ``value``, with
+    more decimal places if it needs them."""
+    places = max(scale, -value.as_tuple().exponent)
+    return places <= _DECIMAL_DIGITS and value.copy_abs() < Decimal(1).scaleb(_DECIMAL_DIGITS - places)
+
+
+def _too_long_with(values: pl.Series, value: Decimal) -> Decimal | None:
+    """A value of the exact decimals ``values`` that doesn't fit when the column gets the decimal
+    places of ``value`` too (123.45 with 37 decimal places has 40 digits), or None."""
+    places = max(values.dtype.scale, -value.as_tuple().exponent)
+    extremes = [v for v in (values.min(), values.max()) if v is not None]
+    longest = max(extremes, key=abs, default=None)
+    return longest if longest is not None and abs(longest) >= Decimal(1).scaleb(_DECIMAL_DIGITS - places) else None
 
 
 def _literal(text: str, dtype: pl.DataType, column: str) -> Any:

@@ -1,8 +1,11 @@
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import signal
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -12,11 +15,13 @@ import polars as pl
 import pytest
 
 from tafl import cli
+from tafl.api import expressions
 from tafl.cli import Console, main
 from tafl.core import Parameter, Project
 from tafl.core.cancel import CancelEvent
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "make_examples.py"
+TAFL_EXE = Path(__file__).resolve().parents[1] / "packaging" / "tafl_cli.py"  # how tafl.exe starts
 
 
 @pytest.fixture
@@ -255,6 +260,226 @@ def test_ctrl_c_is_seen_at_once_while_python_waits_for_a_library():
     ended = time.perf_counter()  # the interruption came when the call was over
     assert seen and seen[0][0] == "ctrl-c" and seen[0][1] - started < (ended - started) / 2
     assert signal.set_wakeup_fd(-1) == -1  # the watching ended
+
+
+def test_ctrl_c_while_the_stop_event_holds_its_lock_doesnt_hang():
+    """The Ctrl+C handler runs in the main thread, also in the middle of the stop event's own
+    code: it must not wait for the event's lock, which that code holds (it hung there)."""
+    stop, seen = CancelEvent(), []
+    stop.when_set(lambda: seen.append(threading.current_thread().name))
+    before = signal.signal(signal.SIGINT, lambda *_: None)  # never a Ctrl+C for pytest itself
+    try:
+        with pytest.raises(KeyboardInterrupt), cli._ctrl_c(stop):
+            with stop._lock:  # as when the handler comes while a query's stopping is removed
+                signal.raise_signal(signal.SIGINT)
+                time.sleep(0.2)  # the handler runs here: it must return at once
+    finally:
+        signal.signal(signal.SIGINT, before)
+    assert stop.is_set()
+    deadline = time.perf_counter() + 5
+    while not seen and time.perf_counter() < deadline:  # the watching thread calls the callbacks
+        time.sleep(0.01)
+    assert seen == ["ctrl-c"]
+
+
+def test_a_stop_event_set_from_a_signal():
+    stop, seen = CancelEvent(), []
+    stop.when_set(lambda: seen.append("first"))
+    with stop._lock:
+        stop.set_from_signal()  # takes no lock
+    assert stop.is_set() and seen == []
+    stop.when_set(lambda: seen.append("later"))  # set already: at once
+    stop.set()  # the rest: the callbacks
+    assert seen == ["later", "first"]
+    stop.clear()
+    assert not stop.is_set()
+
+
+def _one_table(folder: Path) -> Path:
+    """A project that imports orders.csv and writes out.csv."""
+    (folder / "orders.csv").write_text("Id\n1\n", encoding="utf-8")
+    project = Project(name="Orders")
+    table = project.add_table("Orders")
+    project.add_step(table, "csv.import", {"file": "orders.csv"})
+    project.add_step(table, "csv.export", {"file": "out.csv"})
+    return project.save(folder / "orders.tafl")
+
+
+def test_as_the_program_ctrl_c_is_ignored_once_the_work_is_over(tmp_path, monkeypatch, capsys):
+    """tafl.exe, tafl and python -m tafl: a Ctrl+C while Python ends can make the program hang,
+    so from the end of the work on Ctrl+C does nothing."""
+    monkeypatch.setattr(sys, "argv", ["tafl", "run", str(_one_table(tmp_path))])
+    before = signal.signal(signal.SIGINT, lambda *_: None)  # never a Ctrl+C for pytest itself
+    try:
+        assert main() == 0
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+        signal.raise_signal(signal.SIGINT)  # does nothing
+    finally:
+        signal.signal(signal.SIGINT, before)
+    assert "Done in" in capsys.readouterr().out
+    assert main(["run", str(tmp_path / "orders.tafl")]) == 0  # called with a command line: as before
+    assert signal.getsignal(signal.SIGINT) is before
+
+
+def test_a_ctrl_c_as_the_program_ends_changes_nothing(tmp_path, monkeypatch, capsys):
+    """Ctrl+C just after "Done in" (e.g. held down): the result stays, and Ctrl+C is still
+    switched off, also when one comes just as the handler is changed."""
+    monkeypatch.setattr(sys, "argv", ["tafl", "run", str(_one_table(tmp_path))])
+    switch = signal.signal
+
+    def switching(signum, handler):
+        if handler is signal.SIG_IGN:
+            signal.raise_signal(signal.SIGINT)  # Ctrl+C just then
+        return switch(signum, handler)
+
+    before = switch(signal.SIGINT, lambda *_: None)  # never a Ctrl+C for pytest itself
+    try:
+        monkeypatch.setattr(signal, "signal", switching)
+        assert main() == 0
+        monkeypatch.setattr(signal, "signal", switch)
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+    finally:
+        switch(signal.SIGINT, before)
+    output = capsys.readouterr()
+    assert "Done in" in output.out and "Stopped" not in output.err
+
+
+def test_an_interruption_once_the_work_is_over_keeps_the_result(tmp_path, monkeypatch, capsys):
+    """A KeyboardInterrupt that comes as the command ends (Ctrl+C just after "Done in")."""
+    watch = cli._watch_for_ctrl_c
+
+    def watching(stop):
+        end = watch(stop)
+
+        def ending():
+            end()
+            raise KeyboardInterrupt
+
+        return ending
+
+    monkeypatch.setattr(cli, "_watch_for_ctrl_c", watching)
+    before = signal.getsignal(signal.SIGINT)
+    assert main(["run", str(_one_table(tmp_path))]) == 0
+    output = capsys.readouterr()
+    assert "Done in" in output.out and "Stopped" not in output.err
+    assert signal.getsignal(signal.SIGINT) is before
+
+
+def test_a_ctrl_c_before_the_command_stops_it_at_once(tmp_path, capsys):
+    """E.g. while tafl.exe loads its modules: packaging/tafl_cli.py keeps it for main()."""
+    path, early = _one_table(tmp_path), threading.Event()
+    before = signal.getsignal(signal.SIGINT)
+    assert main(["run", str(path)], ctrl_c=early) == 0  # not set: the command runs
+    assert "Done in" in capsys.readouterr().out
+    (tmp_path / "out.csv").unlink()
+    early.set()
+    assert main(["run", str(path)], ctrl_c=early) == 130
+    assert capsys.readouterr() == ("", "Error: Stopped\n")
+    assert not (tmp_path / "out.csv").exists()
+    assert signal.getsignal(signal.SIGINT) is before
+
+
+START = '''
+import builtins
+import multiprocessing
+import runpy
+import signal
+import sys
+
+script, how, *args = sys.argv[1:]
+load = builtins.__import__
+
+
+def loading(name, *more, **options):
+    if name == "tafl.cli":  # Ctrl+C while the program loads its modules
+        builtins.__import__ = load
+        signal.raise_signal(signal.SIGINT)
+    return load(name, *more, **options)
+
+
+def worker():
+    print("worker", signal.getsignal(signal.SIGINT) is signal.default_int_handler)
+    sys.exit(0)
+
+
+if how == "ctrl-c":
+    builtins.__import__ = loading
+if how == "worker":
+    multiprocessing.freeze_support = worker
+    args = ["--multiprocessing-fork", "parent_pid=1", "pipe_handle=2"]
+sys.argv = ["tafl", *args]
+runpy.run_path(script, run_name="__main__")
+'''
+
+
+def test_tafl_exe_keeps_a_ctrl_c_that_comes_while_it_starts(tmp_path):
+    """Without it, Ctrl+C in the first moment gives a KeyboardInterrupt in the middle of loading
+    a library: a traceback, or a crash."""
+    path = _one_table(tmp_path)
+    (tmp_path / "start.py").write_text(START, encoding="utf-8")
+    environment = {**os.environ, "APPDATA": str(tmp_path / "appdata")}  # no plugins of this computer
+    environment.pop("TAFL_PLUGINS", None)
+
+    def start(how: str, *args: str) -> subprocess.CompletedProcess:
+        command = [sys.executable, "-I", str(tmp_path / "start.py"), str(TAFL_EXE), how, *args]
+        return subprocess.run(command, capture_output=True, text=True, errors="replace", env=environment, timeout=120)
+
+    stopped = start("ctrl-c", "run", str(path))
+    assert (stopped.returncode, stopped.stderr) == (130, "Error: Stopped\n")
+    assert not (tmp_path / "out.csv").exists()
+    done = start("plain", "run", str(path))
+    assert done.returncode == 0 and "Done in" in done.stdout and (tmp_path / "out.csv").exists()
+    worker = start("worker")  # a plugin's worker process: Python's own handling of Ctrl+C
+    assert (worker.returncode, worker.stdout) == (0, "worker True\n")
+
+
+SLOW = "=(SELECT COUNT(*) FROM range(30000000000) t(i) WHERE i % 7 = 8)"  # takes minutes
+
+
+@pytest.mark.parametrize("ctrl_c", ["signal", "watching"])
+def test_ctrl_c_during_a_parameter_formula_stops_the_run(ctrl_c, tmp_path, monkeypatch, capsys):
+    """At once, and as the stop: no error of the parameter. Also when only the thread that
+    watches for Ctrl+C sets the stop (Python's own handling may not come while DuckDB runs)."""
+    (tmp_path / "orders.csv").write_text("Id\n1\n", encoding="utf-8")
+    project = Project(name="Slow", parameters=[Parameter("Slow", SLOW)])
+    table = project.add_table("Orders")
+    project.add_step(table, "csv.import", {"file": "orders.csv"})
+    project.add_step(table, "calc.columns", {"columns": [{"name": "X", "formula": "{Slow}"}]})
+    project.add_step(table, "csv.export", {"file": "out.csv"})
+    path = project.save(tmp_path / "slow.tafl")
+
+    running, stops, pressed, evaluate = threading.Event(), [], [], expressions.evaluate
+
+    def evaluating(*args, **kwargs):  # the first formula is the parameter's
+        running.set()
+        return evaluate(*args, **kwargs)
+
+    class Stop(CancelEvent):
+        def __init__(self) -> None:
+            super().__init__()
+            stops.append(self)
+
+    def press() -> None:
+        running.wait(30)
+        time.sleep(0.3)
+        pressed.append(time.perf_counter())
+        if ctrl_c == "signal":
+            signal.raise_signal(signal.SIGINT)
+        else:
+            stops[0].set()
+
+    monkeypatch.setattr(expressions, "evaluate", evaluating)
+    monkeypatch.setattr(cli, "CancelEvent", Stop)
+    before = signal.signal(signal.SIGINT, lambda *_: None)  # never a Ctrl+C for pytest itself
+    try:
+        threading.Thread(target=press, daemon=True).start()
+        assert main(["run", str(path)]) == 130
+        assert time.perf_counter() - pressed[0] < 3  # not the 5 seconds a parameter's formula may take
+    finally:
+        signal.signal(signal.SIGINT, before)
+    output = capsys.readouterr()
+    assert re.fullmatch(r"Stopped after \d+\.\d\ds\n", output.out) and output.err == "Error: Stopped\n"
+    assert not (tmp_path / "out.csv").exists()
 
 
 def test_keyboard_interrupt_from_plugin_functions_is_their_error(plugins, tmp_path, capsys):

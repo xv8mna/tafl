@@ -237,6 +237,82 @@ def test_sqlite_writes_each_date_time_the_same_way_in_every_export(db):
     assert db.rows("SELECT COUNT(*) FROM orders") == [(0,)]
 
 
+def test_sqlite_exact_decimals_keep_their_digits(db, registry):
+    """Exact decimals (e.g. from Parquet or SQL Server) go to SQLite as texts with all their
+    digits. A new table gets INTEGER or REAL for them when that keeps every value of the type,
+    else TEXT, and reads them back so; SQLite turns the texts into numbers for its columns of
+    numbers, also when keys compare."""
+    D = decimal.Decimal
+    data = pl.DataFrame({
+        "OrderNo": [1, 2],
+        "Amount": pl.Series([D("1.005"), D("-12.300")], dtype=pl.Decimal(10, 3)),
+        "Id": pl.Series([D("123456789012345678"), D("-5")], dtype=pl.Decimal(18, 0)),
+        "Big": pl.Series([D("1" * 38), D("1")], dtype=pl.Decimal(38, 0)),
+        "Long": pl.Series([D("12345678901234.5678"), D("0.1000")], dtype=pl.Decimal(18, 4)),
+    })  # fmt: skip
+    db.export(data)
+    assert db.rows("SELECT name, type FROM pragma_table_info('orders')") == [
+        ("OrderNo", "INTEGER"), ("Amount", "REAL"), ("Id", "INTEGER"), ("Big", "TEXT"), ("Long", "TEXT"),
+    ]  # fmt: skip
+    stored = [(1, 1.005, 123456789012345678, "1" * 38, "12345678901234.5678"), (2, -12.3, -5, "1", "0.1000")]
+    assert db.rows() == stored
+    imported = registry.actions["db.import"](None, {"connection": "shop", "table": "orders"}, db.context)
+    assert imported.schema == {"OrderNo": pl.Int64, "Amount": pl.Float64, "Id": pl.Int64, "Big": pl.String, "Long": pl.String}
+    assert imported.rows() == stored
+    for key in ("Amount", "Id", "Big", "Long"):
+        db.export(data.with_columns(OrderNo=pl.col("OrderNo") + 10), mode="upsert", key_columns=[key])
+        assert db.context.messages[-1] == ("info", "orders: updated 2 rows"), key
+    db.export(data, mode="delete", key_columns=["Amount", "Long"])
+    assert db.rows() == []
+
+
+def test_sqlite_stores_exact_decimals_as_it_stores_their_texts(db, tmp_path):
+    """Into an existing table: as SQLite stores the same texts (a number for a column of
+    numbers, the text for a TEXT column or one without a type), in every mode, and keys of
+    each of these columns find the rows."""
+    D = decimal.Decimal
+    kinds = {"R": "REAL", "N": "NUMERIC", "I": "INTEGER", "D": "DECIMAL(10,2)", "T": "TEXT", "B": ""}
+    texts = ["1.5000", "2.0000", "12345678901234.5678", "-0.0500"]
+    data = pl.DataFrame({"OrderNo": [1, 2, 3, 4], **{c: pl.Series([D(t) for t in texts], dtype=pl.Decimal(18, 4)) for c in kinds}})
+    columns = ", ".join(f"{c} {kind}" for c, kind in kinds.items())
+    with sqlite3.connect(tmp_path / "shop.db") as con:
+        con.executescript(f"CREATE TABLE orders (OrderNo INTEGER, {columns}); CREATE TABLE texts (OrderNo INTEGER, {columns})")
+        con.executemany("INSERT INTO texts VALUES (?, ?, ?, ?, ?, ?, ?)", [(n, *[t] * len(kinds)) for n, t in enumerate(texts, 1)])
+    con.close()
+    stored = "SELECT OrderNo, " + ", ".join(f"{c}, typeof({c})" for c in kinds) + " FROM {} ORDER BY OrderNo"
+    expected = db.rows(stored.format("texts"))
+    assert expected[1] == (2, 2.0, "real", 2, "integer", 2, "integer", 2, "integer", "2.0000", "text", "2.0000", "text")
+    db.export(data)
+    assert db.rows(stored.format("orders")) == expected
+    modes = {"update": "updated 4 rows", "replace_keys": "deleted 4 rows, added 4 rows", "delete": "deleted 4 rows", "upsert": "added 4 rows"}
+    for key in kinds:
+        for mode, message in modes.items():
+            db.export(data, mode=mode, key_columns=[key])
+            assert db.context.messages[-1] == ("info", f"orders: {message}"), (key, mode)
+            assert db.rows(stored.format("orders")) == ([] if mode == "delete" else expected), (key, mode)
+
+
+def test_rows_are_written_with_every_digit_of_their_decimals():
+    """pyodbc's fast_executemany converts decimals in the thread's decimal context, whose 28 digits
+    would round a numeric(38,0) ID (…789012345678 would end in …790000000000)."""
+    from tafl.api.database import Connector, Database
+
+    seen = []
+
+    class Cursor:
+        def executemany(self, sql, rows):
+            seen.extend(+value for row in rows for value in row)  # + rounds to the context's digits
+
+        def close(self):
+            pass
+
+    raw = type("Raw", (), {"cursor": lambda self: Cursor()})()
+    values = [decimal.Decimal("12345678901234567890123456789012345678"), decimal.Decimal("1234567890123456789012345678.0123456789")]
+    assert Database(Connector(), raw).execute_many("INSERT INTO t VALUES (?)", [(v,) for v in values]) == 2
+    assert seen == values
+    assert decimal.getcontext().prec == 28  # only while the rows are written
+
+
 def test_sqlite_commands_run_in_one_transaction(db):
     """BEGIN would fail, and a COMMIT would keep what came before an error: both are refused."""
     db.export(DATA)
@@ -511,6 +587,10 @@ _KEYS = [
     ("varchar(50) COLLATE Latin1_General_CS_AS", ["Łódź", "a", "A"]),
     ("nvarchar(50) COLLATE Latin1_General_BIN2", ["Łódź", "a", "A"]),
     ("varchar(50) COLLATE Latin1_General_100_CI_AS_SC_UTF8", ["Łódź", "Praha č"]),
+    ("varchar(50) COLLATE Latin1_General_CI_AS", ["Łódź", "Gdańsk", "€ 5", "Ελλάδα"]),
+    ("varchar(50) COLLATE Polish_CI_AS", ["Łódź", "Gdańsk", "Kraków", "Ελλάδα"]),
+    ("char(10) COLLATE Greek_CI_AS", ["Ελλάδα", "Łódź"]),
+    ("varchar(max) COLLATE Polish_CI_AS", ["Łódź " + "x" * 9000, "b"]),
     ("char(5)", ["AB      ", "x"]),  # the spaces that don't fit are cut, as SQL Server does
     ("datetime2(0)", [dt.datetime(2026, 10, 2, 8), dt.datetime(2026, 10, 2, 8, 0, 1, 500000), dt.datetime(2026, 10, 2, 8, 0, 2, 250000)]),
     ("datetime2(3)", [dt.datetime(2026, 10, 2, 8, 0, 1, 123456), None]),
@@ -703,3 +783,165 @@ def test_sqlserver_spaces_that_dont_fit_are_cut(registry):
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+_KEYED_MODES = ("update", "upsert", "replace_keys", "delete")
+
+
+def _keyed_message(mode: str, n: int) -> str:
+    rows = f"{n} row{'s' if n != 1 else ''}"
+    return {"update": f"updated {rows}", "upsert": f"updated {rows}", "replace_keys": f"deleted {rows}, added {rows}",
+            "delete": f"deleted {rows}"}[mode]  # fmt: skip
+
+
+@_SQLSERVER
+def test_sqlserver_varchar_columns_get_texts_as_the_server_converts_them(registry):
+    """Texts for char and varchar columns arrive as the server converts N'…' to the column's
+    collation, in every mode: Łódź stays Łódź in a Polish or UTF-8 column and is Lódz in a
+    Latin1 one, and keys find the rows the database stored itself. Before, the driver converted
+    them to this PC's code page first (Łódź was Lódz in every varchar column)."""
+    ctx, name = _sqlserver()
+    texts = ["Łódź", "Gdańsk", "Kraków", "Ελλάδα", "東京", "Müller €"]
+    data = pl.DataFrame({"K": texts, "V": texts, "C": texts})
+    literals = ", ".join(f"(N'{t}', N'{t}', N'{t}', N'sql')" for t in texts)
+
+    def export(df, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
+
+    def stored(note):
+        with ctx.database("server") as db:
+            return sorted(db.read(f"SELECT K, V, C FROM {name} WHERE N = N'{note}'").rows())
+
+    try:
+        for collation in ("Polish_CI_AS", "Latin1_General_100_CI_AS_SC_UTF8", "Latin1_General_CI_AS"):
+            columns = f"K varchar(30) COLLATE {collation}, V varchar(max) COLLATE {collation}, C char(20) COLLATE {collation}"
+            with ctx.database("server") as db:
+                db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                db.execute(f"CREATE TABLE {name} ({columns}, N nvarchar(10))")
+                db.execute(f"INSERT INTO {name} VALUES {literals}")
+            by_server = stored("sql")
+            lodz = "Lódz" if collation == "Latin1_General_CI_AS" else "Łódź"
+            assert (lodz, lodz, lodz) in [(k, v, c.rstrip()) for k, v, c in by_server], collation
+            export(data.with_columns(N=pl.lit("add")))
+            assert stored("add") == by_server, collation
+            for mode in _KEYED_MODES:
+                with ctx.database("server") as db:
+                    db.execute(f"DELETE FROM {name}; INSERT INTO {name} VALUES {literals}")
+                export(data.with_columns(N=pl.lit("new")), mode=mode, key_columns=["K"])
+                assert ctx.messages[-1] == ("info", f"{name}: {_keyed_message(mode, len(texts))}"), (collation, mode)
+                assert stored("sql") == [] and stored("new") == ([] if mode == "delete" else by_server), (collation, mode)
+        # Too long in bytes for a UTF-8 column (äöü takes 6): refused with the column and an example,
+        # in every mode. Before, the server's message came through, in keyed modes naming the stage
+        too_long = (
+            rf"^The column T of {name} holds texts of up to 5 bytes in UTF-8 \(varchar\(5\)\), but T has longer ones "
+            r"\(e\.g\. “äöü”, 6 bytes: letters such as ä take two\)\. Shorten them first, or make the column longer "
+            r"in the database\.$"
+        )
+        with ctx.database("server") as db:
+            db.execute(f"DROP TABLE {name}")
+            db.execute(f"CREATE TABLE {name} (K int, T varchar(5) COLLATE Latin1_General_100_CI_AS_SC_UTF8, "
+                       "F char(4) COLLATE Latin1_General_100_CI_AS_SC_UTF8)")  # fmt: skip
+            db.execute(f"INSERT INTO {name} VALUES (1, 'old', 'ab')")
+        for mode in ("insert", "update", "upsert", "replace_keys"):
+            with pytest.raises(ActionError, match=too_long):
+                export(pl.DataFrame({"K": [1], "T": ["äöü"]}), mode=mode, key_columns=["K"])
+        with pytest.raises(ActionError, match=r"holds texts of up to 4 bytes in UTF-8 \(char\(4\)\), but F .*“€ab”, 5 bytes"):
+            export(pl.DataFrame({"K": [1], "F": ["€ab"]}), mode="upsert", key_columns=["K"])  # € takes three
+        export(pl.DataFrame({"K": [1], "T": ["äöx"]}), mode="update", key_columns=["K"])  # 5 bytes fit
+        export(pl.DataFrame({"K": [1], "T": ["äö    "], "F": ["ä  "]}), mode="upsert", key_columns=["K"])  # spaces that don't fit are cut
+        export(pl.DataFrame({"T": ["äöü", "äö"]}), mode="delete", key_columns=["T"])  # äöü can't be in the column: left out
+        assert ctx.messages[-1] == ("info", f"{name}: deleted 1 row")
+        export(pl.DataFrame({"K": [1], "T": ["äöx"], "F": ["ä  "]}))
+        with ctx.database("server") as db:
+            assert db.read(f"SELECT K, T, F FROM {name}").rows() == [(1, "äöx", "ä  ")]
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_rounds_decimals_as_the_server_does(registry):
+    """1.005 is 1.01 in a decimal(10,2), as SQL Server's own CAST makes it (half away from zero),
+    in every mode: keys find the rows the server rounded itself, and nothing is added twice."""
+    ctx, name = _sqlserver()
+    texts = ["1.005", "-0.005", "2.675", "0.125", "1.015", "1.004"]
+    data = pl.DataFrame({"K": pl.Series([decimal.Decimal(t) for t in texts], dtype=pl.Decimal(10, 3))})
+    by_sql = f"INSERT INTO {name} VALUES " + ", ".join(f"(CAST({t} AS decimal(10,3)), {t}, N'sql')" for t in texts)
+
+    def stored(note):
+        with ctx.database("server") as db:
+            return sorted(db.read(f"SELECT CAST(K AS varchar(20)) AS K, CAST(V AS varchar(20)) AS V FROM {name} WHERE N = N'{note}'").rows())
+
+    def export(df, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
+
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (K decimal(10,2), V decimal(10,2), N nvarchar(10))")
+            db.execute(by_sql)
+        by_server = stored("sql")
+        assert by_server == sorted((v, v) for v in ("1.01", "-0.01", "2.68", "0.13", "1.02", "1.00"))
+        export(data.with_columns(V=pl.col("K"), N=pl.lit("add")))
+        assert stored("add") == by_server
+        for mode in _KEYED_MODES:
+            with ctx.database("server") as db:
+                db.execute(f"DELETE FROM {name}; {by_sql}")
+            export(data.with_columns(V=pl.col("K"), N=pl.lit("new")), mode=mode, key_columns=["K"])
+            assert ctx.messages[-1] == ("info", f"{name}: {_keyed_message(mode, len(texts))}"), mode
+            assert stored("sql") == [] and stored("new") == ([] if mode == "delete" else by_server), mode
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_writes_every_digit_of_38_digit_decimals(registry):
+    """numeric(38,0) IDs and decimal(38,10) amounts keep all their digits, in every mode (the
+    driver converted them with 28 digits): imported and written back by key, they find their
+    rows, and an upsert adds nothing."""
+    ctx, name = _sqlserver()
+    copy = f"{name}_copy"
+    D = decimal.Decimal
+    ids = ["12345678901234567890123456789012345678", "-99999999999999999999999999999999999999", "12345678901234567890123456789012345677"]
+    amounts = ["1234567890123456789012345678.0123456789", "-9999999999999999999999999999.9999999999", "0.0000000001"]
+    data = pl.DataFrame({
+        "Id": pl.Series([D(v) for v in ids], dtype=pl.Decimal(38, 0)),
+        "Amount": pl.Series([D(v) for v in amounts], dtype=pl.Decimal(38, 10)),
+        "N": [1, 2, 3],
+    })  # fmt: skip
+    expected = [(i, a, n) for i, a, n in zip(ids, amounts, [1, 2, 3])]
+
+    def export(df, table=name, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": table} | params, ctx)
+
+    def stored(table=name):
+        with ctx.database("server") as db:
+            return db.read(f"SELECT CAST(Id AS varchar(50)) AS Id, CAST(Amount AS varchar(50)) AS Amount, N FROM {table} ORDER BY N").rows()
+
+    try:
+        with ctx.database("server") as db:
+            for table in (name, copy):
+                db.execute(f"CREATE TABLE {table} (Id numeric(38,0), Amount decimal(38,10), N int)")
+        export(data)
+        assert stored() == expected
+        for key in ("Id", "Amount"):
+            for mode in _KEYED_MODES:
+                with ctx.database("server") as db:
+                    db.execute(f"DELETE FROM {name}")
+                export(data)
+                export(data.with_columns(N=pl.col("N") + 10), mode=mode, key_columns=[key])
+                assert ctx.messages[-1] == ("info", f"{name}: {_keyed_message(mode, 3)}"), (key, mode)
+                assert stored() == ([] if mode == "delete" else [(i, a, n + 10) for i, a, n in expected]), (key, mode)
+        # Imported (as exact decimals) and written back by key
+        export(data, mode="replace")
+        imported = registry.actions["db.import"](None, {"connection": "server", "table": name}, ctx)
+        assert imported.schema == {"Id": pl.Decimal(38, 0), "Amount": pl.Decimal(38, 10), "N": pl.Int64}
+        export(imported, table=copy)
+        export(imported, table=copy, mode="upsert", key_columns=["Id"])
+        assert ctx.messages[-1] == ("info", f"{copy}: updated 3 rows")
+        export(imported, table=copy, mode="delete", key_columns=["Amount"])
+        assert ctx.messages[-1] == ("info", f"{copy}: deleted 3 rows")
+    finally:
+        with ctx.database("server") as db:
+            for table in (name, copy):
+                db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")

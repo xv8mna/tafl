@@ -34,12 +34,16 @@ class Params(dict):
 
 @dataclass(frozen=True)
 class ValidationContext:
-    """What parameters can check their values against. ``None`` means "unknown, don't check"."""
+    """What parameters can check their values against. ``None`` means "unknown, don't check".
+
+    ``imported``: whether the first step of the table is an import that read files from a
+    folder (``Context.imported_files``), for a later step of the table."""
 
     columns: Sequence[str] | None = None
     table_columns: Callable[[str], Sequence[str] | None] = lambda table_id: None
     tables: Mapping[str, str] | None = None
     connections: Collection[str] | None = None
+    imported: bool | None = None
 
     def columns_for(self, source: str, params: Mapping[str, Any]) -> Sequence[str] | None:
         """Columns of the input table, or of the table chosen in the parameter named ``source``."""

@@ -233,12 +233,16 @@ class SqlServer(Connector):
             cursor.close()
 
     def column_types(self, conn, table):
-        """E.g. int, nvarchar(50), decimal(10,2), datetime2(0)."""
+        """E.g. int, nvarchar(50), decimal(10,2), datetime2(0). A char or varchar column of a
+        UTF-8 collation, whose length counts bytes, has it after the type: varchar(50) collate
+        latin1_general_100_ci_as_sc_utf8."""
         types = {}
         for c in self._columns(conn, table):
             kind = c.kind
             if kind in _LENGTH_TYPES:
                 kind += "(max)" if c.size == -1 else f"({c.size // 2 if kind.startswith('n') else c.size})"
+                if kind.startswith(_CODE_PAGE_TYPES) and (c.collation or "").lower().endswith("_utf8"):
+                    kind += f" collate {c.collation.lower()}"
             elif kind in ("decimal", "numeric"):
                 kind += f"({c.precision},{c.scale})"
             elif kind in _FRACTION_TYPES:
@@ -313,15 +317,27 @@ class SqlServer(Connector):
     def prepare_cursor(self, cursor):
         cursor.fast_executemany = True  # sends the rows in batches instead of one by one
 
-    def input_sizes(self, df, types=None):
-        # The driver can't look up the columns of a #temporary table: it would send texts as 255
-        # characters in the Windows code page and date-times without fractions of a second.
-        # Bound as the driver binds the same type in a table of the database, a value arrives as
-        # it does there (e.g. a varchar in the code page, a datetime2(0) without its fraction).
-        # Texts for numbers, dates and other types go as texts, which the server converts, as
-        # before. Into the database's own tables the driver's own choice fits the column.
+    def input_sizes(self, df, types=None, temporary=False):
+        # Texts for char and varchar columns go as Unicode, in every mode (_binding): the server
+        # converts them to the column's code page, as it converts N'…' (Łódź stays Łódź in a
+        # Polish or UTF-8 column, and is Lódz in a Latin1 one), and refuses those too long for
+        # the column. Bound as varchar, the driver would convert them to this PC's code page on
+        # the way, whatever the column's collation, and a text too long in bytes for a UTF-8
+        # column would be cut without a word.
         if types is None:
             return None
+        if not temporary:  # into the database's own tables the driver's own choice fits the other columns
+            texts = [None] * df.width
+            for index, (name, dtype) in enumerate(df.schema.items()):
+                if dtype == pl.String and _kind(types.get(name, ""))[0] in _CODE_PAGE_TYPES:
+                    texts[index] = _binding(types[name])
+            return texts if any(texts) else None
+        # The driver can't look up the columns of a #temporary table: it would send texts as 255
+        # characters in the Windows code page and date-times without fractions of a second.
+        # Bound as the driver binds the same type in a table of the database (and texts as
+        # above), a value arrives as it does there (e.g. a datetime2(0) without its fraction).
+        # Texts for numbers, dates and other types go as texts, which the server converts, as
+        # before.
         codes = _odbc_types()
         as_text = {codes[kind] for kind in ("char", "varchar", "nchar", "nvarchar", "datetimeoffset")}
         sizes = []
@@ -340,8 +356,8 @@ class SqlServer(Connector):
         zone's offset (08:30 in Berlin in summer: 08:30 +02:00; the driver gives one without a
         zone the offset of this PC's time zone on its day), and a text the form the driver reads
         (2026-10-01T08:30:00+02:00, as imports give it, is 2026-10-01 08:30:00 +02:00). Decimals
-        (Decimal) are rounded to the decimal places of a decimal column, and are floats for a
-        float column."""
+        (Decimal) are rounded to the decimal places of a decimal column, half away from zero as
+        SQL Server rounds (1.005 is 1.01 in a decimal(10,2)), and are floats for a float column."""
         changes = []
         for name, dtype in df.schema.items():
             kind, size, scale = _kind(types.get(name, ""))
@@ -361,7 +377,7 @@ class SqlServer(Connector):
             elif isinstance(dtype, pl.Decimal) and kind in ("float", "real"):
                 changes.append(column.cast(pl.Float64))
             elif isinstance(dtype, pl.Decimal) and kind in _DECIMAL_TYPES and dtype.scale > scale:
-                changes.append(column.cast(pl.Decimal(38, scale)))  # rounds half away from zero, as SQL Server does
+                changes.append(_round_half_away(df[name], scale))
         return df.with_columns(changes)
 
     def prepare_frame(self, df):
@@ -463,7 +479,9 @@ def _kind(sql_type: str) -> tuple[str, int, int]:
 
 @functools.cache
 def _odbc_types() -> dict[str, int]:
-    """The ODBC type the driver gives a parameter for a column of each SQL Server type."""
+    """The ODBC type the driver gives a parameter for a column of each SQL Server type, except
+    for char and varchar: their texts go as Unicode (nchar, nvarchar), which the server converts
+    to the column's code page."""
     import pyodbc
 
     return {
@@ -473,15 +491,21 @@ def _odbc_types() -> dict[str, int]:
         "smallmoney": pyodbc.SQL_DECIMAL, "date": pyodbc.SQL_TYPE_DATE, "datetime": pyodbc.SQL_TYPE_TIMESTAMP,
         "smalldatetime": pyodbc.SQL_TYPE_TIMESTAMP, "datetime2": pyodbc.SQL_TYPE_TIMESTAMP,
         "time": pyodbc.SQL_SS_TIME2, "datetimeoffset": _SQL_SS_TIMESTAMPOFFSET, "uniqueidentifier": pyodbc.SQL_GUID,
-        "char": pyodbc.SQL_CHAR, "varchar": pyodbc.SQL_VARCHAR, "nchar": pyodbc.SQL_WCHAR,
+        "char": pyodbc.SQL_WCHAR, "varchar": pyodbc.SQL_WVARCHAR, "nchar": pyodbc.SQL_WCHAR,
         "nvarchar": pyodbc.SQL_WVARCHAR, "binary": pyodbc.SQL_BINARY, "varbinary": pyodbc.SQL_VARBINARY,
     }  # fmt: skip
 
 
+_CODE_PAGE_TYPES = ("char", "varchar")  # texts in the code page of the column's collation
+_UNICODE_LIMIT = 4000  # the longest nchar or nvarchar parameter; a longer one is nvarchar(max)
+
+
 def _binding(sql_type: str) -> tuple[int, int, int] | None:
-    """The type, size and digits the driver gives a parameter for a column of this SQL Server
-    type (``setinputsizes``): bound so, a value is written as into such a column of a table,
-    e.g. a varchar in the code page, a datetime2(0) without its fraction. None for others."""
+    """The type, size and digits of a parameter for a column of this SQL Server type
+    (``setinputsizes``): bound so, a value is written as the driver writes it into such a
+    column of a table, e.g. a datetime2(0) without its fraction; texts for a char or varchar
+    column go as Unicode, which the server converts to the column's code page (and refuses
+    when too long for it). None for other types."""
     kind, size, scale = _kind(sql_type)
     code = _odbc_types().get(kind)
     if code is None:
@@ -492,7 +516,24 @@ def _binding(sql_type: str) -> tuple[int, int, int] | None:
         return code, *_FIXED_SIZES[kind]
     if kind in ("decimal", "numeric"):
         return code, size or 18, scale
+    if kind in _CODE_PAGE_TYPES and size > _UNICODE_LIMIT:  # e.g. varchar(8000)
+        return _odbc_types()["nvarchar"], 0, 0
     return code, size, 0  # texts and binary values; 0: max
+
+
+def _round_half_away(series: pl.Series, scale: int) -> pl.Series:
+    """Decimals rounded to ``scale`` decimal places, half away from zero, as SQL Server rounds
+    them for a decimal column (1.005 is 1.01, -0.005 is -0.01; a cast would round half to even)."""
+    try:
+        return series.round(scale, mode="half_away_from_zero").cast(pl.Decimal(38, scale))
+    except pl.exceptions.ComputeError:  # 38 digits that a carry would make 39 before the cast
+        exact = decimal.Context(prec=100, rounding=decimal.ROUND_HALF_UP)  # ties away from zero
+        step = decimal.Decimal(1).scaleb(-scale, context=exact)
+        values = [None if v is None else v.quantize(step, context=exact) for v in series.to_list()]
+        try:
+            return pl.Series(series.name, values, dtype=pl.Decimal(38, scale))
+        except Exception:  # too large for the column after all: SQL Server says so
+            return series
 
 
 def _data_binding(series: pl.Series) -> tuple[int, int, int]:
@@ -566,12 +607,15 @@ _RECORDS = re.compile(r";\s*(?=\[[0-9A-Z]{5}\])")
 _PREFIX = re.compile(r"^\s*\[[0-9A-Z]{5}\]\s*\[[^\]]*\]\[[^\]]*\](?:\[SQL Server\])?")
 _NUMBER = re.compile(r"\s*\((-?\d+)\)(?:\s*\(SQL\w+\))?\s*$")
 _TERMINATED = 3621  # "The statement has been terminated."
+# How SQL Server names a #temporary table in tempdb: its name, underscores and a number
+_TEMPORARY_NAME = re.compile(r"(#[^\s'\"\]]*?)_{8,}[0-9A-F]{12}(?![0-9A-Za-z_])")
 
 
 def _diagnostics(text: str) -> str:
     """The records of a SQL Server error message without the driver's prefixes and the error
     numbers, each once. The same error for many rows (a duplicate key value per row) is shown
-    once, with how many more there are."""
+    once, with how many more there are. A #temporary table is named as it was created."""
+    text = _TEMPORARY_NAME.sub(r"\1", text)
     shown: list[str] = []
     first: dict[int, int] = {}  # the number of a server error -> where it is in shown
     more: dict[int, int] = {}  # where in shown -> how many more records like it
@@ -778,6 +822,11 @@ class SQLite(Connector):
             return "INTEGER"
         if dtype.is_float():
             return "REAL"
+        if isinstance(dtype, pl.Decimal):  # written as texts, which SQLite turns into numbers for such columns
+            precision = dtype.precision or 38
+            if dtype.scale == 0 and precision <= 18:
+                return "INTEGER"
+            return "REAL" if precision <= 15 else "TEXT"  # REAL keeps 15 digits, TEXT all of them
         if dtype == pl.Binary:
             return "BLOB"
         return "TEXT"  # also dates: SQLite keeps them as ISO text (2025-01-31)
@@ -791,13 +840,18 @@ class SQLite(Connector):
     def prepare_frame(self, df):
         """Dates and times as ISO text, the way SQLite stores them (2025-01-31 08:30:00, with
         six digits for a fraction of a second: 08:30:00.500000); a date-time with a time zone in
-        that zone's local time, without the zone. Each value gets the same text in every export,
+        that zone's local time, without the zone. Exact decimals (Decimal) as text with all their
+        digits (1.50): SQLite turns it into a number for a column of numbers (REAL, INTEGER,
+        NUMERIC, DECIMAL(10,2)), as it does with every text that is a number, also when keys
+        compare, and keeps it for a TEXT column. Each value gets the same text in every export,
         whatever the other values are, so that keys find their rows."""
         df = super().prepare_frame(df)
         changes = []
         for name, dtype in df.schema.items():
             column = pl.col(name)
-            if dtype == pl.Date:
+            if isinstance(dtype, pl.Decimal):
+                changes.append(column.cast(pl.String))
+            elif dtype == pl.Date:
                 changes.append(column.dt.strftime("%Y-%m-%d"))
             elif dtype == pl.Datetime:
                 whole, fraction = column.dt.strftime("%Y-%m-%d %H:%M:%S"), column.dt.strftime("%Y-%m-%d %H:%M:%S%.6f")
@@ -1015,7 +1069,7 @@ def export_database(df, p, ctx):
             if p.mode == "upsert":
                 added = db.execute(db.connector.insert_missing_sql(table, stage, list(names.values()), keys))
         if p.mode in ("insert", "replace", "replace_keys", "replace_where"):
-            added = _insert(db, table, data, list(names.values()), ctx)
+            added = _insert(db, table, data, list(names.values()), ctx, fitted)
     if created:  # only now: a failed export creates no table
         ctx.log(f"Created table {p.table}")
     parts = [f"{what} {count:,} row{'s' if count != 1 else ''}" for what, count in (
@@ -1051,7 +1105,7 @@ def _check_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[st
                 )
 
 
-_TEXT_TYPE = re.compile(r"(n?)(?:var)?char\((\d+)\)")
+_TEXT_TYPE = re.compile(r"(n?)(?:var)?char\((\d+)\)( collate \S+_utf8)?")  # a UTF-8 varchar counts bytes
 _BINARY_TYPE = re.compile(r"(?:var)?binary\((\d+)\)")
 _ASTRAL = r"[\x{10000}-\x{10FFFF}]"  # outside the Basic Multilingual Plane, e.g. an emoji
 
@@ -1072,16 +1126,16 @@ def _fit_lengths(
         kind = kinds.get(target.lower(), "")
         text, binary = _TEXT_TYPE.fullmatch(kind), _BINARY_TYPE.fullmatch(kind)
         if text and column.dtype == pl.String:
-            size, wide = int(text[2]), bool(text[1])
-            astral = column.str.count_matches(_ASTRAL) if wide else pl.zeros(df.height, pl.UInt32, eager=True)
-            lengths = column.str.len_chars() + astral  # nvarchar counts UTF-16 code units: an emoji takes two
-            kept = column.str.strip_chars_end(" ").str.len_chars() + astral
+            size, wide, utf8 = int(text[2]), bool(text[1]), bool(text[3])
+            lengths = _text_lengths(column, wide, utf8)
+            kept = _text_lengths(column.str.strip_chars_end(" "), wide, utf8)
             cut = ((lengths > size) & (kept <= size)).fill_null(False)
-            if cut.any():  # the whole text and as many spaces as fit
-                column = column.str.slice(0, (size - astral.cast(pl.Int64)).clip(0)).zip_with(cut, column)
+            if cut.any():  # the whole text and as many spaces as fit (a space takes one)
+                keep = (column.str.len_chars().cast(pl.Int64) - (lengths.cast(pl.Int64) - size)).clip(0)
+                column = column.str.slice(0, keep).zip_with(cut, column)
                 changes.append(column)
-                lengths = column.str.len_chars() + astral
-            unit = "characters"
+                lengths = _text_lengths(column, wide, utf8)
+            unit = "bytes" if utf8 else "characters"
         elif binary and column.dtype == pl.Binary:
             size, lengths, unit = int(binary[1]), column.bin.size(), "bytes"
         else:
@@ -1094,19 +1148,34 @@ def _fit_lengths(
         if not too_long.any():
             continue
         example, length = column.filter(too_long)[0], lengths.filter(too_long)[0]
-        if unit == "bytes":
+        if binary:
             raise ActionError(
                 f"The column {target} of {table} holds values of up to {size:,} bytes ({kind}), but {source} has "
                 f"longer ones (e.g. 0x{example[:20].hex().upper()}{'…' if len(example) > 20 else ''}, {length:,} bytes). "
                 "Shorten them first, or make the column longer in the database."
             )
         shown = example if len(example) <= 40 else example[:40] + "…"
+        if unit == "bytes":  # a varchar of a UTF-8 collation
+            raise ActionError(
+                f"The column {target} of {table} holds texts of up to {size:,} bytes in UTF-8 ({kind.split(' collate ')[0]}), "
+                f"but {source} has longer ones (e.g. “{shown}”, {length:,} bytes: letters such as ä take two). Shorten "
+                "them first, or make the column longer in the database."
+            )
         raise ActionError(
             f"The column {target} of {table} holds texts of up to {size:,} characters ({kind}), but {source} has "
             f"longer ones (e.g. “{shown}”, {length:,} characters). Shorten them first, e.g. LEFT([{source}], {size}), "
             "or make the column longer in the database."
         )
     return df.with_columns(changes).filter(~unmatched)
+
+
+def _text_lengths(texts: pl.Series, wide: bool, utf8: bool) -> pl.Series:
+    """The lengths of texts as SQL Server counts them: an nchar or nvarchar column UTF-16 code
+    units (an emoji takes two), a char or varchar of a UTF-8 collation bytes (ä takes two), other
+    char and varchar columns characters."""
+    if utf8:
+        return texts.str.len_bytes()
+    return texts.str.len_chars() + texts.str.count_matches(_ASTRAL) if wide else texts.str.len_chars()
 
 
 def _target_names(columns: list[str], existing: list[str], p) -> dict[str, str]:
@@ -1158,18 +1227,21 @@ def _stage(db, data: pl.DataFrame, names: dict[str, str], keys: list[str], own: 
     kinds = {c: own.get(names[c].lower()) or db.connector.sql_type(data[c], temporary=True) for c in data.columns}
     definitions = ", ".join(f"{db.quote(names[c])} {kind}" for c, kind in kinds.items())
     db.execute(f"{create} {stage} ({definitions})")
-    _insert(db, stage, data, [names[c] for c in data.columns], ctx, types=kinds)
+    _insert(db, stage, data, [names[c] for c in data.columns], ctx, kinds, temporary=True)
     db.execute(db.connector.index_sql(stage, keys))
     return stage
 
 
-def _insert(db, table: str, data: pl.DataFrame, names: list[str], ctx, types: dict[str, str] | None = None) -> int:
-    """``types``: those of the columns of a temporary table, by column of ``data``."""
+def _insert(
+    db, table: str, data: pl.DataFrame, names: list[str], ctx, types: dict[str, str], temporary: bool = False
+) -> int:
+    """``types``: those of the columns of ``table`` (a temporary one: ``temporary``), by column
+    of ``data``."""
     if data.height == 0:
         return 0
     columns = ", ".join(db.quote(n) for n in names)
     marks = ", ".join("?" for _ in names)
-    sizes = db.connector.input_sizes(data, types)
+    sizes = db.connector.input_sizes(data, types, temporary=temporary)
     sql = f"INSERT INTO {table} ({columns}) VALUES ({marks})"
     return db.execute_many(sql, data.iter_rows(), between=ctx.check_cancelled, sizes=sizes)
 

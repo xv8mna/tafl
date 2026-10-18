@@ -1,9 +1,9 @@
 """Files and folders: a table of the files in a folder, and commands that copy, move, rename
-or delete the files listed in a table, or create a folder. The commands work out what happens
-to every file before they change the first one: a missing file, a name that isn't allowed, a
-read-only file to replace or delete, or two files that would get the same name stop the step
-with nothing changed. Each file is copied, moved, renamed or deleted completely or not at all
-(see ``tafl.api.files``)."""
+or delete the files listed in a table (copy, move and delete also all files the table's import
+read), or create a folder. The commands work out what happens to every file before they change
+the first one: a missing file, a name that isn't allowed, a read-only file to replace or delete,
+or two files that would get the same name stop the step with nothing changed. Each file is
+copied, moved, renamed or deleted completely or not at all (see ``tafl.api.files``)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, files, find_files
+from tafl.api import ActionError, Cancelled, P, action, files, find_files
 
 
 def _listing_fingerprint(p, ctx):
@@ -92,17 +92,56 @@ _EXISTING = [
 ]
 
 
-def _file_params() -> list:
+_IN_COLUMN = {"which": "column"}
+
+
+def _file_params(which: bool = True) -> list:
+    """``which``: the files can also be all files the table's import read."""
+    listed = _IN_COLUMN if which else None
+    choice = P.Choice(
+        "which",
+        "Which files",
+        [("column", "Listed in a column"), ("imported", "All files this table's import read")],
+        help="All files …: every file that the first step, an import of all files in a folder, read, also files "
+        "without rows (only a header row, or a filter left out their rows). A file that arrives after the import "
+        "stays where it is",
+    )
     return [
-        P.Column("column", "Column with the files", help="Full paths, or paths below the folder chosen next"),
+        *([choice] if which else []),
+        P.Column("column", "Column with the files", help="Full paths, or paths below the folder chosen next", visible_if=listed),
         P.Folder(
             "base",
             "Paths in the column are below",
             required=False,
             help=r"For paths like 2025\01\orders.csv (the Path column of a folder import); empty = the project's folder",
+            visible_if=listed,
         ),
         P.Choice("missing", "If a file doesn't exist", [("error", "Stop with an error"), ("skip", "Skip it")]),
     ]
+
+
+_NOT_IMPORTED = (
+    "This table doesn't start with an import of all files in a folder, so no files were read: "
+    "choose “Listed in a column” in Which files"
+)
+
+
+def _check_which(p, vc) -> list[str]:
+    """All files the import read, in a table that doesn't start with a folder import: also a
+    warning while the project is edited, so that it doesn't wait for a run."""
+    return [_NOT_IMPORTED] if p.get("which") == "imported" and vc.imported is False else []
+
+
+def _migrate_which(params: dict, from_version: int) -> dict:
+    """Version 1 took the files from a column."""
+    if from_version < 2:
+        params.setdefault("which", "column")
+    return params
+
+
+def _which(p) -> str:
+    """The files of the step, for its summary."""
+    return "the files the import read" if p.get("which") == "imported" else f"the files in {p.column or '?'}"
 
 
 def _base(p, ctx) -> Path:
@@ -130,7 +169,13 @@ def _same_file(path: Path, other: Path) -> bool:
 
 
 def _listed_files(df: pl.DataFrame, p, ctx) -> list[tuple[Path, Path | None]]:
-    """(file, path below the base folder or None) for each file named in the column, once each."""
+    """(file, path below the base folder or None) for each file named in the column, once each;
+    or for each file the table's import read (with its path below the import's folder)."""
+    if p.get("which") == "imported":
+        found, folder = ctx.imported_files, ctx.imported_folder
+        if found is None or folder is None:
+            raise ActionError(_NOT_IMPORTED)
+        return [(path, _below(path, folder)) for path in found]
     if p.column not in df.columns:
         raise ActionError(f"There is no column {p.column}")
     base = _base(p, ctx)
@@ -140,6 +185,18 @@ def _listed_files(df: pl.DataFrame, p, ctx) -> list[tuple[Path, Path | None]]:
             path, relative = _resolve(value, base)
             found.setdefault(_key(path), (path, relative))
     return list(found.values())
+
+
+def _below(path: Path, folder: Path) -> Path | None:
+    try:
+        return path.relative_to(folder)
+    except ValueError:
+        return None
+
+
+def _listed_in(p) -> str:
+    """Where the files of the step come from, for "…, which <it> too"."""
+    return "the import read" if p.get("which") == "imported" else f"is in the column {p.column}"
 
 
 def _exists(path: Path, p, skipped: list[Path]) -> bool:
@@ -162,11 +219,11 @@ class _Targets:
     """Where the files of one step go, worked out for all of them before the first file is
     changed: a step never replaces a file it has just written, nor one of its own listed files."""
 
-    def __init__(self, sources: list[Path], *, moves: bool, done: str, column: str) -> None:
+    def __init__(self, sources: list[Path], *, moves: bool, done: str, listed_in: str) -> None:
         self.listed = {_key(source) for source in sources}
         self.written: dict[str, Path] = {}  # a target -> the file that goes there
         self.gone: set[str] = set()  # listed files moved away by the step
-        self.moves, self.done, self.column = moves, done, column
+        self.moves, self.done, self.listed_in = moves, done, listed_in
 
     def exists(self, path: Path) -> bool:
         """Whether ``path`` is taken when the step gets to the next file."""
@@ -192,8 +249,7 @@ class _Targets:
                 raise ActionError(f"{wanted} exists already")
             elif _key(wanted) in self.listed:
                 raise ActionError(
-                    f"{source} would replace {wanted}, which is in the column {self.column} too. "
-                    "Choose “Keep both” to number it."
+                    f"{source} would replace {wanted}, which {self.listed_in} too. Choose “Keep both” to number it."
                 )
             elif wanted.is_dir():
                 raise ActionError(f"{wanted} is a folder: a file can't replace it")
@@ -219,6 +275,48 @@ def _failed(error: ActionError, done: int, past: str) -> ActionError:
     return ActionError(f"{error}. {done:,} file{'s were' if done != 1 else ' was'} {past} before it")
 
 
+def _change_each(ctx, plan: list[tuple], change, changed, past: str, stopped: tuple[str, str]) -> int:
+    """Runs ``change(*item)`` for each item of ``plan``; returns how many there were. A file that
+    fails stops the step with how many files were done before it (``past``: "moved"). After a
+    stop (Stop, or Ctrl+C on the command line) the step says how many files it changed: with
+    ``stopped`` ("Moved", " to archive"), "Moved 3 files to archive before the stop".
+    ``changed(*item)`` tells whether the file that was being changed then is done."""
+    number = 0
+    try:
+        for number, item in enumerate(plan):
+            ctx.check_cancelled()
+            try:
+                change(*item)
+            except ActionError as error:
+                raise _failed(error, number, past) from None
+        return len(plan)
+    except (Cancelled, KeyboardInterrupt) as stop:  # Stop comes before a file, Ctrl+C at any moment
+        done = number + (1 if isinstance(stop, KeyboardInterrupt) and plan and _safely(changed, *plan[number]) else 0)
+        ctx.log(f"{stopped[0]} {done:,} file{'s' if done != 1 else ''}{stopped[1]} before the stop")
+        raise
+
+
+def _safely(check, *args) -> bool:
+    try:
+        return bool(check(*args))
+    except OSError:
+        return False
+
+
+def _moved(source: Path, destination: Path, *_) -> bool:
+    return not os.path.lexists(source) and os.path.lexists(destination)
+
+
+def _copied(source: Path, destination: Path, *_) -> bool:
+    """The copy has the target's name only when it is complete, with the source's time and size."""
+    old, new = source.stat(), destination.stat()
+    return (old.st_mtime_ns, old.st_size) == (new.st_mtime_ns, new.st_size)
+
+
+def _deleted(source: Path, *_) -> bool:
+    return not os.path.lexists(source)
+
+
 def _report(ctx, verb: str, done: int, skipped: list[Path], where: str = "", unchanged: int = 0) -> None:
     text = f"{verb} {done:,} file{'s' if done != 1 else ''}{where}"
     notes = [f"{len(skipped):,} skipped"] if skipped else []
@@ -232,7 +330,8 @@ def _report(ctx, verb: str, done: int, skipped: list[Path], where: str = "", unc
 def _copy_or_move(df, p, ctx, move: bool) -> pl.DataFrame:
     target = ctx.resolve_path(p.target)
     sources = _listed_files(df, p, ctx)
-    targets = _Targets([s for s, _ in sources], moves=move, done="moved to" if move else "copied to", column=p.column)
+    done_to = "moved to" if move else "copied to"
+    targets = _Targets([s for s, _ in sources], moves=move, done=done_to, listed_in=_listed_in(p))
     plan, skipped, folders = [], [], set()
     for source, relative in sources:  # all files are checked before the first one is changed
         ctx.check_cancelled()
@@ -250,18 +349,17 @@ def _copy_or_move(df, p, ctx, move: bool) -> pl.DataFrame:
             skipped.append(source)
             continue
         plan.append((source, *place))
-    done = 0
-    for source, destination, replaces in plan:
-        ctx.check_cancelled()
-        try:  # a failed copy or move leaves both files as they were
-            if move:
-                files.move_file(source, destination, replace=replaces)
-            else:
-                files.copy_file(source, destination, replace=replaces, warn=ctx.warn)  # with the modification time
-        except ActionError as error:
-            raise _failed(error, done, "moved" if move else "copied") from None
-        done += 1
-    _report(ctx, "Moved" if move else "Copied", done, skipped, f" to {target}")
+
+    def change(source: Path, destination: Path, replaces: bool) -> None:  # a failed one leaves both files as they were
+        if move:
+            files.move_file(source, destination, replace=replaces)
+        else:
+            files.copy_file(source, destination, replace=replaces, warn=ctx.warn)  # with the modification time
+
+    verb = "Moved" if move else "Copied"
+    with files.batch():  # each folder is searched once for temporary files that were left
+        done = _change_each(ctx, plan, change, _moved if move else _copied, verb.lower(), (verb, f" to {target}"))
+    _report(ctx, verb, done, skipped, f" to {target}")
     return df
 
 
@@ -283,11 +381,15 @@ _TARGET_PARAMS = [
     category="Files",
     kind="command",
     params=[*_file_params(), *_TARGET_PARAMS],
-    summary=lambda p: f"Copy the files in {p.column or '?'} to {Path(str(p.target)).name or p.target or '?'}",
+    version=2,
+    migrate=_migrate_which,
+    checks=_check_which,
+    summary=lambda p: f"Copy {_which(p)} to {Path(str(p.target)).name or p.target or '?'}",
 )
 def copy_files(df, p, ctx):
-    """Copies the files listed in a column of the table into a folder (it is created when
-    needed). Runs only when the project is run; the table passes through unchanged."""
+    """Copies the files listed in a column of the table, or all files the table's import read,
+    into a folder (it is created when needed). Runs only when the project is run; the table
+    passes through unchanged."""
     return _copy_or_move(df, p, ctx, move=False)
 
 
@@ -297,12 +399,15 @@ def copy_files(df, p, ctx):
     category="Files",
     kind="command",
     params=[*_file_params(), *_TARGET_PARAMS],
-    summary=lambda p: f"Move the files in {p.column or '?'} to {Path(str(p.target)).name or p.target or '?'}",
+    version=2,
+    migrate=_migrate_which,
+    checks=_check_which,
+    summary=lambda p: f"Move {_which(p)} to {Path(str(p.target)).name or p.target or '?'}",
 )
 def move_files(df, p, ctx):
-    """Moves the files listed in a column of the table into a folder, e.g. imported daily
-    exports into an archive folder. Runs only when the project is run; the table passes
-    through unchanged."""
+    """Moves the files listed in a column of the table, or all files the table's import read,
+    into a folder, e.g. imported daily exports into an archive folder. Runs only when the
+    project is run; the table passes through unchanged."""
     return _copy_or_move(df, p, ctx, move=True)
 
 
@@ -312,7 +417,7 @@ def move_files(df, p, ctx):
     category="Files",
     kind="command",
     params=[
-        *_file_params(),
+        *_file_params(which=False),
         P.Column("new_name", "Column with the new names", help="Only the name, e.g. orders_done.csv: the file stays in its folder"),
         P.Choice("existing", "If a file of that name is there already", _EXISTING),
     ],
@@ -330,7 +435,7 @@ def rename_files(df, p, ctx):
         if value is not None and value.strip():
             source, _ = _resolve(value, base)
             renames.setdefault(_key(source), (source, (new or "").strip()))  # each file once
-    targets = _Targets([source for source, _ in renames.values()], moves=True, done="renamed to", column=p.column)
+    targets = _Targets([source for source, _ in renames.values()], moves=True, done="renamed to", listed_in=_listed_in(p))
     plan, skipped, unchanged = [], [], 0
     for source, new in renames.values():  # all files are checked before the first one is renamed
         ctx.check_cancelled()
@@ -354,14 +459,11 @@ def rename_files(df, p, ctx):
             skipped.append(source)
             continue
         plan.append((source, *place))
-    done = 0
-    for source, destination, replaces in plan:
-        ctx.check_cancelled()
-        try:
-            files.move_file(source, destination, replace=replaces)
-        except ActionError as error:
-            raise _failed(error, done, "renamed") from None
-        done += 1
+
+    def rename(source: Path, destination: Path, replaces: bool) -> None:
+        files.move_file(source, destination, replace=replaces)
+
+    done = _change_each(ctx, plan, rename, _moved, "renamed", ("Renamed", ""))
     _report(ctx, "Renamed", done, skipped, unchanged=unchanged)
     return df
 
@@ -383,11 +485,15 @@ def _real_name(path: Path) -> str:
             "how", "Delete", [("recycle", "To the Recycle Bin (can be restored)"), ("permanent", "For good (can't be undone)")]
         ),
     ],
-    summary=lambda p: f"Delete the files in {p.column or '?'}" + (" for good" if p.how == "permanent" else ""),
+    version=2,
+    migrate=_migrate_which,
+    checks=_check_which,
+    summary=lambda p: f"Delete {_which(p)}" + (" for good" if p.how == "permanent" else ""),
 )
 def delete_files(df, p, ctx):
-    """Deletes the files listed in a column of the table: to the Recycle Bin, or for good.
-    Runs only when the project is run; the table passes through unchanged."""
+    """Deletes the files listed in a column of the table, or all files the table's import read:
+    to the Recycle Bin, or for good. Runs only when the project is run; the table passes through
+    unchanged."""
     chosen, skipped = [], []
     for source, _ in _listed_files(df, p, ctx):  # all files are checked before the first one is deleted
         ctx.check_cancelled()
@@ -395,14 +501,12 @@ def delete_files(df, p, ctx):
             if p.how == "permanent" and not os.access(source, os.W_OK):  # on Windows: the read-only attribute
                 raise ActionError(f"{source} is read-only, so it can't be deleted")
             chosen.append(source)
-    done = 0
-    for source in chosen:
-        ctx.check_cancelled()
-        try:
-            files.delete_file(source, recycle=p.how != "permanent")
-        except ActionError as error:
-            raise _failed(error, done, "deleted" if p.how == "permanent" else "moved to the Recycle Bin") from None
-        done += 1
+
+    def delete(source: Path) -> None:
+        files.delete_file(source, recycle=p.how != "permanent")
+
+    past, stopped = ("deleted", ("Deleted", "")) if p.how == "permanent" else ("moved to the Recycle Bin", ("Moved", " to the Recycle Bin"))
+    done = _change_each(ctx, [(source,) for source in chosen], delete, _deleted, past, stopped)
     _report(ctx, "Deleted" if p.how == "permanent" else "Moved to the Recycle Bin:", done, skipped)
     return df
 

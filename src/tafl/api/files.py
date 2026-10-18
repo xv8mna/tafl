@@ -18,14 +18,20 @@ was until the new one is complete::
     with replace_file(ctx.resolve_path(p.file), ctx.warn) as path:
         write_my(df, path)
 
-``copy_file``, ``move_file`` and ``delete_file`` either do their work or change nothing, and
-``read_error`` turns an error from reading a file into a plain message. ``name_problem`` and
-``check_folder`` say why a file or folder name isn't allowed in Windows.
+``copy_file``, ``move_file`` and ``delete_file`` either do their work or change nothing (a step
+that copies or moves many files does it in ``with batch():``), and ``read_error`` turns an error
+from reading a file into a plain message. ``name_problem`` and ``check_folder`` say why a file or
+folder name isn't allowed in Windows.
+
+For a folder, ``source_files`` also notes the files and the folder in ``ctx.imported_files`` and
+``ctx.imported_folder``: the later steps of the table get them there, e.g. to move all files
+that the import read (see ``Context``).
 """
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import ctypes
 import errno
 import fnmatch
@@ -34,9 +40,11 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import stat
 import tempfile
 import threading
+import zlib
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -109,8 +117,13 @@ def source_files(params: Any, ctx: Context) -> tuple[list[Path], Path | None]:
 
     A folder without matching files is an ActionError, or as chosen in ``no_files``: no files
     (an empty list) and a warning, or a SkipRest with an empty table (``combine`` gives the
-    same table for no files)."""
+    same table for no files). For a folder, the files and the folder are noted in
+    ``ctx.imported_files`` and ``ctx.imported_folder`` for the later steps of the table; an
+    import that leaves some of the files out (e.g. workbooks without a chosen sheet) notes only
+    the files it read in ``ctx.imported_files`` afterwards."""
     files, folder = _sources(params, ctx)
+    if folder is not None:
+        ctx.imported_files, ctx.imported_folder = tuple(files), folder
     if files or folder is None:
         return files, folder
     where = f"{folder} or its subfolders" if params.get("subfolders") else str(folder)
@@ -289,12 +302,29 @@ def _check_folder(folder: Path, ends: bool) -> None:
 
 # --- writing, copying, moving and deleting files ------------------------------------------------
 
-_ROOM = _LONGEST - len("~$.ffffffff-ffffff")  # for the name and extension in a temporary file's name
+
+def _computer_name() -> str:
+    """This computer in the names of temporary files: its Windows name (letters, digits and -,
+    at most 15), or else a number worked out from its name."""
+    name = os.environ.get("COMPUTERNAME", "") if os.name == "nt" else ""
+    if not name:
+        with contextlib.suppress(OSError):
+            name = socket.gethostname()
+    if re.fullmatch(r"[A-Za-z0-9-]{1,15}", name):
+        return name.upper()
+    return f"{zlib.crc32(name.encode('utf-8', 'surrogatepass')):08X}"
+
+
+# Other computers may write into the same shared folder: their process ids say nothing here
+_COMPUTER = _computer_name()
+_ROOM = _LONGEST - len(f"~$.{_COMPUTER}-ffffffff-ffffff.old")  # for the name and extension in a temporary file's name
 _CHUNK = 1 << 20
 _READ, _WRITE, _DELETE = 0x80000000, 0x40000000, 0x00010000  # access rights in Windows
 _IN_USE = (32, 33)  # Windows' errors when another program has the file open
 _ACTIVE: set[str] = set()  # the temporary files this process is writing
-_ACTIVE_LOCK = threading.Lock()
+# Re-entrant: Ctrl+C can come right after a thread took the lock, before the ``with`` block that
+# releases it begins. That thread (the command line's only one) can still take it then.
+_ACTIVE_LOCK = threading.RLock()
 
 
 @contextlib.contextmanager
@@ -305,11 +335,13 @@ def replace_file(target: Path, warn: Callable[[str], None] | None = None) -> Ite
     that say why: the file is open in another program or read-only, the name isn't allowed, no
     permission to write in the folder.
 
-    The new file is named ``~$name.<process>-<random>.csv``: folder imports leave such files out,
-    and the next export of ``target`` deletes the ones of a process that has ended (e.g. one that
-    was ended in the Task Manager). In a folder where files may be changed but no new ones
-    created, the block writes a file in the temporary folder that then is written over
-    ``target``; ``warn`` is told that a failure while writing could leave it half-written."""
+    The new file is named ``~$name.<computer>-<process>-<random>.csv``: folder imports leave
+    such files out, and the next export of ``target`` deletes the ones of a process of this
+    computer that has ended (e.g. one that was ended in the Task Manager). Those of other
+    computers stay: in a shared folder, their process ids say nothing here. In a folder where
+    files may be changed but no new ones created, the block writes a file in the temporary
+    folder that then is written over ``target``; ``warn`` is told that a failure while writing
+    could leave it half-written."""
     with _written(target, True, warn, target.name) as path:
         yield path
 
@@ -329,10 +361,10 @@ def copy_file(source: Path, target: Path, *, replace: bool = False, warn: Callab
 def move_file(source: Path, target: Path, *, replace: bool = False) -> None:
     """Moves the file ``source`` to ``target``: another name, folder or drive (the folder is
     created if needed). Either the file is moved, or nothing changes: on the same drive it is
-    renamed in one step; to another drive it is copied next to the target, the source is deleted,
-    and then the copy gets the target's name (an old target is kept aside until then). Without
-    ``replace``, an existing target is an error. Problems are ActionErrors that say why, e.g.
-    which of the two files is open in another program."""
+    renamed in one step; to another drive it is copied next to the target, the copy gets the
+    target's name (an old target is put aside until then), and then the source is deleted, last
+    the old target. Without ``replace``, an existing target is an error. Problems are
+    ActionErrors that say why, e.g. which of the two files is open in another program."""
     _prepare(target)
     if not replace and os.path.lexists(target) and not _same(source, target):
         raise ActionError(f"{target} exists already")
@@ -370,6 +402,25 @@ def read_error(error: BaseException, path: Path) -> ActionError:
     has open without letting others read it. ``error`` may also come from a library that read
     the file: its text decides then (e.g. Polars' "(os error 32)")."""
     return ActionError(_read_problem(error, path, path.name))
+
+
+# In a batch: folder -> the names of temporary files of this computer found in it
+_BATCH: contextvars.ContextVar[dict[str, list[str]] | None] = contextvars.ContextVar("tafl_files_batch", default=None)
+
+
+@contextlib.contextmanager
+def batch() -> Iterator[None]:
+    """For a step that writes, copies or moves many files: in the block, each folder is searched
+    only once for the temporary files that ended processes left (see ``replace_file``), not once
+    for each file, which takes long in a folder of many files (on a network drive even longer)."""
+    if _BATCH.get() is not None:
+        yield
+        return
+    token = _BATCH.set({})
+    try:
+        yield
+    finally:
+        _BATCH.reset(token)
 
 
 @contextlib.contextmanager
@@ -515,77 +566,160 @@ def _copy_into(source: Path, copy: Path) -> None:
 
 
 def _move_to_other_drive(source: Path, target: Path, replace: bool) -> None:
-    """Copy next to the target, put an old target aside, delete the source, give the copy the
-    target's name. After a failure, everything is put back."""
-    copy: Path | None = _temporary_for(source, target)
-    old: Path | None = None
+    """Copy next to the target, put an old target aside, give the copy the target's name, delete
+    the source, then the old target. At every moment the file is complete in the source or the
+    target, and an old target in its place or aside. A failure, or a stop (Ctrl+C), before the
+    source is deleted puts everything back. An old target that a process left aside when it
+    ended (``~$name.<computer>-<process>-<random>.old.csv``) is deleted only once a file has the
+    target's name again."""
+    move = _Move(source, target)
     try:
+        move.run(replace)
+    except BaseException as error:
+        note = _to_the_end(move.end)
+        if note and isinstance(error, ActionError):
+            raise ActionError(f"{error}{note}") from None
+        raise
+
+
+class _Move:
+    """A move to another drive, and how far it got: ``end`` finishes it or puts everything back."""
+
+    def __init__(self, source: Path, target: Path) -> None:
+        self.source, self.target = source, target
+        self.copy: Path | None = None  # the copy next to the target, until it gets the target's name
+        self.old: Path | None = None  # where an old target is put aside
+        self.aside = self.placing = self.deleting = False  # which of these steps began
+        self.put_aside = False  # the old target is aside
+        self.mode: int | None = None  # of the source: deleting a read-only file changes it
+
+    def run(self, replace: bool) -> None:
+        source, target = self.source, self.target
+        with contextlib.suppress(OSError):
+            self.mode = os.stat(source).st_mode
+        self.copy = _temporary_for(source, target)
         try:
-            _copy_into(source, copy)
+            _copy_into(source, self.copy)
         except OSError as error:  # e.g. the disk is full
             raise ActionError(f"Can't write {target}: {_reason(error)}") from None
         if replace and os.path.lexists(target):
             if not os.access(target, os.W_OK):  # as on the same drive, where Windows refuses it
                 raise ActionError(f"{target} is read-only, so it can't be replaced")
-            old = _temporary_for(source, target)
+            self.old = _temporary_for(source, target, old=True)
+            self.aside = True
             try:
-                os.replace(target, old)
-            except PermissionError:
-                raise ActionError(_replace_problem(target, str(target))) from None
+                os.replace(target, self.old)
             except OSError as error:
+                self.aside = False
+                if isinstance(error, PermissionError):
+                    raise ActionError(_replace_problem(target, str(target))) from None
                 raise ActionError(f"Could not move {source} to {target}: {_reason(error)}") from None
+            self.put_aside = True
+        self.placing = True
+        try:
+            _rename_new(self.copy, target)
+        except FileExistsError:  # a file came there meanwhile
+            raise ActionError(f"{target} exists already") from None
+        except OSError as error:
+            raise ActionError(f"Could not move {source} to {target}: {_reason(error)}") from None
+        self.deleting = True
         try:
             _delete(source)
         except OSError as error:
-            old, aside = None, old
-            raise ActionError(_delete_problem(error, source, moving=True) + _put_back(aside, target)) from None
+            raise ActionError(_delete_problem(error, source, moving=True)) from None
+        self.end()
+
+    def end(self) -> str:
+        """When the source is deleted, the old target is deleted too: the move is complete.
+        Otherwise the copy is deleted and an old target gets its name again. Running it again
+        (when Ctrl+C cut it short) changes nothing more. Returns what to add to the message when
+        a file can't be put back."""
+        source, target, copy, old = self.source, self.target, self.copy, self.old
+        if self.deleting and not os.path.lexists(source):
+            for path in (old, copy):
+                if path is not None:
+                    _finish(path)
+            return ""
+        if self.deleting and self.mode is not None:  # e.g. read-only again after Ctrl+C cut that short
+            with contextlib.suppress(OSError):
+                if os.stat(source).st_mode != self.mode:
+                    os.chmod(source, self.mode)
+        placed = self.placing and copy is not None and not os.path.lexists(copy)  # the target is the copy
+        if copy is not None:
+            _finish(copy)  # the source is complete: deletes the copy if it doesn't have the target's name
+        if old is None:
+            if placed:
+                try:
+                    _delete(target)  # no file there, as before
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    return f". {target} is a copy of it now"
+            return ""
+        if not (self.put_aside or (self.aside and not os.path.lexists(target))):
+            _finish(old)  # still the empty file that kept the name free
+            return ""
+        if not os.path.lexists(old):  # the old target got its name again already
+            _forget(old)
+            return ""
+        if not placed and os.path.lexists(target):  # another file came there meanwhile
+            return _keep_old(old, target)
         try:
-            os.rename(copy, target)
-        except OSError as error:  # the target's place was free a moment ago
-            copy, made = None, copy
-            old, aside = None, old
-            notes = _put_back(aside, target) + _bring_back(made, source)
-            raise ActionError(f"Could not move {source} to {target}: {_reason(error)}{notes}") from None
-        copy = None
-    finally:
-        for path in (copy, old):
-            if path is not None:
-                _finish(path)
+            if placed:
+                _writable(target)  # Windows doesn't replace a read-only file
+            os.replace(old, target)
+        except OSError:
+            return _keep_old(old, target)
+        _forget(old)
+        return ""
 
 
-def _temporary_for(source: Path, target: Path) -> Path:
+def _keep_old(old: Path, target: Path) -> str:
+    """Gives an old target that can't get its name again a name of its own (a later export
+    would delete it as a left-over temporary file). Returns what to add to the message."""
+    for number in range(1, 100):
+        name = f"{target.stem} (old{'' if number == 1 else f' {number}'}){target.suffix}"
+        try:
+            _rename_new(old, target.with_name(name))
+        except FileExistsError:
+            continue
+        except OSError:
+            break
+        _forget(old)
+        return f". The old {target.name} is {name} now"
+    return f". The old {target.name} is {old} now"
+
+
+def _to_the_end(work: Callable[[], str]) -> str:
+    """Runs ``work``, which may run again without harm, to its end: when Ctrl+C cuts it short,
+    it runs again, and the KeyboardInterrupt comes afterwards."""
+    interrupted: KeyboardInterrupt | None = None
+    for _ in range(100):
+        try:
+            result = work()
+        except KeyboardInterrupt as error:
+            interrupted = error
+            continue
+        if interrupted is not None:
+            raise interrupted
+        return result
+    raise interrupted or KeyboardInterrupt()
+
+
+def _temporary_for(source: Path, target: Path, old: bool = False) -> Path:
     try:
-        return _new_temporary(target)
+        return _new_temporary(target, old)
     except PermissionError:
         raise ActionError(f"No permission to write in {target.parent}") from None
     except OSError as error:
         raise ActionError(f"Could not move {source} to {target}: {_reason(error)}") from None
 
 
-def _put_back(aside: Path | None, target: Path) -> str:
-    """Gives an old target that was put aside its name again. Returns what to add to the
-    message when that fails."""
-    if aside is None:
-        return ""
-    try:
-        os.replace(aside, target)
-        return ""
-    except OSError:
-        return f". The old {target.name} is {aside} now"
-    finally:
-        _forget(aside)
-
-
-def _bring_back(copy: Path, source: Path) -> str:
-    """Writes the source again from its copy, after it was deleted for a move that failed.
-    Returns what to add to the message when that fails."""
-    try:
-        shutil.copy2(copy, source)
-    except OSError:
-        _forget(copy)
-        return f". {source.name} is {copy} now"
-    _finish(copy)
-    return ""
+def _writable(path: Path) -> None:
+    with contextlib.suppress(OSError):
+        mode = os.stat(path).st_mode
+        if not mode & stat.S_IWRITE:
+            os.chmod(path, mode | stat.S_IWRITE)
 
 
 def _rename_new(source: Path, target: Path) -> None:
@@ -610,10 +744,10 @@ def _delete(path: Path) -> None:
         mode = os.stat(path).st_mode
         if mode & stat.S_IWRITE:
             raise
-        os.chmod(path, mode | stat.S_IWRITE)
         try:
+            os.chmod(path, mode | stat.S_IWRITE)
             os.remove(path)
-        except OSError:
+        except BaseException:  # also Ctrl+C: the file stays read-only
             with contextlib.suppress(OSError):
                 os.chmod(path, mode)
             raise
@@ -622,14 +756,15 @@ def _delete(path: Path) -> None:
 # --- temporary files ------------------------------------------------------------------------------
 
 
-def _new_temporary(target: Path) -> Path:
-    """An empty file next to ``target`` named ``~$name.<process>-<random>.csv``, after the ones
-    of ``target`` that a process left when it ended were deleted. OSError when it can't be
-    created."""
+def _new_temporary(target: Path, old: bool = False) -> Path:
+    """An empty file next to ``target`` named ``~$name.<computer>-<process>-<random>.csv`` (with
+    ``old``, for an old target put aside: ``….old.csv``), after the ones of ``target`` that a
+    process of this computer left when it ended were deleted. OSError when it can't be created."""
     _remove_left_overs(target)
     stem = _short_stem(target)
     for _ in range(3):
-        path = target.parent / f"~${stem}.{os.getpid():x}-{secrets.token_hex(3)}{target.suffix}"
+        name = f"~${stem}.{_COMPUTER}-{os.getpid():x}-{secrets.token_hex(3)}{'.old' if old else ''}{target.suffix}"
+        path = target.parent / name
         with _ACTIVE_LOCK:
             _ACTIVE.add(_key(path))
         try:
@@ -638,7 +773,12 @@ def _new_temporary(target: Path) -> Path:
             return path
         except FileExistsError:
             _forget(path)
-        except BaseException:
+        except OSError:
+            _forget(path)
+            raise
+        except BaseException:  # Ctrl+C, maybe right after the file was created
+            with contextlib.suppress(OSError):
+                os.remove(path)
             _forget(path)
             raise
     raise FileExistsError(errno.EEXIST, "Can't find a free name for a temporary file", str(target.parent))
@@ -654,18 +794,19 @@ def _short_stem(target: Path) -> str:
     return stem
 
 
+_OURS = re.compile(rf"~\$.*\.{re.escape(_COMPUTER)}-[0-9a-f]{{1,8}}-[0-9a-f]{{6}}(\.old)?(\.[^.]*)?", re.IGNORECASE)
+
+
 def _remove_left_overs(target: Path) -> None:
-    """Deletes the temporary files of ``target`` that a process left when it ended (e.g. it was
-    ended in the Task Manager while writing)."""
-    start = f"~${_short_stem(target)}."
-    pattern = re.compile(re.escape(start) + r"([0-9a-f]{1,8})-[0-9a-f]{6}" + re.escape(target.suffix), re.IGNORECASE)
-    try:
-        with os.scandir(target.parent) as entries:
-            names = [entry.name for entry in entries if entry.name.startswith("~$")]
-    except OSError:
-        return
-    for name in names:
+    """Deletes the temporary files of ``target`` that a process of this computer left when it
+    ended (e.g. it was ended in the Task Manager while writing); an old target put aside only
+    when a file has the target's name again."""
+    start = f"~${_short_stem(target)}.{_COMPUTER}-"
+    pattern = re.compile(re.escape(start) + r"([0-9a-f]{1,8})-[0-9a-f]{6}(\.old)?" + re.escape(target.suffix), re.IGNORECASE)
+    for name in _temporary_names(target.parent):
         if (found := pattern.fullmatch(name)) is None:
+            continue
+        if found.group(2) and not os.path.lexists(target):  # the only copy of the old target
             continue
         path = target.parent / name
         with _ACTIVE_LOCK:
@@ -675,6 +816,23 @@ def _remove_left_overs(target: Path) -> None:
         if process == os.getpid() or not _running(process):
             with contextlib.suppress(OSError):
                 _delete(path)
+
+
+def _temporary_names(folder: Path) -> list[str]:
+    """The names of this computer's temporary files in ``folder``. In a ``batch``, the folder is
+    looked at only the first time."""
+    seen = _BATCH.get()
+    key = os.path.normcase(os.path.abspath(folder))
+    if seen is not None and key in seen:
+        return seen[key]
+    try:
+        with os.scandir(folder) as entries:
+            names = [entry.name for entry in entries if entry.name.startswith("~$") and _OURS.fullmatch(entry.name)]
+    except OSError:
+        names = []
+    if seen is not None:
+        seen[key] = names
+    return names
 
 
 def _finish(temporary: Path) -> None:
@@ -741,7 +899,20 @@ def _move_problem(error: OSError, source: Path, target: Path) -> str:
             return _replace_problem(target, str(target))
     if _probe(source, _DELETE) in _IN_USE:
         return _open_elsewhere(str(source))
+    if not _can_create(target):
+        return f"No permission to write in {target.parent}"
     return f"No permission to move or rename {source}"
+
+
+def _can_create(target: Path) -> bool:
+    """Whether a new file can be created next to ``target`` (True when that can't be told)."""
+    try:
+        _finish(_new_temporary(target))
+    except PermissionError:
+        return False
+    except OSError:
+        pass
+    return True
 
 
 def _delete_problem(error: OSError, path: Path, *, moving: bool = False, recycle: bool = False) -> str:

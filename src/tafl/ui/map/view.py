@@ -524,12 +524,12 @@ class MapView(QWidget):
             statuses = [session.table_status(t) for t in box.members]
             errors = statuses.count("error")
             off = statuses.count("disabled") + statuses.count("skipped")
-            unfinished = statuses.count("incomplete") + statuses.count("waiting")
+            unfinished = [f"{n} {status}" for status in ("incomplete", "waiting") if (n := statuses.count(status))]
             if errors:
                 box.summary = f"{errors} error{'s' if errors > 1 else ''}"
                 box.summary_color = theme.status_text_color("error")
             elif unfinished:
-                box.summary, box.summary_color = f"{unfinished} incomplete", QColor(theme.MAP_TEXT_DIM)
+                box.summary, box.summary_color = ", ".join(unfinished), QColor(theme.MAP_TEXT_DIM)
             elif off:
                 box.summary = "all off" if off == len(statuses) else f"{off} off"
                 box.summary_color = QColor(theme.MAP_TEXT_DIM)

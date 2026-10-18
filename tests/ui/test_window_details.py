@@ -1,10 +1,12 @@
 """Details of the window: forms in a narrow settings panel, names, the map's keys and group
-bar, the connection test, saving over a changed file, colors and the first window size."""
+bar, the connection test, saving over a changed file, colors, the first window size and the
+toolbar of a narrow window."""
 
 import polars as pl
 from PySide6.QtCore import QSettings, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox, QToolBar, QToolButton
 
 from tafl.core import Connection, Project, Status, StepResult, TableResult
 from tafl.ui import theme
@@ -210,3 +212,23 @@ def test_sizes_say_1_row_and_1_column():
     assert size_text(pl.DataFrame({"a": [1]})) == "1 row × 1 column"
     assert size_text(pl.DataFrame({"a": [1, 2], "b": [3, 4]})) == "2 rows × 2 columns"
     assert size_text(pl.DataFrame({"a": range(1500)})) == "1,500 rows × 1 column"
+
+
+def test_the_buttons_that_dont_fit_the_toolbar_can_be_reached(window, qtbot):
+    """In a narrow window the toolbar ends with a » button for the buttons that don't fit. It
+    was drawn dark on the grey toolbar, and the padding of the buttons left it no room."""
+    window.setStyleSheet(theme.STYLE_SHEET)  # the look of the app (the tests don't set it for all windows)
+    window.show()
+    window.resize(window.minimumSizeHint())
+    toolbar = window.findChild(QToolBar, "MainToolbar")
+    button = toolbar.findChild(QToolButton, "qt_toolbar_ext_button")
+    qtbot.waitUntil(button.isVisible)
+    hidden = [a for a in toolbar.actions() if not a.isSeparator() and not toolbar.widgetForAction(a).isVisible()]
+    assert hidden
+    drawn = button.grab().toImage()
+    assert len({drawn.pixelColor(x, y).rgb() for x in range(drawn.width()) for y in range(drawn.height())}) > 1
+    icon = button.icon().pixmap(button.iconSize()).toImage()
+    lines = [icon.pixelColor(x, y) for x in range(icon.width()) for y in range(icon.height())]
+    assert min(c.lightness() for c in lines if c.alpha() > 200) > QColor(theme.TEXT).lightness() - 30  # not dark
+    button.click()  # the rest of the buttons, below
+    qtbot.waitUntil(lambda: all(toolbar.widgetForAction(a).isVisible() for a in hidden))

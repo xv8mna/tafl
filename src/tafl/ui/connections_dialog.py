@@ -202,7 +202,8 @@ class ConnectionsDialog(QDialog):
                 return False, str(e)
             try:
                 with connector.open(filled, ctx) as db:
-                    return True, f"Connected — {len(db.tables())} tables and views"
+                    count = len(db.tables())
+                    return True, f"Connected — {count} {'table or view' if count == 1 else 'tables and views'}"
             except Exception as e:
                 return False, str(e)
 

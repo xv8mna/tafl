@@ -11,7 +11,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from tafl.api import ActionError, Context, P, expressions
+from tafl.api import ActionError, Cancelled, Context, P, expressions
 from tafl.api.parameters import (
     Failed,
     Fixed,
@@ -30,6 +30,7 @@ from tafl.api.parameters import (
     unknown,
 )
 from tafl.core import Connection, Engine, Parameter, Project, Status, parameters
+from tafl.core.cancel import CancelEvent, stopping, stopping_queries
 
 DAY = dt.date(2026, 10, 15)
 BERLIN_SUMMER = dt.datetime(2026, 10, 15, 8, 30, tzinfo=dt.timezone(dt.timedelta(hours=2)))
@@ -393,6 +394,45 @@ def test_a_formula_that_ends_just_in_time_keeps_its_value():
         found = parameters.values(_project(("A", "=40 + 2")), limit=limit)["A"]
         assert found in (42, Failed(f"the formula took longer than {limit:g} seconds"))
         assert parameters.values(_project(("A", "=40 + 2")))["A"] == 42
+
+
+@pytest.mark.parametrize("when", ["while it runs", "before it starts"])
+def test_stopping_the_work_stops_a_formula(when):
+    """E.g. Ctrl+C on the command line: at once, not after the time limit, and as the stop (no
+    error of the parameter). DuckDB forgets an interrupt that comes before the query starts."""
+    stop = CancelEvent()
+    if when == "before it starts":
+        stop.set()
+    else:
+        threading.Timer(0.3, stop.set).start()
+    started = time.perf_counter()
+    with pytest.raises(Cancelled), stopping_queries(stop):
+        parameters.values(_project(("Day", "2026-10-15"), ("Slow", LONG), ("Next", "=1 + 1")))
+    assert time.perf_counter() - started < 3
+    # Once the block is over, formulas on this thread work again and have their own errors
+    found = parameters.values(_project(("A", "=40 + 2"), ("Bad", "=1 +"), ("Slow", LONG)), limit=0.3)
+    assert found["A"] == 42 and found["Bad"].message.startswith("the formula ends too early")
+    assert found["Slow"] == Failed("the formula took longer than 0.3 seconds")
+
+
+def test_a_stop_is_only_for_the_work_in_its_block():
+    """The block's thread is stopped; a formula of another thread, and one with the stop not set,
+    are not."""
+    stop, idle, found = CancelEvent(), CancelEvent(), []
+    stop.set()
+
+    def other_thread() -> None:
+        found.append((stopping(), parameters.values(_project(("A", "=40 + 2")))["A"]))
+
+    with stopping_queries(idle):
+        assert not stopping() and parameters.values(_project(("A", "=40 + 2")))["A"] == 42
+        with stopping_queries(stop):
+            assert stopping()
+            thread = threading.Thread(target=other_thread)
+            thread.start()
+            thread.join()
+        assert not stopping()
+    assert found == [(False, 42)] and not stopping()
 
 
 def test_problems_with_names_and_overrides():

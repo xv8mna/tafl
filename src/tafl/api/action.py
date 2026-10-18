@@ -44,6 +44,7 @@ class Action:
     summary: Callable[[Params], str] | str | None = None
     description: str = ""
     fingerprint: Callable[[Params, Context], Any] | None = None
+    checks: Callable[[Params, ValidationContext], list[str]] | None = None
     plugin: str = ""  # set by the registry
 
     @property
@@ -67,7 +68,12 @@ class Action:
         return dict(values)
 
     def check(self, params: Params, vc: ValidationContext) -> list[str]:
-        return check(self.params, params, vc)
+        """The problems of the parameters, and those that ``checks`` finds."""
+        return check(self.params, params, vc) + self.own_problems(params, vc)
+
+    def own_problems(self, params: Params, vc: ValidationContext) -> list[str]:
+        """The problems that ``checks`` finds (none without it)."""
+        return list(self.checks(params, vc)) if self.checks is not None else []
 
     def table_refs(self, params: Params) -> list[str]:
         return table_refs(self.params, params)
@@ -108,6 +114,7 @@ def action(
     migrate: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
     summary: Callable[[Params], str] | str | None = None,
     fingerprint: Callable[[Params, Context], Any] | None = None,
+    checks: Callable[[Params, ValidationContext], list[str]] | None = None,
 ) -> Callable[[RunFunction], Action]:
     """Declare an action by decorating its run function: ``(table, params, ctx) -> table``.
 
@@ -117,6 +124,10 @@ def action(
       shown in the step list.
     * ``fingerprint``: for sources, a function returning something that changes when the source
       changes (e.g. file modification time); the cached result is then refreshed automatically.
+    * ``checks``: a function ``(params, vc) -> [problems]`` for what the parameters can't check
+      on their own, e.g. a choice that needs something of the table (``ValidationContext``).
+      Its problems stop the step before it runs, as those of the parameters do. Exports and
+      commands don't run while the project is edited: there they show as warnings.
 
     The function's docstring becomes the help text shown in the app.
     """
@@ -136,6 +147,7 @@ def action(
             summary=summary,
             description=inspect.getdoc(run) or "",
             fingerprint=fingerprint,
+            checks=checks,
         )
 
     return wrap

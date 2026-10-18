@@ -67,7 +67,7 @@ class Session(QObject):
     run_busy_changed = Signal(bool)
     dirty_changed = Signal(bool)
     run_finished = Signal(object)  # {table id: TableResult}
-    run_stopped = Signal()  # a run was stopped before it finished (no results)
+    run_stopped = Signal(object)  # a run was stopped: {table id: TableResult} of what ran (see run_project)
     undo_changed = Signal()
     layout_changed = Signal()  # table positions on the project map changed
     filters_changed = Signal(str)  # the instant filters of a table changed: table id
@@ -88,6 +88,7 @@ class Session(QObject):
         self._stamp: tuple[int, int] | None = None  # the project file as it was opened or saved
         self._stopping = False
         self.run_seconds: float | None = None  # how long the last run took
+        self._run_done: dict[str, TableResult] = {}  # the tables the latest run has calculated so far
         # Tables whose results are out of date (a table they use changed, or Reload data): they
         # are calculated again after the selected table, so that no table shows an old status.
         self._recheck: set[str] = set()
@@ -100,7 +101,7 @@ class Session(QObject):
         self._runner = Worker(self)
         self._runner.finished.connect(self._on_run_finished)
         self._runner.failed.connect(self.error)
-        self._runner.cancelled.connect(self.run_stopped)
+        self._runner.cancelled.connect(self._on_run_stopped)
         self._runner.busy_changed.connect(self.run_busy_changed)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -399,15 +400,19 @@ class Session(QObject):
         self.calculate_now()
 
     def run_project(self, table_ids: list[str] | None = None) -> None:
-        """Run tables (default: all) with exports and commands, in the background."""
+        """Run tables (default: all) with exports and commands, in the background. A run that is
+        stopped sends run_stopped with the tables calculated before the stop, and the one that
+        was stopped (``TableResult.stopped``, with the steps that ran)."""
         engine = self.engine.snapshot()
+        done: dict[str, TableResult] = {}  # filled while the run goes on
 
         def work(cancel):
             started = time.perf_counter()
-            results = engine.run(table_ids, cancel=cancel)
+            results = engine.run(table_ids, cancel=cancel, done=done.__setitem__)
             return results, engine.reload_token, time.perf_counter() - started
 
         self._stopping = False
+        self._run_done = done
         self._runner.start(work)
 
     def cancel_run(self) -> None:
@@ -461,6 +466,10 @@ class Session(QObject):
         self.results_changed.emit()
         self.run_finished.emit(results)
         self.calculate_now()
+
+    def _on_run_stopped(self) -> None:
+        # The run has ended (only the latest run reports it): its tables are no longer changing
+        self.run_stopped.emit(dict(self._run_done))
 
     # --- editing tables ----------------------------------------------------------------------
 

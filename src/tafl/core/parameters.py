@@ -11,7 +11,7 @@ from typing import Any
 
 import polars as pl
 
-from tafl.api import ActionError, P, expressions
+from tafl.api import ActionError, Cancelled, P, expressions
 from tafl.api.parameters import (
     NAME,
     PLACE,
@@ -27,6 +27,7 @@ from tafl.api.parameters import (
 )
 from tafl.api.params import Param, is_visible, resolve
 
+from .cancel import stopping
 from .project import Project
 
 TIME_LIMIT = 5.0  # seconds a parameter's formula may take
@@ -42,7 +43,8 @@ def values(project: Project, overrides: Mapping[str, str] | None = None, *, limi
     formulas calculated (a formula can use the parameters above it, and may take ``limit``
     seconds). ``overrides`` (e.g. from ``tafl run --set``) replace the values written in the
     project; a value that can't be worked out is a Failed. A formula that fails with an
-    override of another type than the project's value says so."""
+    override of another type than the project's value says so. Stopping the work while a
+    formula runs (see ``cancel.stopping_queries``) raises Cancelled."""
     given = {name.strip().lower(): value for name, value in (overrides or {}).items()}
     names = [parameter.name.strip().lower() for parameter in project.parameters]
     found: dict[str, Any] = {}
@@ -268,7 +270,9 @@ def _value(text: str, earlier: Mapping[str, Any], names: Sequence[str], limit: f
 def _calculated(formula: str, limit: float) -> Any:
     """The value of a formula. One that takes longer than ``limit`` seconds is stopped: a timer
     interrupts DuckDB on this thread, again and again until the formula is over (DuckDB forgets
-    an interrupt that comes between two queries)."""
+    an interrupt that comes between two queries). A formula that fails while the work is being
+    stopped (see ``cancel.stopping_queries``, e.g. Ctrl+C on the command line) has no error:
+    it raises Cancelled."""
     con = expressions._connection()
     lock = threading.Lock()
     running, late = True, False
@@ -289,6 +293,8 @@ def _calculated(formula: str, limit: float) -> Any:
     try:
         result = expressions.evaluate(pl.DataFrame({"__one": [0]}), formula)
     except Exception as e:
+        if stopping():
+            raise Cancelled() from None
         if late:
             return Failed(f"the formula took longer than {limit:g} seconds")
         message = str(e) if isinstance(e, ActionError) else f"{type(e).__name__}: {e}"

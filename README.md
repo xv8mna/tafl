@@ -142,7 +142,10 @@ Only in a source install (they need Python):
   table** (Shift+F5) does the same for the selected table and the tables it uses. While you edit,
   exports and commands never run. **Run results** list every table and step, with how long the
   run took. **Stop** stops a formula that is running at once; another step that is running
-  finishes first (an export can take a while). The run results say what ran. Closing the window
+  finishes first (an export can take a while). The run results then list the tables calculated
+  before the stop (their exports and commands are done) and, for the stopped table, the steps
+  that ran, the step where it stopped (a file command says how many files it had copied, moved,
+  renamed or deleted) and the steps that did not run. Closing the window
   during a run asks whether to wait or to stop. **Reload data** (Ctrl+R) reads files and
   databases again and brings the status of every table up to date. A changed file is also read
   again by itself when the table is calculated again: when you select the table again, change a
@@ -239,7 +242,10 @@ folder** ("Read: All files in a folder"), with all subfolder levels if you like:
   no delimiter has one column); numbers, dates and the decimal separator once for all files,
   the decimal separator also per column (`0.500` shows a decimal point, `2,5` a comma). A value
   like `1.000` can be one thousand or one: it follows the other numbers of its column, else
-  those of the files, and without any it is one thousand in files with semicolons.
+  those of the files, and without any it is one thousand in files with semicolons. Amounts
+  (`1.234,50 €`, `123,45-`) and percentages (`12,5%` is 0.125) are numbers when every value of
+  the column is one; spaces between digits count only there, as thousands separators
+  (`1 234,50 €`), so phone numbers, card numbers or `2025 01 31` stay text.
 - Optional columns **File** (file name) and **Path** (below the folder, e.g.
   `2025\01\orders_2025-01-02.csv`) show where each row came from. Calculated columns take
   what you need from them:
@@ -256,14 +262,22 @@ folder** ("Read: All files in a folder"), with all subfolder levels if you like:
 ## File commands
 
 **Copy files**, **Move files**, **Rename files** and **Delete files** work on the files listed in
-a column of the table; **Create folder** makes a folder. Like exports, they run only when the
-project runs (F5), never while you edit, and the table passes through unchanged.
+a column of the table (copy, move and delete also on all files the table's import read);
+**Create folder** makes a folder. Like exports, they run only when the project runs (F5), never
+while you edit, and the table passes through unchanged.
 
-- The files come from a column with full paths (e.g. *Full path* of "Files in a folder"), or
-  with paths below a folder (the *Path* column of a folder import: choose that folder in
-  "Paths in the column are below").
-- Copy / move: into a folder (created when needed), optionally keeping the subfolders. If a file
-  of that name is there already: keep both (`name (2).csv`), replace it, skip it, or stop.
+- **Which files** (copy, move, delete): *Listed in a column* (the default), or *All files this
+  table's import read*: when the table starts with an import of all files in a folder (CSV,
+  Excel or Parquet), every file it read, also files without rows (only a header row, or a filter
+  left out their rows); of Excel workbooks, those of which it read a sheet. A file that arrives
+  after the import stays where it is. In a table that doesn't start with such an import, the
+  step shows a warning while you edit, and stops with a message in a run.
+- A column holds full paths (e.g. *Full path* of "Files in a folder"), or paths below a folder
+  (the *Path* column of a folder import: choose that folder in "Paths in the column are
+  below"). *Rename files* always takes its files from a column.
+- Copy / move: into a folder (created when needed), optionally keeping the subfolders (of the
+  paths in the column, or below the import's folder). If a file of that name is there already:
+  keep both (`name (2).csv`), replace it, skip it, or stop.
 - Rename: the new names come from a column, e.g. a calculated `REPLACE([File], '.csv', '.done')`.
   A file that already has its new name stays as it is; a new name that differs only in upper and
   lower case renames the file.
@@ -272,32 +286,36 @@ project runs (F5), never while you edit, and the table passes through unchanged.
 - All files are checked before the first one is changed: a missing file, a name that Windows
   doesn't allow (`:`, `..`, `CON`, more than 255 characters, …), a read-only file to replace or
   to delete for good, or a folder where a file belongs stops the step with nothing changed.
-- Each file is copied, moved or renamed completely or not at all. A move to another drive
-  copies the file first and deletes it only when the copy is complete; a file it replaces is
-  kept until then. When a file is open in another program, the message names it.
-- Two listed files that would get the same name, e.g. `2025\01\b.csv` and `2025\02\b.csv` moved
-  into one folder: **Keep both** numbers them, **Replace it** and **Stop with an error** stop the
-  step (keeping the subfolders keeps them apart). A step never replaces a file it has just
-  written, nor one that is listed in its column.
+- Each file is copied, moved or renamed completely or not at all, also when the run is stopped.
+  A move to another drive copies the file next to the target, gives the copy the target's name,
+  and only then deletes the source; a file it replaces is kept until then. Only *Copy files*
+  with *Replace it*, in a folder where files may be changed but no new ones created, writes over
+  the old file directly, with a warning, as an export does: then a failed copy can leave it
+  half-written. When a file is open in another program, the message names it.
+- Two of the step's files that would get the same name, e.g. `2025\01\b.csv` and
+  `2025\02\b.csv` moved into one folder: **Keep both** numbers them, **Replace it** and **Stop
+  with an error** stop the step (keeping the subfolders keeps them apart). A step never replaces
+  a file it has just written, nor one of its own files.
 
 Example, daily exports: a table imports all files in `inbox` (*All files in a folder*, `*.csv`,
-**When there are no files**: *Skip the rest of the table*) and exports them. Its last step,
-**Move files** (column *File*, or *Path* with subfolders; "Paths in the column are below":
-`inbox`; to the folder `archive`), moves the files after the exports: when an export fails, the
-files stay in `inbox` for the next run. Keep the move in the importing table: a separate table
-might run before the import and move the files away first. On a day without files, the import
-skips the exports and the move: the run succeeds (Run results: *ok, rest skipped*), and the
-table has no error, also right after a run that emptied the inbox. A table that uses this table
-on such a day (to start from it, merge or append it) skips its rest from that step on.
+**When there are no files**: *Skip the rest of the table*), filters and exports them. Its last
+step, **Move files** (**Which files**: *All files this table's import read*; to the folder
+`archive`, keeping the subfolders if you like), moves the files after the exports: every file
+the import read, also one with only its header row or one whose rows the filter left out. When
+an export fails, the files stay in `inbox` for the next run, and so does a file that arrives
+during the run. Keep the move in the importing table: other tables don't get the files its
+import read. On a day without files, the import skips the exports and the move: the run
+succeeds (Run results: *ok, rest skipped*), and the table has no error, also right after a run
+that emptied the inbox. A table that uses this table on such a day (to start from it, merge or
+append it) skips its rest from that step on.
 
-*Move files* moves the files in its column at its step: a file without rows there stays in
-`inbox` and is read again the next day, e.g. a file with only its header row, or one whose rows
-a filter before the move left out. With a filter, put the move before it (import, **Move
-files**, filter, exports): then every file with rows is moved, and the exports run after the
-move (when one fails, the files are in `archive` already). On a day when the table has no rows
-(files with only a header row, or the filter left none), **Don't export an empty table** in the
-exports, or the step *Skip the rest if a table is empty* before them, leaves the exported files
-as they are.
+On a day when the table has no rows (the files have only header rows, or the filter left none),
+**Don't export an empty table** in the exports leaves the exported files as they are, and the
+move still moves the files. The step *Skip the rest if a table is empty* before the exports
+would skip the move too: the files would stay in `inbox`. With **Which files**: *Listed in a
+column* (column *File*, or *Path* with subfolders; "Paths in the column are below": `inbox`),
+the move takes only the files that have rows at its step: the others stay in `inbox` and are
+read again the next day.
 
 Before you run a project you got from someone else, look at its exports and commands: *Delete
 files* can delete for good, and *Run SQL command* runs any SQL (see also
@@ -311,11 +329,14 @@ never while you edit.
 - A CSV or Excel export writes the new file next to the old one (named `~$…`) and replaces the
   old file only when the new one is complete: if the export fails, the old file stays as it was.
   A `~$…` file left by a run that was ended (e.g. in the Task Manager) is deleted by the next
-  export of that file. In a folder where files may be changed but no new ones created, the
-  export writes over the old file directly, with a warning: then a failed export can leave it
-  half-written. A
-  file that is open in another program, such as Excel, gives a message that says so: close it
-  and run again.
+  export of that file on the same computer (in a shared folder, those of other computers stay).
+  In a folder where files may be changed but no new ones created, the export writes over the
+  old file directly, with a warning: then a failed export can leave it half-written. A file
+  that is open in another program, such as Excel, gives a message that says so: close it and
+  run again.
+- CSV: decimal numbers are written with at most 15 significant digits, as Excel shows and saves
+  them (`0.37 * 3` gives `1,11`, not `1,1099999999999999`); whole numbers and exact decimals keep
+  all their digits.
 - Binary values (e.g. from a `varbinary` column) are written as hex text, `0x0102FF`.
 - **Don't export an empty table** (in every export, off by default): when the table has no rows,
   the file or the database table is left as it is, and the step says "Not exported: the table is
@@ -348,14 +369,18 @@ always in one transaction: if anything fails, the database stays as it was.
 - Columns are matched by name (not case sensitive). Columns the database table doesn't have stop
   the export, or are left out if you choose. Empty key values match empty ones.
 - A missing table is created with fitting types (SQL Server: `INT`/`BIGINT`, `FLOAT`,
-  `DECIMAL(p, s)`, `NVARCHAR(n)`, `DATE`, `DATETIME2`, `TIME`, `BIT`, `VARBINARY(MAX)`). For
-  other types, create the table yourself first. A temporary table (`#name` in SQL Server,
-  `temp.name` in SQLite) can't be the target: it would disappear when the export ends.
+  `DECIMAL(p, s)`, `NVARCHAR(n)`, `DATE`, `DATETIME2`, `TIME`, `BIT`, `VARBINARY(MAX)`; SQLite:
+  `INTEGER`, `REAL`, `TEXT`, `BLOB`, and for exact decimals `INTEGER` or `REAL` when that keeps
+  their digits, else `TEXT`). For other types, create the table yourself first. A temporary
+  table (`#name` in SQL Server, `temp.name` in SQLite) can't be the target: it would disappear
+  when the export ends.
 - Values are stored as their columns hold them, the same way in every mode, and key values
   compare as the columns do (with their collation). SQL Server cuts fractions of a second to
   the digits of the column (`datetime2(0)` holds whole seconds), a `date` column keeps only the
-  date, a `varchar` column gets only the characters of the database's code page (Łódź becomes
-  Lódz), and spaces at the end of a text that don't fit are left out.
+  date, decimals are rounded to the column's decimal places as SQL Server rounds them (1.005 is
+  1.01 in a `decimal(10,2)`), a `varchar` or `char` column gets the characters its collation's
+  code page holds (Łódź becomes Lódz in a `Latin1_General` column and stays Łódź in a Polish or
+  UTF-8 one), and spaces at the end of a text that don't fit are left out.
 - Date-times with a time zone are written in that zone's local time, without the zone (08:30 in
   Berlin stays 08:30), as in the Excel export. A SQL Server `datetimeoffset` column gets the
   zone's offset with it (08:30 +02:00 in Berlin in summer); a date-time without a zone gets the
@@ -363,8 +388,9 @@ always in one transaction: if anything fails, the database stays as it was.
 - Updating needs one row per key value, as the key column holds it (08:00:01.2 and 08:00:01.7
   are one value in a `datetime2(0)`); duplicates stop the export with an example.
 - SQL Server: values that don't fit stop the export with a message that names the column: a
-  text or binary value longer than its column (e.g. `nvarchar(50)`), a decimal for a
-  whole-number column, an infinite number (e.g. from a division by zero).
+  text or binary value longer than its column (e.g. `nvarchar(50)`; in a UTF-8 `varchar`,
+  longer in bytes), a decimal for a whole-number column, an infinite number (e.g. from a
+  division by zero).
 - 100,000 rows take a second or two with a local SQL Server, less with SQLite.
 
 **Run SQL command** runs any SQL when the project runs, e.g. `EXEC dbo.RefreshReport` after an

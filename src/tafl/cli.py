@@ -17,7 +17,7 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 import polars as pl
@@ -37,7 +37,7 @@ from tafl.core import (
     TableResult,
     parameters,
 )
-from tafl.core.cancel import CancelEvent
+from tafl.core.cancel import CancelEvent, stopping_queries
 
 STOPPED = 130  # Ctrl+C
 _SUMMARY = 300  # characters of a step's summary that are printed at most, as in the window
@@ -58,16 +58,23 @@ _CODES = (
 )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, ctrl_c: threading.Event | None = None) -> int:
+    """Runs the command line ``argv`` (default: the program's own). ``ctrl_c`` is set by a Ctrl+C
+    that came before, while the program started (see packaging/tafl_cli.py): then it stops at
+    once. As the program (no ``argv``), Ctrl+C is ignored once the work is over, up to the end:
+    a Ctrl+C while Python ends can make the program hang."""
     args = _parser().parse_args(argv)
     console = Console()
-    stop = CancelEvent()  # setting it also stops a formula that runs
+    stop = CancelEvent()  # setting it also stops a formula that runs, e.g. of a parameter
+    code: int | None = None
     try:
-        with _ctrl_c(stop):
-            return _main(args, console, stop)
+        with stopping_queries(stop), _ctrl_c(stop, ctrl_c, program=argv is None):
+            code = _main(args, console, stop)
     except (KeyboardInterrupt, Cancelled):
-        console.error("Stopped")
-        return STOPPED
+        if code is None:  # a Ctrl+C after the work is over doesn't change its result
+            console.error("Stopped")
+            code = STOPPED
+    return code
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -115,26 +122,51 @@ def _at_least_one(text: str) -> int:
 
 
 @contextlib.contextmanager
-def _ctrl_c(stop: threading.Event) -> Iterator[None]:
+def _ctrl_c(stop: threading.Event, before: threading.Event | None = None, *, program: bool = False) -> Iterator[None]:
     """Ctrl+C sets ``stop`` before it interrupts: the engine then stops the calculation, instead
     of taking the interruption for an error of the step it came in. The interruption comes when
     the program runs Python code again, which a query in DuckDB may not let it do until the query
-    is over: so ``stop`` is also set at once by another thread, which stops the query."""
+    is over: so ``stop`` is also set at once by another thread, which stops the query. ``before``
+    set: Ctrl+C came before the block. Afterwards Ctrl+C has its previous handling again, or with
+    ``program`` it is ignored."""
     if threading.current_thread() is not threading.main_thread():  # signals reach only the main thread
         yield
         return
+    over = False
+    watching = False
 
     def interrupt(signum: int, frame: object) -> None:
-        stop.set()
+        if over:  # a Ctrl+C that came while the block ended: the end goes on
+            return
+        # The handler may have interrupted the stop event's own code while it held its lock:
+        # then only the flag is set here, and the watching thread does the rest of set()
+        if watching and isinstance(stop, CancelEvent):
+            stop.set_from_signal()
+        else:
+            stop.set()
         raise KeyboardInterrupt
 
     previous = signal.signal(signal.SIGINT, interrupt)
     end_watching = _watch_for_ctrl_c(stop)
+    watching = end_watching is not _NOT_WATCHING
     try:
+        if before is not None and before.is_set():
+            interrupt(signal.SIGINT, None)
         yield
     finally:
+        over = True  # first: a Ctrl+C from here on doesn't interrupt the end
+        if program:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+        else:
+            signal.signal(signal.SIGINT, previous if previous is not None else signal.default_int_handler)
         end_watching()
-        signal.signal(signal.SIGINT, previous if previous is not None else signal.default_int_handler)
+
+
+def _not_watching() -> None:
+    pass
+
+
+_NOT_WATCHING = _not_watching  # what _watch_for_ctrl_c gives when it can't watch
 
 
 def _watch_for_ctrl_c(stop: threading.Event) -> Callable[[], None]:
@@ -143,14 +175,14 @@ def _watch_for_ctrl_c(stop: threading.Event) -> Callable[[], None]:
     try:
         reader, writer = socket.socketpair()
     except OSError:  # no sockets: Ctrl+C still stops the run, a query only when it is over
-        return lambda: None
+        return _NOT_WATCHING
     writer.setblocking(False)
     try:
         previous = signal.set_wakeup_fd(writer.fileno(), warn_on_full_buffer=False)
     except (OSError, ValueError):
         reader.close()
         writer.close()
-        return lambda: None
+        return _NOT_WATCHING
 
     def watch() -> None:
         with contextlib.suppress(OSError):
@@ -276,7 +308,10 @@ def _print_table(engine: Engine, table: Table, result: TableResult, console: Con
         failed |= step_result.status == Status.ERROR
     if result.stopped:
         for number, step in enumerate(table.steps[len(result.steps) :], start=len(result.steps) + 1):
-            console.step(number, engine.describe(step), None, stopped=number == len(result.steps) + 1)
+            running = number == len(result.steps) + 1
+            console.step(number, engine.describe(step), None, stopped=running)
+            if running:  # e.g. how many files it had moved
+                console.notes(result.stopped_messages)
     return failed
 
 
@@ -417,9 +452,12 @@ class Console:
         if result.error and result.status == Status.ERROR:
             for line in result.error.splitlines():
                 self.print(f"          {line}")
-        for level, message in result.messages:
-            if level == "warning" or result.status != Status.SKIPPED:
-                self.print(f"          {'!' if level == 'warning' else 'i'} {message}")
+        self.notes((level, text) for level, text in result.messages if level == "warning" or result.status != Status.SKIPPED)
+
+    def notes(self, messages: Iterable[tuple[str, str]]) -> None:
+        """A step's messages, below it."""
+        for level, message in messages:
+            self.print(f"          {'!' if level == 'warning' else 'i'} {message}")
 
 
 if __name__ == "__main__":

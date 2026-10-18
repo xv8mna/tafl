@@ -10,9 +10,9 @@ every value as it is, and text sorted as in Excel.
 Old projects mostly work as before, and the new options start with the old behaviour. But some
 fixes give other results, and a step of an old project can then fail, e.g. a formula that took
 amounts in a CSV file for text: "Results that change" lists these changes. Once a project is
-saved by 0.3.0, 0.2.0 can't calculate its file imports, file exports and database exports any
-more (they say they were saved by a newer version), nor the new step *Skip the rest if a table
-is empty* (an unknown action there).
+saved by 0.3.0, 0.2.0 can't calculate its file imports, file exports, database exports and the
+commands *Copy*, *Move* and *Delete files* any more (they say they were saved by a newer
+version), nor the new step *Skip the rest if a table is empty* (an unknown action there).
 
 ### Days without data
 
@@ -34,13 +34,16 @@ is empty* (an unknown action there).
 - The README's daily-exports example uses them: on a day without files, the exports and the
   Move files step are skipped, and the table has no error, also right after a run that emptied
   the inbox. Before, the table showed an error after every run, and a run without files failed.
+  Its Move files step takes all files the import read (**Which files**, see File commands), also
+  those without rows.
 
 ### Exports
 
 - CSV and Excel exports, also "Replace only this sheet", write the new file next to the old one
   and replace it only when it is complete. Before, a failed export, a run that was ended or two
   runs at once could leave a broken or half-written file. The next export of a file deletes the
-  `~$…` file that a run ended in the Task Manager left (and a later run its folders in `%TEMP%`).
+  `~$…` file that a run on the same computer left when it was ended in the Task Manager (and a
+  later run its folders in `%TEMP%`).
   In a folder where no new files can be created, the file is written over directly, with a
   warning. A hidden file stays hidden.
 - Plain messages when the file is open in another program, is read-only, or the folder can't be
@@ -48,7 +51,10 @@ is empty* (an unknown action there).
   characters). Before, some of these were raw system errors, or named the wrong cause.
 - Binary values (e.g. from `varbinary` or SQLite BLOB columns) are written as hex text,
   `0x0102FF`. Before, the CSV and Excel exports failed.
-- CSV: infinite and not-a-number values are written as empty, as in Excel; times as hh:mm:ss.
+- CSV: decimal numbers are written with at most 15 significant digits, as Excel shows and saves
+  them (0.37 * 3 gives 1,11, not 1,1099999999999999); whole numbers and exact decimals keep all
+  their digits. Infinite and not-a-number values are written as empty, as in Excel; times as
+  hh:mm:ss. A table with rows but no columns gives an empty file (it stopped with a raw error).
 - Excel: texts longer than 32,767 characters are cut with a warning; a table with more rows or
   columns than a sheet holds stops with a plain message. Decimal columns get the number format.
   A table without columns (e.g. a folder import without files and without its File column) gives
@@ -67,9 +73,13 @@ is empty* (an unknown action there).
   stored, e.g. `datetime`, `datetime2(0)`, `time`, `varchar` and `varbinary` keys and long
   texts.
 - SQL Server: values are stored as their columns hold them, in every mode: fractions of a second
-  are cut to the column's digits (*Add* into `time(n)` and `date` columns works now), and spaces
-  at the end of a text that don't fit are cut. *Update* and *Upsert* refuse keys that are equal
-  as the column holds them (08:00:01.2 and 08:00:01.7 in a `datetime2(0)`).
+  are cut to the column's digits (*Add* into `time(n)` and `date` columns works now), decimals
+  are rounded to the column's decimal places as SQL Server rounds them (1.005 is 1.01) and keep
+  all 38 digits (more than 28 were rounded), and spaces at the end of a text that don't fit are
+  cut. Texts for `char` and `varchar` columns get the characters of the column's collation, also
+  with *Add*: Łódź stays Łódź in a Polish or UTF-8 column (it became Lódz). *Update* and
+  *Upsert* refuse keys that are equal as the column holds them (08:00:01.2 and 08:00:01.7 in a
+  `datetime2(0)`).
 - SQL Server: date-times with a time zone are written in that zone's local time, without the
   zone, as SQLite and the Excel export do. Before, they were written in UTC. A `datetimeoffset`
   column gets the zone's offset with them, and the offset of this PC's time zone for a date-time
@@ -79,6 +89,9 @@ is empty* (an unknown action there).
   become equal.
 - SQLite writes each date-time the same way in every export, whole seconds without `.000000`.
   Before, the other values of the export decided, so keys could miss their rows.
+- SQLite exports exact decimals (e.g. from Parquet or SQL Server): a number column gets them as
+  numbers, a text column with all their digits; new tables get `INTEGER`, `REAL` or `TEXT`,
+  whichever keeps their digits. Before, such an export failed.
 - SQL Server: Windows' own driver "SQL Server" is no longer chosen by itself, as it reads dates
   and times as text. Without ODBC Driver 18 or 17, the message says what to install; the old
   driver still works when it is entered in the connection. A driver that isn't installed gets
@@ -105,11 +118,13 @@ is empty* (an unknown action there).
 - CSV: values like 1.000 or 12.000 (thousands with a point) are no longer read as decimals,
   which also left real decimal-comma columns as text. They follow the other numbers of their
   column (0.500 or 2,5 shows the separator), else those of the files; without any, they are
-  thousands in files with semicolons. The log names the decimal separator.
+  thousands in files with semicolons. The log names the decimal separator of the files and
+  the columns that have the other one.
 - CSV: a file whose first line has no delimiter is one column, so values like 1.234,50 keep
   their comma (they were split at it); line ends converted twice (`\r\r\n`) count as one.
 - CSV: amounts like 1.234,50 €, € 5 or 123,45- and percentages like 12,5% (read as 0.125)
-  become numbers when every value of the column is one.
+  become numbers when every value of the column is one. Spaces between digits count only there,
+  as thousands separators (1 234,50 €): phone numbers, card numbers or 2025 01 31 stay text.
 - CSV: warnings for characters that don't fit the chosen encoding, and for rows with more
   values than the first row (the extra values are left out). With "Detect automatically", a
   UTF-8 file with a few wrong bytes is read as UTF-8, with a warning.
@@ -148,26 +163,37 @@ is empty* (an unknown action there).
   separator.
 - *Merge*: keys of different types are compared without changing this table's key column. Only
   a full join whose other table has keys that don't fit its type (2.5 for whole numbers) gives
-  it a type that fits both.
+  it a type that fits both. Whole numbers and exact decimals of different types are compared
+  with all their digits.
 - *Replace*: an invalid regular expression says why. *Aggregate*: "Sum needs a number column;
   Status is text"; average and median also take dates.
 - `UPPER` in formulas writes ß as SS, like *Clean text* (GRÖSSE, not GRÖẞE).
 
 ### File commands
 
+- *Copy*, *Move* and *Delete files* have the new setting **Which files**: *Listed in a column*
+  (as before), or *All files this table's import read*: every file the table's folder import
+  read, also files with only a header row or whose rows a filter left out (of Excel workbooks,
+  those of which it read a sheet). In a table without a folder import, the step shows a warning
+  while the project is edited, and a run stops it with a message.
+- A file command that is stopped part-way (Stop, or Ctrl+C on the command line) says how many
+  files it had copied, moved, renamed or deleted, in Run results and on the command line.
 - *Copy*, *Move*, *Rename* and *Delete files* check all files before they change the first
   one: a missing file, a name that Windows doesn't allow (`..`, `:`, `CON`, more than 255
   characters, …), a read-only file to replace or to delete for good, or a folder where a file
   belongs stops the step with nothing changed. When Windows fails part-way, the message says
   how many files were done.
-- Each file is copied or moved completely or not at all: a move to another drive deletes the
-  file only when its copy is complete, and a file it replaces is kept until then. Before, a file
-  open in another program could leave a copy behind, and *Replace it* could lose the old file.
-  Messages name the file that is open in another program, or read-only.
+- Each file is copied or moved completely or not at all, also when the run is stopped: a move to
+  another drive deletes the file only when its copy has the new name, and a file it replaces is
+  kept until then. Before, a file open in another program could leave a copy behind, and
+  *Replace it* could lose the old file. Only *Copy files* with *Replace it*, in a folder where no
+  new files can be created, writes over the old file directly, with a warning, as exports do.
+  Messages name the file that is open in another program or read-only, or the folder where no
+  files can be created.
 - Two listed files that would get the same name (e.g. `b.csv` from two date folders, moved
   into one folder): *Keep both* numbers them, *Replace it* and *Stop with an error* stop the
   step and name both. Before, *Replace it* deleted the file moved a moment before.
-- *Replace it* never replaces a file the step has just written, or one listed in its column.
+- *Replace it* never replaces a file the step has just written, or one of its own files.
 - *Rename*: a file that already has its new name stays as it is (before, it became
   `name (2)` or stopped the run); a new name that differs only in upper or lower case renames
   the file.
@@ -186,7 +212,8 @@ is empty* (an unknown action there).
 - Long texts above the data (a step's summary, a skip reason with a path) end with "…" and
   never make the window wider; the window can be made much narrower.
 - **Stop** says "Stopping after the current step…", and a stopped run says so in the status bar
-  and in Run results. A formula that is running stops at once (before, Stop waited for it).
+  and in Run results, which list the tables and steps that ran before the stop. A formula that
+  is running stops at once (before, Stop waited for it).
   Closing the window during a run asks whether to wait or to stop.
 - Ctrl+A and Ctrl+C on a big grid no longer freeze the window: up to 2,000,000 cells are
   copied (many in the background), more are refused with a message.
@@ -219,7 +246,8 @@ is empty* (an unknown action there).
 - Ctrl+C stops a run, also during a formula, at once: "Error: Stopped", exit code 130. Each
   table is printed as soon as it is calculated, and after Ctrl+C also the steps of the stopped
   table, so the output shows what ran. Each line reaches a log file at once, also when the run is
-  ended; a step's summary is cut after 300 characters, as in the window.
+  ended; a step's summary is cut after 300 characters, as in the window. A Ctrl+C that comes
+  while the run ends no longer makes `tafl.exe` hang.
 - `show` says why a table is skipped, and exits with 0 for a table that is turned off.
 - Plain messages for a project file that isn't there, a folder, or a file that can't be read.
 - A parameter formula that fails because of a `--set` value of another type says so.
@@ -265,19 +293,28 @@ is text).
 - SQL Server imports: `numeric` and `decimal` columns keep their digits (see Databases), as
   whole numbers or exact decimals instead of decimal numbers.
 - *Sort* and *Number rows* order text differently (see above).
-- *Change type* → Whole number keeps all digits; numbers → text writes the text and `%` of
-  number formats, and formats it can't write stop the step.
+- *Change type* → Whole number keeps all digits. Numbers → text writes the text and `%` of
+  number formats, `General` and `@` write the number as it is (1,5, not 2), a comma after the
+  digits divides by 1000 (`0.000,` writes 1234,5 as 1,235), and formats it can't write stop the
+  step.
+- *Change type* to a date or date-time without a format reads each text in its own format, so a
+  column with 2025-12-31 and 31.12.2025, or with dates next to date-times, gets no empty values
+  (a date alone is that day at 00:00). Before, only the format of most values was read.
+- *Aggregate*: *Sum* of a date or date-time column, and *Average* or *Median* of a text column,
+  stop the step with a message (they gave empty values).
 - `UPPER` writes ß as SS.
 - *Merge* keeps the type of this table's key columns, except in a full join whose other table's
   keys don't fit it.
-- CSV exports write infinite and not-a-number values as empty (they were inf and NaN), and times
-  as hh:mm:ss (they were 08:30:00.000000000).
+- CSV exports write decimal numbers with at most 15 significant digits (1,11, not
+  1,1099999999999999), infinite and not-a-number values as empty (they were inf and NaN), and
+  times as hh:mm:ss (they were 08:30:00.000000000).
 - SQL Server: a connection without a driver of its own no longer falls back to Windows' driver
   "SQL Server" (enter it in the connection to keep it). Exports write date-times with a time
   zone in that zone's local time, not in UTC.
 - SQL Server exports by key store and find values as *Add the rows* does, and *Update* and
   *Upsert* refuse keys that are equal as their column holds them; `datetimeoffset` columns get
-  the zone's offset, or this PC's, in every mode (see Databases).
+  the zone's offset, or this PC's, in every mode, and `char` and `varchar` columns the
+  characters of their collation, also with *Add* (see Databases).
 - SQLite: exports write whole seconds without `.000000`, also when other values have fractions
   (a key no longer finds a row written before as 08:00:00.000000); *Run SQL command* refuses
   `BEGIN`, `COMMIT` and `ROLLBACK`.
@@ -300,19 +337,27 @@ is text).
 - `SkipRest(message, df=None)` in `tafl.api`: ends the table at this step without an error.
 - `source_params` has the new setting `no_files` (its default keeps the old behaviour);
   `source_files` can then give no files, and `combine([])` gives a table with only the File and
-  Path columns.
+  Path columns. For a folder, `source_files` notes the files and the folder in
+  `ctx.imported_files` and `ctx.imported_folder`, which the later steps of the table get.
+- `@action(..., checks=)`: a function `(params, vc)` that gives the problems the parameters
+  can't see on their own, e.g. with `ValidationContext.imported` (whether the table's import read
+  files from a folder). They stop the step before it runs; for exports and commands they show as
+  warnings while the project is edited.
+- `TableResult.stopped_messages`: the messages of the step that was running when the run was
+  stopped.
 - `files.replace_file(target, warn)` writes a file safely; `copy_file`, `move_file` and
-  `delete_file` change a file completely or not at all; `name_problem` and `check_folder` check
-  names and folders first; `files.read_error` gives a plain message for a file that can't be
-  read.
+  `delete_file` change a file completely or not at all (a step that changes many files does it
+  in `with files.batch():`); `name_problem` and `check_folder` check names and folders first;
+  `files.read_error` gives a plain message for a file that can't be read.
 - `dtypes.parse_integers`, `parse_decimal`, `float_loses_digits`, `text_sort_key` (for an
   expression or a Series) and `text_key`; `normalize(..., exact=True)`;
   `infer_types(..., warn=)`.
-- Connectors: `input_sizes(df, types)`, `stage_types`, `fit_frame` and `read_table_sql`,
-  `Database.execute_many(..., sizes=)`; `column_types` may give lengths and digits
-  (`nvarchar(50)`, `decimal(10,2)`, `datetime2(0)`); `make_series` keeps the digits of decimals
-  (Int64, Float64 or Decimal), and stops with the message of an `ActionError` value, with
-  `{column}` standing for the column's name.
+- Connectors: `input_sizes(df, types, temporary)`, `stage_types`, `fit_frame` and
+  `read_table_sql`, `Database.execute_many(..., sizes=)`; `column_types` may give lengths and
+  digits (`nvarchar(50)`, `decimal(10,2)`, `datetime2(0)`; SQL Server: a UTF-8 `varchar` with
+  its collation); `make_series` keeps the digits of
+  decimals (Int64, Float64 or Decimal), and stops with the message of an `ActionError` value,
+  with `{column}` standing for the column's name.
 - `xlsx.replace_sheet` returns the name of the sheet it replaced, as the workbook has it, or
   None when it added the sheet (it returned True or False).
 - A summary gets `?` for a required setting that is still empty.

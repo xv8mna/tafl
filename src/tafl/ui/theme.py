@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
-from PySide6.QtWidgets import QApplication, QStyleFactory
+from PySide6.QtWidgets import QApplication, QStyleFactory, QToolBar, QToolButton
 
 WINDOW = "#3c3f41"  # panels
 BASE = "#2f3133"  # lists, grid, input fields
@@ -82,6 +82,7 @@ QToolBar QToolButton {{ padding: 4px 8px; border-radius: 4px; }}
 QToolBar QToolButton:hover {{ background: {RAISED}; }}
 QToolBar QToolButton:pressed {{ background: {BORDER_LIGHT}; }}
 QToolBar QToolButton:checked {{ background: {SELECTION}; color: white; }}
+QToolBar QToolButton#qt_toolbar_ext_button {{ padding: 0px; }}
 QStatusBar {{ background: #353739; border-top: 1px solid {BORDER}; color: {TEXT_DIM}; }}
 QListView, QTreeView, QTableView {{ border: 1px solid {BORDER}; }}
 QTableView {{ gridline-color: #3f4245; }}
@@ -172,6 +173,23 @@ def status_icon(status: str, size: int = 12) -> QIcon:
     painter.drawEllipse(QRectF(1.5, 1.5, size - 3, size - 3))
     painter.end()
     return QIcon(pixmap)
+
+
+def show_overflow_button(toolbar: QToolBar) -> None:
+    """The » button that a toolbar too narrow for its buttons shows at its end (it opens the
+    rest): Fusion's own is dark, unseen on the grey toolbar."""
+    button = toolbar.findChild(QToolButton, "qt_toolbar_ext_button")
+    if button is None:
+        return
+    pixmap = QPixmap(10, 12)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor(TEXT), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    for left in (1.5, 5.5):
+        painter.drawPolyline([QPointF(left, 2.5), QPointF(left + 3, 6), QPointF(left, 9.5)])
+    painter.end()
+    button.setIcon(QIcon(pixmap))
 
 
 def group_color(name: str) -> QColor:

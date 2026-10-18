@@ -136,6 +136,32 @@ def test_decimals_to_text_keep_their_digits():
 
 
 @pytest.mark.parametrize(
+    ("fmt", "expected"),
+    [
+        (
+            "#,##0.00",
+            ["99,999,999,999,999,999,999,999,999,999.00", "-12,345,678,901,234,567,890,123,456,789,012,345,678.00"],
+        ),
+        ("0;(0)", ["99999999999999999999999999999", "(12345678901234567890123456789012345678)"]),
+        ("0%", ["9999999999999999999999999999900%", "-1234567890123456789012345678901234567800%"]),
+        ("#,##0,", ["100,000,000,000,000,000,000,000,000", "-12,345,678,901,234,567,890,123,456,789,012,346"]),
+    ],
+)
+def test_format_numbers_keeps_all_38_digits_of_decimals(fmt, expected):
+    ids = pl.Series([Decimal("9" * 29), Decimal("-12345678901234567890123456789012345678")], dtype=pl.Decimal(38, 0))
+    assert dtypes.format_numbers(ids, fmt, ".").to_list() == expected
+
+
+def test_format_numbers_keeps_all_decimal_places_of_long_decimals():
+    s = pl.Series([Decimal("1234567890123456789012345678.0123456789"), Decimal("-0.5")], dtype=pl.Decimal(38, 10))
+    assert dtypes.format_numbers(s, "0.0000", ",").to_list() == ["1234567890123456789012345678,0123", "-0,5000"]
+    assert dtypes.format_numbers(s, "0.00000000;-0.00000000", ".").to_list() == [
+        "1234567890123456789012345678.01234568",
+        "-0.50000000",
+    ]
+
+
+@pytest.mark.parametrize(
     ("text", "decimal", "expected"),
     [
         ("12345678901234,5678", ",", Decimal("12345678901234.5678")),

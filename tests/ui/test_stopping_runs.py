@@ -7,7 +7,8 @@ import types
 import pytest
 
 from tafl.api import Mode, action
-from tafl.core import Project, Registry
+from tafl.core import Project, Registry, Status, StepResult, TableResult
+from tafl.ui import theme
 from tafl.ui.main_window import MainWindow
 from tafl.ui.session import Session
 
@@ -35,11 +36,15 @@ def slow_registry():
 
 @pytest.fixture
 def running(qapp, qtbot, slow_registry, tmp_path, monkeypatch):
-    """A window with a project whose run waits in its second step; the run is started."""
+    """A window with a project whose run exports a quick table, then waits in the second step
+    of the next table; the run is started."""
     STARTED.clear()
     RELEASE.clear()
     (tmp_path / "data.csv").write_text("A;B\n1;2\n", encoding="utf-8")
     project = Project()
+    quick = project.add_table("Quick")
+    project.add_step(quick, slow_registry.actions["csv.import"], {"file": "data.csv"})
+    project.add_step(quick, slow_registry.actions["csv.export"], {"file": "quick.csv"})
     table = project.add_table("Slow")
     project.add_step(table, slow_registry.actions["csv.import"], {"file": "data.csv"})
     project.add_step(table, slow_registry.actions["test.wait_on_run"], {})
@@ -76,8 +81,55 @@ def test_stop_says_it_stops_and_that_it_stopped(running, qtbot):
     assert window.statusBar().currentMessage() == "Run stopped — the steps after the stop did not run"
     assert window.run_dock.isVisible()
     assert window.run_panel.summary.text().startswith("Run stopped at ")
-    assert window.run_panel.tree.topLevelItemCount() == 0
     assert window.run_action.isEnabled() and not session.stopping
+
+
+def test_the_run_results_say_what_ran_before_the_stop(running, qtbot, tmp_path):
+    window, session = running, running.session
+    window.stop_action.trigger()
+    RELEASE.set()
+    qtbot.waitUntil(lambda: not session.running, timeout=10_000)
+    tree = window.run_panel.tree
+    rows = [[tree.topLevelItem(i).text(c) for c in range(2)] for i in range(tree.topLevelItemCount())]
+    assert rows == [["Quick", "ok"], ["Slow", "stopped at step 3"]]
+    quick, slow = tree.topLevelItem(0), tree.topLevelItem(1)
+    assert [quick.child(i).text(1) for i in range(quick.childCount())] == ["1 row × 2 columns"] * 2  # the export ran
+    assert (tmp_path / "quick.csv").exists()
+    steps = [(slow.child(i).text(0)[:3], slow.child(i).text(1)) for i in range(slow.childCount())]
+    assert steps == [("1. ", "1 row × 2 columns"), ("2. ", "1 row × 2 columns"), ("3. ", "stopped")]
+    assert slow.isExpanded() and slow.foreground(1).color().name() == theme.STATUS_TEXT["warning"]
+    tree.itemDoubleClicked.emit(slow.child(2), 0)  # the step where the run stopped
+    assert session.table.name == "Slow" and session.step is session.table.steps[2]
+    assert window.run_panel.summary.text().startswith("Run stopped at ")
+
+
+def test_the_steps_after_the_stop_did_not_run(window, session):
+    table = session.project.add_table("Slow")
+    steps = [session.project.add_step(table, "csv.import", {"file": "a.csv"}) for _ in range(3)]
+    stopped = TableResult(table.id, [StepResult(steps[0].id, Status.OK, seconds=1.5)], stopped=True)
+    window.run_panel.show_stopped({table.id: stopped})
+    top = window.run_panel.tree.topLevelItem(0)
+    assert [top.text(1), top.text(2)] == ["stopped at step 2", "1.50 s"]
+    assert [top.child(i).text(1) for i in range(top.childCount())] == ["", "stopped", "not run"]
+    window.run_panel.show_stopped({})  # stopped before a table was calculated
+    assert window.run_panel.tree.topLevelItemCount() == 0
+    assert window.run_panel.summary.text().startswith("Run stopped at ")
+
+
+def test_the_stopped_step_shows_its_messages(window, session):
+    """E.g. how many files a Move files step had moved before the stop."""
+    table = session.project.add_table("Archive")
+    steps = [session.project.add_step(table, "csv.import", {"file": "a.csv"}) for _ in range(3)]
+    moved = [("info", "Moved 202 files to archive before the stop"), ("warning", "Something to know")]
+    stopped = TableResult(table.id, [StepResult(steps[0].id, Status.OK)], stopped=True, stopped_messages=moved)
+    window.run_panel.show_stopped({table.id: stopped})
+    top = window.run_panel.tree.topLevelItem(0)
+    running, after = top.child(1), top.child(2)
+    assert running.text(1) == "stopped" and after.text(1) == "not run" and after.childCount() == 0
+    assert [running.child(i).text(0) for i in range(running.childCount())] == [
+        "Moved 202 files to archive before the stop",
+        "⚠ Something to know",
+    ]
 
 
 def test_closing_during_a_run_waits_for_it(running, qtbot, monkeypatch):

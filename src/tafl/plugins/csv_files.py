@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import codecs
 import io
+import math
 import re
 from collections.abc import Callable
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Context
 from pathlib import Path
 
 import polars as pl
@@ -39,6 +41,14 @@ _WHOLE = {",": r"^[+-]?([0-9]+|[1-9][0-9]{0,2}(\.[0-9]{3})+)$", ".": r"^[+-]?([0
 _EITHER = r"^[+-]?([0-9]+|[1-9][0-9]{0,2}[.,][0-9]{3})$"  # 12, 1.250 and 1,250 fit both decimal separators
 _SPACES = "[   ]"
 _CURRENCY = "€$£"
+# Amounts and percentages can also have spaces between the thousands (1 234,50 €), only in groups
+# of three digits: other digits with spaces between them (phone numbers, 2025 01 31) stay text.
+_SPACED = {
+    ",": rf"([0-9]+|[1-9][0-9]{{0,2}}(\.[0-9]{{3}})+|[1-9][0-9]{{0,2}}({_SPACES}[0-9]{{3}})+)(,[0-9]+)?",
+    ".": rf"([0-9]+|[1-9][0-9]{{0,2}}(,[0-9]{{3}})+|[1-9][0-9]{{0,2}}({_SPACES}[0-9]{{3}})+)(\.[0-9]+)?",
+}
+_FIFTEEN_DIGITS = Context(prec=15, rounding=ROUND_HALF_UP)  # the digits Excel shows and saves
+_FIFTEEN_DIGITS_DOWN = Context(prec=15, rounding=ROUND_DOWN)
 
 
 def _migrate_import(params: dict, from_version: int) -> dict:
@@ -93,10 +103,12 @@ def import_csv(df, p, ctx):
     each file); a file whose first line has no delimiter has one column. Numbers and dates are
     recognized when every value of a column fits, in all files together: also amounts like
     1.234,50 € or 123,45- and percentages like 12,5% (read as 0.125). Columns with leading
-    zeros (customer numbers, postal codes) stay text. A value like 1.000 can be one thousand
-    or one: it follows the other numbers of its column (like 0.500 or 2,5), else those of the
-    file, and without any it is one thousand in files with semicolons. Files are matched by
-    column names; a column missing in a file stays empty there.
+    zeros (customer numbers, postal codes) stay text, and so do digits with spaces between them
+    (phone numbers, card numbers): spaces between thousands count only in amounts and
+    percentages (1 234,50 €). A value like 1.000 can be one thousand or one: it follows the
+    other numbers of its column (like 0.500 or 2,5), else those of the file, and without any it
+    is one thousand in files with semicolons. Files are matched by column names; a column
+    missing in a file stays empty there.
     """
     paths, folder = source_files(p, ctx)
     parts, separators, encodings = [], [], []
@@ -112,11 +124,11 @@ def import_csv(df, p, ctx):
         if not p.detect_types:
             return data
         decimal, columns = (p.decimal, {}) if p.decimal != "auto" else _guess_decimal(data, separators[0])
-        decimals.append(decimal)
+        decimals.append((decimal, [name for name, own in columns.items() if own != decimal]))
         return _detect_types(data, {name: columns.get(name, decimal) for name in data.columns}, ctx.warn)
 
     out = combine(parts, p, folder, prepare=detect_types)
-    decimal = [f"decimal {'comma' if decimals[0] == ',' else 'point'}"] if decimals else []
+    decimal = [_describe_decimals(*decimals[0])] if decimals else []
     if len(paths) == 1:
         ctx.log(", ".join([f"Encoding {encodings[0]}", f"delimiter {_describe_separator(separators[0])}", *decimal]))
     elif paths:
@@ -206,8 +218,10 @@ def export_csv(df, p, ctx):
     """Writes the table to a delimited text file. An existing file is replaced when the new
     one is complete: if the export fails, the old file stays as it was.
 
-    Binary values are written as hex text (0x0102FF); infinite and not-a-number values as
-    empty, as in Excel.
+    Decimal numbers are written with at most 15 significant digits, as Excel shows and saves
+    them: 0.37 * 3 is 1,11 (not 1,1099999999999999). Whole numbers and exact decimals keep all
+    their digits. Binary values are written as hex text (0x0102FF); infinite and not-a-number
+    values as empty, as in Excel. A table without columns gives an empty file.
     """
     path = ctx.resolve_path(p.file)
     separator = _separator(p.delimiter)
@@ -228,9 +242,11 @@ def export_csv(df, p, ctx):
         float_scientific=False,
     )
     data = df.with_columns(
-        *(pl.when(pl.col(c).is_finite()).then(pl.col(c)).alias(c) for c, t in df.schema.items() if t.is_float()),
+        *(_fifteen_digits(df[c]) for c, t in df.schema.items() if t.is_float()),
         *((pl.lit("0x") + pl.col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
     )
+    if df.width == 0:  # rows without columns (Polars can't write them): an empty file, as for no rows
+        data = pl.DataFrame()
     with files.replace_file(path, ctx.warn) as temporary:
         if p.encoding in ("utf-8", "utf-8-sig"):
             data.write_csv(temporary, include_bom=p.encoding == "utf-8-sig", **options)
@@ -242,7 +258,34 @@ def export_csv(df, p, ctx):
                 encoded = text.encode(p.encoding, errors="replace")
                 ctx.warn(f"Some characters don't exist in {p.encoding} and were written as '?'")
             temporary.write_bytes(encoded)
-    ctx.log(f"Wrote {df.height:,} row{'s' if df.height != 1 else ''} to {path}")
+    if df.width == 0:
+        ctx.log(f"Wrote an empty file to {path}: the table has no columns")
+    else:
+        ctx.log(f"Wrote {df.height:,} row{'s' if df.height != 1 else ''} to {path}")
+
+
+def _fifteen_digits(s: pl.Series) -> pl.Series:
+    """Decimal numbers for the export, rounded to 15 significant digits (half away from zero), as
+    Excel shows and saves them: 0.37 * 3 is written as 1.11, not 1.1099999999999999, since Polars
+    writes the shortest text that reads back as the number. That holds for whole decimal numbers
+    too (0.37 * 3 * 1e16 is 11100000000000000, not 11099999999999998); whole numbers (Int) and
+    exact decimals keep all their digits. A Float32 value keeps the digits it shows (0.1, not
+    0.10000000149011612); infinite and not-a-number values become empty."""
+    if s.dtype != pl.Float64:
+        s = s.cast(pl.String).cast(pl.Float64)
+    s = pl.select(pl.when(pl.lit(s).is_finite()).then(pl.lit(s)).alias(s.name)).to_series()
+    long = s.cast(pl.String).str.len_bytes() > 16  # shorter texts have at most 15 digits: they stay as they are
+    rows = long.fill_null(False).arg_true()
+    if rows.len():
+        s = s.scatter(rows, [_fifteen(v) for v in s.gather(rows).to_list()])
+    return s
+
+
+def _fifteen(value: float) -> float:
+    rounded = float(_FIFTEEN_DIGITS.create_decimal_from_float(value))
+    if math.isinf(rounded):  # rounded up beyond the largest decimal number: round towards zero
+        rounded = float(_FIFTEEN_DIGITS_DOWN.create_decimal_from_float(value))
+    return rounded
 
 
 def _to_utf8(raw: bytes, encoding: str, name: str, warn: Callable[[str], None]) -> tuple[bytes, str]:
@@ -382,8 +425,9 @@ def _shown_decimals(s: pl.Series) -> tuple[int, int]:
 def _detect_types(data: pl.DataFrame, decimals: dict[str, str], warn: Callable[[str], None]) -> pl.DataFrame:
     """``dtypes.infer_types`` with the decimal separator of each column, and also: numbers with
     thousands separators only (1.000) become whole numbers (exact, up to 19 digits); amounts
-    (1.234,50 €, 123,45-) and percentages (12,5% is 0.125) become numbers when every value of
-    the column is one."""
+    (1.234,50 €, 1 234,50 €, 123,45-) and percentages (12,5% is 0.125) become numbers when every
+    value of the column is one. Digits with spaces between them are numbers only in amounts and
+    percentages, as thousands (see ``_SPACED``): 1 234 and +49 30 1234567 stay text."""
     notes: dict[str, list[str]] = {}  # the warnings of infer_types, by column
     typed = data.with_columns(
         [dtypes.infer_series(data[name], decimals[name], notes.setdefault(name, []).append) for name in data.columns]
@@ -394,8 +438,9 @@ def _detect_types(data: pl.DataFrame, decimals: dict[str, str], warn: Callable[[
         if dtype != pl.String or kind not in (pl.Float64, pl.String):
             continue
         decimal = decimals[name]
-        number = _NUMBER[decimal]
-        whole, percent, amount = _WHOLE[decimal], f"^[+-]?{number}%$", f"^[{_CURRENCY}]?[+-]?{number}-?[{_CURRENCY}]?$"
+        number, gap = _SPACED[decimal], f"{_SPACES}*"
+        whole, percent = _WHOLE[decimal], f"^[+-]?{gap}{number}{gap}%$"
+        amount = f"^[{_CURRENCY}]?{gap}[+-]?{gap}{number}{gap}-?{gap}[{_CURRENCY}]?$"
         sample = _clean(data[name].drop_nulls().head(1000)).drop_nulls()  # most columns end here, quickly
         if kind == pl.Float64 or _fit(sample, whole):  # text: numbers too long for a decimal number
             pattern = whole
@@ -419,7 +464,7 @@ def _detect_types(data: pl.DataFrame, decimals: dict[str, str], warn: Callable[[
         if lost.any():
             notes[name].append(f"{name} stays text: its numbers are too long to be kept exactly, e.g. '{values.filter(lost)[0]}'")
         elif pattern == percent:
-            updates.append((dtypes.parse_numbers(text.str.strip_suffix("%"), decimal) / 100).alias(name))
+            updates.append(_percentages(text, decimal).alias(name))
         elif _amounts(values):
             parsed = dtypes.parse_numbers(text, decimal)
             if parsed.null_count() == text.null_count():
@@ -437,19 +482,27 @@ def _fit(values: pl.Series, pattern: str) -> bool:
 def _amounts(values: pl.Series) -> bool:
     """Amounts with a currency sign or a minus at the end (else they would be numbers already),
     without leading zeros (codes like 0815 stay text)."""
-    return values.str.contains(f"[{_CURRENCY}]|-$").any() and not values.str.contains(f"^[{_CURRENCY}]?[+-]?0[0-9]").any()
+    leading_zero = f"^[{_CURRENCY}]?{_SPACES}*[+-]?{_SPACES}*0[0-9]"
+    return values.str.contains(f"[{_CURRENCY}]|-$").any() and not values.str.contains(leading_zero).any()
+
+
+def _percentages(text: pl.Series, decimal: str) -> pl.Series:
+    """Percentages as numbers, read exactly: 1,1% is 0.011 (divided by 100 it would be
+    0.011000000000000001)."""
+    thousands = "." if decimal == "," else ","
+    number = text.str.replace_all(_SPACES, "").str.strip_suffix("%").str.replace_all(thousands, "", literal=True)
+    return (number.str.replace(decimal, ".", literal=True) + "e-2").cast(pl.Float64, strict=False)
 
 
 def _clean(s: pl.Series) -> pl.Series:
-    """Text without spaces (also in 1 234,50 €) and other white space at the ends (tabs, line
-    ends); empty values as null."""
-    text = s.str.strip_chars().str.replace_all(_SPACES, "")
+    """Text without white space at the ends (spaces, tabs, line ends); empty values as null."""
+    text = s.str.strip_chars()
     return pl.select(pl.when(pl.lit(text) == "").then(None).otherwise(pl.lit(text)).alias(s.name)).to_series()
 
 
 def _bare(s: pl.Series) -> pl.Series:
-    """The numbers in amounts and percentages, for counting decimal separators."""
-    return _clean(s).drop_nulls().str.strip_chars(_CURRENCY + "%").str.strip_suffix("-")
+    """The numbers in amounts and percentages, without spaces, for counting decimal separators."""
+    return _clean(s).drop_nulls().str.replace_all(_SPACES, "").str.strip_chars(_CURRENCY + "%").str.strip_suffix("-")
 
 
 def _separator(choice: str) -> str:
@@ -459,3 +512,12 @@ def _separator(choice: str) -> str:
 def _describe_separator(separator: str) -> str:
     names = {"\t": "tab", ";": "semicolon", ",": "comma", "|": "pipe", _ONE_COLUMN: "none (one column)"}
     return names.get(separator, repr(separator))
+
+
+def _describe_decimals(decimal: str, others: list[str]) -> str:
+    """For the log: the decimal separator of the files, and the columns that have the other one."""
+    text = f"decimal {'comma' if decimal == ',' else 'point'}"
+    if not others:
+        return text
+    named = ", ".join(others[:5]) + (f" and {len(others) - 5} more" if len(others) > 5 else "")
+    return f"{text} (decimal {'point' if decimal == ',' else 'comma'} in {named})"

@@ -12,6 +12,9 @@ An action that raises SkipRest ends its table there: the step is OK, the steps a
 skipped, and the table's result is the data of that step. A step that uses a table which skipped
 its rest and has no rows (e.g. an import on a day without files) ends its own table the same way,
 without running: there is no data for it to work with.
+
+The files that a folder import read (``Context.imported_files``) are kept with its result, also
+in the cache, and the later steps of its table get them.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, NamedTuple
 
 import polars as pl
@@ -64,6 +68,13 @@ class Status(StrEnum):
     BLOCKED = "blocked"  # an earlier step of the table failed
 
 
+class Imported(NamedTuple):
+    """The files that an import read from a folder, and the folder (``Context.imported_files``)."""
+
+    folder: Path
+    files: tuple[Path, ...]
+
+
 @dataclass
 class StepResult:
     step_id: str
@@ -78,6 +89,7 @@ class StepResult:
     inherited: bool = False  # the error is in a table this step uses
     # The message of a SkipRest: on the step that raised it (OK) and on the steps after it (SKIPPED)
     skip_rest: str | None = None
+    imported: Imported | None = None  # of an import of all files in a folder: the files it read
 
     @property
     def ok(self) -> bool:
@@ -100,6 +112,9 @@ class TableResult:
     skipped: str | None = None  # why it wasn't calculated: "turned off", or a table it uses is off
     # The run was stopped while this table was calculated: ``steps`` are the steps that ran
     stopped: bool = False
+    # Of a stopped table: the messages of the step that was running, e.g. how many files a
+    # command had moved before the stop
+    stopped_messages: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -158,16 +173,16 @@ class ResultCache:
     a quarter of the installed memory). Of each step only the results of its last two settings
     are kept: the current ones, and those an undo goes back to. A result keeps the step's
     messages and the message of a SkipRest, so that a cached step shows the same messages and
-    skips the rest of its table too."""
+    skips the rest of its table too, and an import's result the files it read from a folder."""
 
     KEEP = 2  # results kept per step
 
     def __init__(self, max_bytes: int | None = None) -> None:
         self.max_bytes = max_bytes if max_bytes is not None else default_cache_bytes()
-        self._items: OrderedDict[str, tuple[Cached, int]] = OrderedDict()
+        self._items: OrderedDict[str, tuple[Cached, int, Imported | None]] = OrderedDict()
         self._bytes = 0
         self._steps: dict[str, list[str]] = {}  # step id -> the keys of its results, the latest last
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # re-entrant: Ctrl+C right after it was taken leaves it held
 
     def get(self, key: str) -> pl.DataFrame | None:
         found = self.lookup(key)
@@ -176,6 +191,11 @@ class ResultCache:
     def lookup(self, key: str, *, step: str | None = None) -> Cached | None:
         """The result with its messages. ``step``: the id of the step that uses it, which makes
         it that step's latest result."""
+        found = self.find(key, step=step)
+        return found[0] if found is not None else None
+
+    def find(self, key: str, *, step: str | None = None) -> tuple[Cached, Imported | None] | None:
+        """``lookup``, and the files an import read from a folder (``put``)."""
         with self._lock:
             item = self._items.get(key)
             if item is None:
@@ -183,7 +203,7 @@ class ResultCache:
             self._items.move_to_end(key)
             if step is not None:
                 self._remember(step, key)
-            return item[0]
+            return item[0], item[2]
 
     def put(
         self,
@@ -193,10 +213,12 @@ class ResultCache:
         *,
         step: str | None = None,
         messages: Iterable[tuple[str, str]] | None = None,
+        imported: Imported | None = None,
     ) -> None:
         """Keep a result; ``step``: the id of the step whose result it is, whose results of older
-        settings are dropped. Without ``messages``, a result that is there already keeps its
-        messages (a step that passed its table through unchanged)."""
+        settings are dropped; ``imported``: the files an import read from a folder. Without
+        ``messages``, a result that is there already keeps its messages and files (a step that
+        passed its table through unchanged)."""
         size = df.estimated_size()
         with self._lock:
             old = self._items.pop(key, None)
@@ -204,12 +226,13 @@ class ResultCache:
                 self._bytes -= old[1]
             if messages is None:
                 messages = old[0].messages if old is not None else ()
-            self._items[key] = (Cached(df, skip_rest, tuple(messages)), size)
+                imported = old[2] if old is not None else imported
+            self._items[key] = (Cached(df, skip_rest, tuple(messages)), size, imported)
             self._bytes += size
             if step is not None:
                 self._remember(step, key)
             while self._bytes > self.max_bytes and len(self._items) > 1:
-                _, (_, dropped) = self._items.popitem(last=False)
+                _, (_, dropped, _) = self._items.popitem(last=False)
                 self._bytes -= dropped
 
     def clear(self) -> None:
@@ -289,7 +312,9 @@ class Engine:
         self.parameter_overrides: dict[str, str] = {}
         # The parameters' values by what they were worked out from (shared with snapshots)
         self._parameter_values: dict[tuple, dict[str, Any]] = {}
-        self._parameter_lock = threading.Lock()
+        # Re-entrant: Ctrl+C can come right after a thread took it, and that thread then lists
+        # the parameters that the stopped run used
+        self._parameter_lock = threading.RLock()
 
     def reload(self) -> None:
         """Re-read all sources on the next calculation (databases can't tell us they changed)."""
@@ -360,7 +385,8 @@ class Engine:
 
         ``done`` gets each table's result as soon as the table is calculated. When the run is
         stopped (Cancelled), it also gets the table that was being calculated, with ``stopped``
-        set and the steps that ran before the stop.
+        set, the steps that ran before the stop, and the messages of the step that was running
+        (``stopped_messages``).
         """
         if Mode(mode) == Mode.RUN:
             self.reload()
@@ -449,8 +475,9 @@ class Engine:
             return f"Unknown action '{step.action}'"
         try:
             params = action.resolve(action.upgrade(step.params, step.version))
-        except _BROKEN:
-            _stop_if(self.cancel)
+        except _BROKEN as e:  # e.g. saved by a newer version; after Ctrl+C, only Ctrl+C itself stops here
+            if isinstance(e, KeyboardInterrupt):
+                _stop_if(self.cancel)
             return action.name
         shown = Params(params)
         for param in action.params:
@@ -490,6 +517,7 @@ class _Evaluation:
         self.results: dict[str, TableResult] = {}
         self.stack: list[str] = []
         self.stopped: TableResult | None = None  # the table being calculated when it was stopped
+        self.stopped_messages: list[tuple[str, str]] = []  # those of the step that was running then
         # The same for every step, so that =TODAY() means the same day everywhere
         self.parameters = engine.parameter_values()
 
@@ -515,6 +543,7 @@ class _Evaluation:
             key = ""
             failed = False
             skip_rest: str | None = None
+            imported: Imported | None = None  # the files the first step read from a folder
             for index, step in enumerate(table.steps if full else table.steps[: until + 1]):
                 if failed:
                     result.steps.append(StepResult(step.id, Status.BLOCKED, error="An earlier step has an error"))
@@ -527,15 +556,18 @@ class _Evaluation:
                         skipped = StepResult(step.id, Status.DISABLED, df=df, key=key)
                     result.steps.append(skipped)
                     continue
-                step_result = self._step(table, index, step, df, key)
+                step_result = self._step(table, index, step, df, key, imported)
                 result.steps.append(step_result)
                 if step_result.status == Status.ERROR:
                     failed = True
                 else:
                     df, key, skip_rest = step_result.df, step_result.key, step_result.skip_rest
+                    if index == 0:
+                        imported = step_result.imported
         except (Cancelled, KeyboardInterrupt):
             if self.stopped is None:  # the innermost table: the one whose step was running
                 self.stopped = result
+                result.stopped_messages, self.stopped_messages = self.stopped_messages, []
             raise
         finally:
             self.stack.pop()
@@ -560,7 +592,10 @@ class _Evaluation:
             self.stack.pop()
         return None
 
-    def _step(self, table: Table, index: int, step: Step, df: pl.DataFrame | None, prev_key: str) -> StepResult:
+    def _step(
+        self, table: Table, index: int, step: Step, df: pl.DataFrame | None, prev_key: str, imported: Imported | None = None
+    ) -> StepResult:
+        """``imported``: the files the first step of the table read from a folder."""
         _stop_if(self.cancel)
         action = self.registry.actions.get(step.action)
         if action is None:
@@ -606,6 +641,8 @@ class _Evaluation:
             deps[ref] = dependency
 
         ctx = _StepContext(self, deps)
+        if imported is not None and index > 0:
+            ctx.imported_folder, ctx.imported_files = imported
         if (empty := _empty_and_skipped(deps)) is not None:  # nothing to work with: this table ends here too
             message = f"The table “{self.engine.table_name(empty)}” has no data (its rest was skipped)"
             data = df if df is not None else deps[empty].df
@@ -613,25 +650,37 @@ class _Evaluation:
             messages = [*warnings, ("info", message)]
             return StepResult(step.id, Status.OK, df=data, key=key, messages=messages, skip_rest=message)
 
-        if action.side_effects and self.mode == Mode.PREVIEW:
-            messages = [*warnings, ("info", "Runs only when the project is run")]
+        from_folder = (imported is not None) if index > 0 else None  # the table's import read files from a folder
+        if action.side_effects and self.mode == Mode.PREVIEW:  # what would stop the step in a run, as a warning
+            problems = [("warning", problem) for problem in self._own_problems(action, params, df, deps, from_folder)]
+            messages = [*warnings, *problems, ("info", "Runs only when the project is run")]
             return StepResult(step.id, Status.SKIPPED, df=df, key=prev_key, messages=messages)
 
         key = self._key(action, params, prev_key, deps, ctx)
         # Exports and commands always execute. Everything else is cached; a run raises the reload
         # token first, so it never gets old data from the cache.
         use_cache = not action.side_effects
-        if use_cache:
-            found = self.engine.cache.lookup(key, step=step.id)
-            if found is not None:
-                messages = [*warnings, *found.messages]
-                if found.skip_rest is not None:
-                    messages.append(("info", found.skip_rest))
-                return StepResult(
-                    step.id, Status.OK, df=found.df, key=key, cached=True, messages=messages, skip_rest=found.skip_rest
-                )
+        if use_cache and (hit := self.engine.cache.find(key, step=step.id)) is not None:
+            found, read = hit
+            messages = [*warnings, *found.messages]
+            if found.skip_rest is not None:
+                messages.append(("info", found.skip_rest))
+            return StepResult(
+                step.id,
+                Status.OK,
+                df=found.df,
+                key=key,
+                cached=True,
+                messages=messages,
+                skip_rest=found.skip_rest,
+                imported=read if index == 0 else None,
+            )
 
-        problems = action.check(params, self._validation_context(df, deps))
+        try:
+            problems = action.check(params, self._validation_context(df, deps, from_folder))
+        except _BROKEN as e:  # a plugin's checks
+            _stop_if(self.cancel)
+            return _error(step, f"Could not check the step settings: {_friendly(e)}", traceback.format_exc(), warnings)
         if problems:
             return _error(step, "\n".join(problems), messages=warnings)
         ctx.messages.extend(warnings)
@@ -641,6 +690,7 @@ class _Evaluation:
             with stopping_queries(self.cancel):  # Stop and Ctrl+C also stop a formula that runs
                 out = action.run(df.clone() if df is not None else None, params, ctx)
         except Cancelled:
+            self.stopped_messages = list(ctx.messages)
             raise
         except SkipRest as e:  # cached under this step's own key: the key of the data going in has no SkipRest
             seconds = time.perf_counter() - started
@@ -648,22 +698,25 @@ class _Evaluation:
             if not isinstance(data, pl.DataFrame):
                 return _error(step, f"'{action.name}' did not return a table", messages=ctx.messages, seconds=seconds)
             message = str(e.message).strip() or f"Step {index + 1} skips the rest of the table"
+            read = _imported(ctx) if index == 0 else None
             if use_cache:
-                self.engine.cache.put(key, data, message, step=step.id, messages=ctx.messages[len(warnings) :])
+                self.engine.cache.put(key, data, message, step=step.id, messages=ctx.messages[len(warnings) :], imported=read)
             ctx.messages.append(("info", message))
-            return StepResult(step.id, Status.OK, df=data, key=key, messages=ctx.messages, seconds=seconds, skip_rest=message)
+            return StepResult(
+                step.id, Status.OK, df=data, key=key, messages=ctx.messages, seconds=seconds, skip_rest=message, imported=read
+            )
         except ActionError as e:  # also a DuckDB query that Ctrl+C stopped ("Query interrupted")
-            _stop_if(self.cancel)
+            self._stop_if_stopping(ctx)
             return _error(step, str(e), messages=ctx.messages, seconds=time.perf_counter() - started)
         except Exception as e:
-            _stop_if(self.cancel)
+            self._stop_if_stopping(ctx)
             seconds = time.perf_counter() - started
             return _error(step, _friendly(e), traceback.format_exc(), ctx.messages, seconds=seconds)
         except BaseException as e:
             # Not an Exception: a crash inside Polars (Rust), and an action that tries to end the
             # program (sys.exit, KeyboardInterrupt). Ctrl+C on the command line sets the cancel
             # event before it interrupts: then the calculation stops.
-            _stop_if(self.cancel)
+            self._stop_if_stopping(ctx)
             if not (is_panic(e) or isinstance(e, SystemExit | KeyboardInterrupt)):
                 raise
             message = _friendly(e) if is_panic(e) else f"{_owner(action)} tried to end the program ({_friendly(e)})"
@@ -677,9 +730,17 @@ class _Evaluation:
         own = ctx.messages[len(warnings) :]
         if out is df:  # passed the table through unchanged: later steps keep their cache keys
             key, own = prev_key, None  # the result stays the previous step's, with its messages
+        read = _imported(ctx) if index == 0 else None
         if use_cache:
-            self.engine.cache.put(key, out, step=step.id, messages=own)
-        return StepResult(step.id, Status.OK, df=out, key=key, messages=ctx.messages, seconds=seconds)
+            self.engine.cache.put(key, out, step=step.id, messages=own, imported=read)
+        return StepResult(step.id, Status.OK, df=out, key=key, messages=ctx.messages, seconds=seconds, imported=read)
+
+    def _stop_if_stopping(self, ctx: Context) -> None:
+        """``_stop_if``; the messages of the step that was running go to its table then
+        (``TableResult.stopped_messages``)."""
+        if self.cancel is not None and self.cancel.is_set():
+            self.stopped_messages = list(ctx.messages)
+            raise Cancelled() from None
 
     def _connector(self, action: Action, raw: Mapping[str, Any]) -> Connector | None:
         """The database type of the step's connection: it fills the parameters into the SQL."""
@@ -724,7 +785,19 @@ class _Evaluation:
         """A connection's settings with the parameters filled in (as texts)."""
         return parameters.fill(list(connector.params), settings, self.parameters)
 
-    def _validation_context(self, df: pl.DataFrame | None, deps: dict[str, TableResult]) -> ValidationContext:
+    def _own_problems(
+        self, action: Action, params: Params, df: pl.DataFrame | None, deps: dict[str, TableResult], from_folder: bool | None
+    ) -> list[str]:
+        """The problems that the action's own ``checks`` finds; none when it fails."""
+        try:
+            return action.own_problems(params, self._validation_context(df, deps, from_folder))
+        except _BROKEN:
+            _stop_if(self.cancel)
+            return []
+
+    def _validation_context(
+        self, df: pl.DataFrame | None, deps: dict[str, TableResult], imported: bool | None = None
+    ) -> ValidationContext:
         def table_columns(ref: str) -> list[str] | None:
             result = deps.get(ref)
             return result.df.columns if result is not None and result.df is not None else None
@@ -735,6 +808,7 @@ class _Evaluation:
             table_columns=table_columns,
             tables=tables,
             connections=[c.name for c in self.project.connections],
+            imported=imported,
         )
 
 
@@ -808,6 +882,16 @@ def _unfilled_rows(param: P.List, rows: list) -> list:
 
 def _owner(action: Action) -> str:
     return f"The plugin '{action.plugin}'" if action.plugin else f"'{action.name}'"
+
+
+def _imported(ctx: Context) -> Imported | None:
+    """The files an import read from a folder, as its context has them (``source_files``)."""
+    if ctx.imported_files is None or ctx.imported_folder is None:
+        return None
+    try:
+        return Imported(Path(ctx.imported_folder), tuple(Path(path) for path in ctx.imported_files))
+    except TypeError:  # set by a plugin to something else
+        return None
 
 
 def _empty_and_skipped(deps: Mapping[str, TableResult]) -> str | None:

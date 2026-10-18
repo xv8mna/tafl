@@ -1,10 +1,22 @@
 """tafl.exe of the Windows download: the command line."""
 
-import multiprocessing
-import os
-import sys
+import signal
+import threading
 
-from tafl.cli import main
+# Ctrl+C while the program loads its modules is kept for main(), which then stops at once: a
+# KeyboardInterrupt in the middle of loading a library can crash the program.
+ctrl_c = threading.Event()
+signal.signal(signal.SIGINT, lambda signum, frame: ctrl_c.set())
+
+import multiprocessing  # noqa: E402
+import multiprocessing.spawn  # noqa: E402
+import os  # noqa: E402
+import sys  # noqa: E402
+
+if multiprocessing.spawn.is_forking(sys.argv):  # a plugin's worker process: Python's own handling
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+
+from tafl.cli import main  # noqa: E402
 
 
 def use_python_io_variables() -> None:
@@ -24,4 +36,4 @@ def use_python_io_variables() -> None:
 
 multiprocessing.freeze_support()  # a plugin's worker processes start this program again
 use_python_io_variables()
-raise SystemExit(main())
+raise SystemExit(main(ctrl_c=ctrl_c))

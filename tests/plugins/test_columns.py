@@ -139,6 +139,22 @@ def test_exact_decimals(act):
     assert change(act, df, "Amount", "text", "#,##0.00").to_list() == ["12.345.678.901.234,57", "2,50", "-2,50", None]
 
 
+def test_exact_decimals_with_38_digits_to_text_with_a_format(act):
+    df = pl.DataFrame(
+        {
+            "P": pl.Series([D("1234567890123456789012345678.0123456789"), None], dtype=pl.Decimal(38, 10)),
+            "I": pl.Series([D("99999999999999999999999999999"), D("-" + "1" * 38)], dtype=pl.Decimal(38, 0)),
+        }
+    )
+    assert change(act, df, "P", "text", "0.0000").to_list() == ["1234567890123456789012345678,0123", None]
+    assert change(act, df, "I", "text", "#,##0.00").to_list() == [
+        "99.999.999.999.999.999.999.999.999.999,00",
+        "-11.111.111.111.111.111.111.111.111.111.111.111.111,00",
+    ]
+    assert change(act, df, "I", "text", "0;(0)").to_list() == ["99999999999999999999999999999", "(" + "1" * 38 + ")"]
+    assert change(act, df, "I", "text").to_list() == ["99999999999999999999999999999", "-" + "1" * 38]
+
+
 def test_date_times_with_two_digit_years_without_a_format(act):
     df = pl.DataFrame({"T": ["31.12.25 08:30", "01.01.45 17:05:09", ""]})
     ctx = StubContext()

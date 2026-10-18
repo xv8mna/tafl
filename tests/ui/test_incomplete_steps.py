@@ -86,3 +86,22 @@ def test_a_new_aggregate_step_is_incomplete_too(window, settle, session, demo):
     session.select_table(revenue.id)
     settle(session)
     assert session.table_status(revenue.id) == "waiting"  # for Orders, not an error
+
+
+def test_a_collapsed_group_tells_waiting_tables_from_incomplete_ones(window, settle, session, demo):
+    orders, _, _ = add_condition_step(window, settle, session, demo)
+    revenue = session.project.table("Revenue by customer")
+    window.show_map(True)
+    settle(session)
+    view = window.map_view
+    group = session.add_group("Reports", [revenue.id])
+    view.set_collapsed(group.id, True)
+    view.rebuild()
+    assert session.table_status(revenue.id) == "waiting"
+    assert view.group_nodes[group.id].summary == "1 waiting"  # its own steps are complete
+    session.set_table_group([orders.id], group.id)
+    view.rebuild()
+    assert view.group_nodes[group.id].summary == "1 incomplete, 1 waiting"
+    session.set_table_group([revenue.id], None)
+    view.rebuild()
+    assert view.group_nodes[group.id].summary == "1 incomplete"

@@ -529,6 +529,49 @@ def test_sqlserver_fits_values_to_their_columns(registry):
     assert fit(df, {}).equals(df)
 
 
+def test_sqlserver_rounds_decimals_half_away_from_zero(registry):
+    """As SQL Server rounds a decimal for a column with fewer decimal places: 1.005 is 1.01 in a
+    decimal(10,2), not 1.00 (half to even), so that keys find the rows it rounded itself."""
+    fit = registry.connectors["sqlserver"].fit_frame
+    D = decimal.Decimal
+    df = pl.DataFrame({
+        "Price": pl.Series([D(v) for v in ("1.005", "-0.005", "2.675", "0.125", "1.015", "-2.665", "1.004")], dtype=pl.Decimal(10, 3)),
+        "Fee": pl.Series([*(D(v) for v in ("1.00005", "-0.00005", "2.00015", "0.00004", "1", "-1.00015")), None], dtype=pl.Decimal(12, 5)),
+        "Huge": pl.Series([D("9" * 37 + ".5"), D("-" + "9" * 37 + ".5"), D("0.5"), D("2.5"), D("1.4"), D("-1.5"), None], dtype=pl.Decimal(38, 1)),
+    })  # fmt: skip
+    fitted = fit(df, {"Price": "decimal(10,2)", "Fee": "money", "Huge": "numeric(38,0)"})
+    assert fitted["Price"].to_list() == [D(v) for v in ("1.01", "-0.01", "2.68", "0.13", "1.02", "-2.67", "1.00")]
+    assert fitted["Fee"].to_list() == [*(D(v) for v in ("1.0001", "-0.0001", "2.0002", "0.0000", "1.0000", "-1.0002")), None]
+    # A carry beyond the 38 digits of the decimal before the cast: rounded one by one
+    assert fitted["Huge"].to_list() == [D("1" + "0" * 37), D("-1" + "0" * 37), D("1"), D("3"), D("1"), D("-2"), None]
+    assert fitted.schema == {"Price": pl.Decimal(38, 2), "Fee": pl.Decimal(38, 4), "Huge": pl.Decimal(38, 0)}
+    unchanged = fit(df, {"Price": "decimal(10,3)", "Fee": "decimal(20,6)"})
+    assert unchanged["Price"].equals(df["Price"]) and unchanged["Fee"].equals(df["Fee"])
+
+
+def test_sqlserver_sends_texts_for_varchar_columns_as_unicode(registry):
+    """The server converts them to the code page of the column's collation (as N'…'), in every
+    mode; bound as varchar, the driver would convert them to this PC's code page first."""
+    pyodbc = pytest.importorskip("pyodbc")
+    sizes = registry.connectors["sqlserver"].input_sizes
+    df = pl.DataFrame({"City": ["Łódź"], "Code": ["AB"], "Memo": ["x"], "Long": ["y"], "Name": ["z"], "N": [1], "Digits": [5]})
+    stage = {
+        "City": "VARCHAR(30) COLLATE Polish_CI_AS", "Code": "CHAR(5) COLLATE Latin1_General_CI_AS",
+        "Memo": "VARCHAR(MAX) COLLATE Latin1_General_100_CI_AS_SC_UTF8", "Long": "VARCHAR(8000)", "Name": "NVARCHAR(50)",
+        "N": "INT", "Digits": "VARCHAR(10)",
+    }  # fmt: skip
+    W, WCHAR = pyodbc.SQL_WVARCHAR, pyodbc.SQL_WCHAR
+    assert sizes(df, stage, temporary=True) == [
+        (W, 30, 0), (WCHAR, 5, 0), (W, 0, 0), (W, 0, 0), (W, 50, 0), (pyodbc.SQL_INTEGER, 10, 0), (W, 10, 0),
+    ]  # fmt: skip
+    # Into the database's own table only the texts for char and varchar columns: the driver
+    # finds the others as before
+    own = {"City": "varchar(30)", "Code": "char(5)", "Memo": "varchar(max)", "Long": "varchar(8000)", "Name": "nvarchar(50)",
+           "N": "int", "Digits": "varchar(10)"}  # fmt: skip
+    assert sizes(df, own) == [(W, 30, 0), (WCHAR, 5, 0), (W, 0, 0), (W, 0, 0), None, None, None]
+    assert sizes(df, {"Name": "nvarchar(50)", "N": "int"}) is None and sizes(df, {}) is None and sizes(df) is None
+
+
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_import_keeps_the_digits_of_numbers(registry):
     """numeric(19, 0) and longer IDs: whole numbers while they fit, else Decimal, as amounts
@@ -578,6 +621,21 @@ def test_text_sizes_count_utf16_code_units():
 
 
 _SERVER = "[23000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]"
+
+
+def test_sqlserver_messages_name_a_temporary_table_as_it_was_created(registry):
+    """SQL Server pads the name of a #temporary table in tempdb with underscores and a number."""
+    error_message = registry.connectors["sqlserver"].error_message
+    padded = "#tafl_stage_8cb96cd0" + "_" * 96 + "0000000001EC"
+    text = (
+        f"[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]String or binary data would be truncated in table "
+        f"'tempdb.dbo.{padded}', column 'T'. Truncated value: 'äö'. (2628) (SQLExecute); {_SERVER}The statement has been terminated. (3621)"
+    )
+    assert error_message(Exception("42000", text)) == (
+        "String or binary data would be truncated in table 'tempdb.dbo.#tafl_stage_8cb96cd0', column 'T'. Truncated value: 'äö'."
+    )
+    kept = f"{_SERVER}Invalid column name 'a_________b'. (207)"  # underscores of a name stay
+    assert error_message(Exception("42000", kept)) == "Invalid column name 'a_________b'."
 
 
 def test_sqlserver_messages_keep_their_values_and_say_things_once(registry):

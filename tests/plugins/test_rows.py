@@ -117,6 +117,81 @@ def test_typed_values_for_exact_decimals(act):
     assert filled["Amount"][0] == D("12345678901234.5678")
 
 
+FORTY = "1234567890123456789012345678901234567890"  # more digits than an exact decimal holds
+TINY = "0," + "0" * 39 + "1"  # 40 decimal places
+
+
+@pytest.fixture
+def decimals():
+    ids = [D("12345678901234567890123"), D("12345678901234567890124"), D(-5), None]
+    return pl.DataFrame(
+        {
+            "Name": ["a", "b", "c", "d"],
+            "ID": pl.Series(ids, dtype=pl.Decimal(30, 0)),
+            "Small": pl.Series([D("1.50"), D("0.00"), D("-2.25"), None], dtype=pl.Decimal(10, 2)),
+            "Max": pl.Series([D("9" * 38), D("0"), D("-" + "9" * 38), None], dtype=pl.Decimal(38, 0)),
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "expected"),
+    [
+        ("ID", FORTY, {"=": [], "!=": "abcd", ">": [], ">=": [], "<": "abc", "<=": "abc"}),
+        ("ID", "-" + FORTY, {"=": [], "!=": "abcd", ">": "abc", ">=": "abc", "<": [], "<=": []}),
+        ("Small", TINY, {"=": [], "!=": "abcd", ">": "a", ">=": "a", "<": "bc", "<=": "bc"}),
+        ("Small", "-" + TINY, {"=": [], "!=": "abcd", ">": "ab", ">=": "ab", "<": "c", "<=": "c"}),
+        ("Small", "1,505", {"=": [], "!=": "abcd", ">": [], ">=": [], "<": "abc", "<=": "abc"}),
+        ("Small", "1,5" + "0" * 40, {"=": "a", "!=": "bcd", ">": [], ">=": "a", "<": "bc", "<=": "abc"}),
+        ("Max", "9" * 38 + ",5", {"=": [], "!=": "abcd", ">": [], ">=": [], "<": "abc", "<=": "abc"}),
+        ("Max", "-" + "9" * 38 + ",5", {"=": [], "!=": "abcd", ">": "abc", ">=": "abc", "<": [], "<=": []}),
+        ("Max", "9" * 38, {"=": "a", "!=": "bcd", ">": [], ">=": "a", "<": "bc", "<=": "abc"}),
+        ("ID", "12345678901234567890123", {"=": "a", "!=": "bcd", ">": "b", ">=": "ab", "<": "c", "<=": "ac"}),
+    ],
+)
+def test_typed_values_with_more_digits_than_exact_decimals_hold(act, decimals, column, value, expected):
+    for operator, rows in expected.items():
+        assert names(flt(act, decimals, (column, operator, value))) == list(rows), operator
+
+
+def test_lists_with_more_digits_than_exact_decimals_hold(act, decimals):
+    assert names(flt(act, decimals, ("ID", "in", f"{FORTY}; -5"))) == ["c"]
+    assert names(flt(act, decimals, ("ID", "not_in", f"{FORTY}; -5"))) == ["a", "b", "d"]
+    assert names(flt(act, decimals, ("Small", "in", f"{TINY}; 1,505; 1,5{'0' * 40}"))) == ["a"]
+    assert names(flt(act, decimals, ("Small", "in", TINY))) == []
+    assert names(flt(act, decimals, ("Small", "not_in", TINY))) == ["a", "b", "c", "d"]
+    assert names(flt(act, decimals, ("Max", "in", f"{'9' * 38}; {'9' * 39}"))) == ["a"]
+
+
+@pytest.mark.parametrize(("column", "value"), [("ID", FORTY), ("Small", TINY), ("Small", "1" * 37)])
+def test_fill_with_more_digits_than_exact_decimals_hold(act, decimals, column, value):
+    message = rf"^'{value}' has too many digits for column '{column}': an exact decimal holds 38, decimal places"
+    with pytest.raises(ActionError, match=message + " included$"):
+        act("rows.fill", decimals, {"columns": [column], "method": "value", "value": value})
+
+
+def test_fill_with_more_decimal_places_than_the_values_of_the_column_allow(act):
+    """The column gets the decimal places of the value: 123.45 with 37 of them would have 40
+    digits. Before, Polars stopped with "conversion from decimal[10,2] to decimal[38,37] failed"."""
+    df = pl.DataFrame({"d": pl.Series([D("1.5"), None, D("-123.45")], dtype=pl.Decimal(10, 2))})
+    for places in (37, 36):
+        value = "0," + "1" * places
+        message = rf"^'{value}' has too many decimal places for the values of column 'd' \(e\.g\. -123\.45\): an exact"
+        with pytest.raises(ActionError, match=message + " decimal holds 38 digits, decimal places included$"):
+            act("rows.fill", df, {"columns": ["d"], "method": "value", "value": value})
+    filled = act("rows.fill", df, {"columns": ["d"], "method": "value", "value": "0," + "1" * 35})  # 3 + 35 digits fit
+    assert filled["d"].to_list() == [D("1.5"), D("0." + "1" * 35), D("-123.45")]
+    empty = pl.DataFrame({"d": pl.Series([None], dtype=pl.Decimal(10, 2))})
+    assert act("rows.fill", empty, {"columns": ["d"], "method": "value", "value": "0," + "1" * 37})["d"][0] == D("0." + "1" * 37)
+
+
+def test_fill_exact_decimals_with_long_values_that_fit(act, decimals):
+    filled = act("rows.fill", decimals, {"columns": ["ID", "Small"], "method": "value", "value": "1" * 36})
+    assert filled["ID"].to_list()[3] == D("1" * 36) and filled["Small"].to_list()[3] == D("1" * 36)
+    places = act("rows.fill", decimals, {"columns": ["Small"], "method": "value", "value": "0," + "0" * 35 + "1"})
+    assert places["Small"].to_list() == [D("1.5"), D("0"), D("-2.25"), D("1e-36")]
+
+
 def test_typed_date_times(act):
     stamps = [dt.datetime(2025, 12, 31, 8, 30), dt.datetime(1945, 1, 1, 8, 30), None]
     df = pl.DataFrame({"Name": ["a", "b", "c"], "At": stamps})

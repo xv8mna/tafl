@@ -27,6 +27,9 @@ _MISSING_TABLE = re.compile(
 )
 # Errors that certainly don't mean a missing table
 _OTHER_ERROR = re.compile(r"permission|denied|not authori[sz]ed|privilege|access|locked|timeout|connection|login", re.IGNORECASE)
+# The digits of the decimal context rows are written in: more than a decimal (38 digits) and its
+# scale together
+_EXACT_DIGITS = 100
 
 
 class Connector:
@@ -140,11 +143,16 @@ class Connector:
     def prepare_cursor(self, cursor: Any) -> None:
         """Called before writing many rows with one cursor (e.g. to switch on bulk mode)."""
 
-    def input_sizes(self, df: pl.DataFrame, types: Mapping[str, str] | None = None) -> Sequence[Any] | None:
+    def input_sizes(
+        self, df: pl.DataFrame, types: Mapping[str, str] | None = None, temporary: bool = False
+    ) -> Sequence[Any] | None:
         """The type and size of each column's values for the driver (DB-API ``setinputsizes``)
-        when the rows of ``df`` are written, or None to let the driver find them. ``types``:
-        when the rows go into a table made by ``temp_table``, whose columns a driver may not be
-        able to look up, the type each column of ``df`` has there, as its ``CREATE`` gave it."""
+        when the rows of ``df`` are written, or None to let the driver find them (also as an
+        item: the driver finds that column's). ``types``: the type each column of ``df`` has in
+        the table the rows go into (a column it leaves out has no known type), as
+        ``column_types`` tells it, or, when the rows go into a table made by ``temp_table``
+        (``temporary``), whose columns a driver may not be able to look up, as its ``CREATE``
+        gave it."""
         return None
 
     def stage_types(self, conn: Any, table: str) -> dict[str, str]:
@@ -297,8 +305,8 @@ class Database:
     ) -> int:
         """Run one statement for many rows of values, in batches; ``between`` is called after
         each batch (e.g. ``ctx.check_cancelled``). ``sizes``: the type and size of each value for
-        the driver (``setinputsizes``), e.g. from ``connector.input_sizes``. Returns the number
-        of rows."""
+        the driver (``setinputsizes``), e.g. from ``connector.input_sizes``. Decimals go to the
+        driver in a decimal context that keeps all their digits. Returns the number of rows."""
         cursor = self.raw.cursor()
         total = 0
         try:
@@ -321,7 +329,10 @@ class Database:
 
     def _many(self, cursor: Any, sql: str, rows: list[Sequence[Any]]) -> int:
         try:
-            cursor.executemany(sql, rows)
+            # A driver may convert decimals in the thread's decimal context (pyodbc does with
+            # fast_executemany): its 28 digits would round a numeric(38) value
+            with decimal.localcontext(prec=_EXACT_DIGITS):
+                cursor.executemany(sql, rows)
         except Exception as e:
             raise ActionError(self.connector.error_message(e)) from e
         return len(rows)

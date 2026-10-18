@@ -224,6 +224,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.connections_action)
         toolbar.addAction(self.parameters_action)
+        theme.show_overflow_button(toolbar)  # in a narrow window, the buttons that don't fit are behind it
 
     def _update_actions(self) -> None:
         self.undo_action.setEnabled(self.session.can_undo)
@@ -433,7 +434,7 @@ class MainWindow(QMainWindow):
         text = "Run finished with errors" if failed else "Run finished"
         self.statusBar().showMessage(f"{text} — see Run results", 10000)
 
-    def _run_stopped(self) -> None:
+    def _run_stopped(self, _results: dict) -> None:
         self.run_dock.show()
         self.statusBar().showMessage("Run stopped — the steps after the stop did not run", 10000)
 

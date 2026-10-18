@@ -23,7 +23,14 @@ class Mode(StrEnum):
 
 
 class Context:
-    """Passed to every action run. The engine supplies a subclass wired to the project."""
+    """Passed to every action run. The engine supplies a subclass wired to the project.
+
+    ``imported_files``: the files that the first step of the table, an import of all files in a
+    folder, read (all of them, also files that gave no rows), and ``imported_folder`` that
+    folder. ``source_files`` notes them in the import's context, and the engine gives them to
+    the later steps of the same table, also when the import's result comes from the cache.
+    Both are None in a table that doesn't start with such an import (e.g. one that starts from
+    another table)."""
 
     def __init__(
         self,
@@ -35,6 +42,8 @@ class Context:
         self.mode = Mode(mode)
         self.project_dir = Path(project_dir) if project_dir else None
         self.messages: list[tuple[str, str]] = []
+        self.imported_files: tuple[Path, ...] | None = None
+        self.imported_folder: Path | None = None
         self._cancel = cancel
 
     def table(self, table_id: str) -> pl.DataFrame:

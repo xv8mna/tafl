@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 import polars as pl
@@ -160,19 +161,27 @@ with replace_file(Path(sys.argv[1])) as temporary:
 def test_the_next_export_deletes_what_a_stopped_export_left(tmp_path):
     target = tmp_path / "orders.csv"
     target.write_text("old", encoding="utf-8")
+    pc = files._COMPUTER
     for _ in range(2):  # the second export deletes what the first one left, and leaves its own
         child = subprocess.run([sys.executable, "-c", STOPPED, str(target)], capture_output=True, text=True, timeout=60)
         left = child.stdout.strip()
-        assert re.fullmatch(r"~\$orders\.[0-9a-f]+-[0-9a-f]{6}\.csv", left), child.stderr
+        found = re.fullmatch(rf"~\$orders\.{re.escape(pc)}-([0-9a-f]+)-[0-9a-f]{{6}}\.csv", left)
+        assert found, child.stderr
         assert sorted(p.name for p in tmp_path.iterdir()) == ["orders.csv", left]
-    ended = int(left.split(".")[1].split("-")[0], 16)  # the process that wrote it
-    removed = [f"~$ORDERS.{ended:x}-ABCDEF.CSV", f"~$orders.{os.getpid():x}-abcdef.csv"]
+    ended = int(found.group(1), 16)  # the process that wrote it
+    removed = [
+        f"~$ORDERS.{pc.lower()}-{ended:x}-ABCDEF.CSV",
+        f"~$orders.{pc}-{os.getpid():x}-abcdef.csv",
+        f"~$orders.{pc}-{ended:x}-abcdef.old.csv",  # an old orders.csv a move put aside: a new one is there
+    ]
     kept = [
-        f"~$orders.{os.getppid():x}-abcdef.csv",  # an export of a process that still runs
+        f"~$orders.{pc}-{os.getppid():x}-abcdef.csv",  # an export of a process that still runs
+        f"~$orders.OTHER-PC-{ended:x}-abcdef.csv",  # another computer's, writing into a shared folder
+        f"~$orders.{ended:x}-abcdef.csv",  # without the computer: can't be told
         "~$orders.csv",  # Excel's lock file of a workbook orders.csv
         "~$orders.1a2b3c4d.csv",
-        f"~$orders.{ended:x}-abcdef.xlsx",  # of another file
-        f"~$order.{ended:x}-abcdef.csv",
+        f"~$orders.{pc}-{ended:x}-abcdef.xlsx",  # of another file
+        f"~$order.{pc}-{ended:x}-abcdef.csv",
     ]
     for name in removed + kept:
         (tmp_path / name).write_text("x", encoding="utf-8")
@@ -183,6 +192,76 @@ def test_the_next_export_deletes_what_a_stopped_export_left(tmp_path):
         temporary.write_text("new", encoding="utf-8")
     assert target.read_text(encoding="utf-8") == "new"
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["orders.csv", *kept])
+
+
+OTHER_COMPUTER = """
+import os, sys
+from pathlib import Path
+from tafl.api.files import replace_file
+
+with replace_file(Path(sys.argv[1])) as temporary:
+    temporary.write_text("the other computer's export", encoding="utf-8")
+    print(temporary.name, os.getpid(), flush=True)
+    sys.stdin.readline()  # until its export is to end
+"""
+
+
+def test_the_temporary_file_of_another_computer_is_left_alone(tmp_path, monkeypatch):
+    """Another computer may export into the same shared folder: its process ids say nothing
+    here, so its temporary file is never deleted, and its export ends as it should."""
+    target = tmp_path / "orders.csv"
+    target.write_text("old", encoding="utf-8")
+    other = {**os.environ, "COMPUTERNAME": "OTHER-PC", "PYTHONPATH": os.pathsep.join(sys.path)}
+    child = subprocess.Popen(
+        [sys.executable, "-c", OTHER_COMPUTER, str(target)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=other
+    )
+    try:
+        left, process = child.stdout.readline().split()
+        running = files._running
+        monkeypatch.setattr(files, "_running", lambda number: number != int(process) and running(number))  # not here
+        with replace_file(target) as temporary:  # an export of this computer at the same time
+            temporary.write_text("ours", encoding="utf-8")
+        assert (tmp_path / left).exists() and target.read_text(encoding="utf-8") == "ours"
+        assert re.fullmatch(r"~\$orders\.OTHER-PC-[0-9a-f]+-[0-9a-f]{6}\.csv", left)
+        child.communicate("\n", timeout=60)
+    finally:
+        child.kill()
+    assert child.returncode == 0 and target.read_text(encoding="utf-8") == "the other computer's export"
+    assert [p.name for p in tmp_path.iterdir()] == ["orders.csv"]
+
+
+@windows
+def test_the_computer_in_the_names_of_temporary_files(monkeypatch):
+    monkeypatch.setenv("COMPUTERNAME", "Desk-1")
+    assert files._computer_name() == "DESK-1"
+    for odd in ("laptop.example.org", "Büro", "A" * 16):  # only letters, digits and - (at most 15)
+        monkeypatch.setenv("COMPUTERNAME", odd)
+        assert re.fullmatch(r"[0-9A-F]{8}", files._computer_name())
+    monkeypatch.setenv("COMPUTERNAME", "B" * 16)
+    assert files._computer_name() != f"{zlib.crc32(b'A' * 16):08X}"  # another name, another number
+
+
+def test_in_a_batch_each_folder_is_searched_once(tmp_path, monkeypatch):
+    looked = []
+    real = os.scandir
+
+    def scandir(path="."):
+        looked.append(Path(path))
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    for name in ("a.csv", "b.csv"):
+        with replace_file(tmp_path / name) as temporary:
+            temporary.write_text(name, encoding="utf-8")
+    assert looked == [tmp_path, tmp_path]  # each export looks
+    looked.clear()
+    with files.batch():
+        with files.batch():  # the same batch
+            files.copy_file(tmp_path / "a.csv", tmp_path / "c.csv")
+        files.copy_file(tmp_path / "b.csv", tmp_path / "d.csv")
+        files.copy_file(tmp_path / "b.csv", tmp_path / "sub" / "d.csv")
+    assert looked == [tmp_path, tmp_path / "sub"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.csv", "b.csv", "c.csv", "d.csv", "sub"]
 
 
 @windows

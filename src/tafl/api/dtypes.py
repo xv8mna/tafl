@@ -454,15 +454,16 @@ def format_numbers(s: pl.Series, fmt: str = "", decimal: str = ",") -> pl.Series
         if sections is None or value != value or value in _INFINITE:
             text = str(value) if isinstance(value, int) else _plain_float(value)
             return text.translate(swap) if swap else text
+        number = value if isinstance(value, Decimal) else Decimal(repr(value))
         section = sections[0]
-        if value < 0 and len(sections) > 1:
-            section, value = sections[1], -value  # the section writes its own minus, if any
-        elif value == 0 and len(sections) > 2:
+        if number < 0 and len(sections) > 1:
+            section, number = sections[1], number.copy_negate()  # the section writes its own minus, if any
+        elif number == 0 and len(sections) > 2:
             section = sections[2]
         if section.spec is None:  # a section without digits: only its text
             return section.prefix
-        number = value if isinstance(value, Decimal) else Decimal(repr(value))
-        rounded = number.scaleb(section.scale).quantize(section.quantum, context=_DECIMAL_CONTEXT)
+        scaled = number.scaleb(section.scale, context=_DECIMAL_CONTEXT)  # the default context keeps 28 digits
+        rounded = scaled.quantize(section.quantum, context=_DECIMAL_CONTEXT)
         text = format(rounded, section.spec)
         sign = "-" if text.startswith("-") else ""
         if section.min_digits > 1 or sign:

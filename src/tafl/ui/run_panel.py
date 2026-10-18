@@ -46,15 +46,29 @@ class RunPanel(QWidget):
     def _run_finished(self, results: dict[str, TableResult]) -> None:
         self.show_results(results, self.session.run_seconds)
 
-    def show_stopped(self) -> None:
-        """A run that was stopped has no results: what ran before the stop is done (exports too)."""
-        self.tree.clear()
+    def show_stopped(self, results: dict[str, TableResult] | None = None) -> None:
+        """A run that was stopped: ``results`` has the tables calculated before the stop (their
+        exports and commands are done) and the table that was stopped, with the steps that ran."""
+        self._show_tables(results or {})
         stopped = dt.datetime.now().strftime("%H:%M:%S")
         self.summary.setText(f"Run stopped at {stopped}: what ran before the stop is done (exports too), the rest did not run.")
         self.summary.setStyleSheet(f"color: {theme.STATUS_TEXT['warning']};")
 
     def show_results(self, results: dict[str, TableResult], seconds: float | None = None) -> None:
         """``seconds``: how long the run took (without it, the time of its steps added up)."""
+        failed, skipped, total = self._show_tables(results)
+        finished = dt.datetime.now().strftime("%H:%M:%S")
+        tables = len(results)
+        problems = f"{failed} with errors" if failed else "no errors"
+        if skipped:
+            problems += f", {skipped} skipped"
+        total = seconds if seconds is not None else total
+        self.summary.setText(f"Run finished at {finished}: {tables} table{'s' if tables != 1 else ''}, {problems}, {total:.2f} s")
+        self.summary.setStyleSheet(f"color: {theme.STATUS_TEXT['error' if failed else 'ok']};")
+
+    def _show_tables(self, results: dict[str, TableResult]) -> tuple[int, int, float]:
+        """The tables and their steps. Returns how many tables have errors, how many were skipped,
+        and the time of their steps added up."""
         self.tree.clear()
         failed = skipped = 0
         total = 0.0
@@ -75,13 +89,21 @@ class RunPanel(QWidget):
             table_seconds = sum(r.seconds for r in result.steps)
             total += table_seconds
             ok = result.ok
-            failed += not ok
+            failed += result.failed
             text = "ok" if ok else (result.first_error or "error")
             if ok and (ended := result.skipped_from) is not None:
                 text = f"ok, rest skipped: {ended.skip_reason}"
+            ran = {r.step_id for r in result.steps}
+            not_run = [s for s in table.steps if s.id not in ran] if result.stopped else []
+            if not_run:
+                text = f"stopped at step {steps[not_run[0].id][0]}"
+            elif result.stopped:
+                text = "stopped"
             top = QTreeWidgetItem([table.name, text, f"{table_seconds:.2f} s"])
             top.setToolTip(1, text)
-            top.setIcon(0, theme.status_icon("ok" if ok else "error"))
+            top.setIcon(0, theme.status_icon("warning" if result.stopped else "ok" if ok else "error"))
+            if result.stopped:
+                top.setForeground(1, theme.status_text_color("warning"))
             top.setData(0, Qt.ItemDataRole.UserRole, (table_id, None))
             for step_result in result.steps:
                 number, step = steps.get(step_result.step_id, (0, None))
@@ -99,16 +121,21 @@ class RunPanel(QWidget):
                     note.setForeground(0, theme.status_text_color("warning" if level == "warning" else "skipped"))
                     child.addChild(note)
                 top.addChild(child)
+            for index, step in enumerate(not_run):  # the step that was running, then the rest
+                text = "not run" if index else "stopped"
+                child = QTreeWidgetItem([f"{steps[step.id][0]}. {self.session.describe(step)}", text, ""])
+                child.setIcon(0, theme.status_icon("pending" if index else "warning"))
+                child.setForeground(1, theme.status_text_color("skipped" if index else "warning"))
+                child.setToolTip(1, "Not run: the run was stopped before this step" if index else "The run was stopped here")
+                child.setData(0, Qt.ItemDataRole.UserRole, (table_id, step.id))
+                for level, message in [] if index else result.stopped_messages:  # e.g. how many files it moved
+                    note = QTreeWidgetItem([("⚠ " if level == "warning" else "") + message, "", ""])
+                    note.setForeground(0, theme.status_text_color("warning" if level == "warning" else "skipped"))
+                    child.addChild(note)
+                top.addChild(child)
             self.tree.addTopLevelItem(top)
             top.setExpanded(not ok or any(r.messages for r in result.steps))
-        finished = dt.datetime.now().strftime("%H:%M:%S")
-        tables = len(results)
-        problems = f"{failed} with errors" if failed else "no errors"
-        if skipped:
-            problems += f", {skipped} skipped (off)"
-        total = seconds if seconds is not None else total
-        self.summary.setText(f"Run finished at {finished}: {tables} table{'s' if tables != 1 else ''}, {problems}, {total:.2f} s")
-        self.summary.setStyleSheet(f"color: {theme.STATUS_TEXT['error' if failed else 'ok']};")
+        return failed, skipped, total
 
     def _jump(self, item: QTreeWidgetItem, _column: int) -> None:
         target = item.data(0, Qt.ItemDataRole.UserRole) or (item.parent() and item.parent().data(0, Qt.ItemDataRole.UserRole))

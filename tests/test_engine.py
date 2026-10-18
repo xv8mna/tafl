@@ -10,6 +10,7 @@ import pytest
 from tafl.api import ActionError, Cancelled, P, action, expressions
 from tafl.core import Engine, Project, Registry, ResultCache, Status
 from tafl.core.cancel import CancelEvent
+from tafl.core.engine import Imported
 
 CSV = "Id;Customer;Amount;Date\n1;A;10,5;01.01.2025\n2;B;20;02.01.2025\n3;A;5;03.01.2025\n"
 
@@ -399,6 +400,38 @@ def test_a_step_that_tries_to_end_the_program_is_a_step_error(project, quitting_
     assert result.steps[-1].error == "The plugin 'quitting' tried to end the program (KeyboardInterrupt)"
 
 
+def test_an_actions_own_checks(project):
+    """``checks`` finds what the parameters can't check on their own: its problems stop the step
+    in a run, and show as warnings for an export or command in the preview, where it doesn't run.
+    A checks function that fails is the step's error."""
+    module = types.ModuleType("checked")
+
+    def needs_files(p, vc):
+        if p.mode == "broken":
+            raise RuntimeError("no idea")
+        return [] if vc.imported or p.mode == "any" else ["The table didn't read files from a folder"]
+
+    ran = []
+    module.send = action(
+        "demo.send", "Send", kind="command", params=[P.Text("mode", "Mode")], checks=needs_files
+    )(lambda df, p, ctx: ran.append(p.mode))
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    step = project.add_step("Orders", "demo.send", {"mode": "files"})
+    preview = Engine(project, registry).evaluate("Orders").steps[-1]
+    assert preview.status == Status.SKIPPED
+    assert preview.messages == [("warning", "The table didn't read files from a folder"), ("info", "Runs only when the project is run")]
+    run = Engine(project, registry).run()["t1"].steps[-1]
+    assert run.status == Status.ERROR and run.error == "The table didn't read files from a folder" and ran == []
+    step.params["mode"] = "any"
+    assert Engine(project, registry).run()["t1"].ok and ran == ["any"]
+    step.params["mode"] = "broken"
+    assert Engine(project, registry).evaluate("Orders").steps[-1].messages == [("info", "Runs only when the project is run")]
+    failed = Engine(project, registry).run()["t1"].steps[-1]
+    assert failed.error == "Could not check the step settings: RuntimeError: no idea" and ran == ["any"]
+
+
 def _leaving_registry(error: BaseException) -> Registry:
     """The built-in actions plus ones whose migrate, summary and fingerprint raise ``error``."""
 
@@ -473,6 +506,37 @@ def test_a_keyboard_interrupt_from_plugin_code_after_cancelling_stops(project):
         cancel.clear()
         with pytest.raises(Cancelled):
             Engine(project, registry).evaluate(table, cancel=cancel)
+
+
+def test_after_ctrl_c_all_steps_of_the_stopped_table_are_described(project):
+    """The listing after Ctrl+C describes every step of the stopped table: one whose settings
+    can't be read (here saved by a newer version) shows its action's name, and the steps after
+    it follow."""
+    cancel = threading.Event()
+    module = types.ModuleType("interrupted")
+
+    @action("demo.ctrl_c", "Ctrl+C")
+    def ctrl_c(df, p, ctx):
+        cancel.set()
+        raise KeyboardInterrupt
+
+    module.ctrl_c = ctrl_c
+    registry = Registry()
+    registry.load_builtin()
+    registry.add_module(module)
+    project.add_step("Orders", "demo.ctrl_c", {}, index=1)
+    newer = project.add_step("Orders", "rows.sort", {"by": [{"column": "Id"}]}, version=99, index=2)
+    engine = Engine(project, registry)
+    engine.cancel = cancel
+    listed = []
+
+    def done(table_id, result):  # as the command line prints a table
+        listed.extend(engine.describe(step) for step in project.table(table_id).steps)
+
+    with pytest.raises(Cancelled):
+        engine.run(cancel=cancel, done=done)
+    assert listed == ["Import orders.csv", "Ctrl+C", "Sort", "Keep rows where [Amount] > 6", "Calculate Gross", "Export to orders.csv"]
+    assert engine.describe(newer) == "Sort"
 
 
 def test_an_interruption_after_cancelling_stops_the_calculation(project):
@@ -646,6 +710,41 @@ def test_a_result_that_another_step_still_has_stays():
     cache.put("k4", df, step="s1")
     cache.put("k5", df, step="s1")
     assert cache.get("shared") is None and len(cache) == 4
+
+
+def test_the_cache_keeps_the_files_an_import_read(tmp_path):
+    cache = ResultCache()
+    df = pl.DataFrame({"a": [1]})
+    read = Imported(tmp_path, (tmp_path / "a.csv", tmp_path / "b.csv"))
+    cache.put("k1", df, step="s1", imported=read)
+    assert cache.find("k1") == (cache.lookup("k1"), read) and cache.lookup("k1") == (df, None, ())
+    cache.put("k1", df, step="s2")  # passed through unchanged: the result keeps its messages and files
+    assert cache.find("k1")[1] == read
+    cache.put("k1", df, step="s2", messages=[])
+    assert cache.find("k1")[1] is None and cache.find("k2") is None
+
+
+def test_a_lock_that_ctrl_c_left_taken_doesnt_stop_its_thread(project, registry):
+    """Ctrl+C can come right after a thread took a lock, before the block that releases it
+    begins (CPython looks for it right after ``__enter__``): the command line's thread then
+    still lists the parameters of the stopped run and uses the cache, instead of waiting."""
+    from tafl.core import Parameter
+
+    project.parameters = [Parameter("Day", "2026-10-01")]
+    engine = Engine(project, registry)
+    found = []
+
+    def after_ctrl_c() -> None:
+        engine._parameter_lock.acquire()  # as Ctrl+C left them
+        engine.cache._lock.acquire()
+        found.append(engine.parameter_values()["Day"].text)
+        engine.cache.put("k", pl.DataFrame({"a": [1]}), step="s")
+        found.append(engine.cache.get("k").height)
+
+    thread = threading.Thread(target=after_ctrl_c, daemon=True)
+    thread.start()
+    thread.join(10)
+    assert not thread.is_alive() and found == ["2026-10-01", 1]
 
 
 def test_the_cache_limit_follows_the_installed_memory(monkeypatch):

@@ -212,7 +212,7 @@ def test_turned_off_tables_are_shown_and_skipped(window, settle, session, demo):
 
     results = session.engine.run(mode=Mode.PREVIEW)
     window.run_panel.show_results(results)
-    assert "2 skipped (off)" in window.run_panel.summary.text()
+    assert ", 2 skipped, " in window.run_panel.summary.text()  # one is off, one uses it: both skipped
     assert "no errors" in window.run_panel.summary.text()
 
     group = session.add_group("Everything", [t.id for t in session.project.tables])

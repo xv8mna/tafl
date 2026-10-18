@@ -71,8 +71,12 @@ icon = "../src/tafl/ui/app.ico"
 
 def program(script, **options):
     """An EXE that runs one of the two scripts, with the shared modules. programs.scripts also
-    holds PyInstaller's start-up code and runtime hooks, which both need."""
-    scripts = [entry for entry in programs.scripts if entry[0] not in {"tafl_app", "tafl_cli"} - {script}]
+    holds PyInstaller's start-up code and runtime hooks, which both need, except Qt's: the
+    command line doesn't use Qt, and loading it at the start makes a Ctrl+C then crash."""
+    left_out = {"tafl_app", "tafl_cli"} - {script}
+    if script == "tafl_cli":
+        left_out.add("pyi_rth_pyside6")
+    scripts = [entry for entry in programs.scripts if entry[0] not in left_out]
     return EXE(modules, scripts, [], exclude_binaries=True, icon=icon, upx=False, **options)
 
 

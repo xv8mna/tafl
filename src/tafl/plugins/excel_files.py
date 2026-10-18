@@ -116,6 +116,8 @@ def import_excel(df, p, ctx):
             parts.append((path, sheet, _read_sheet(reader, sheet, p, path, ctx.warn)))
     if not parts and paths:
         raise ActionError(f"No sheet named {p.sheet_pattern} in {len(paths)} file{'s' if len(paths) != 1 else ''}")
+    if folder is not None:  # the files the import read: a workbook without a chosen sheet isn't one
+        ctx.imported_files = tuple(dict.fromkeys(path for path, _, _ in parts))
 
     def convert(data: pl.DataFrame) -> pl.DataFrame:
         if p.whole_numbers:
