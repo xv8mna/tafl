@@ -762,7 +762,9 @@ class _Evaluation:
                     parts.append(repr(action.fingerprint(params, ctx)))
                 except _BROKEN:
                     _stop_if(self.cancel)
-                    parts.append(f"no-fingerprint={time.time_ns()}")  # can't tell: read again
+                    # can't tell: read again (not by the clock: on some systems it gives the same
+                    # time for calculations a few milliseconds apart)
+                    parts.append(f"no-fingerprint={uuid.uuid4().hex}")
         if action.side_effects:
             parts.append(f"run={self.run_id}")
         for param in action.params:  # changed connection settings: read the data again

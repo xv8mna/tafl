@@ -326,6 +326,8 @@ is text).
 - A plugin that calls `sys.exit()` (or raises SystemExit or KeyboardInterrupt) no longer ends
   the app or the command line: it is a load error, or an error of its step (also from its
   `migrate`, `summary` or `fingerprint` function).
+- An import that can't tell whether its data changed is read again for every calculation, also
+  on Python 3.12, whose clock could make two quick calculations share an old result.
 - Big tables: the results kept for the previews take at most a quarter of the installed memory
   (it was a fixed 4 GB), and only the last two settings of each step are kept, so memory no
   longer grows with every edit.
