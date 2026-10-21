@@ -1,5 +1,10 @@
 # Changes
 
+## Unreleased
+
+- User guide: [docs/guide.md](docs/guide.md), `Guide.html` in the download and **Help → User
+  guide**.
+
 ## 0.3.0 – 2026-10-21
 
 Options for days without data: a folder import can go on without files, a new step skips the

@@ -11,3 +11,7 @@ APP_FOLDER = "Tafl"  # in %APPDATA% (plugins) and %LOCALAPPDATA% (log file)
 COMMAND = "tafl"  # the command line program
 APP_COMMAND = "tafl-app"  # the program that opens the window (what the desktop shortcut starts)
 PROJECT_URL = "https://github.com/xv8mna/tafl"
+# The user guide (Help → User guide): a page next to the programs in the download (tools/build.py
+# makes it from docs/guide.md), else the guide on GitHub
+GUIDE_FILE = "Guide.html"
+GUIDE_URL = f"{PROJECT_URL}/blob/main/docs/guide.md"

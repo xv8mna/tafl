@@ -5,6 +5,10 @@ Tafl is a desktop app for preparing data: a table is built step by step (import,
 export), and the data after every step is right there to look at.
 Documentation, source code and issues: https://github.com/xv8mna/tafl
 
+The user guide is Guide.html in this folder: a first project step by step, every action,
+formulas, parameters, databases and scheduled runs, with pictures. In tafl-app.exe,
+Help > User guide opens it.
+
 Start
 -----
 Unzip the download into a folder of your choice, e.g. into C:\Tools (which gives

@@ -406,6 +406,10 @@ class MapView(QWidget):
             shortcut = QShortcut(QKeySequence(sequence), self)
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             shortcut.activated.connect(slot)
+        # Esc in the search field, as on the map: no search, no selection, back to the map
+        escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self.search)
+        escape.setContext(Qt.ShortcutContext.WidgetShortcut)
+        escape.activated.connect(self._leave_search)
 
         session.project_changed.connect(self._project_changed)
         session.structure_changed.connect(self.schedule_rebuild)
@@ -1262,6 +1266,11 @@ class MapView(QWidget):
     def focus_search(self) -> None:
         self.search.setFocus()
         self.search.selectAll()
+
+    def _leave_search(self) -> None:
+        self.scene.clearSelection()
+        self.search.clear()
+        self.canvas.setFocus()
 
 
 def _top_left(points: list[tuple[float, float]]) -> tuple[float, float] | None:

@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tafl import APP_NAME, PROJECT_URL, __version__
+from tafl import APP_NAME, GUIDE_FILE, GUIDE_URL, PROJECT_URL, __version__
 from tafl.core import EXTENSION, ProjectError
 from tafl.core.registry import default_plugin_folders
 
@@ -151,6 +151,9 @@ class MainWindow(QMainWindow):
             "Formula functions", lambda: functions_window.show_functions(self), QKeySequence("F1"),
             "What the functions in formulas do and how they are written (F1)",
         )
+        self.guide_action = self._action(
+            "User guide", self.open_guide, tip="How to build, run and schedule projects, step by step and with pictures"
+        )
         self.plugins_action = self._action("Plugins…", self.show_plugins)
         self.about_action = self._action(f"About {APP_NAME}", self.show_about)
         self.log_action = self._action(
@@ -198,6 +201,7 @@ class MainWindow(QMainWindow):
         view.addSeparator()
         view.addAction(self.results_action)
         help_menu = bar.addMenu("&Help")
+        help_menu.addAction(self.guide_action)
         help_menu.addAction(self.functions_action)
         help_menu.addAction(self.plugins_action)
         help_menu.addAction(self.log_action)
@@ -480,6 +484,14 @@ class MainWindow(QMainWindow):
             f"PySide6 {pyside_version}<br>Qt {qVersion()} and PySide6 are under the LGPL-3.0{licenses}<br><br>"
             f"Log file: {self.log_file or '-'}",
         )
+
+    def open_guide(self) -> None:
+        """Help → User guide: Guide.html next to the programs in the download, else the guide on GitHub."""
+        page = Path(sys.executable).parent / GUIDE_FILE
+        if getattr(sys, "frozen", False) and page.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(page)))
+        else:
+            QDesktopServices.openUrl(QUrl(GUIDE_URL))
 
     def open_log_folder(self) -> None:
         if self.log_file is not None:

@@ -79,8 +79,8 @@ def source_params(filter: str, patterns: str) -> list[P.Param]:
             [("error", "Stop with an error"), ("empty", "Continue with an empty table"), ("skip", "Skip the rest of the table")],
             visible_if=_IN_FOLDER,
             help="e.g. for a folder that is empty on some days: skipping leaves out the steps after this "
-            "one. An empty table (with a warning) has only the file and path columns: a later step that "
-            "names another column fails.",
+            "one. An empty table (with a warning) has only the columns with the file name and the path, "
+            "as far as they are switched on below: a later step that names another column fails.",
         ),
         P.Bool("file_column", "Add a column with the file name", default=True, visible_if=_IN_FOLDER),
         P.Bool(

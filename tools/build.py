@@ -1,5 +1,6 @@
 """Build the Windows download and check it: dist\\Tafl (tafl-app.exe: the window, tafl.exe: the
-command line, the libraries, their licenses and the demo) and dist\\Tafl-<version>-windows.zip.
+command line, the libraries, their licenses, the demo and the user guide as Guide.html) and
+dist\\Tafl-<version>-windows.zip.
 
 Build in a fresh virtual environment with Python 3.14, so that only what Tafl needs goes in:
 
@@ -9,7 +10,7 @@ Build in a fresh virtual environment with Python 3.14, so that only what Tafl ne
     .venv-build\\Scripts\\python tools\\build.py
 
 The download is built from committed files only: the build stops when files in src, packaging,
-tools or examples have changes that are not committed, unless --dirty is given (for trying
+tools, examples or docs have changes that are not committed, unless --dirty is given (for trying
 things out).
 """
 
@@ -17,29 +18,82 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import os
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 import zipfile
+from html import escape
 from importlib import metadata
 from pathlib import Path, PurePath
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 APP = DIST / "Tafl"
 WORK = ROOT / "build"
+GUIDE = ROOT / "docs" / "guide.md"
 QT_NOTICES = ROOT / "packaging" / "licenses" / "Qt-third-party.txt"
 PYTHON_NOTICES = ROOT / "packaging" / "licenses" / "Python" / "ACKNOWLEDGEMENTS.txt"
 
 # Tools for building, not part of the download. PyInstaller is not one of them: its start-up code
-# and run-time hooks are in both programs.
+# and run-time hooks are in both programs. Markdown turns the user guide into Guide.html.
 BUILD_TOOLS = {"pip", "pyinstaller-hooks-contrib", "setuptools", "altgraph", "pefile", "pywin32-ctypes", "packaging",
-               "tafl"}  # fmt: skip
+               "markdown", "tafl"}  # fmt: skip
+# The pictures a guide may embed
+PICTURE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+                 ".svg": "image/svg+xml", ".webp": "image/webp"}  # fmt: skip
+WIDE_PICTURE = 736  # pixels: wider pictures may be wider than the text column (46rem) of Guide.html
+# Guide.html: readable in a narrow window and a wide one, in the light and the dark mode of Windows.
+# The text keeps a column that is easy to read; a picture wider than the column (img.wide) may
+# be as wide as the window, up to its own size, so that the text in it keeps its size.
+GUIDE_STYLE = """\
+:root { color-scheme: light dark; --text: #1f2328; --muted: #59636e; --page: #ffffff; --line: #d1d9e0;
+        --box: #f6f8fa; --link: #0969da; }
+@media (prefers-color-scheme: dark) {
+  :root { --text: #e6edf3; --muted: #9198a1; --page: #0d1117; --line: #3d444d; --box: #151b23; --link: #4493f8; }
+}
+body { margin: 0; background: var(--page); color: var(--text);
+       font: 16px/1.6 system-ui, "Segoe UI", -apple-system, sans-serif; }
+main { max-width: 46rem; margin: 0 auto; padding: 1rem 1.25rem 5rem; }
+h1, h2, h3 { line-height: 1.25; margin: 2rem 0 1rem; }
+h1 { font-size: 2rem; }
+h2 { font-size: 1.5rem; margin-top: 3rem; padding-bottom: .3rem; border-bottom: 1px solid var(--line); }
+h3 { font-size: 1.2rem; }
+a { color: var(--link); }
+img { display: block; max-width: 100%; height: auto; margin: 1rem 0; border: 1px solid var(--line); border-radius: 6px; }
+img.wide { max-width: calc(100vw - 3rem); position: relative; left: 50%; transform: translateX(-50%); }
+.toc { padding-left: 0; list-style: none; }
+.toc > li { margin-top: .4rem; }
+.toc a { text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+.toc ul { margin: .1rem 0 .4rem; padding-left: 1.25rem; list-style: none; font-size: .9rem; }
+.toc ul li { display: inline; }
+.toc ul li + li::before { content: " · "; color: var(--muted); }
+code, pre { font-family: "Cascadia Mono", Consolas, monospace; font-size: .875em; background: var(--box);
+            border-radius: 4px; }
+code { padding: .1em .35em; }
+pre { padding: .75rem 1rem; overflow-x: auto; line-height: 1.45; }
+pre code { padding: 0; background: none; font-size: 1em; }
+table { display: block; overflow-x: auto; border-collapse: collapse; margin: 1rem 0; }
+th, td { padding: .35rem .7rem; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { background: var(--box); }
+li + li { margin-top: .25rem; }
+.contents { position: fixed; right: 1rem; bottom: 1rem; padding: .35rem .8rem; border: 1px solid var(--line);
+            border-radius: 6px; background: var(--page); color: var(--muted); font-size: .9rem; text-decoration: none; }
+@media (max-width: 62rem) { .contents { right: .4rem; bottom: .4rem; padding: .15rem .5rem; font-size: .8rem; opacity: .85; } }
+@media print {
+  .contents { display: none; }
+  img { break-inside: avoid; }
+  img.wide { max-width: 100%; left: 0; transform: none; }
+}
+"""
 # Notes for libraries whose license files don't cover all their code
 LICENSE_NOTES = {
     "shiboken6": "Shiboken6 includes code from Python under the PSF License Agreement: see ..\\Python\\LICENSE.txt.\n",
@@ -85,6 +139,8 @@ def main() -> None:
     _check_sources()
     _check_qt_notices()
     _add_files(__version__, versions)
+    _add_guide()
+    _check_guide()
     _check(__version__)
     archive = _zip(__version__)
     size = sum(f.stat().st_size for f in APP.rglob("*") if f.is_file())
@@ -97,7 +153,7 @@ def _git(*arguments: str) -> str:
 
 def _committed() -> None:
     """The download is what is committed: CI checkouts are clean, a local folder may not be."""
-    changes = _git("status", "--porcelain", "--untracked-files=all", "--", "src", "packaging", "tools", "examples")
+    changes = _git("status", "--porcelain", "--untracked-files=all", "--", "src", "packaging", "tools", "examples", "docs")
     if changes:
         raise SystemExit(f"Not committed:\n{changes}\nCommit first, or build with --dirty to try things out.")
 
@@ -233,6 +289,133 @@ def _license_path(file: PurePath) -> PurePath:
     if parts[0].endswith(".dist-info"):
         parts = parts[2:] if parts[1:2] == ("licenses",) else parts[1:]
     return PurePath(*parts)
+
+
+def _add_guide() -> None:
+    """The user guide, docs/guide.md with its pictures, as one file next to the programs: Help →
+    User guide opens it."""
+    from tafl import GUIDE_FILE
+
+    (APP / GUIDE_FILE).write_text(guide_html(GUIDE), encoding="utf-8")
+
+
+def guide_html(guide: Path, root: Path = ROOT) -> str:
+    """A Markdown file of the repository as one HTML page that needs nothing else: its pictures
+    embedded as data URIs, links to other files of the repository pointing to them on GitHub, and
+    headings with the anchors GitHub gives them, so that links between chapters work in both. The
+    list under the heading Contents becomes a list of all chapters with their sections.
+    Needs the package markdown, a build tool (not part of the download)."""
+    import markdown
+    from markdown.extensions.toc import TocExtension
+    from markdown.treeprocessors import Treeprocessor
+
+    from tafl import PROJECT_URL
+
+    class Embed(Treeprocessor):
+        def run(self, element):
+            for image in element.iter("img"):
+                picture = guide.parent / image.get("src", "")
+                image.set("src", _data_uri(picture))
+                if size := _picture_size(picture):  # the page keeps its layout while it loads
+                    image.set("width", str(size[0]))
+                    image.set("height", str(size[1]))
+                    if size[0] > WIDE_PICTURE:
+                        image.set("class", "wide")
+            for link in element.iter("a"):
+                link.set("href", _repository_link(link.get("href", ""), guide, root, PROJECT_URL))
+
+    extensions = [f"markdown.extensions.{name}" for name in ("tables", "fenced_code", "sane_lists")]
+    converter = markdown.Markdown(extensions=[*extensions, TocExtension(slugify=anchor)])
+    converter.treeprocessors.register(Embed(converter), "embed", 1)  # after the links, pictures and anchors are made
+    text = guide.read_text(encoding="utf-8")
+    body = _with_sections(converter.convert(text), converter.toc_tokens)
+    title = next((line[2:].strip() for line in text.splitlines() if line.startswith("# ")), guide.stem)
+    contents = '<a class="contents" href="#contents">Contents</a>\n' if 'id="contents"' in body else ""
+    return (
+        '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"<title>{escape(title)}</title>\n<style>\n{GUIDE_STYLE}</style>\n</head>\n"
+        f"<body>\n<main>\n{body}\n</main>\n{contents}</body>\n</html>\n"
+    )
+
+
+def anchor(heading: str, separator: str = "-") -> str:
+    """The anchor GitHub gives a heading: lower case, without punctuation, a hyphen for each space."""
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", separator)
+
+
+def _with_sections(body: str, tokens: list[dict]) -> str:
+    """The list under the heading Contents replaced by the chapters (the headings ## of the
+    page) with their sections (###): the HTML page has no outline of its own, as GitHub has."""
+    start = re.search(r'<h2 id="contents">.*?</h2>\s*<ul>', body)
+    if start is None:
+        return body
+    depth, position = 1, start.end()
+    for tag in re.finditer(r"<(/?)ul\b", body[position:]):
+        depth += -1 if tag.group(1) else 1
+        if depth == 0:
+            end = position + tag.end() + len(">")
+            break
+    else:
+        return body
+    chapters = [token for top in tokens for token in (top["children"] if top["level"] == 1 else [top])]
+    items = []
+    for chapter in chapters:
+        if chapter["id"] == "contents":
+            continue
+        sections = "".join(f'<li><a href="#{s["id"]}">{s["html"]}</a></li>' for s in chapter["children"])
+        sections = f"<ul>{sections}</ul>" if sections else ""
+        items.append(f'<li><a href="#{chapter["id"]}">{chapter["html"]}</a>{sections}</li>')
+    return f'{body[: start.end() - len("<ul>")]}<ul class="toc">\n' + "\n".join(items) + f"\n</ul>{body[end:]}"
+
+
+def _data_uri(picture: Path) -> str:
+    kind = PICTURE_TYPES.get(picture.suffix.lower())
+    if kind is None or not picture.is_file():
+        raise SystemExit(f"The guide shows a picture that isn't there: {picture}")
+    return f"data:{kind};base64,{base64.b64encode(picture.read_bytes()).decode('ascii')}"
+
+
+def _picture_size(picture: Path) -> tuple[int, int] | None:
+    """Width and height of a PNG file (from its header), or None for another picture."""
+    with open(picture, "rb") as file:
+        head = file.read(24)
+    if head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", head[16:24])
+    return width, height
+
+
+def _repository_link(href: str, guide: Path, root: Path, project_url: str) -> str:
+    """A link to another file of the repository (../README.md#install) as a link to it on GitHub."""
+    if not href or href.startswith("#") or urlsplit(href).scheme:
+        return href
+    path, _, fragment = href.partition("#")
+    try:
+        target = Path(os.path.normpath(guide.parent / path)).relative_to(root).as_posix()
+    except ValueError:
+        raise SystemExit(f"{guide.name} links to a file outside the repository: {href}") from None
+    return f"{project_url}/blob/main/{target}" + (f"#{fragment}" if fragment else "")
+
+
+def _check_guide() -> None:
+    """Guide.html is in the download, with every picture of the guide embedded."""
+    from tafl import GUIDE_FILE
+
+    page = APP / GUIDE_FILE
+    if not page.is_file():
+        raise SystemExit(f"{page} is missing")
+    html = page.read_text(encoding="utf-8")
+    sources = re.findall(r'<img [^>]*?src="([^"]*)"', html)
+    embedded = [source for source in sources if source.startswith("data:image/")]
+    pictures = re.findall(r"!\[(?:\\.|[^\[\]\\]|\[[^\]]*\])*\]\([^)\s]+\)", GUIDE.read_text(encoding="utf-8"))
+    local = re.findall(r'href="((?!#|https?:|mailto:)[^"]*)"', html)
+    if len(embedded) != len(sources) or len(sources) != len(pictures) or local:
+        raise SystemExit(
+            f"{page.name}: {len(sources)} pictures, {len(embedded)} of them embedded, for the {len(pictures)} of "
+            f"{GUIDE.relative_to(ROOT)}; links to local files: {local or '-'}"
+        )
+    print(f"{page.name}: {len(sources)} pictures embedded, {page.stat().st_size / 2**20:.1f} MB")
 
 
 def _check(version: str) -> None:

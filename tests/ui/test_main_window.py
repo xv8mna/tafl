@@ -1,7 +1,11 @@
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import qVersion
 from PySide6.QtWidgets import QMessageBox
+
+from tafl import GUIDE_URL
+from tafl.ui import main_window
 
 
 def test_window_shows_the_demo(window, settle, session, demo):
@@ -62,3 +66,28 @@ def test_about_names_the_licenses_of_qt_and_pyside(window, monkeypatch, tmp_path
     monkeypatch.setattr(sys, "executable", str(tmp_path / "tafl-app.exe"))
     window.show_about()
     assert f"LGPL-3.0; the licenses of all parts are in {tmp_path / 'licenses'}.<br>" in shown[1]
+
+
+def test_user_guide_opens_the_page_of_the_download_or_the_guide_on_github(window, monkeypatch, tmp_path):
+    opened = []
+
+    class Desktop:  # never a real browser
+        openUrl = staticmethod(opened.append)
+
+    monkeypatch.setattr(main_window, "QDesktopServices", Desktop)
+    help_menu = window.menuBar().actions()[-1].menu()
+    assert help_menu.actions()[0] is window.guide_action
+    assert window.guide_action.text() == "User guide"
+
+    window.guide_action.trigger()  # a source install
+    assert opened.pop().toString() == GUIDE_URL == "https://github.com/xv8mna/tafl/blob/main/docs/guide.md"
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)  # the download
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "tafl-app.exe"))
+    (tmp_path / "Guide.html").write_text("<!DOCTYPE html>", encoding="utf-8")
+    window.guide_action.trigger()
+    assert Path(opened.pop().toLocalFile()) == tmp_path / "Guide.html"
+
+    (tmp_path / "Guide.html").unlink()  # removed from the folder: the guide on GitHub
+    window.guide_action.trigger()
+    assert opened.pop().toString() == GUIDE_URL

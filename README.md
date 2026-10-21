@@ -5,6 +5,10 @@ and the data after every step is right there to look at. Projects are saved as `
 and can also be run from the command line, e.g. by the Windows Task Scheduler. *Tafl* is Old Norse
 for "table".
 
+**[User guide](docs/guide.md)**: a first project step by step, the window, every action, formulas,
+parameters, databases and scheduled runs, with pictures. The download has it as `Guide.html`, and
+**Help → User guide** opens it. This README has the details for reference.
+
 ![The table view: tables, steps, the data after the selected step, and its settings](docs/table-view.png)
 
 - **Import** CSV / text files, Excel workbooks and Parquet files (one file or all files of a
@@ -106,6 +110,9 @@ Only in a source install (they need Python):
 ## Using the app
 
 ![The project map](docs/project-map.png)
+
+The [user guide](docs/guide.md) explains all of this with pictures and examples (**Help → User
+guide** in the app). In short:
 
 - **Tables** (top left): **+ New table** starts a table with an import. Double-click to rename,
   drag to reorder, right-click for more.
@@ -639,7 +646,8 @@ you trust.
   written by `tools\lock.py` (it needs `pip install uv`); `--upgrade` takes the newest versions
   that `pyproject.toml` allows. Once a week, CI also tests with the newest versions.
 - `tools\build.py` builds the Windows download into `dist\` and checks it (see its description
-  for the build environment). A tag like `v0.2.0` makes CI build it and publish the release, with
+  for the build environment). It also turns the user guide into `Guide.html`, with the pictures in
+  the file. A tag like `v0.2.0` makes CI build it and publish the release, with
   that version's part of [CHANGELOG.md](CHANGELOG.md) as the notes.
 - The SQL Server tests run only when the environment variable `TAFL_TEST_SQLSERVER` names a
   server you can reach with your Windows login (e.g. `.\SQLEXPRESS`). They read `master` and
@@ -651,6 +659,10 @@ you trust.
   .venv\Scripts\python tools\screenshot.py docs\table-view.png --project examples\demo.tafl --table Orders --step 4
   .venv\Scripts\python tools\screenshot.py docs\project-map.png --project examples\demo.tafl --table Customers --step 3 --map
   ```
+
+- `tools\guide_screenshots.py` makes the pictures of the user guide (`docs\guide\*.png`) in the
+  same way, from example projects it builds in a temporary folder: run it after a change to the
+  window. With picture names (`--list` shows them), it makes only those.
 
 ## Reporting problems
 

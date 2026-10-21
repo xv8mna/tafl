@@ -196,6 +196,20 @@ def test_find_a_table_in_a_collapsed_group(window, settle, session, demo):
     assert visible.contains(node.box_rect())
 
 
+def test_esc_in_the_search_field_ends_the_search(window, settle, session, demo, qtbot):
+    view = open_map(window, session, demo, settle)
+    window.activateWindow()
+    QTest.keyClick(view.canvas, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+    qtbot.waitUntil(view.search.hasFocus, timeout=2000)
+    QTest.keyClicks(view.search, "orders")
+    QTest.keyClick(view.search, Qt.Key.Key_Return)
+    assert view.search.hasFocus() and view.scene.selectedItems()
+    QTest.keyClick(view.search, Qt.Key.Key_Escape)
+    assert view.search.text() == "" and not view.scene.selectedItems()
+    assert not any(node.search_match for node in view.nodes.values())
+    assert view.canvas.hasFocus()
+
+
 def test_turned_off_tables_are_shown_and_skipped(window, settle, session, demo):
     view = open_map(window, session, demo, settle)
     customers, orders, revenue = session.project.tables

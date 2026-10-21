@@ -44,8 +44,9 @@ dependencies = [
 # Tafl installs from those alone (pip install --no-deps --no-build-isolation, as CI does).
 # requirements.lock has only what Tafl needs to run: an install with it lets pip get setuptools.
 [project.optional-dependencies]
-dev = ["pytest>=9,<10", "pytest-qt>=4.4,<5", "openpyxl>=3.1,<4", "ruff==0.17.0", "setuptools>=77"]
-build = ["pyinstaller>=6.22,<7", "setuptools>=77"]  # the Windows download (tools/build.py)
+# markdown turns the user guide into Guide.html for the download; the tests check that too.
+dev = ["pytest>=9,<10", "pytest-qt>=4.4,<5", "openpyxl>=3.1,<4", "ruff==0.17.0", "setuptools>=77", "markdown>=3.5,<4"]
+build = ["pyinstaller>=6.22,<7", "setuptools>=77", "markdown>=3.5,<4"]  # the Windows download (tools/build.py)
 
 [project.urls]
 Homepage = "https://github.com/xv8mna/tafl"
