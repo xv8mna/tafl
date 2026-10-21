@@ -1,6 +1,6 @@
 # Changes
 
-## 0.3.0 – 2026-10-17
+## 0.3.0 – 2026-10-21
 
 Options for days without data: a folder import can go on without files, a new step skips the
 rest of a table when it is empty, and every export can leave out an empty table. Also many
