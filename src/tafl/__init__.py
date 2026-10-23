@@ -3,7 +3,7 @@
 *Tafl* is Old Norse for "table".
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 # The app's name in one place: window, dialogs, shortcut, command line, folders.
 APP_NAME = "Tafl"

@@ -1,9 +1,11 @@
 # Changes
 
-## Unreleased
+## 0.3.1 – 2026-10-23
 
-- User guide: [docs/guide.md](docs/guide.md), `Guide.html` in the download and **Help → User
-  guide**.
+- A user guide with pictures of the window: [docs/guide.md](https://github.com/xv8mna/tafl/blob/main/docs/guide.md),
+  `Guide.html` in the download and **Help → User guide**.
+- On the project map, Esc in the search field ends the search, as it does on the map.
+- The help of "When there are no files" says which columns an empty table has.
 
 ## 0.3.0 – 2026-10-21
 
