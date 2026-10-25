@@ -1,6 +1,6 @@
 # Changes
 
-## 0.4.0 – 2026-10-24
+## 0.4.0 – 2026-10-25
 
 A Find panel that lists what a project reads and writes and finds any step by its texts, marks
 for imports and exports on the project map with a highlight of what a table uses and what uses
