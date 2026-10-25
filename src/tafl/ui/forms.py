@@ -9,12 +9,13 @@ from __future__ import annotations
 import html
 import os
 import weakref
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+import shiboken6
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
@@ -102,6 +103,26 @@ class Editor(QWidget):
         are cut off), so that the row fits a narrow settings panel."""
         for combo in self.findChildren(_Combo):
             combo.make_narrow()
+
+    def focus_input(self) -> QWidget:
+        """Put the keyboard focus into the editor; returns the widget that has it (its focus proxy,
+        else its first child that takes Tab focus, else itself). A line edit gets its text
+        selected."""
+        widget = self.focusProxy()
+        if widget is None:
+            widget = next(
+                (
+                    child
+                    for child in self.findChildren(QWidget)
+                    if child.focusPolicy() & Qt.FocusPolicy.TabFocus and child.isEnabled() and child.isVisibleTo(self)
+                ),
+                self,
+            )
+        widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        line = widget.lineEdit() if isinstance(widget, QComboBox) else widget
+        if isinstance(line, QLineEdit):
+            line.selectAll()
+        return widget
 
 
 class _Combo(QComboBox):
@@ -1108,6 +1129,10 @@ class ListEditor(Editor):
             self._rebuild(rows)
             self.changed.emit()
 
+    def row_editor(self, row: int, key: str) -> Editor | None:
+        """The editor of field ``key`` in row ``row`` (from 1)."""
+        return self._rows[row - 1].get(key) if 1 <= row <= len(self._rows) else None
+
     def _child_changed(self) -> None:
         self._update_visibility()
         self.changed.emit()
@@ -1161,6 +1186,27 @@ def _set_missing(widget: QWidget, missing: bool) -> None:
         widget.setProperty("missing", missing)
         widget.style().unpolish(widget)
         widget.style().polish(widget)
+
+
+def flash(widgets: Iterable[QWidget], msecs: int = 1500) -> None:
+    """Mark widgets for a moment (dynamic property "found", styled in theme.STYLE_SHEET)."""
+    marked = [widget for widget in widgets if widget is not None]
+    for widget in marked:
+        _set_found(widget, True)
+
+    def clear() -> None:
+        for widget in marked:
+            if shiboken6.isValid(widget):  # a form built again meanwhile deleted it
+                _set_found(widget, False)
+
+    QTimer.singleShot(msecs, clear)
+
+
+def _set_found(widget: QWidget, found: bool) -> None:
+    widget.setProperty("found", found)
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+    widget.update()
 
 
 _EDITORS: dict[str, type[Editor]] = {
@@ -1237,6 +1283,24 @@ class ParamForm(QWidget):
 
     def editor(self, key: str) -> Editor:
         return next(editor for param, _, editor, _ in self._rows if param.key == key)
+
+    def focus(self, key: str, row: int = 0, field: str = "") -> QWidget | None:
+        """Focus the editor of setting ``key`` (in a list: of ``field`` in ``row``) and flash it and
+        its label. None when the setting isn't there or isn't shown."""
+        found = next(((label, editor) for param, label, editor, _ in self._rows if param.key == key), None)
+        if found is None or found[1].isHidden():
+            return None
+        label, editor = found
+        target: Editor = editor
+        if isinstance(editor, ListEditor):  # a field of a row; else the first field shown in the row
+            row = max(row, 1)
+            shown = editor.row_editor(row, field)
+            if (shown is None or shown.isHidden()) and row <= len(editor._rows):
+                shown = next((e for e in editor._rows[row - 1].values() if not e.isHidden()), None)
+            target = shown or editor
+        widget = target.focus_input()
+        flash([widget] if label is None else [widget, label])
+        return widget
 
     def _on_changed(self) -> None:
         values = self.values()

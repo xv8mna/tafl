@@ -3,11 +3,12 @@ writing, copying, moving and deleting files safely, for exports and commands.
 
 An import action puts ``source_params(...)`` first in its parameters, reads each file of
 ``source_files(p, ctx)`` and returns ``combine(...)``; ``fingerprint=sources_fingerprint``
-makes the app notice new, changed and deleted files::
+makes the app notice new, changed and deleted files, and ``endpoints=source_endpoints`` tells
+it the file or folder that the step reads::
 
     @action("my.import", "Import my files", kind="source",
             params=[*source_params("My files (*.my)", "*.my")],
-            fingerprint=sources_fingerprint)
+            fingerprint=sources_fingerprint, endpoints=source_endpoints)
     def import_my(df, p, ctx):
         files, folder = source_files(p, ctx)
         return combine([(path, None, read_my(path)) for path in files], p, folder)
@@ -53,6 +54,7 @@ import polars as pl
 
 from . import params as P
 from .context import Context
+from .endpoints import FOLDER, IN, Endpoint, file_endpoint
 from .errors import ActionError, SkipRest
 
 _IN_FOLDER = {"source": "folder"}
@@ -147,6 +149,31 @@ def _sources(params: Any, ctx: Context) -> tuple[list[Path], Path | None]:
     if not folder.is_dir():
         raise ActionError(f"Folder not found: {folder}")
     return find_files(folder, params.get("pattern", "*"), params.get("subfolders", False)), folder
+
+
+def source_endpoints(params: Any) -> list[Endpoint]:
+    """``endpoints=`` for import actions with ``source_params``: the file, or the folder with the
+    file names (and "with subfolders"), whose files the later steps of the table can take."""
+    if params.get("source", "file") != "folder":
+        file = params.get("file")
+        return [file_endpoint(file, IN, setting="file")] if isinstance(file, str) and file.strip() else []
+    folder, pattern = params.get("folder"), params.get("pattern")
+    if not (isinstance(folder, str) and folder.strip()):
+        return []
+    pattern = pattern.strip() if isinstance(pattern, str) else ""
+    subfolders = bool(params.get("subfolders"))
+    return [
+        Endpoint(
+            IN,
+            FOLDER,
+            place=folder.strip(),
+            name=pattern or "*",
+            mode="with subfolders" if subfolders else "",
+            setting="folder",
+            mode_setting="subfolders" if subfolders else "",
+            folder_import=True,
+        )
+    ]
 
 
 def sources_fingerprint(params: Any, ctx: Context) -> Any:

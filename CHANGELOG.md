@@ -1,5 +1,56 @@
 # Changes
 
+## 0.4.0 – 2026-10-24
+
+A Find panel that lists what a project reads and writes and finds any step by its texts, marks
+for imports and exports on the project map with a highlight of what a table uses and what uses
+it, and a merge that says how many rows matched.
+
+- **Find panel** (**Find** in the toolbar, Ctrl+Shift+F, **View → Find panel**): a panel beside
+  the tables view and the map. With an empty search it lists every import, export and command,
+  each with the file, folder or sheet, or the connection and database table, that it reads or
+  writes. A search finds steps by the names of their table, group and action, their summaries
+  and notes, and every text setting: files, SQL, formulas, conditions, column names, connections
+  and parameters; all words must match. Filters show the steps with problems, those turned off,
+  those changed since the project was opened, and those that use a parameter. The results can be
+  grouped by kind, by table, or by place (folder or connection, then file or database table). A
+  click selects the step in the current view; Enter in the results or a double-click also puts
+  the cursor into the setting that matched. Enter in the search field goes to the next result,
+  and F3 and Shift+F3 go to the next and previous result from anywhere.
+- Project map: the rows of imports are marked **in**, those of exports and commands **out**, and
+  a collapsed group counts them ("3 in · 2 out").
+- Project map: H (or **Uses / used by** above the map, or a box's right-click menu) shows the
+  tables the selected table uses, directly or through others, and the tables that use it, each
+  in a color of its own; the other tables dim. H or Esc ends it.
+- Merge with another table says how many rows matched, with up to three keys of the rows without
+  a match: "152 of 156 rows matched, 4 without a match: 09999". Each merge type says it in its
+  own words, e.g. how many rows an inner join left out.
+- The box at the top of the step settings shows what a step reported, such as the merge's
+  message or what an import detected. Before, these messages were only in Run results.
+- Plugins: `endpoints=` in `action(...)` tells the Find panel what a step reads and writes
+  (`Endpoint`, `file_endpoint` and `source_endpoints` in `tafl.api`). Without it, the action's
+  file, folder and connection settings count, and an import built with `source_params` gets the
+  endpoints of `source_endpoints`, so plugins keep working as they are.
+- Fixes: on the project map, a step turned on or off shows it at once (a dashed arrow, a pale
+  row), and a new summary is on its row at once. What is typed into a setting stays with its
+  step when another step is selected before the field is left. Undo and Redo in the toolbar or
+  the Edit menu apply what is typed into a setting or a note first, as Save and Run do, and Undo
+  takes back just that typing; before, the setting's values were written into the step selected
+  by the undo, and Redo was lost. A merge with the same row in
+  **Match rows where** twice, or with one column of the other table for two columns of this
+  table, works instead of stopping with an error. So does a full join of a date, date-time, time
+  or true/false key with a text key, and a merge on two time spans of different units; keys that
+  can't be compared at all, such as a duration and a text, stop with a message that says so and
+  what to do. A time compared with a text keeps its fractions of a second: 08:00:00.5 no longer
+  matches "08:00:00". A column added by a merge no longer stops the step when its new name
+  ("City (2)") is the name of the other table's key column: it gets the next one. A full join that uses only the first matching row adds
+  every row of the other table without a match, also those with an empty or a repeated key. Undo
+  of a connection rename brings back the old name in the steps that use the connection. When the
+  key columns of a database export don't identify the rows, the message names the same key value
+  every time: the first one in the order of the rows that occurs more than once, and a key column
+  may be named "len". Undo after saving
+  the project in another folder brings back file paths that still point to the same files.
+
 ## 0.3.1 – 2026-10-23
 
 - A user guide with pictures of the window: [docs/guide.md](https://github.com/xv8mna/tafl/blob/main/docs/guide.md),

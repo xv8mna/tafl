@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tafl.core import Connection, Parameter, Project, ProjectError, Status
+from tafl.core import Connection, Engine, Parameter, Project, ProjectError, Status
 
 
 def test_open_select_and_calculate(qtbot, settle, session, demo):
@@ -82,6 +82,7 @@ def test_saving_elsewhere_keeps_file_paths_working(qtbot, settle, session, demo,
 def test_saving_into_a_folder_without_permission(qtbot, settle, session, demo, tmp_path, monkeypatch):
     session.open_project(demo)
     first = session.project.tables[0].steps[0]
+    session.set_note(first.id, "checked")  # an undo step: its paths stay as they were too
 
     def denied(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
@@ -92,6 +93,39 @@ def test_saving_into_a_folder_without_permission(qtbot, settle, session, demo, t
         session.save_project(folder / "copy.tafl")
     assert first.params["file"] == "data/customers.xlsx"  # not saved: the paths are as they were
     assert session.project.path == demo.resolve()
+    session.undo()
+    assert session.find_step(first.id)[1].params["file"] == "data/customers.xlsx"
+
+
+def test_undo_and_redo_after_saving_elsewhere_keep_file_paths_working(session, registry, tmp_path):
+    """The undo and redo steps get the paths of the new folder too. Before, undoing an edit of a
+    path made before saving brought back a path relative to the old folder, which then pointed
+    into the new one."""
+    project = Project(name="x")
+    project.add_connection("shop", "sqlite", file="data/shop.db")
+    step = project.add_step(project.add_table("Orders"), registry.actions["csv.import"], {"file": "data/orders.csv"})
+    project.save(tmp_path / "here" / "x.tafl")
+    session.open_project(tmp_path / "here" / "x.tafl")
+    session.set_params(step.id, {"file": "data/orders 2.csv"})
+    session.set_connections([Connection("shop", "sqlite", {"file": "data/shop 2.db"})])
+    session.set_note(step.id, "checked")  # its undo step shares the settings with the edit before
+    session.undo()  # the note is a redo step now
+    session.save_project(tmp_path / "x.tafl")  # one folder up: the paths start with here/
+
+    def paths() -> tuple[str, str]:
+        return session.find_step(step.id)[1].params["file"], session.project.connections[0].settings["file"]
+
+    assert paths() == ("here/data/orders 2.csv", "here/data/shop 2.db")
+    session.redo()
+    assert session.find_step(step.id)[1].note == "checked" and paths() == ("here/data/orders 2.csv", "here/data/shop 2.db")
+    session.undo()
+    session.undo()
+    assert paths() == ("here/data/orders 2.csv", "here/data/shop.db")
+    session.undo()
+    assert paths() == ("here/data/orders.csv", "here/data/shop.db")
+    session.redo()
+    session.redo()
+    assert paths() == ("here/data/orders 2.csv", "here/data/shop 2.db")
 
 
 def test_saving_elsewhere_keeps_paths_that_start_with_a_parameter(session, registry, tmp_path):
@@ -133,6 +167,53 @@ def test_parameter_values_stay_until_a_reload(session, settle, demo):
     assert session.parameter_values()["R"] == second  # the same parameters as before: the same values
 
 
+def test_calculating_all_tables_goes_on_after_a_selection_or_an_edit(qtbot, settle, session, demo):
+    """calculate_all (the Find panel's Problems filter in the tables view): the selected table is
+    calculated first, then the others, until every table has a result. Before, a selection or an
+    edit while it calculated stopped it for good."""
+
+    def calculated() -> set[str]:
+        settle(session)
+        return set(session.results) & {t.id for t in session.project.tables}
+
+    session.open_project(demo)
+    customers, orders, revenue = (t.id for t in session.project.tables)
+    assert calculated() == {customers}
+    session.calculate_all()
+    session.select_table(orders)  # the selected table first: it stops the others for a while
+    assert calculated() == {customers, orders, revenue}
+
+    session.open_project(demo)  # another project: only the selected table again
+    session.select_table(orders)
+    assert calculated() == {customers, orders}
+    session.calculate_all()
+    session.set_note(session.project.tables[0].steps[0].id, "An edit")
+    session.calculate_now()  # what the edit starts a moment later
+    assert calculated() == {customers, orders, revenue}
+
+    session.open_project(demo)
+    session.calculate_all()
+    session.calculate_all(False)  # the filter is turned off again
+    session.select_table(orders)
+    assert calculated() == {customers, orders}
+
+
+def test_calculating_all_tables_stops_after_an_unexpected_error(qtbot, settle, session, demo, monkeypatch):
+    """An unexpected error while all tables are calculated is shown once, not again after every
+    selection."""
+    session.open_project(demo)
+    settle(session)
+    errors = []
+    session.error.connect(errors.append)
+    monkeypatch.setattr(Engine, "run", lambda self, *args, **kwargs: 1 / 0)
+    session.calculate_all()
+    settle(session)
+    for table in session.project.tables[1:]:
+        session.select_table(table.id)
+        settle(session)
+    assert len(errors) == 1 and "ZeroDivisionError" in errors[0]
+
+
 def test_run_project_writes_exports_and_previews_reuse_it(qtbot, settle, session, demo):
     session.open_project(demo)
     settle(session)
@@ -156,6 +237,25 @@ def test_renaming_a_connection_updates_its_steps(session, registry, tmp_path):
     session.find_step(step.id)[1].params["connection"] = ["main"]  # a file written by hand
     session.set_connections([Connection("db", "sqlite", {"file": "data.db"})], {"main": "db"})
     assert session.find_step(step.id)[1].params["connection"] == ["main"] and session.dirty
+
+
+def test_undo_of_a_connection_rename_brings_back_the_old_name_in_the_steps(session, registry, tmp_path):
+    project = Project(name="x")
+    project.add_connection("Old", "sqlite", file="data.db")
+    table = project.add_table("T")
+    step = project.add_step(table, registry.actions["db.import"], {"connection": "Old", "table": "t"})
+    project.save(tmp_path / "x.tafl")
+    session.open_project(tmp_path / "x.tafl")
+    session.set_connections([Connection("New", "sqlite", {"file": "data.db"})], renames={"Old": "New"})
+    assert session.find_step(step.id)[1].params["connection"] == "New"
+    session.undo()
+    assert [c.name for c in session.project.connections] == ["Old"]
+    assert session.find_step(step.id)[1].params["connection"] == "Old"
+    session.redo()
+    assert [c.name for c in session.project.connections] == ["New"]
+    assert session.find_step(step.id)[1].params["connection"] == "New"
+    session.undo()
+    assert session.find_step(step.id)[1].params["connection"] == "Old"
 
 
 def test_the_input_of_a_step_waits_for_new_results(qtbot, settle, session, demo):

@@ -83,6 +83,7 @@ class Session(QObject):
         self.step_id: str | None = None
         self.dirty = False
         self.overview = False  # True while the project map is shown: calculate every table
+        self._all = False  # calculate_all: the tables without a result are calculated too
         self._undo: list[dict[str, Any]] = []
         self._redo: list[dict[str, Any]] = []
         self._stamp: tuple[int, int] | None = None  # the project file as it was opened or saved
@@ -145,6 +146,8 @@ class Session(QObject):
             raise
         self._stamp = _stamp(saved)
         self._set_dirty(False)
+        if before is not None:
+            self._rebase_history(old_dir, target.parent)
         self.structure_changed.emit()
         return saved
 
@@ -163,6 +166,7 @@ class Session(QObject):
         self.project = project
         self.engine = Engine(project, self.registry, self.engine.cache)
         self.results = {}
+        self._all = False
         self._recheck.clear()
         self._waiting.clear()
         self._undo.clear()
@@ -361,13 +365,13 @@ class Session(QObject):
         self._timer.start()
 
     def calculate_now(self) -> None:
-        """Calculate the selected table; on the project map, all other tables afterwards, and
-        else the tables whose results are out of date (see ``_on_results``)."""
+        """Calculate the selected table; on the project map (or for ``calculate_all``), all other
+        tables afterwards, and else the tables whose results are out of date (see ``_on_results``)."""
         self._timer.stop()
         table_id = self.table_id if self.table_id and self.project.find_table(self.table_id) else None
         if table_id is not None:
             self._calculate("table", table_id)
-        elif self.overview and self.project.tables:
+        elif self._wants_all() and self.project.tables:
             self._calculate("all", None)
         else:
             self._calculate_stale()
@@ -391,6 +395,20 @@ class Session(QObject):
         if enabled != self.overview:
             self.overview = enabled
             self.calculate_now()
+
+    def calculate_all(self, enabled: bool = True) -> None:
+        """While enabled (for the Find panel's Problems filter in the tables view), the tables that
+        have no result yet are calculated after the selected table, until every table has one: a
+        selection or an edit calculates the selected table first, and then they go on. The project
+        map calculates them anyway."""
+        self._all = enabled
+        if enabled and not self.overview and self._wants_all():
+            self._calculate("all", None)
+
+    def _wants_all(self) -> bool:
+        """Whether every table is calculated after the selected one: on the project map, and for
+        ``calculate_all`` while a table has no result yet."""
+        return self.overview or (self._all and any(t.id not in self.results for t in self.project.tables))
 
     def reload_sources(self) -> None:
         """Read files and databases again: the selected table first, then every other table
@@ -445,13 +463,15 @@ class Session(QObject):
         if scope == "table" and changed:  # the tables that use a changed table show old results now
             self._recheck |= (self.users(changed) & set(self.results)) - set(results)
         self.results_changed.emit()
-        if scope == "table" and self.overview:  # the selected table first, then everything else
+        if scope == "table" and self._wants_all():  # the selected table first, then everything else
             self._calculate("all", None)
         elif scope == "table":
             self._calculate_stale()
 
     def _failed(self, text: str) -> None:
-        self._recheck.clear()  # not again and again after every edit
+        # Not again and again after every edit or selection
+        self._recheck.clear()
+        self._all = False
         self.error.emit(text)
 
     def _update_results(self, results: dict[str, TableResult]) -> None:
@@ -847,7 +867,8 @@ class Session(QObject):
                 for param in action.params if action else ():
                     value = step.params.get(param.key)
                     if param.kind == "connection" and isinstance(value, str) and value in renames:
-                        step.params[param.key] = renames[value]
+                        # New settings, not changed in place: the undo step holds the old ones
+                        step.params = {**step.params, param.key: renames[value]}
         self._edited(structure=True)
 
     def set_parameters(self, new: list[Parameter], renames: dict[str, str] | None = None) -> None:
@@ -960,16 +981,39 @@ class Session(QObject):
     def _rebase_paths(self, old_dir: Path | None, new_dir: Path) -> None:
         """Keep file paths valid when the project is saved in another folder: relative paths are
         relative to the project file. A path that starts with a parameter ({Folder}\\orders.csv)
-        stays as it is: the parameter may stand for a whole folder."""
+        stays as it is: the parameter may stand for a whole folder. The settings get new dicts:
+        the undo and redo steps share the old ones (see ``_rebase_history``)."""
         for table in self.project.tables:
             for step in table.steps:
                 action = self.registry.actions.get(step.action)
                 if action is not None:
-                    _rebase(step.params, action.params, old_dir, new_dir)
+                    step.params = _rebased(step.params, action.params, old_dir, new_dir)
         for connection in self.project.connections:
             connector = self.registry.connectors.get(connection.type)
             if connector is not None:
-                _rebase(connection.settings, connector.params, old_dir, new_dir)
+                connection.settings = _rebased(connection.settings, connector.params, old_dir, new_dir)
+
+    def _rebase_history(self, old_dir: Path | None, new_dir: Path) -> None:
+        """The paths in the undo and redo steps, after the project was saved in another folder:
+        else undoing an edit of a path made before brings back a path relative to the old folder,
+        which then points into the new one. The steps share the dicts of the settings that didn't
+        change between them: each dict is rebased once, and they share the new one."""
+        done: dict[int, tuple[dict, dict]] = {}  # id of a dict: the dict (kept alive), its new one
+
+        def rebased(values: dict[str, Any], spec: tuple[Param, ...]) -> dict[str, Any]:
+            if id(values) not in done:
+                done[id(values)] = values, _rebased(values, spec, old_dir, new_dir)
+            return done[id(values)][1]
+
+        for state in (*self._undo, *self._redo):
+            data = state["project"]
+            for table in data["tables"]:
+                for step in table["steps"]:
+                    if (action := self.registry.actions.get(step["action"])) is not None:
+                        step["params"] = rebased(step["params"], action.params)
+            for connection in data["connections"]:
+                if (connector := self.registry.connectors.get(connection["type"])) is not None:
+                    connection["settings"] = rebased(connection["settings"], connector.params)
 
 
 def _stamp(path: Path | None) -> tuple[int, int] | None:
@@ -1052,6 +1096,12 @@ def json_ready(value: Any) -> Any:
 
 def _json_equal(a: Any, b: Any) -> bool:
     return json_ready(a) == json_ready(b)
+
+
+def _rebased(values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | None, new_dir: Path) -> dict[str, Any]:
+    values = dict(values)
+    _rebase(values, spec, old_dir, new_dir)
+    return values
 
 
 def _rebase(values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | None, new_dir: Path) -> None:

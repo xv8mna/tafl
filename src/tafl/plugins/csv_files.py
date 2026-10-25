@@ -14,11 +14,15 @@ import polars as pl
 
 from tafl.api import (
     ActionError,
+    Endpoint,
     P,
     action,
     combine,
     dtypes,
+    endpoints,
+    file_endpoint,
     files,
+    source_endpoints,
     source_files,
     source_params,
     source_summary,
@@ -94,6 +98,7 @@ def _migrate_import(params: dict, from_version: int) -> dict:
     migrate=_migrate_import,
     summary=lambda p: f"Import {source_summary(p)}",
     fingerprint=sources_fingerprint,
+    endpoints=source_endpoints,
 )
 def import_csv(df, p, ctx):
     """Reads a delimited text file (CSV, TXT, TSV), or all such files of a folder (and its
@@ -181,6 +186,10 @@ def _read_long_rows(data: bytes, options: dict) -> tuple[pl.DataFrame, int]:
     return wide.drop(wide.columns[-1]), wide[:, -1].is_not_null().sum()
 
 
+def _export_endpoints(p) -> list[Endpoint]:
+    return [file_endpoint(p.file, endpoints.OUT, setting="file")] if p.file.strip() else []
+
+
 def _migrate_export(params: dict, from_version: int) -> dict:
     """Version 1 always wrote the file, also for an empty table."""
     if from_version < 2:
@@ -213,6 +222,7 @@ def _migrate_export(params: dict, from_version: int) -> dict:
     version=2,
     migrate=_migrate_export,
     summary=lambda p: f"Export to {Path(p.file).name}",
+    endpoints=_export_endpoints,
 )
 def export_csv(df, p, ctx):
     """Writes the table to a delimited text file. An existing file is replaced when the new

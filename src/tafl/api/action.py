@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from .endpoints import Endpoint, default_endpoints
 from .errors import ActionError
 from .params import List, Param, Params, ValidationContext, check, resolve, table_refs
 
@@ -45,6 +46,7 @@ class Action:
     description: str = ""
     fingerprint: Callable[[Params, Context], Any] | None = None
     checks: Callable[[Params, ValidationContext], list[str]] | None = None
+    endpoints: Callable[[Params], Iterable[Endpoint]] | None = None
     plugin: str = ""  # set by the registry
 
     @property
@@ -77,6 +79,17 @@ class Action:
 
     def table_refs(self, params: Params) -> list[str]:
         return table_refs(self.params, params)
+
+    def endpoints_of(self, params: Params) -> list[Endpoint]:
+        """What a step with these settings reads, writes or changes outside the project: from
+        ``endpoints``, else from its file, folder and connection settings. A broken ``endpoints``
+        function gives the latter; what isn't an Endpoint is left out."""
+        if self.endpoints is not None:
+            try:
+                return [endpoint for endpoint in self.endpoints(params) if isinstance(endpoint, Endpoint)]
+            except Exception:
+                pass
+        return default_endpoints(self, params)
 
     def describe(self, params: Params) -> str:
         """One line for the step list, e.g. "Sort by Date, Amount"."""
@@ -115,6 +128,7 @@ def action(
     summary: Callable[[Params], str] | str | None = None,
     fingerprint: Callable[[Params, Context], Any] | None = None,
     checks: Callable[[Params, ValidationContext], list[str]] | None = None,
+    endpoints: Callable[[Params], Iterable[Endpoint]] | None = None,
 ) -> Callable[[RunFunction], Action]:
     """Declare an action by decorating its run function: ``(table, params, ctx) -> table``.
 
@@ -128,6 +142,9 @@ def action(
       on their own, e.g. a choice that needs something of the table (``ValidationContext``).
       Its problems stop the step before it runs, as those of the parameters do. Exports and
       commands don't run while the project is edited: there they show as warnings.
+    * ``endpoints``: a function ``(params) -> [Endpoint]``: the files, folders, database tables and
+      SQL that the step reads, writes or changes (see ``tafl.api.endpoints``). Without it they come
+      from the action's file, folder and connection settings.
 
     The function's docstring becomes the help text shown in the app.
     """
@@ -148,6 +165,7 @@ def action(
             description=inspect.getdoc(run) or "",
             fingerprint=fingerprint,
             checks=checks,
+            endpoints=endpoints,
         )
 
     return wrap

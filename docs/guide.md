@@ -204,8 +204,9 @@ data panel shows the data: "200 rows × 5 columns".
 Under each column name is the type Tafl detected: Bestellnr *integer*, Kundennr *text*, Datum
 *date*, Netto *number*, Status *text*. **Delimiter**, **Encoding** and **Decimal separator**
 are set to **Detect automatically**: Tafl found the semicolons, the decimal commas and the
-dates by itself. Kundennr stays text because of its leading zeros (`00017`): as a number, they
-would be lost.
+dates by itself, and the box at the top of the settings says so ("Encoding utf-8, delimiter
+semicolon, decimal comma"). Kundennr stays text because of its leading zeros (`00017`): as a
+number, they would be lost.
 
 The grid shows dates in your Windows date format and decimals with your decimal separator. The
 values themselves don't depend on it.
@@ -331,7 +332,8 @@ them up: they become "Müller GmbH" and "Bäckerei Weiß".
 ![Merge with another table: the customer names and cities looked up by CustomerNo](guide/first-merge.png)
 
 The table has 7 rows × 5 columns now, with Name and City. Customer 09999 is not in the list, so
-its Name and City stay empty. A lookup never changes the number of rows: it only adds columns.
+its Name and City stay empty. The box at the top of the settings says so: "6 of 7 rows matched, 1
+without a match: 09999". A lookup never changes the number of rows: it only adds columns.
 The other merge types (joins, keep rows with or without a match) are in
 [chapter 4](#combine-merge-and-append-tables).
 
@@ -411,8 +413,8 @@ was.
 5. **Step settings**, the settings panel: the settings of the selected step, with its help text
     at the bottom.
 6. The toolbar: **New project**, **Open**, **Save**, **Tables** and **Map** (the two views),
-    **Undo**, **Redo**, **Run project**, **Stop**, **Reload data**, **Connections** and
-    **Parameters**.
+    **Find** ([the Find panel](#the-find-panel)), **Undo**, **Redo**, **Run project**, **Stop**,
+    **Reload data**, **Connections** and **Parameters**.
 
 The menus are **File**, **Edit**, **Project**, **View** and **Help**. The status bar at the
 bottom shows short messages, such as "Opened demo.tafl" or "Run finished — see Run results".
@@ -513,6 +515,11 @@ a short note ("first step of a table", "runs when the project is run").
 - Lists of settings (renames, conditions, formulas) have **+ Add** for a new row, and **▲**,
   **▼** and **✕** at the end of each row to move or remove it.
 
+The box at the top of the settings shows what the step reported when it was calculated: what an
+import detected ("Encoding utf-8, delimiter semicolon, decimal comma"), how many rows a merge
+matched ([chapter 4](#combine-merge-and-append-tables)), or for an export or a command that it
+runs only when you run the project. Warnings and errors have boxes of their own, orange and red.
+
 After a change, the table is calculated again in the background: "Calculating…" shows in the
 title line of the data. You can go on working meanwhile.
 
@@ -568,6 +575,97 @@ blue), and the button says **Filters (2)**.
 Each table has its own filters. They are saved with the project, but they are no edits: undo
 doesn't change them.
 
+### The Find panel
+
+The Find panel finds steps anywhere in the project, and lists everything the project reads and
+writes outside of it. It stays open beside the tables view and the map.
+
+Click **Find** in the toolbar, choose **Edit → Find in project…** or press Ctrl+Shift+F: the panel
+opens at the left, with the cursor in its search field. **View → Find panel** shows or hides it.
+Drag its title to put it at the right or at the bottom; Tafl keeps where it is.
+
+**Imports, exports and commands.** With an empty search field, the panel lists every step that
+reads, writes or changes something outside the project, in the groups **Imports**, **Exports** and
+**Commands** (file commands and SQL commands). Each result has two lines:
+
+- its kind (**in**, **out** or **cmd**), the table, the step number and the action, for example
+  "Daily orders · 5 · Export to Excel file";
+- what it reads or writes: a file, folder or sheet ("daily orders.xlsx, sheet Orders in output"),
+  or a connection and its database table or SQL ("revenue on Shop").
+
+Paths are shown as the settings have them, relative to the project's folder; the tooltip has the
+full path. A path with a parameter is shown as written and with the value now, as in the example
+of [chapter 7](#7-parameters): "orders {Month}.xlsx, sheet {Month} in output now: orders
+2026-03.xlsx, sheet 2026-03". The line above the results counts them: "2 imports · 2 exports · 2
+commands". Before you run a project from someone else, this is the list to look at.
+
+![The Find panel with an empty search: the imports, exports and commands of a project, with the files and the database each one reads or writes](guide/find-overview.png)
+
+**Search.** Type into the field: the panel finds the steps whose texts contain all the words, in
+any order, without regard to upper and lower case. It searches the names of the table, its group
+and the action, the step's summary and note, and every setting you type: files, folders, sheets,
+SQL, formulas, conditions and column names, also the connections (with their server and
+database) and the parameters. A setting with a parameter is found by the parameter's name and by
+its value now. What the list says about how a file is read or written is found too, for example
+"to the Recycle Bin" or "first sheet". **Aa** makes upper and lower case count; **.\*** takes the
+text as a regular expression, written as for the filter pane's **Pattern (regex)**: look-ahead,
+look-behind and back-references don't exist there, and a brace is written `\{`, so a search for
+the parameter {Month} as a pattern is `\{Month\}`. The panel says when a pattern is not valid.
+
+The second line of a result shows the setting that matched, with the match marked, for example
+"Match rows where, row 1 – Column in this table: CustomerNo", or "Group: Sources" when only the
+name of the table's group matched. The line above the results says "4 steps in 2 tables", or
+"Nothing found". A result of a step that has a problem or is turned off says so at the right:
+*error*, *warning*, *incomplete*, *waiting* or *off*. Problems show once the step's table has been
+calculated: on the map all tables are, in the table view the selected table and the tables it
+uses (the **Problems** filter calculates the others).
+
+**Go to a result.** Click it: Tafl selects its table and step, in the table view or on the map
+(the box comes into view, and a collapsed group opens; that is a change of the map, as if you
+had opened it, and Ctrl+Z closes it again). The panel stays open, so you can click through the
+results. Enter or a double-click also puts the cursor into the setting that matched, and marks it
+for a moment; for a step that is not complete yet, into the setting to fill in. F3 and Shift+F3
+go to the next and the previous result from anywhere in the window, also while you type in a
+setting or a note: what you typed is applied to its step first (Ctrl+Z takes it back and shows
+that step again), and the keyboard stays in the step settings instead of moving into a setting
+of the next step. When the current result leaves the list, for example because you fixed its
+problem, F3 goes on with the result after its place (such as the next error of the same table)
+and Shift+F3 with the one before, also after you change **Group by**.
+
+![A search for CustomerNo: Enter went to the merge step of Orders, and the setting that matched is marked](guide/find-search.png)
+
+**Filters**, the buttons below the field, show only some of the steps, with or without a search:
+
+- **Problems**: steps with an error or a warning, steps that are not complete yet, and the steps
+  waiting for them. Tafl first calculates the tables that were not calculated yet; meanwhile the
+  line above the results says "calculating all tables…". If you select another table or change a
+  step meanwhile, Tafl calculates that table first and then goes on with the others.
+- **Off**: steps and tables that are turned off.
+- **Changed**: steps changed since the project was opened, also new ones. A step whose settings
+  are back as they were is not listed.
+- **Uses {…}**: steps that use a parameter. The arrow next to it chooses one parameter, for
+  example **{Month}**. When you rename that parameter, the filter follows the new name.
+
+**Group by** sorts the results into groups:
+
+- **Kind** (the default): Imports, Exports, Commands and Other steps.
+- **Table**: the map group, the table, then its steps.
+- **Place**: the folder or connection, the file or database table, then the steps that read or
+  write it. This answers "which steps write into this file?". A folder written in two ways is one
+  place, for example `output` and `C:\Reports\output` in a project saved in `C:\Reports`. A file
+  command that takes the files the import read is listed under the import's folder and files,
+  with the parameters' values now, as the import is, when the table's first step imports all
+  files of a folder (CSV, Excel or Parquet); otherwise, e.g. after *Files in a folder*, it is
+  under **Files the import read**. A database export or SQL command without a connection yet is
+  under **No connection chosen**.
+
+![Grouped by place: the folders and the connection Shop, with the files, the database table and the SQL of each](guide/find-place.png)
+
+Keys: in the search field, Enter goes to the next result (Shift+Enter to the one before), ↓ moves
+into the results, and Esc clears the field (in an empty field, Esc goes back to the view). In the
+results, ↑ and ↓ go to the result before or after, as a click does, and Esc goes back to the
+search field.
+
 ### Running a project
 
 - **Run project** (F5) calculates all tables and executes their exports and commands.
@@ -596,6 +694,11 @@ If you close the window during a run, Tafl asks: **Wait, then close**, or **Stop
 **Edit → Undo** (Ctrl+Z) and **Redo** (Ctrl+Y) work for every change to the project: steps,
 settings, tables, groups, positions on the map, connections and parameters, up to 100 changes
 back. The filters in the filter pane are not part of it.
+
+Undo and Redo in the toolbar or the Edit menu first apply what you are typing in a setting or a
+note, as saving and running do, so Undo takes back just that typing. Redo while you type has
+nothing to redo: what you typed is a new change, and the status bar says so. Inside a text
+field, Ctrl+Z and Ctrl+Y undo and redo the typing in the field.
 
 ### Saving and opening projects
 
@@ -628,7 +731,9 @@ Tafl rolls back what an import's query changes, and formulas can only use the da
 step. Still, a project can read whatever your Windows login can read. Open projects only from
 people you trust. If in doubt, open the `.tafl` file in a text editor first: its connections,
 SQL queries and file paths can be read there. Before you run a project from someone else, look
-at its exports and commands, above all **Delete files** and **Run SQL command**.
+at its exports and commands, above all **Delete files** and **Run SQL command**. The
+[Find panel](#the-find-panel) lists them all when its search field is empty, with every file,
+folder and database the project reads or writes.
 
 ## 4. Actions
 
@@ -680,8 +785,9 @@ table.
 
 Values with leading zeros, such as customer numbers (`00017`) and postal codes, stay text
 ([Import the orders](#import-the-orders) shows an example). Amounts like `1.234,50 €` and
-percentages like `12,5%` (0.125) become numbers. After a run, Run results show under the step
-what was detected: "Encoding utf-8, delimiter semicolon, decimal comma".
+percentages like `12,5%` (0.125) become numbers. The box at the top of the step's settings says
+what was detected, and so do Run results under the step: "Encoding utf-8, delimiter semicolon,
+decimal comma".
 
 Tip: if the columns look wrong, for example with a warning that rows have more values than the first
 row, the first line is probably a title, not the column names. Set **Skip lines at the top** to
@@ -916,6 +1022,17 @@ customer 09999 have no match:
 *Lookup* and *Left join* differ when the other table has a key twice: with customer 00017 listed
 twice, *Lookup* keeps 156 rows, *Left join* gives 172 (each order of 00017 twice).
 
+The step says how many rows matched, in the box at the top of its settings and in Run results.
+For the demo's lookup: "152 of 156 rows matched, 4 without a match: 09999". It names up to three
+keys of the rows without a match, and how many more there are ("09999, 01234, 05555 and 17
+more"), so a wrong key column or missing master data shows at once. The other merge types say it
+in their own words, for example *Inner join* "152 of 156 rows matched; 4 without a match were
+left out: 09999", and *Keep rows without a match* "4 of 156 rows without a match were kept; 152
+matched and were left out". A *Full join* also counts the rows of the other table that it added,
+also when this table has no rows. A key of several columns is shown as "(09999, North)".
+
+![Merge with another table: 152 of 156 rows matched, and the key of the 4 without a match](guide/merge-message.png)
+
 Tips: empty keys never match. A number key and a text key are compared as text (with a warning),
 so the number 17 doesn't match the text `00017`: keep such keys as text. *Keep rows without a
 match* finds missing master data, for example orders of unknown customers.
@@ -1133,8 +1250,11 @@ Every table is a box:
 - The numbered rows are the steps that matter for the map: the first step, every step that uses
   another table, and the exports and commands. The steps between them are counted, for example
   `⋯ 4 steps`.
+- A row that reads from outside the project, an import, ends with **in**; a row that writes or
+  changes something outside, an export or a command, ends with **out**. Each has its own color,
+  so you see at a glance where data comes in and where it goes out.
 
-![The boxes of the demo on the map: name, size and the steps that matter, with arrows to the steps that use a table](guide/map-boxes.png)
+![The boxes of the demo on the map: name, size and the steps that matter, imports marked in and exports out, with arrows to the steps that use a table](guide/map-boxes.png)
 
 An arrow runs from a table to the step that uses it (**Start from another table**, **Merge with
 another table**, **Append other tables**). In the demo, an arrow runs from *Customers* to step 4
@@ -1221,7 +1341,9 @@ groups *Sources*, *Reports* and *Checks*.
 Click ▾ at the right of a frame's title, and the group becomes one compact box. It lists only the
 tables that are connected to tables outside the group (the arrows end there) and counts the
 others (`⋯ 1 more table`). Its header sums up the status: **all ok**, **2 errors**, **all off**.
-**Collapse all** in the group bar does this for every group: an overview of a big project.
+A line at the bottom counts the imports and the exports and commands of its tables, for example
+`3 in · 2 out`. **Collapse all** in the group bar does this for every group: an overview of a big
+project.
 
 Double-click the header of a collapsed box (or click **Expand all**) to see the tables again.
 Click a row to select that table; double-click it to open the table. Collapsed groups are saved
@@ -1229,12 +1351,31 @@ with the project.
 
 ![Collapse all: each group as one box, for an overview of a big project](guide/map-collapsed.png)
 
+### What a table uses and what uses it
+
+Click a box and press H, or click **Uses / used by** above the map, or right-click the box and
+choose **Show what it uses and what uses it**. The tables it uses, directly or through other
+tables, get a teal border, the tables that use it a violet one, and the arrows between them the
+same colors. The other tables and arrows are dimmed. The status bar says, for example,
+"“Orders with customers” uses 2 tables and is used by 1 · H or Esc ends the highlight".
+
+The highlight follows the selection: click another box to see what that table uses. H again,
+Esc or the button ends it. Steps that are turned off don't count, as in the calculation: turn a
+step off, and its arrow leaves the highlight at once. In a collapsed group, a bar in the same
+colors marks the rows of the highlighted tables; on the row `⋯ 2 more tables`, the bar is for
+highlighted tables that the box doesn't list (its tooltip names them). Tables that the selected
+table uses and that use it too, a circular reference, get a red border, and the status bar says
+"… a circular reference with 2 of them".
+
+![The highlight: Customers and Orders are used by Orders with customers, Revenue by customer uses it; the other tables are dimmed](guide/map-highlight.png)
+
 ### Find a table on the map
 
 Press Ctrl+F anywhere on the map and type a part of a name. Matching tables get an orange
 border; Enter jumps to the next one ("Table 1 of 3 containing “order” · Enter: next one"), and
 opens a collapsed group if the table is in it. Esc clears the search and the selection and
-takes you back to the map (so does **✕** at the end of the field, for the search).
+takes you back to the map (so does **✕** at the end of the field, for the search). To find steps,
+files, SQL or formulas instead, use the [Find panel](#the-find-panel) (Ctrl+Shift+F).
 
 Other keys on the map: F2 renames the selected table, Del deletes the selected tables (after
 asking) or the step of the selected arrow. Ctrl+Z undoes all of it.
@@ -2037,7 +2178,9 @@ A step with an error is red, and so is the dot of its table. Click the red step:
 says "Step 6 has an error:" with the message, and the settings show it in a red box. The steps
 after it are not calculated: they say "An earlier step has an error. Click the red step to see
 it." A table that uses this table gets an error too as soon as it is calculated: "Table 'Orders'
-has an error: …". Fix the first red step, and the others follow.
+has an error: …". Fix the first red step, and the others follow. **Problems** in the
+[Find panel](#the-find-panel) lists the steps with errors and warnings, and the incomplete and
+waiting ones, of all tables at once.
 
 In this example, the formula of *Gross* says `[Nett]` instead of `[Net]`: "Formula error in
 [Gross]: column [Nett] not found (did you mean [Net]?)". **Write [Net]** below the formula
@@ -2119,6 +2262,7 @@ of the repository → **Report a vulnerability**.
 | Changes | Ctrl+Z undo, Ctrl+Y redo |
 | Running | F5 run the project, Shift+F5 run this table, Ctrl+R reload data |
 | Views | Ctrl+1 the tables, Ctrl+2 the project map |
+| Find panel | Ctrl+Shift+F opens it with the cursor in the search field; F3 and Shift+F3 the next and previous result, from anywhere; in the search field, Enter the next result, ↓ to the results, Esc clears the field; in the results, ↑ and ↓ from result to result, Enter goes to the setting that matched, Esc back to the search field |
 | Tables panel | F2 rename, Del delete |
 | Steps panel | Ctrl+↑ and Ctrl+↓ move the step, Del delete it |
 | Settings panel | Enter applies a text field; Ctrl+Enter applies a SQL field; in a formula field, Enter applies and Shift+Enter starts a new line |
@@ -2126,4 +2270,4 @@ of the repository → **Report a vulnerability**.
 | Formula window | Enter starts a new line, Ctrl+Enter applies, Esc cancels |
 | Data panel | Ctrl+C copies the selected cells, Ctrl+A selects all |
 | Filter pane | Enter applies the selected values |
-| Project map | Ctrl+F find a table, Ctrl+G group the selected tables, 1–9 jump to a group, 0 show all, F2 rename, Del delete, Esc clear the search and selection, Ctrl + mouse wheel zoom |
+| Project map | Ctrl+F find a table, Ctrl+G group the selected tables, 1–9 jump to a group, 0 show all, H show what the selected table uses and what uses it, F2 rename, Del delete, Esc clear the search, the selection and the highlight, Ctrl + mouse wheel zoom |

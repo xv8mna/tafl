@@ -30,6 +30,15 @@ MAP_BOX = "#45494a"  # table boxes
 MAP_TEXT_DIM = "#b4b7ba"  # secondary text in the boxes ("⋯ 3 steps"): 4.5 : 1 against MAP_BOX
 MAP_EDGE = "#7a7f84"  # arrows
 
+# What a step does outside the project: the marks on the map's rows and in the Find panel.
+# Text: at least 4.5 : 1 against MAP_BOX, BASE, ALTERNATE and WINDOW
+MARK_COLORS = {"in": "#72cfc2", "out": "#d4b0f5", "cmd": "#d4b0f5", "step": TEXT_DIM}
+# The map's highlight of what the selected table uses and what uses it (borders, arrows)
+MAP_USES = MARK_COLORS["in"]
+MAP_USED_BY = MARK_COLORS["out"]
+# The Find panel: behind the text that matched, and behind a setting it moved the focus to
+FIND_MATCH = "#5c5230"  # TEXT on it: 5.3 : 1
+
 GROUP_COLORS = {
     "blue": "#4f9ee3",
     "green": "#6aab73",
@@ -64,6 +73,8 @@ STATUS_COLORS = {
     "incomplete": "#8fa3b8",  # a step that is not filled in yet
     "waiting": "#8fa3b8",  # uses a table with a step that is not filled in yet
 }
+# The map's highlight: tables that the selected table uses and that use it (a circular reference)
+MAP_CYCLE = STATUS_COLORS["error"]
 
 # Text in a status color (results, messages): 4.5 : 1 against WINDOW, BASE and ALTERNATE
 STATUS_TEXT = {
@@ -78,7 +89,7 @@ QSplitter::handle {{ background: {BORDER}; }}
 QSplitter::handle:horizontal {{ width: 3px; }}
 QSplitter::handle:vertical {{ height: 3px; }}
 QToolBar {{ background: {WINDOW}; border: none; border-bottom: 1px solid {BORDER}; spacing: 2px; padding: 3px 6px; }}
-QToolBar QToolButton {{ padding: 4px 8px; border-radius: 4px; }}
+QToolBar QToolButton {{ padding: 4px 6px; border-radius: 4px; }}
 QToolBar QToolButton:hover {{ background: {RAISED}; }}
 QToolBar QToolButton:pressed {{ background: {BORDER_LIGHT}; }}
 QToolBar QToolButton:checked {{ background: {SELECTION}; color: white; }}
@@ -111,6 +122,8 @@ QLabel#InfoBox {{
 }}
 QLineEdit[missing="true"], QComboBox[missing="true"] {{ color: {STATUS_TEXT["error"]}; }}
 QFrame#ListCard {{ background: {ALTERNATE}; border: 1px solid {BORDER}; border-radius: 4px; }}
+QLabel[found="true"], QLineEdit[found="true"], QPlainTextEdit[found="true"], QComboBox[found="true"],
+QCheckBox[found="true"], QListWidget[found="true"] {{ background: {FIND_MATCH}; }}
 """
 
 
@@ -160,6 +173,10 @@ def status_color(status: str) -> QColor:
 def status_text_color(status: str) -> QColor:
     """For text: lighter than the status color where that is hard to read on the panels."""
     return QColor(STATUS_TEXT.get(status, TEXT))
+
+
+def mark_color(kind: str) -> QColor:
+    return QColor(MARK_COLORS.get(kind, TEXT_DIM))
 
 
 def status_icon(status: str, size: int = 12) -> QIcon:

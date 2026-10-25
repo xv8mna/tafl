@@ -28,7 +28,7 @@ rows, a step of another table that uses it ends that table too.
 
 from tafl import APP_NAME
 
-from . import dtypes, expressions, files, parameters, xlsx
+from . import dtypes, endpoints, expressions, files, parameters, xlsx
 from . import params as P
 from .action import Action, Kind, action, file_fingerprint
 from .context import Context, Mode
@@ -43,8 +43,17 @@ from .database import (
     text_length,
     unique_names,
 )
+from .endpoints import Endpoint, file_endpoint
 from .errors import ActionError, Cancelled, SkipRest, TaflError
-from .files import combine, find_files, source_files, source_params, source_summary, sources_fingerprint
+from .files import (
+    combine,
+    find_files,
+    source_endpoints,
+    source_files,
+    source_params,
+    source_summary,
+    sources_fingerprint,
+)
 from .params import Params, ValidationContext
 
 API_VERSION = 1
@@ -58,6 +67,7 @@ __all__ = [
     "Connector",
     "Context",
     "Database",
+    "Endpoint",
     "Kind",
     "Mode",
     "P",
@@ -70,13 +80,16 @@ __all__ = [
     "all_results",
     "connector",
     "dtypes",
+    "endpoints",
     "expressions",
+    "file_endpoint",
     "file_fingerprint",
     "files",
     "find_files",
     "frame_from_cursor",
     "make_series",
     "parameters",
+    "source_endpoints",
     "source_files",
     "source_params",
     "source_summary",

@@ -118,6 +118,36 @@ def test_mistakes_are_explained(db):
     assert len(db.rows()) == 6
 
 
+def test_the_example_of_a_repeated_key_is_the_same_every_time(db):
+    """The first key value in the order of the rows that occurs more than once (before, a random one)."""
+    db.export(DATA)
+    keys = ["00001", *(f"{100 + i % 40:05d}" for i in range(400))]  # 00001 once, 40 values ten times
+    data = pl.DataFrame({"OrderNo": range(401), "Customer": keys, "Day": [dt.date(2025, 1, 1 + i % 3) for i in range(401)]})
+    texts = set()
+    for _ in range(20):
+        for key_columns in (["Customer"], ["Customer", "Day"]):
+            with pytest.raises(ActionError) as error:
+                db.export(data, mode="update", key_columns=key_columns)
+            texts.add(str(error.value))
+    assert sorted(texts) == [
+        "The key columns don't identify the rows: 120 key values occur more than once "
+        "(e.g. Customer = 00100, Day = 2025-01-02). Remove the duplicates first, or choose more key columns.",
+        "The key columns don't identify the rows: 40 key values occur more than once (e.g. Customer = 00100). "
+        "Remove the duplicates first, or choose more key columns.",
+    ]
+    with pytest.raises(ActionError, match=r"2 key values occur more than once \(e\.g\. OrderNo = 1\)"):  # not 2, seen again first
+        db.export(pl.DataFrame({"OrderNo": [1, 2, 2, 1]}), mode="update", key_columns=["OrderNo"])
+
+
+def test_a_key_column_named_len(tmp_path):
+    """Polars names the count of a group "len": a key column of that name must not clash with it."""
+    from tafl.plugins.databases import _check_unique
+
+    _check_unique(pl.DataFrame({"len": [1, 2], "_len_": [1, 1]}), ["len", "_len_"])  # unique: no error
+    with pytest.raises(ActionError, match=r"1 key value occurs more than once \(e\.g\. len = 2\)"):
+        _check_unique(pl.DataFrame({"len": [1, 2, 2]}), ["len"])
+
+
 def test_a_failed_export_changes_nothing(db):
     db.export(DATA)
     with pytest.raises(ActionError):

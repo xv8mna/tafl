@@ -171,7 +171,7 @@ def test_run_results_show_how_long_the_run_took(running, qtbot):
     window, session = running, running.session
     threading.Timer(0.5, RELEASE.set).start()
     qtbot.waitUntil(lambda: not session.running, timeout=10_000)
-    assert session.run_seconds >= 0.5
+    assert session.run_seconds >= 0.45  # the timer's clock may end a few milliseconds before the run's
     assert window.run_panel.summary.text().endswith(f", {session.run_seconds:.2f} s")
 
 

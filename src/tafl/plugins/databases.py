@@ -19,12 +19,14 @@ from tafl.api import (
     APP_NAME,
     ActionError,
     Connector,
+    Endpoint,
     Mode,
     P,
     action,
     all_results,
     connector,
     dtypes,
+    endpoints,
     parameters,
     split_name,
     text_length,
@@ -894,6 +896,14 @@ class SQLite(Connector):
         return conn.total_changes - before
 
 
+def _import_endpoints(p) -> list[Endpoint]:
+    if p.mode == "table":
+        found = Endpoint(endpoints.IN, endpoints.DATABASE, place=p.connection, name=p.table, setting="table")
+    else:
+        found = Endpoint(endpoints.IN, endpoints.SQL, place=p.connection, name=p.query, setting="query")
+    return [found] if found.place.strip() or found.name.strip() else []
+
+
 @action(
     "db.import",
     "Import from database",
@@ -907,6 +917,7 @@ class SQLite(Connector):
         P.Bool("detect_types", "Detect numbers and dates in text columns", default=False),
     ],
     summary=lambda p: f"Import {p.table if p.mode == 'table' else 'SQL query'} from {p.connection}",
+    endpoints=_import_endpoints,
 )
 def import_database(df, p, ctx):
     """Reads a whole table or view, or the result of a SQL query written in the database's own
@@ -951,6 +962,30 @@ _EXPORT_VERBS = {
 def _export_summary(p) -> str:
     verb = _EXPORT_VERBS.get(p.mode, "Export to").format(keys=", ".join(p.key_columns) or "?")
     return f"{verb} {p.table or '?'} ({p.connection or '?'})"
+
+
+# What each mode does to the database table, in a few words (the mode of its endpoint)
+_EXPORT_WORDS = {
+    "insert": "add rows",
+    "replace": "replace all rows",
+    "replace_keys": "replace rows by {keys}",
+    "replace_where": "replace rows where …",
+    "update": "update rows by {keys}",
+    "upsert": "update or add rows by {keys}",
+    "delete": "delete rows by {keys}",
+}
+
+
+def _export_endpoints(p) -> list[Endpoint]:
+    if not (p.connection.strip() or p.table.strip()):
+        return []
+    mode = _EXPORT_WORDS.get(p.mode, "").format(keys=", ".join(p.key_columns) or "?")
+    how = "mode" if mode else ""
+    return [
+        Endpoint(
+            endpoints.OUT, endpoints.DATABASE, place=p.connection, name=p.table, mode=mode, setting="table", mode_setting=how
+        )
+    ]
 
 
 def _migrate_export(params: dict, from_version: int) -> dict:
@@ -1000,6 +1035,7 @@ def _migrate_export(params: dict, from_version: int) -> dict:
     version=2,
     migrate=_migrate_export,
     summary=_export_summary,
+    endpoints=_export_endpoints,
 )
 def export_database(df, p, ctx):
     """Writes the table into a database table, in one transaction: if anything fails, the
@@ -1204,8 +1240,13 @@ def _key_names(p, names: dict[str, str]) -> list[str]:
 
 
 def _check_unique(df: pl.DataFrame, keys: list[str]) -> None:
-    """Updating needs one row per key value: otherwise it isn't clear which row wins."""
-    repeated = df.group_by(keys).len().filter(pl.col("len") > 1)
+    """Updating needs one row per key value: otherwise it isn't clear which row wins. The example
+    is the first key value in the order of the rows that occurs more than once (for 1, 2, 2, 1
+    that is 1), the same in every run."""
+    count = "len"
+    while count in keys:  # a key column may have the name
+        count = f"_{count}_"
+    repeated = df.group_by(keys, maintain_order=True).len(name=count).filter(pl.col(count) > 1)
     if repeated.height:
         example = ", ".join(f"{k} = {repeated[k][0]}" for k in keys)
         values = "1 key value occurs" if repeated.height == 1 else f"{repeated.height:,} key values occur"
@@ -1246,6 +1287,12 @@ def _insert(
     return db.execute_many(sql, data.iter_rows(), between=ctx.check_cancelled, sizes=sizes)
 
 
+def _command_endpoints(p) -> list[Endpoint]:
+    if not (p.connection.strip() or p.sql.strip()):
+        return []
+    return [Endpoint(endpoints.CMD, endpoints.SQL, place=p.connection, name=p.sql, setting="sql")]
+
+
 @action(
     "db.command",
     "Run SQL command",
@@ -1256,6 +1303,7 @@ def _insert(
         P.Code("sql", "SQL", required=True, placeholder="EXEC dbo.RefreshReport", help="The database's own SQL (T-SQL for SQL Server)"),
     ],
     summary=lambda p: f"Run SQL on {p.connection or '?'}: " + (" ".join(p.sql.split())[:40] or "?"),
+    endpoints=_command_endpoints,
 )
 def run_sql(df, p, ctx):
     """Runs SQL in a database, e.g. a stored procedure after an export, or DELETE / UPDATE

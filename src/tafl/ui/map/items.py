@@ -18,7 +18,8 @@ from PySide6.QtWidgets import (
     QStyleOptionGraphicsItem,
 )
 
-from tafl.core import Group, Link, Status, Table
+from tafl.core import Group, Link, Status, Step, Table
+from tafl.core.index import step_kind
 
 from .. import theme
 from ..session import Session, first_error, missing_settings, waiting_text
@@ -28,6 +29,16 @@ if TYPE_CHECKING:
     from .view import MapView
 
 _FADED = 0.5  # opacity of tables that are off or skipped
+_DIMMED = 0.25  # opacity of what the highlight of a table's uses and users leaves out
+_MARKS = {"in": "in", "out": "out", "cmd": "out"}  # step kind -> the mark on its row
+# The highlight of what the selected table uses and what uses it: role -> color (MapView.lineage_role)
+_ROLE_COLORS = {"table": theme.ACCENT, "uses": theme.MAP_USES, "used_by": theme.MAP_USED_BY, "both": theme.MAP_CYCLE}
+_ROLE_WORDS = {  # for a tooltip, {0}: the selected table
+    "table": "selected",
+    "uses": "“{0}” uses it",
+    "used_by": "it uses “{0}”",
+    "both": "a circular reference with “{0}”",
+}
 
 
 @dataclass
@@ -37,28 +48,53 @@ class NodeRow:
     number: int = 0
     kind: str = "step"  # "step", "link" (uses another table), "export", "table", "gap"
     enabled: bool = True
+    mark: str = ""  # "in": reads from outside the project; "out": writes or changes something outside
 
 
-def node_rows(session: Session, table: Table, linked_steps: set[str]) -> list[NodeRow]:
-    """The import, steps using other tables and exports; the steps between are counted."""
+def kind_of(session: Session, step: Step, kinds: dict[str, str]) -> str:
+    """``step_kind`` of the step's action, kept in ``kinds`` (action id -> kind) while the map is built."""
+    kind = kinds.get(step.action)
+    if kind is None:
+        kind = kinds[step.action] = step_kind(session.action(step))
+    return kind
+
+
+def node_rows(session: Session, table: Table, linked_steps: set[str], kinds: dict[str, str] | None = None) -> list[NodeRow]:
+    """The import, steps using other tables, exports and steps reading from outside the project;
+    the steps between are counted. ``kinds``: see ``kind_of``."""
+    kinds = {} if kinds is None else kinds
     rows: list[NodeRow] = []
     skipped = 0
     for number, step in enumerate(table.steps, start=1):
         action = session.action(step)
         export = action is not None and action.side_effects
-        if number != 1 and step.id not in linked_steps and not export:
+        outside = kind_of(session, step, kinds)
+        if number != 1 and step.id not in linked_steps and not export and outside != "in":
             skipped += 1
             continue
         if skipped:
             rows.append(NodeRow(f"⋯ {skipped} step{'s' if skipped > 1 else ''}", kind="gap"))
             skipped = 0
         kind = "link" if step.id in linked_steps else "export" if export else "step"
-        rows.append(NodeRow(session.describe(step), step.id, number, kind, step.enabled))
+        rows.append(NodeRow(session.describe(step), step.id, number, kind, step.enabled, _MARKS.get(outside, "")))
     if skipped:
         rows.append(NodeRow(f"⋯ {skipped} more step{'s' if skipped > 1 else ''}", kind="gap"))
     if not table.steps:
         rows.append(NodeRow("no steps yet", kind="gap"))
     return rows
+
+
+def group_counts(session: Session, members: list[Table], kinds: dict[str, str] | None = None) -> tuple[int, int]:
+    """For a collapsed group: its steps that read from outside the project, and those that write or
+    change something outside (on or off). ``kinds``: see ``kind_of``."""
+    kinds = {} if kinds is None else kinds
+    marks = [_MARKS.get(kind_of(session, step, kinds), "") for table in members for step in table.steps]
+    return marks.count("in"), marks.count("out")
+
+
+def counts_text(counts: tuple[int, int]) -> str:
+    """The footer of a collapsed group: "3 in · 2 out"; a part that is zero is left out."""
+    return " · ".join(f"{number} {word}" for number, word in zip(counts, ("in", "out")) if number)
 
 
 def group_rows(members: list[Table], connected: set[str]) -> list[NodeRow]:
@@ -86,6 +122,17 @@ def _port(painter: QPainter, center: QPointF, highlighted: bool, radius: float =
     painter.setPen(QPen(QColor(theme.MAP_BOX), 2))
     painter.setBrush(QColor(theme.ACCENT if highlighted else theme.MAP_EDGE))
     painter.drawEllipse(center, radius, radius)
+
+
+def _mark_font(base: QFont) -> QFont:
+    """The font of the "in" and "out" marks: bold, one point smaller."""
+    font = QFont(base)
+    font.setBold(True)
+    if font.pointSizeF() > 1:
+        font.setPointSizeF(font.pointSizeF() - 1)
+    elif font.pixelSize() > 1:
+        font.setPixelSize(font.pixelSize() - 1)
+    return font
 
 
 class Box(QGraphicsObject):
@@ -174,7 +221,10 @@ class Box(QGraphicsObject):
         return row.kind == "gap" and before >= self.skipped_after
 
     def _paint_rows(self, painter: QPainter, numbers: bool) -> None:
-        metrics = QFontMetrics(painter.font())
+        base = painter.font()
+        metrics = QFontMetrics(base)
+        mark_font = _mark_font(base)
+        mark_metrics = QFontMetrics(mark_font)
         number_width = metrics.horizontalAdvance("00") + 8 if numbers else 14
         for index, row in enumerate(self.rows):
             top = HEADER + PADDING / 2 + index * ROW
@@ -186,10 +236,23 @@ class Box(QGraphicsObject):
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(theme.status_color(self.view.session.table_status(row.key)))
                 painter.drawEllipse(QPointF(20, top + ROW / 2), 3.5, 3.5)
-            color = theme.TEXT_DISABLED if self.dimmed(index) else theme.MAP_TEXT_DIM if row.kind == "gap" else theme.TEXT
+            dimmed = self.dimmed(index)
+            width = NODE_WIDTH - left - 12
+            if row.mark:  # "in" or "out" at the right end
+                mark_width = mark_metrics.horizontalAdvance(row.mark)
+                painter.setFont(mark_font)
+                painter.setPen(QColor(theme.TEXT_DISABLED) if dimmed else theme.mark_color(row.mark))
+                painter.drawText(
+                    QRectF(NODE_WIDTH - 12 - mark_width, top, mark_width, ROW),
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    row.mark,
+                )
+                painter.setFont(base)
+                width -= mark_width + 8
+            color = theme.TEXT_DISABLED if dimmed else theme.MAP_TEXT_DIM if row.kind == "gap" else theme.TEXT
             painter.setPen(QColor(color))
-            text = metrics.elidedText(row.text, Qt.TextElideMode.ElideRight, int(NODE_WIDTH - left - 12))
-            painter.drawText(QRectF(left, top, NODE_WIDTH - left - 12, ROW), Qt.AlignmentFlag.AlignVCenter, text)
+            text = metrics.elidedText(row.text, Qt.TextElideMode.ElideRight, int(width))
+            painter.drawText(QRectF(left, top, width, ROW), Qt.AlignmentFlag.AlignVCenter, text)
 
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         self._press_pos = QPointF(self.pos())
@@ -229,10 +292,13 @@ class TableNode(Box):
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: Any = None) -> None:
         current = self.view.session.table_id == self.table_id
-        if self.status in ("disabled", "skipped"):
-            painter.setOpacity(_FADED)
+        if self.status in ("disabled", "skipped"):  # on top of the highlight's dimming, if any
+            painter.setOpacity(painter.opacity() * _FADED)
+        role = self.view.lineage_role(self.table_id)
         if self.search_match:
             border, width = QColor(theme.STATUS_COLORS["warning"]), 2.0
+        elif role in ("uses", "used_by", "both"):
+            border, width = QColor(_ROLE_COLORS[role]), 2.5
         elif current or self.isSelected() or self.link_target:
             border, width = QColor(theme.ACCENT), 2.0
         else:
@@ -338,9 +404,13 @@ class TableNode(Box):
 
 class GroupNode(Box):
     """A collapsed group: one box listing its tables that have arrows to or from the outside.
-    Double-click the header to expand it; click a row to select that table."""
+    Double-click the header to expand it; click a row to select that table. A line at the bottom
+    counts the steps that read from outside the project and those that write or change something
+    outside ("3 in · 2 out")."""
 
-    def __init__(self, view: MapView, group: Group, rows: list[NodeRow], members: list[str]) -> None:
+    def __init__(
+        self, view: MapView, group: Group, rows: list[NodeRow], members: list[str], counts: tuple[int, int] = (0, 0)
+    ) -> None:
         super().__init__(view, rows)
         self.group_id = group.id
         self.name = group.name
@@ -348,6 +418,14 @@ class GroupNode(Box):
         self.members = members
         self.summary = ""
         self.summary_color = QColor(theme.MAP_TEXT_DIM)
+        self.counts = counts  # steps "in", steps "out" (see group_counts)
+        if any(counts):
+            self.height += ROW
+
+    @property
+    def footer(self) -> str:
+        """The line below the rows ("" when there is none)."""
+        return counts_text(self.counts)
 
     def in_anchor(self, table_id: str) -> QPointF:
         return self.mapToScene(QPointF(0, self.row_offset(table_id)))
@@ -368,9 +446,19 @@ class GroupNode(Box):
         painter.drawText(QRectF(10, 0, 16, HEADER), Qt.AlignmentFlag.AlignVCenter, "▸")
         self._paint_header(painter, f"{self.name}  ({len(self.members)})", self.summary, color.lighter(130), self.summary_color, left=26)
         self._paint_rows(painter, numbers=False)
+        self._paint_footer(painter)
         for index, row in enumerate(self.rows):
+            center = HEADER + PADDING / 2 + index * ROW + ROW / 2
+            if row.kind == "gap" and self.view.lineage is not None:  # "⋯ 4 more tables": a bar per color
+                roles = {role for _, role in self.hidden_roles()}
+                colors = [color for role, color in _ROLE_COLORS.items() if role in roles]
+                for number, color in enumerate(colors):
+                    part = (ROW - 6) / len(colors)
+                    painter.fillRect(QRectF(5, center - ROW / 2 + 3 + number * part, 3, part), QColor(color))
             if row.kind == "table":
-                center = HEADER + PADDING / 2 + index * ROW + ROW / 2
+                role = self.view.lineage_role(row.key)
+                if role:  # a bar in the colour of the highlight
+                    painter.fillRect(QRectF(5, center - ROW / 2 + 3, 3, ROW - 6), QColor(_ROLE_COLORS[role]))
                 ins = any(e.target is self and e.target_key == row.key for e in self.edges)
                 outs = any(e.source is self and e.source_key == row.key for e in self.edges)
                 lit = any(e.lit and row.key in (e.link.source, e.link.target) for e in self.edges)
@@ -378,6 +466,25 @@ class GroupNode(Box):
                     _port(painter, QPointF(0, center), lit)
                 if outs:
                     _port(painter, QPointF(NODE_WIDTH, center), lit)
+
+    def _paint_footer(self, painter: QPainter) -> None:
+        """The line "3 in · 2 out" below the rows, the words in the colours of the marks."""
+        if not self.footer:
+            return
+        dim = QColor(theme.MAP_TEXT_DIM)
+        pieces: list[tuple[str, QColor]] = []
+        for number, word in zip(self.counts, ("in", "out")):
+            if number:
+                if pieces:
+                    pieces.append((" · ", dim))
+                pieces += [(f"{number} ", dim), (word, theme.mark_color(word))]
+        metrics = QFontMetrics(painter.font())
+        top = HEADER + PADDING / 2 + len(self.rows) * ROW
+        x = 16.0
+        for text, color in pieces:
+            painter.setPen(color)
+            painter.drawText(QRectF(x, top, NODE_WIDTH - x, ROW), Qt.AlignmentFlag.AlignVCenter, text)
+            x += metrics.horizontalAdvance(text)
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         row = self.row_at(event.pos().y())
@@ -392,10 +499,23 @@ class GroupNode(Box):
         if row is not None and row.kind == "table":
             self.view.session.select_table(row.key)
 
+    def hidden_roles(self) -> list[tuple[str, str]]:
+        """With the highlight on: the tables of the group that its rows don't list ("⋯ 4 more
+        tables") and that are highlighted, with their roles (see MapView.lineage_role)."""
+        listed = {row.key for row in self.rows if row.kind == "table"}
+        return [(t, role) for t in self.members if t not in listed and (role := self.view.lineage_role(t))]
+
     def hoverMoveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
         row = self.row_at(event.pos().y())
+        hidden = self.hidden_roles() if row is not None and row.kind == "gap" else []
         if row is not None and row.kind == "table":
             self.setToolTip(f"{row.text}\nClick to select · double-click to open")
+        elif hidden:
+            project = self.view.session.project
+            names = {t.id: t.name for t in project.tables}
+            selected = names.get(self.view.lineage.table, "")
+            lines = [f"{names.get(t, t)}: {_ROLE_WORDS[role].format(selected)}" for t, role in hidden]
+            self.setToolTip("Highlighted, not listed here:\n" + "\n".join(lines))
         else:
             self.setToolTip(
                 f"Group “{self.name}” (collapsed)\nDouble-click to expand · drop tables here to add them · right-click for more"
@@ -431,12 +551,33 @@ class Edge(QGraphicsPathItem):
     def refresh_pen(self) -> None:
         current = self.view.session.table_id
         self.lit = self._hover or self.isSelected() or current in (self.link.source, self.link.target)
-        width = 2.4 if self._hover or self.isSelected() else 2.0 if self.lit else 1.6
-        pen = QPen(QColor(theme.ACCENT if self.lit else theme.MAP_EDGE), width)
+        role = self.lineage_role()
+        width = 2.4 if self._hover or self.isSelected() else 2.2 if role else 2.0 if self.lit else 1.6
+        if role:
+            color = _ROLE_COLORS[role]
+        else:
+            color = theme.ACCENT if self.lit else theme.MAP_EDGE
+        pen = QPen(QColor(color), width)
         if not self.link.enabled:
             pen.setStyle(Qt.PenStyle.DashLine)
         self.setPen(pen)
-        self.setZValue(0.5 if self.lit else 0)
+        self.setZValue(0.6 if role else 0.5 if self.lit else 0)
+        self.setOpacity(_DIMMED if role == "" else 1.0)
+
+    def lineage_role(self) -> str | None:
+        """With the highlight of a table's uses and users on: "uses" for an arrow between tables it
+        uses (or into it), "used_by" for one between tables that use it (or out of it), "both" for
+        one that is both (a circular reference), else "". None when the highlight is off. Arrows
+        of steps that are off are never part of it."""
+        lineage = self.view.lineage
+        if lineage is None:
+            return None
+        source, target = self.link.source, self.link.target
+        if not self.link.enabled:
+            return ""
+        uses = (target == lineage.table or target in lineage.uses) and source in lineage.uses
+        used_by = (source == lineage.table or source in lineage.used_by) and target in lineage.used_by
+        return "both" if uses and used_by else "uses" if uses else "used_by" if used_by else ""
 
     def update_path(self) -> None:
         start = self.source.out_anchor(self.source_key)

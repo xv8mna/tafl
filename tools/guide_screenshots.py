@@ -251,15 +251,7 @@ class Examples:
 
     def _database(self) -> Path:
         folder = self._data("database")
-        con = sqlite3.connect(folder / "data" / "shop.sqlite")
-        with con:
-            con.execute("CREATE TABLE IF NOT EXISTS customers (CustomerNo TEXT PRIMARY KEY, Name TEXT, City TEXT)")
-            con.executemany(
-                "INSERT OR REPLACE INTO customers VALUES (?, ?, ?)",
-                [(number, " ".join(name.split()), city) for number, name, city in make_examples.CUSTOMERS],
-            )
-            con.execute("CREATE TABLE IF NOT EXISTS load_log (Loaded TEXT, Rows INTEGER)")
-        con.close()
+        _shop(folder / "data" / "shop.sqlite")
         project = Project(name="Database")
         project.add_connection("Shop", "sqlite", file="data/shop.sqlite")
         project.add_connection(
@@ -339,6 +331,54 @@ class Examples:
         folder = self.root / "daily-inbox"
         header, rows = _order_rows(folder)
         _write_rows(folder / "inbox" / "orders_2026-02-21.csv", header, [row for row in rows if row[2] == "21.02.2026"])
+
+    def report(self) -> Path:
+        """A daily report: orders from an inbox and customers from a database, written to an Excel
+        file and a database table; imports, exports and commands for the Find panel."""
+        return self._once("report", self._report)
+
+    def _report(self) -> Path:
+        folder = self._data("daily-report")
+        _shop(folder / "data" / "shop.sqlite")
+        header, rows = _order_rows(folder)
+        for day in ("17.02.2026", "20.02.2026"):
+            d, m, y = day.split(".")
+            _write_rows(folder / "inbox" / f"orders_{y}-{m}-{d}.csv", header, [row for row in rows if row[2] == day])
+        project = Project(name="Daily report")
+        project.add_connection("Shop", "sqlite", file="data/shop.sqlite")
+        query = "SELECT CustomerNo, Name, City\nFROM customers"
+        customers = _table(project, "Customers", [("db.import", {"connection": "Shop", "mode": "query", "query": query})])
+        daily = _table(project, "Daily orders", [
+            ("csv.import", {"source": "folder", "folder": "inbox", "pattern": "orders_*.csv", "no_files": "skip"}),
+            ("columns.rename", RENAME_ORDERS),
+            ("rows.filter", NOT_CANCELLED),
+            ("table.merge", {"other": customers.id, "match": BY_CUSTOMER, "columns": ["Name", "City"]}),
+            ("excel.export", {"file": "output/daily orders.xlsx", "sheet": "Orders"}),
+            ("files.move", {"which": "imported", "target": "archive"}),
+        ])
+        command = "INSERT INTO load_log (Loaded, Rows)\nSELECT datetime('now'), COUNT(*) FROM revenue"
+        _table(project, "Revenue by day", [
+            ("table.derive", {"table": daily.id}),
+            ("calc.aggregate", {"group_by": ["Date"], "calculations": [
+                {"function": "sum", "column": "Net", "name": "Revenue"},
+            ]}),
+            ("db.export", {"connection": "Shop", "table": "revenue", "mode": "replace_keys", "key_columns": ["Date"]}),
+            ("db.command", {"connection": "Shop", "sql": command}),
+        ])
+        return project.save(folder / f"daily-report{EXTENSION}")
+
+
+def _shop(path: Path) -> None:
+    """The SQLite database of chapter 8: the customers, and an empty table load_log."""
+    con = sqlite3.connect(path)
+    with con:
+        con.execute("CREATE TABLE IF NOT EXISTS customers (CustomerNo TEXT PRIMARY KEY, Name TEXT, City TEXT)")
+        con.executemany(
+            "INSERT OR REPLACE INTO customers VALUES (?, ?, ?)",
+            [(number, " ".join(name.split()), city) for number, name, city in make_examples.CUSTOMERS],
+        )
+        con.execute("CREATE TABLE IF NOT EXISTS load_log (Loaded TEXT, Rows INTEGER)")
+    con.close()
 
 
 def _table(project: Project, name: str, steps: list[tuple[str, dict[str, Any]]]) -> Any:
@@ -1006,6 +1046,67 @@ def filter_pane(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
     return s.picture().copy(s.rect(s.window.data_panel))
 
 
+def open_find(s: Shot, width: int = 380) -> Any:
+    """The Find panel opened (Ctrl+Shift+F) on the left, ``width`` pixels wide."""
+    w = s.window
+    w.open_find()
+    settle(0.2)
+    w.resizeDocks([w.find_dock], [width], Qt.Orientation.Horizontal)
+    settle(0.2)
+    w.find_panel.refresh()
+    s.wait()
+    return w.find_panel
+
+
+def find_picture(s: Shot) -> QPixmap:
+    """The Find panel, down to a little below its last result."""
+    panel = s.window.find_panel
+    view = panel.view
+    last = panel.model.results()[-1]
+    bottom = view.viewport().mapTo(s.window, view.visualRect(panel.model.index_of(last)).bottomLeft()).y()
+    area = s.rect(s.window.find_dock)
+    if bottom + 16 > area.bottom():
+        raise RuntimeError("the window is too low for all results")
+    area.setBottom(bottom + 16)
+    return s.picture().copy(area)
+
+
+@picture("find-overview", "the Find panel with an empty search: the imports, exports and commands of a project")
+def find_overview(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot(size=(1280, 640))
+    s.open(ex.report(), "Daily orders", 1)
+    open_find(s)
+    return find_picture(s)
+
+
+@picture("find-place", "the Find panel grouped by place: folders and connections, files and database tables")
+def find_place(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot(size=(1280, 760))
+    s.open(ex.report(), "Daily orders", 1)
+    panel = open_find(s)
+    panel.set_group_by("place")
+    s.wait()
+    return find_picture(s)
+
+
+@picture("find-search", "a search for CustomerNo in the demo; Enter went to the merge step and its setting")
+def find_search(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot()
+    s.open(ex.demo(), "Customers")
+    panel = open_find(s, 320)
+    w = s.window
+    w.splitter.setSizes([230, w.splitter.width() - 230 - 400, 400])
+    settle(0.2)
+    panel.set_text("CustomerNo")
+    hits = panel.hits()
+    merge = next(n for n, hit in enumerate(hits) if hit.entry.table == "Orders" and hit.entry.number == 4)
+    panel.activate(merge)  # a click on the result
+    s.wait()
+    w.focus_setting(*hits[merge].focus)  # Enter: the setting that matched, marked for a moment
+    settle(0.2)
+    return s.picture()
+
+
 # Chapter 4: actions
 
 
@@ -1021,6 +1122,13 @@ def number_rows_settings(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
     s = shot()
     s.open(ex.demo(), "Orders", 7)
     return s.settings_picture()
+
+
+@picture("merge-message", "Merge with another table: how many rows matched, and the key without a match")
+def merge_message(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot()
+    s.open(ex.demo(), "Orders", 4)
+    return s.settings_picture("how")
 
 
 # Chapter 5: formulas
@@ -1212,6 +1320,18 @@ def map_collapsed(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
     s.wait()
     area = map_only(s)
     return s.picture().copy(area)
+
+
+@picture("map-highlight", "the tables Orders with customers uses, and the table that uses it (key H)")
+def map_highlight(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot(size=(1280, 760))
+    s.open(ex.sales(), "Orders with customers", 2)
+    s.window.show_map(True)
+    s.wait()
+    area = map_only(s)
+    s.window.map_view.toggle_lineage()  # H
+    s.wait()
+    return s.picture().copy(union(area, s.rect(s.window.statusBar())))  # with the message
 
 
 # Chapter 7: parameters

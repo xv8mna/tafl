@@ -3,7 +3,8 @@ table's steps, settings and data, so a whole project can be built from here.
 
 For big projects: the group bar (and the keys 1–9) jumps to a group, groups can be collapsed
 into one box each, and Ctrl+F finds a table by name. A map arranged by hand stays free of
-overlaps: what is in the way of a growing group moves down (``layout.tidy``).
+overlaps: what is in the way of a growing group moves down (``layout.tidy``). The key H
+highlights what the selected table uses and what uses it (``Lineage``).
 
 Rebuilding the scene always happens a moment later (``schedule_rebuild``): items must not be
 deleted while one of them is still handling a mouse event.
@@ -12,9 +13,10 @@ deleted while one of them is still handling a mouse event.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import Any
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, QStringListModel, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QCompleter,
@@ -36,17 +38,30 @@ from PySide6.QtWidgets import (
 )
 
 from tafl.api import Action
-from tafl.core import Group
+from tafl.core import Group, Link
 
 from .. import theme
 from ..action_menu import fill_action_menu
 from ..data_panel import DataPanel
 from ..labels import ElidedLabel
-from ..session import Session
+from ..session import Session, count
 from ..settings_panel import SettingsPanel
 from ..steps_panel import StepsPanel
 from ..tables_panel import confirm_delete_table
-from .items import Box, Edge, GroupFrame, GroupNode, LinkDrag, NodeRow, TableNode, group_rows, node_height, node_rows
+from .items import (
+    _DIMMED,
+    Box,
+    Edge,
+    GroupFrame,
+    GroupNode,
+    LinkDrag,
+    NodeRow,
+    TableNode,
+    group_counts,
+    group_rows,
+    node_height,
+    node_rows,
+)
 from .layout import (
     GAP_X,
     GAP_Y,
@@ -84,6 +99,7 @@ QToolButton#Chip:hover {{ background: {theme.BORDER_LIGHT}; border-color: {theme
 QToolButton#Chip[error="true"] {{ border-color: {theme.STATUS_COLORS["error"]}; }}
 QToolButton#Plain {{ border: none; padding: 2px 8px; color: {theme.TEXT_DIM}; }}
 QToolButton#Plain:hover {{ color: {theme.TEXT}; }}
+QToolButton#Plain:checked {{ color: {theme.ACCENT_TEXT}; }}
 QToolButton#Arrow {{
     border: 1px solid {theme.BORDER_LIGHT}; border-radius: 11px; padding: 1px 7px; background: {theme.RAISED};
     font-size: 11pt;
@@ -91,6 +107,54 @@ QToolButton#Arrow {{
 QToolButton#Arrow:hover {{ background: {theme.BORDER_LIGHT}; border-color: {theme.MAP_EDGE}; }}
 QToolButton#Arrow:disabled {{ color: {theme.TEXT_DISABLED}; background: transparent; }}
 """
+# The "Uses / used by" button: on while the highlight is on (as the Find panel's filter buttons)
+_TOGGLE_STYLE = f"""
+QToolButton {{ border: 1px solid {theme.BORDER_LIGHT}; border-radius: 3px; padding: 0px 8px; background: {theme.RAISED}; }}
+QToolButton:hover {{ background: {theme.BORDER_LIGHT}; }}
+QToolButton:checked {{ background: {theme.SELECTION}; border-color: {theme.ACCENT}; color: {theme.TEXT}; }}
+QToolButton:disabled {{ color: {theme.TEXT_DISABLED}; }}
+"""
+
+
+@dataclass(frozen=True)
+class Lineage:
+    """The highlight on the map: a table, the tables it uses and the tables that use it."""
+
+    table: str  # the selected table
+    uses: frozenset[str]  # tables it uses, directly and through others
+    used_by: frozenset[str]  # tables that use it, directly and through others
+
+
+def lineage_of(links: Iterable[Link], table_id: str) -> tuple[set[str], set[str]]:
+    """The tables ``table_id`` uses and the tables that use it, following the links of steps that
+    are on (as the calculation does); the table itself is in neither."""
+    sources: dict[str, set[str]] = {}  # table -> the tables it uses
+    targets: dict[str, set[str]] = {}  # table -> the tables that use it
+    for link in links:
+        if link.enabled:
+            sources.setdefault(link.target, set()).add(link.source)
+            targets.setdefault(link.source, set()).add(link.target)
+
+    def reach(edges: dict[str, set[str]]) -> set[str]:
+        found: set[str] = set()
+        todo = [table_id]
+        while todo:
+            for other in edges.get(todo.pop(), ()):
+                if other not in found:
+                    found.add(other)
+                    todo.append(other)
+        found.discard(table_id)
+        return found
+
+    return reach(sources), reach(targets)
+
+
+def lineage_text(name: str, uses: set[str], used_by: set[str]) -> str:
+    """The status bar message of the highlight: "“Orders” uses 2 tables and is used by 1 · …"."""
+    text = f"“{name}” uses {count(len(uses), 'table')} and is used by {len(used_by)}"
+    if both := len(uses & used_by):  # each of them uses it and is used by it
+        text += f": a circular reference with {'it' if both == 1 else f'{both} of them'}"
+    return text + " · H or Esc ends the highlight"
 
 
 class _Canvas(QGraphicsView):
@@ -179,6 +243,54 @@ class _ChipStrip(QScrollArea):
         """One page to the left (-1) or right (1)."""
         bar = self.horizontalScrollBar()
         bar.setValue(bar.value() + direction * max(bar.pageStep() * 3 // 4, 60))
+
+
+class _ShortButton(QToolButton):
+    """A button that shows a short text when there is no room for its own (a narrow window), and
+    nothing when there is no room for that either: it never makes the map wider. Not drawn, it
+    doesn't react either: no click, no tooltip, no keyboard focus. Had it the focus, ``instead``
+    gets it (the map, so that its keys keep working)."""
+
+    def __init__(self, parent: QWidget, text: str, short: str, instead: QWidget) -> None:
+        super().__init__(parent)
+        self._full, self._short = text, short
+        self._instead = instead
+        self._focus = self.focusPolicy()
+        self.setText(text)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def _width(self, text: str) -> int:
+        metrics = self.fontMetrics()
+        return super().sizeHint().width() - metrics.horizontalAdvance(self.text()) + metrics.horizontalAdvance(text)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._width(self._full), super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().sizeHint().height())
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        width = event.size().width()
+        text = self._full if width >= self.sizeHint().width() else self._short
+        if text != self.text():
+            self.setText(text)
+        drawn = self.drawn()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, not drawn)  # clicks go to the map
+        self.setFocusPolicy(self._focus if drawn else Qt.FocusPolicy.NoFocus)
+        if not drawn and self.hasFocus():
+            if self._instead.isVisible():
+                self._instead.setFocus(Qt.FocusReason.OtherFocusReason)
+            if self.hasFocus():  # the map is hidden (no tables)
+                self.clearFocus()
+
+    def drawn(self) -> bool:
+        """Whether the button is drawn: else not even the short text fits."""
+        return self.width() >= self._width(self._short)
+
+    def paintEvent(self, event: Any) -> None:
+        if self.drawn():
+            super().paintEvent(event)
 
 
 class GroupBar(QWidget):
@@ -294,6 +406,9 @@ class GroupBar(QWidget):
 class MapView(QWidget):
     open_table = Signal(str, str)  # table id, step id ("" = the table as a whole): open in the table view
     message = Signal(str)  # for the status bar
+    # (shown, new): the status bar shows ``new`` ("" = nothing) instead of ``shown``, but only while
+    # it still shows that ("" = no message): the highlight's message never hides another one
+    message_update = Signal(str, str)
 
     def __init__(self, session: Session, edit_connections: Callable[[], None], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -315,6 +430,10 @@ class MapView(QWidget):
         self._flashing: GroupFrame | None = None
         self._search_hits: list[str] = []
         self._search_index = -1
+        self.lineage: Lineage | None = None  # what the selected table uses and what uses it (None: off)
+        self._lineage_text = ""  # the status bar message of the highlight ("" while it is off)
+        self._links: list[Link] = []  # all links when the map was built (also inside collapsed groups)
+        self._linked_steps: set[str] = set()  # the steps with an arrow
         self._rebuild_timer = QTimer(self)
         self._rebuild_timer.setSingleShot(True)
         self._rebuild_timer.setInterval(0)
@@ -331,7 +450,10 @@ class MapView(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.setMinimumWidth(150)  # 230 when there is room
         self.search.setMaximumWidth(230)
-        self.search.setToolTip("Matching tables get an orange border; Enter jumps to the next one")
+        self.search.setToolTip(
+            "Matching tables get an orange border; Enter jumps to the next one. "
+            "Search everything (steps, files, SQL): Ctrl+Shift+F"
+        )
         self.search.textChanged.connect(self._search_changed)
         self.search.returnPressed.connect(self.find_next)
         self._names = QStringListModel(self)
@@ -352,6 +474,14 @@ class MapView(QWidget):
         new_table.setMenu(new_menu)
         arrange = QPushButton("Arrange automatically", self)
         arrange.clicked.connect(self.arrange)
+        # Beside the hint, which gives way first: the group bar keeps its room for the chips
+        self.lineage_button = _ShortButton(self, "Uses / used by", "⇄", instead=self.canvas)
+        self.lineage_button.setStyleSheet(_TOGGLE_STYLE)
+        self.lineage_button.setFixedHeight(arrange.sizeHint().height())
+        self.lineage_button.setCheckable(True)
+        self.lineage_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lineage_button.setToolTip("Highlight the tables the selected table uses and the tables that use it (H)")
+        self.lineage_button.clicked.connect(lambda _=False: self.toggle_lineage())
         header = QHBoxLayout()
         header.setContentsMargins(6, 4, 6, 2)
         header.addWidget(title)
@@ -359,6 +489,7 @@ class MapView(QWidget):
         header.addWidget(self.search, 1)
         header.addSpacing(10)
         header.addWidget(hint, 2)
+        header.addWidget(self.lineage_button)
         header.addWidget(new_table)
         header.addWidget(arrange)
         self.group_bar = GroupBar(self)
@@ -406,16 +537,17 @@ class MapView(QWidget):
             shortcut = QShortcut(QKeySequence(sequence), self)
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             shortcut.activated.connect(slot)
-        # Esc in the search field, as on the map: no search, no selection, back to the map
+        # Esc in the search field works as on the map
         escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self.search)
         escape.setContext(Qt.ShortcutContext.WidgetShortcut)
-        escape.activated.connect(self._leave_search)
+        escape.activated.connect(self._escape)
 
         session.project_changed.connect(self._project_changed)
         session.structure_changed.connect(self.schedule_rebuild)
         session.layout_changed.connect(self._layout_changed)
         session.results_changed.connect(self.update_statuses)
-        session.selection_changed.connect(self.update_highlight)
+        session.selection_changed.connect(self._selection_changed)
+        session.step_changed.connect(self._step_changed)
         self.rebuild()
 
     # --- building ----------------------------------------------------------------------------
@@ -443,21 +575,24 @@ class MapView(QWidget):
         collapsed = {g.id for g in project.groups if g.collapsed}
         unit_of = {t.id: _GROUP_UNIT + t.group if t.group in collapsed else t.id for t in project.tables}
         # Arrows between boxes; arrows inside a collapsed group are not drawn.
-        links = [link for link in session.engine.links() if unit_of[link.source] != unit_of[link.target]]
-        linked_steps = {link.step for link in links}
+        self._links = session.engine.links()
+        links = [link for link in self._links if unit_of[link.source] != unit_of[link.target]]
+        linked_steps = self._linked_steps = {link.step for link in links}
         connected = {link.source for link in links} | {link.target for link in links}
 
         boxes: dict[str, Box] = {}
         units: list[Unit] = []
+        kinds: dict[str, str] = {}  # action id -> step_kind
         for table in project.tables:
             if table.group not in collapsed:
-                node = TableNode(self, table, node_rows(session, table, linked_steps))
+                node = TableNode(self, table, node_rows(session, table, linked_steps, kinds))
                 self.nodes[table.id] = boxes[table.id] = node
                 units.append(Unit(table.id, node.height, table.group, table.position))
         for group in project.groups:
             members = project.members(group.id)
             if group.id in collapsed and members:
-                box = GroupNode(self, group, group_rows(members, connected), [t.id for t in members])
+                counts = group_counts(session, members, kinds)
+                box = GroupNode(self, group, group_rows(members, connected), [t.id for t in members], counts)
                 self.group_nodes[group.id] = box
                 boxes[_GROUP_UNIT + group.id] = box
                 position = group.position or _top_left([t.position for t in members if t.position is not None])
@@ -487,11 +622,7 @@ class MapView(QWidget):
                 self.frames[group.id] = frame
         for link in links:
             source, source_key, target, target_key = ends(link)
-            names = f"{project.table(link.source).name} → {project.table(link.target).name}"
-            step = session.describe(session.find_step(link.step)[1])
-            off = "" if link.enabled else "  (step is off)"
-            tooltip = f"{names}, step {link.index + 1}: {step}{off}\nClick to edit · right-click for more"
-            edge = Edge(self, link, source, source_key, target, target_key, tooltip)
+            edge = Edge(self, link, source, source_key, target, target_key, self._edge_tooltip(link))
             self.scene.addItem(edge)
             self.edges.append(edge)
 
@@ -503,12 +634,21 @@ class MapView(QWidget):
         self._names.setStringList(sorted(t.name for t in project.tables))
         self._mark_search_hits()
         self.update_statuses()
+        if self.lineage is not None:
+            self._update_lineage()
         self.update_highlight()
         focus, self._pending_focus = self._pending_focus, None
         if focus is not None and focus in self.nodes:
             self.focus_table(focus)
         else:
             self.refit()
+
+    def _edge_tooltip(self, link: Link) -> str:
+        project = self.session.project
+        names = f"{project.table(link.source).name} → {project.table(link.target).name}"
+        step = self.session.describe(self.session.find_step(link.step)[1])
+        off = "" if link.enabled else "  (step is off)"
+        return f"{names}, step {link.index + 1}: {step}{off}\nClick to edit · right-click for more"
 
     def update_statuses(self) -> None:
         session = self.session
@@ -545,11 +685,118 @@ class MapView(QWidget):
         self.group_bar.update_statuses()
 
     def update_highlight(self) -> None:
-        """Arrows into and out of the selected table are drawn in the accent color."""
+        """Arrows into and out of the selected table are drawn in the accent color. With the
+        highlight of its uses and users on, those are drawn in their colours and the rest dims."""
         for edge in self.edges:
             edge.refresh_pen()
+        for table_id, node in self.nodes.items():
+            node.setOpacity(_DIMMED if self.lineage_role(table_id) == "" else 1.0)
+        for box in self.group_nodes.values():
+            dimmed = self.lineage is not None and not any(self.lineage_role(t) for t in box.members)
+            box.setOpacity(_DIMMED if dimmed else 1.0)
         for box in self.boxes():
             box.update()
+        # The "Uses / used by" button: checked while the highlight is on; needs a selected table
+        self.lineage_button.setChecked(self.lineage is not None)
+        self.lineage_button.setEnabled(bool(self.session.table_id))
+
+    # --- what a table uses and what uses it --------------------------------------------------
+
+    def toggle_lineage(self) -> None:
+        """Highlight what the selected table uses and what uses it, or end that (key H)."""
+        self.set_lineage(self.lineage is None)
+
+    def set_lineage(self, on: bool) -> None:
+        self.lineage = None
+        if on and self.session.table_id:
+            self._update_lineage(announce=True)
+        else:
+            self._end_lineage_message()
+            if on:
+                self.message.emit("Select a table first")
+        self.update_highlight()
+
+    def lineage_role(self, table_id: str) -> str | None:
+        """With the highlight on: "table" (the selected one), "uses" (a table it uses), "used_by"
+        (a table that uses it), "both" (both: a circular reference) or "" (neither: dimmed); None
+        when it is off."""
+        lineage = self.lineage
+        if lineage is None:
+            return None
+        if table_id == lineage.table:
+            return "table"
+        uses, used_by = table_id in lineage.uses, table_id in lineage.used_by
+        return "both" if uses and used_by else "uses" if uses else "used_by" if used_by else ""
+
+    def _update_lineage(self, announce: bool = False) -> None:
+        """Work out the highlight for the selected table (off when there is none). The status bar
+        says what it shows when it starts or moves to another table (``announce``); after an edit
+        its message changes only while the status bar still shows it."""
+        table = self.session.project.find_table(self.session.table_id or "")
+        if table is None:
+            self.lineage = None
+            self._end_lineage_message()
+            return
+        uses, used_by = lineage_of(self.session.engine.links(), table.id)
+        self.lineage = Lineage(table.id, frozenset(uses), frozenset(used_by))
+        text = lineage_text(table.name, uses, used_by)
+        if not self.isHidden():  # the map is the view shown
+            if announce:
+                self.message.emit(text)
+            elif text != self._lineage_text:
+                self.message_update.emit(self._lineage_text, text)
+        self._lineage_text = text
+
+    def _end_lineage_message(self) -> None:
+        """The highlight is over (or the map is hidden): so is its message, if the status bar still
+        shows it."""
+        if self._lineage_text:
+            self.message_update.emit(self._lineage_text, "")
+        if self.lineage is None:
+            self._lineage_text = ""
+
+    def _lineage_menu(self, table_id: str) -> None:
+        """The table box menu's entry: the highlight for this table, or off if it is on for it."""
+        if self.lineage is not None and self.lineage.table == table_id:
+            self.set_lineage(False)
+            return
+        self.session.select_table(table_id)  # the highlight, if on, follows it
+        if self.lineage is None or self.lineage.table != table_id:
+            self.set_lineage(True)
+
+    def _selection_changed(self) -> None:
+        if self.lineage is not None and self.lineage.table != self.session.table_id:
+            self._update_lineage(announce=True)  # it follows the selection
+        self.update_highlight()
+
+    def _step_changed(self, step_id: str) -> None:
+        """A step was edited: its row and its arrows show it as it is now (a step that is off: a
+        pale row and a dashed arrow, and it leaves the highlight). A step that uses another table
+        now, or a row more or less: the map is built again."""
+        try:
+            table, _step = self.session.find_step(step_id)
+        except KeyError:
+            return
+        links = self.session.engine.links(table.id)
+        shown = [link for link in self._links if link.target == table.id]
+        node = self.nodes.get(table.id)
+        rows = node_rows(self.session, table, self._linked_steps) if node is not None else []
+        if [(link.source, link.step) for link in links] != [(link.source, link.step) for link in shown] or (
+            node is not None and [_row_place(row) for row in rows] != [_row_place(row) for row in node.rows]
+        ):
+            self.schedule_rebuild()
+            return
+        self._links = [link for link in self._links if link.target != table.id] + links
+        now = {(link.source, link.step): link for link in links}
+        for edge in self.edges:
+            if edge.link.target == table.id and (link := now.get((edge.link.source, edge.link.step))) is not None:
+                edge.link = link
+                edge.setToolTip(self._edge_tooltip(link))
+        if node is not None:
+            node.rows = rows
+        if self.lineage is not None:
+            self._update_lineage()
+        self.update_highlight()
 
     def update_edges(self) -> None:
         for edge in self.edges:
@@ -594,6 +841,8 @@ class MapView(QWidget):
 
     def _project_changed(self) -> None:
         self.auto_fit = True
+        self.lineage = None
+        self._end_lineage_message()
         self.search.clear()
         self.rebuild()
 
@@ -604,6 +853,12 @@ class MapView(QWidget):
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
         self.canvas.setFocus()  # so 1–9, Ctrl+G and Ctrl+F work right away
+        if self.lineage is not None and self._lineage_text:  # the highlight is still on: unless
+            self.message_update.emit("", self._lineage_text)  # the status bar shows something else
+
+    def hideEvent(self, event: Any) -> None:
+        super().hideEvent(event)
+        self._end_lineage_message()  # "H or Esc ends the highlight" works on the map only
 
     # --- positions ---------------------------------------------------------------------------
 
@@ -856,6 +1111,9 @@ class MapView(QWidget):
             )
             menu.addSeparator()
         menu.addAction("Open in table view", lambda: self.open_table.emit(table_id, ""))
+        lineage = menu.addAction("Show what it uses and what uses it\tH", lambda: self._lineage_menu(table_id))
+        lineage.setCheckable(True)
+        lineage.setChecked(self.lineage is not None and self.lineage.table == table_id)
         fill_action_menu(
             menu.addMenu("Add step"), self.session.registry, sources=False, chosen=lambda a: self.add_step(table_id, a)
         )
@@ -1249,9 +1507,11 @@ class MapView(QWidget):
         if key == Qt.Key.Key_F2 and self.session.table_id:
             self.rename_table(self.session.table_id)
             return True
+        if not control and key == Qt.Key.Key_H:
+            self.toggle_lineage()
+            return True
         if key == Qt.Key.Key_Escape:
-            self.scene.clearSelection()
-            self.search.clear()
+            self._escape()
             return True
         return False
 
@@ -1267,10 +1527,19 @@ class MapView(QWidget):
         self.search.setFocus()
         self.search.selectAll()
 
-    def _leave_search(self) -> None:
+    def _escape(self) -> None:
+        """Esc on the map or in its search field: no search, no selection, no highlight, back to
+        the map."""
         self.scene.clearSelection()
         self.search.clear()
+        if self.lineage is not None:
+            self.set_lineage(False)
         self.canvas.setFocus()
+
+
+def _row_place(row: NodeRow) -> tuple[str, int, str, str]:
+    """What decides where a row of a box is (its text and on/off don't)."""
+    return row.key, row.number, row.kind, row.mark
 
 
 def _top_left(points: list[tuple[float, float]]) -> tuple[float, float] | None:

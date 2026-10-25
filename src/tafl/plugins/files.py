@@ -13,7 +13,18 @@ from pathlib import Path
 
 import polars as pl
 
-from tafl.api import ActionError, Cancelled, P, action, files, find_files
+from tafl.api import ActionError, Cancelled, Endpoint, P, action, endpoints, files, find_files
+
+
+def _folder_endpoints(p, direction: str, key: str, *, name: str = "", mode: str = "", how: str = "") -> list[Endpoint]:
+    """The folder in setting ``key``, if one is named (``how``: the setting that ``mode`` comes from)."""
+    folder, how = p[key].strip(), how if mode else ""
+    found = Endpoint(direction, endpoints.FOLDER, place=folder, name=name, mode=mode, setting=key, mode_setting=how)
+    return [found] if folder else []
+
+
+def _subfolders(p) -> str:
+    return "with subfolders" if p.subfolders else ""
 
 
 def _listing_fingerprint(p, ctx):
@@ -43,6 +54,9 @@ def _listing_fingerprint(p, ctx):
     ],
     summary=lambda p: f"Files in {Path(str(p.folder)).name or p.folder}" + (" and its subfolders" if p.subfolders else ""),
     fingerprint=_listing_fingerprint,
+    endpoints=lambda p: _folder_endpoints(
+        p, endpoints.IN, "folder", name=p.pattern.strip() or "*", mode=_subfolders(p), how="subfolders"
+    ),
 )
 def list_files(df, p, ctx):
     """A table of the files in a folder (and its subfolders): name, path below the folder,
@@ -137,6 +151,24 @@ def _migrate_which(params: dict, from_version: int) -> dict:
     if from_version < 2:
         params.setdefault("which", "column")
     return params
+
+
+def _files_endpoints(p, direction: str, mode: str = "", how: str = "", *, which: bool = True) -> list[Endpoint]:
+    """The files a command works on: those listed in a column, or (``which``) those the table's
+    import read (``how``: the setting that ``mode`` comes from)."""
+    if which and p.get("which") == "imported":
+        return [Endpoint(direction, endpoints.FILE, mode=mode, setting="which", imported=True, mode_setting=how)]
+    if not p.column.strip():
+        return []
+    return [
+        Endpoint(direction, endpoints.FILE, place=p.base.strip(), mode=mode, setting="column", column=p.column, mode_setting=how)
+    ]
+
+
+def _copy_endpoints(p, direction: str) -> list[Endpoint]:
+    """The files, then the folder they go to."""
+    target = _folder_endpoints(p, endpoints.OUT, "target", mode="keep subfolders" if p.subfolders else "", how="subfolders")
+    return _files_endpoints(p, direction) + target
 
 
 def _which(p) -> str:
@@ -385,6 +417,7 @@ _TARGET_PARAMS = [
     migrate=_migrate_which,
     checks=_check_which,
     summary=lambda p: f"Copy {_which(p)} to {Path(str(p.target)).name or p.target or '?'}",
+    endpoints=lambda p: _copy_endpoints(p, endpoints.IN),
 )
 def copy_files(df, p, ctx):
     """Copies the files listed in a column of the table, or all files the table's import read,
@@ -403,6 +436,7 @@ def copy_files(df, p, ctx):
     migrate=_migrate_which,
     checks=_check_which,
     summary=lambda p: f"Move {_which(p)} to {Path(str(p.target)).name or p.target or '?'}",
+    endpoints=lambda p: _copy_endpoints(p, endpoints.CMD),
 )
 def move_files(df, p, ctx):
     """Moves the files listed in a column of the table, or all files the table's import read,
@@ -422,6 +456,7 @@ def move_files(df, p, ctx):
         P.Choice("existing", "If a file of that name is there already", _EXISTING),
     ],
     summary=lambda p: f"Rename the files in {p.column or '?'} to {p.new_name or '?'}",
+    endpoints=lambda p: _files_endpoints(p, endpoints.CMD, f"new names in {p.new_name or '?'}", "new_name", which=False),
 )
 def rename_files(df, p, ctx):
     """Gives the files listed in a column the names in another column (calculate them with a
@@ -489,6 +524,7 @@ def _real_name(path: Path) -> str:
     migrate=_migrate_which,
     checks=_check_which,
     summary=lambda p: f"Delete {_which(p)}" + (" for good" if p.how == "permanent" else ""),
+    endpoints=lambda p: _files_endpoints(p, endpoints.CMD, "for good" if p.how == "permanent" else "to the Recycle Bin", "how"),
 )
 def delete_files(df, p, ctx):
     """Deletes the files listed in a column of the table, or all files the table's import read:
@@ -518,6 +554,7 @@ def delete_files(df, p, ctx):
     kind="command",
     params=[P.Folder("folder", "Folder", help="Created with all the folders above it; nothing happens if it exists")],
     summary=lambda p: f"Create folder {Path(str(p.folder)).name or p.folder or '?'}",
+    endpoints=lambda p: _folder_endpoints(p, endpoints.CMD, "folder", mode="create"),
 )
 def create_folder(df, p, ctx):
     """Creates a folder (and the folders above it) if it doesn't exist yet. Runs only when the

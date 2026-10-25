@@ -35,6 +35,7 @@ from . import functions_window, theme
 from .checks import checks
 from .connections_dialog import ConnectionsDialog
 from .data_panel import DataPanel
+from .find_panel import FindPanel
 from .map import MapView
 from .parameters_dialog import ParametersDialog
 from .run_panel import RunPanel
@@ -75,6 +76,7 @@ class MainWindow(QMainWindow):
         self.map_view = MapView(session, self.edit_connections, self)
         self.map_view.open_table.connect(self.open_from_map)
         self.map_view.message.connect(lambda text: self.statusBar().showMessage(text, 10000))
+        self.map_view.message_update.connect(self._update_message)
         self.data_panel.status_message.connect(lambda text: self.statusBar().showMessage(text, 10000))
         self._close_after_run = False  # closing waits for the run to end
         self.views = QStackedWidget(self)
@@ -88,6 +90,20 @@ class MainWindow(QMainWindow):
         self.run_dock.setWidget(self.run_panel)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.run_dock)
         self.run_dock.hide()
+
+        self.find_panel = FindPanel(session, self)
+        self.find_dock = QDockWidget("Find", self)
+        self.find_dock.setObjectName("Find")
+        self.find_dock.setWidget(self.find_panel)
+        self.find_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.find_dock)
+        self.find_dock.hide()
+        self.find_panel.go_to.connect(self.go_to_step)
+        self.find_panel.focus_setting.connect(self.focus_setting)
+        self.find_panel.message.connect(lambda text: self.statusBar().showMessage(text, 10000))
+        self.find_panel.leave.connect(self._leave_find)
 
         self.busy_label = QLabel("", self)
         self.statusBar().addPermanentWidget(self.busy_label)
@@ -126,8 +142,8 @@ class MainWindow(QMainWindow):
         self.save_action = self._action("&Save", self.save_project, QKeySequence.StandardKey.Save)
         self.save_as_action = self._action("Save &as…", self.save_project_as, QKeySequence("Ctrl+Shift+S"))
         self.exit_action = self._action("E&xit", self.close)
-        self.undo_action = self._action("&Undo", self.session.undo, QKeySequence.StandardKey.Undo)
-        self.redo_action = self._action("&Redo", self.session.redo, QKeySequence("Ctrl+Y"))
+        self.undo_action = self._action("&Undo", self.undo, QKeySequence.StandardKey.Undo)
+        self.redo_action = self._action("&Redo", self.redo, QKeySequence("Ctrl+Y"))
         self.run_action = self._action(
             "▶  Run project", self.run_project, QKeySequence("F5"),
             "Calculate all tables and execute their exports and commands (F5)",
@@ -161,6 +177,15 @@ class MainWindow(QMainWindow):
         )
         self.results_action = self.run_dock.toggleViewAction()
         self.results_action.setText("Run results")
+        self.find_action = self._action(
+            "Find in project…", self.open_find, QKeySequence("Ctrl+Shift+F"),
+            "Find tables, steps, files, SQL, formulas and notes; with an empty search, all imports, exports and commands (Ctrl+Shift+F)",
+        )
+        self.find_action.setIconText("Find")  # short (the menu has the text): the toolbar stays narrow
+        self.find_next_action = self._action("Find next", lambda: self.find_next(1), QKeySequence("F3"))
+        self.find_previous_action = self._action("Find previous", lambda: self.find_next(-1), QKeySequence("Shift+F3"))
+        self.find_panel_action = self.find_dock.toggleViewAction()
+        self.find_panel_action.setText("Find panel")
         self.tables_view_action = self._action(
             "▤  Tables", lambda: self.show_map(False), QKeySequence("Ctrl+1"), "Edit the steps of a table (Ctrl+1)"
         )
@@ -188,6 +213,9 @@ class MainWindow(QMainWindow):
         edit = bar.addMenu("&Edit")
         edit.addAction(self.undo_action)
         edit.addAction(self.redo_action)
+        edit.addSeparator()
+        for action in (self.find_action, self.find_next_action, self.find_previous_action):
+            edit.addAction(action)
         project = bar.addMenu("&Project")
         for action in (self.run_action, self.run_table_action, self.stop_action):
             project.addAction(action)
@@ -200,6 +228,7 @@ class MainWindow(QMainWindow):
         view.addAction(self.map_view_action)
         view.addSeparator()
         view.addAction(self.results_action)
+        view.addAction(self.find_panel_action)
         help_menu = bar.addMenu("&Help")
         help_menu.addAction(self.guide_action)
         help_menu.addAction(self.functions_action)
@@ -218,6 +247,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.tables_view_action)
         toolbar.addAction(self.map_view_action)
+        toolbar.addAction(self.find_action)
         toolbar.addSeparator()
         toolbar.addAction(self.undo_action)
         toolbar.addAction(self.redo_action)
@@ -387,6 +417,23 @@ class MainWindow(QMainWindow):
         if field is not None:
             field.apply()
 
+    def undo(self) -> None:
+        """Edit → Undo. What is typed in a field is applied first (the toolbar's buttons leave the
+        keyboard focus in it), so Undo takes back just that typing. Ctrl+Z in a field is the
+        field's own undo."""
+        self.apply_typing()
+        self.session.undo()
+
+    def redo(self) -> None:
+        """Edit → Redo; what is typed in a field is applied first, as for Undo. That is an edit:
+        there is nothing to redo after it then (the status bar says so)."""
+        could_redo = self.session.can_redo
+        self.apply_typing()
+        if could_redo and not self.session.can_redo:
+            self.statusBar().showMessage("What you typed was applied: there is nothing to redo after a change", 10000)
+            return
+        self.session.redo()
+
     # --- running -----------------------------------------------------------------------------
 
     def run_project(self) -> None:
@@ -416,11 +463,61 @@ class MainWindow(QMainWindow):
         (self.map_view_action if on else self.tables_view_action).setChecked(True)
         self.session.set_overview(on)
 
+    def open_find(self) -> None:
+        """The Find panel, with the keyboard focus in its search field (Ctrl+Shift+F)."""
+        self.find_dock.show()
+        self.find_dock.raise_()
+        self.find_panel.focus_search()
+
+    def find_next(self, step: int) -> None:
+        """The next (or previous) result of the Find panel (F3, Shift+F3); a hidden panel is shown."""
+        if not self.find_dock.isVisible():
+            self.find_dock.show()
+            self.find_dock.raise_()
+        self.find_panel.next(step)
+
+    def go_to_step(self, table_id: str, step_id: str) -> None:
+        """Select a table and step in the current view; on the map its box is centred (a collapsed
+        group opens, as the map's Ctrl+F does). What is typed in a field is applied first (F3
+        doesn't leave the field): its undo step then shows the step typed in."""
+        focus = QApplication.focusWidget()
+        # Not from the panel itself (Enter, a click): a field left for it has applied its typing,
+        # and the panel's search field keeps its selected text
+        if focus is None or not self.find_panel.isAncestorOf(focus):
+            self.apply_typing()
+        if self.views.currentWidget() is self.map_view:
+            self.map_view.focus_table(table_id)
+        else:
+            self.session.select_table(table_id)
+        self.session.select_step(step_id)
+
+    def focus_setting(self, key: str, row: int, field: str) -> None:
+        """Move the keyboard focus to a setting of the selected step (Enter in the Find panel)."""
+        panel = self.map_view.settings if self.views.currentWidget() is self.map_view else self.settings_panel
+        panel.focus_setting(key, row, field)
+
+    def _leave_find(self) -> None:
+        """Esc in the Find panel's empty search field: back to the view."""
+        if self.views.currentWidget() is self.map_view:
+            self.map_view.canvas.setFocus()
+        else:
+            self.steps_panel.list.setFocus()
+
     def open_from_map(self, table_id: str, step_id: str) -> None:
         self.session.select_table(table_id)
         if step_id:
             self.session.select_step(step_id)
         self.show_map(False)
+
+    def _update_message(self, shown: str, new: str) -> None:
+        """``new`` instead of the message ``shown`` ("" = none), but only while the status bar
+        still shows that one: another message stays its time."""
+        status = self.statusBar()
+        if status.currentMessage() == shown:
+            if new:
+                status.showMessage(new, 10000)
+            else:
+                status.clearMessage()
 
     def _run_busy(self, running: bool) -> None:
         self._update_actions()

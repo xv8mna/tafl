@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import fnmatch
 import logging
@@ -14,11 +15,15 @@ import xlsxwriter
 
 from tafl.api import (
     ActionError,
+    Endpoint,
     P,
     action,
     combine,
     dtypes,
+    endpoints,
+    file_endpoint,
     files,
+    source_endpoints,
     source_files,
     source_params,
     source_summary,
@@ -58,6 +63,29 @@ def _migrate_import(params: dict, from_version: int) -> dict:
 _SEVERAL_SHEETS = ("all", "matching")
 
 
+def _import_endpoints(p) -> list[Endpoint]:
+    """The file or the folder, with the sheets. The mode starts with the sheets ("first sheet, with
+    subfolders"), and its setting is the one that chooses them."""
+    words, sheet, setting = [], "", ""
+    if p.get("sheets", "one") == "all":
+        words, setting = ["all sheets"], "sheets"
+    elif p.get("sheets") == "matching":
+        words, setting = [f"sheets {p.get('sheet_pattern') or '*'}"], "sheet_pattern"
+    elif str(p.get("sheet") or "").strip():
+        sheet = str(p.sheet)
+    else:
+        words, setting = ["first sheet"], "sheet"
+    return [
+        dataclasses.replace(
+            found,
+            part=sheet,
+            mode=", ".join([*words, *([found.mode] if found.mode else [])]),
+            mode_setting=setting or found.mode_setting,
+        )
+        for found in source_endpoints(p)
+    ]
+
+
 @action(
     "excel.import",
     "Import Excel files",
@@ -87,6 +115,7 @@ _SEVERAL_SHEETS = ("all", "matching")
     migrate=_migrate_import,
     summary=lambda p: f"Import {source_summary(p)}" + _sheets_summary(p),
     fingerprint=sources_fingerprint,
+    endpoints=_import_endpoints,
 )
 def import_excel(df, p, ctx):
     """Reads Excel files (xlsx, xlsm, xlsb, xls) or OpenDocument spreadsheets: one file or all
@@ -194,6 +223,14 @@ def _time_only(s: pl.Series) -> pl.Series:
     return s
 
 
+def _export_endpoints(p) -> list[Endpoint]:
+    if not p.file.strip():
+        return []
+    mode = "replace only this sheet" if p.existing == "sheet" else ""
+    how = "existing" if mode else ""
+    return [file_endpoint(p.file, endpoints.OUT, part=p.sheet, mode=mode, setting="file", mode_setting=how)]
+
+
 def _migrate_export(params: dict, from_version: int) -> dict:
     """Version 1 always replaced the whole file; versions 1 and 2 also wrote an empty table."""
     if from_version < 2:
@@ -244,6 +281,7 @@ def _migrate_export(params: dict, from_version: int) -> dict:
     migrate=_migrate_export,
     summary=lambda p: f"Export to {Path(p.file).name} ({p.sheet}"
     + (", other sheets kept)" if p.get("existing") == "sheet" else ")"),
+    endpoints=_export_endpoints,
 )
 def export_excel(df, p, ctx):
     """Writes the table to an .xlsx file, as an Excel table with formats. An existing file is

@@ -19,7 +19,7 @@ from .layout import (
     push_down,
     tidy,
 )
-from .view import LINK_CHOICES, GroupBar, MapView
+from .view import LINK_CHOICES, GroupBar, Lineage, MapView, lineage_of
 
 __all__ = [
     "GAP_Y",
@@ -36,6 +36,7 @@ __all__ = [
     "GroupBar",
     "GroupFrame",
     "GroupNode",
+    "Lineage",
     "MapView",
     "NodeRow",
     "TableNode",
@@ -44,6 +45,7 @@ __all__ = [
     "frame_rect",
     "free_spot",
     "group_rows",
+    "lineage_of",
     "node_height",
     "node_rows",
     "place",

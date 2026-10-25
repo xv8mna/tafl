@@ -20,6 +20,8 @@ parameters, databases and scheduled runs, with pictures. The download has it as 
 - **Export** to CSV, formatted Excel files (or one sheet of an existing workbook) and databases
   (insert, replace, update, upsert, delete by key), and run file commands and SQL commands.
 - **Project map**: all tables and how they use each other, with groups for big projects.
+- **Find panel**: find any step by its files, SQL, formulas, column names or notes; with an
+  empty search, every import, export and command of the project at a glance.
 - **Filter pane**: look at a selection of the rows without changing the table.
 - **Plugins**: every action is a plugin; your own actions are a Python file away.
 
@@ -123,9 +125,11 @@ guide** in the app). In short:
   panel shows the data going into it, and the steps after it are calculated once it is filled
   in. A run counts it as an error. A table that uses a table with an incomplete step is
   *waiting* (grey-blue too) until that step is filled in.
-- **Settings** (right): the selected step's settings. Changes apply when you press Enter or leave
-  the field (in SQL fields: Ctrl+Enter); the data updates in the background. Formula fields:
-  Enter applies, Shift+Enter starts a new line. Typing **[** (or the **[ ]** button) lists the
+- **Settings** (right): the selected step's settings. The box at the top shows what the step
+  reported, e.g. what an import detected or how many rows a merge matched ("152 of 156 rows
+  matched, 4 without a match: 09999"). Changes apply when you press Enter or leave the field (in
+  SQL fields: Ctrl+Enter); the data updates in the background. Formula fields: Enter applies,
+  Shift+Enter starts a new line. Typing **[** (or the **[ ]** button) lists the
   columns with their types; after two letters of a word the list offers functions, keywords and
   columns (Ctrl+Space opens it at any time). Enter, Tab or a click writes the selected one in,
   Esc closes the list. Columns, functions, texts, numbers and comments have their own colors, a
@@ -161,6 +165,10 @@ guide** in the app). In short:
   are on the right, its data below the map. **Tables** (Ctrl+1) switches back.
   - Every table is a box; arrows run from a table to the step that uses it (merge, append, start
     from). The selected table's arrows are blue; dashed arrows belong to steps that are off.
+    Imports are marked **in**, exports and commands **out**, each in its own color.
+  - **Uses / used by** (H, the button above the map, or right-click a box): the tables the
+    selected table uses, directly or through others, and the tables that use it are drawn in
+    two colors, with their arrows; the rest dims. It follows the selection; H or Esc ends it.
   - **Connect tables**: drag a table's ● (right edge) onto another table and choose Lookup, Left /
     Inner / Full join, Append or Keep rows with / without a match. The step is added before the
     exports, with the matching column filled in when both tables have one with the same name.
@@ -180,15 +188,30 @@ guide** in the app). In short:
     between them.
   - **Collapsed groups**: ▾ in a frame's title (or double-click a collapsed box) switches between
     the tables and one compact box. The box lists the group's tables that are connected to the
-    outside, and arrows go to exactly those rows. **Collapse all** gives an overview of a big
+    outside, and arrows go to exactly those rows; a line at the bottom counts the group's imports
+    and its exports and commands (`3 in · 2 out`). **Collapse all** gives an overview of a big
     project.
   - **Find** (Ctrl+F, anywhere on the map): matching tables get an orange border; Enter jumps to
-    the next one (a collapsed group opens for it).
+    the next one (a collapsed group opens for it). The Find panel (Ctrl+Shift+F) searches steps.
   - **Turn a table off** (right-click a box, a table in the list, or a whole group): it is not
     calculated and its exports don't run; tables that use it show as *skipped* (grey), not as
     errors. The run results list them as skipped.
   - Ctrl + mouse wheel zooms, dragging the background moves the view, **Arrange automatically**
     tidies everything up.
+- **Find panel** (**Find** in the toolbar, Ctrl+Shift+F; **View → Find panel**): a panel beside
+  the tables view and the map.
+  - With an empty search: every import, export and command, with the file, folder or sheet, or
+    the connection and database table, that it reads or writes (paths relative to the project;
+    with a parameter also with its value now).
+  - Typing searches table, group and action names, step summaries and notes, and every text
+    setting (files, SQL, formulas, column names, connections, parameters); all words must match.
+    Filters: **Problems**, **Off**, **Changed** (since the project was opened) and **Uses {…}**.
+    Group by **Kind**, **Table** or **Place** (folder or connection, then file or database
+    table: which steps write into a file).
+  - A click selects the step in the current view (on the map, a collapsed group opens) and the
+    panel stays open; Enter in the results (or a double-click) also puts the cursor into the
+    setting that matched. Enter in the search field goes to the next result; F3 and Shift+F3 go
+    to the next and previous result from anywhere.
 - **Filter pane** (**Filters** above the grid): see only the rows with the values you pick,
   without adding a step. Add a filter with **+ Filter**, or right-click a column header
   (**Filter by …**) or a cell (**Show only rows where … is …**).
@@ -627,6 +650,22 @@ The settings form is built from `params`. Rules for plugins:
 - `raise ActionError("...")` for a problem the user can fix. To end the table at this step
   without an error, e.g. when there is nothing to do, `raise SkipRest("No new orders")`: the
   steps after it are skipped with that message.
+- The Find panel takes what a step reads and writes from the action's file, folder and
+  connection settings. An action can say it itself with `endpoints=`, a
+  function `(params) -> [Endpoint]` (`Endpoint` and `file_endpoint` are in `tafl.api`, the
+  directions `IN`, `OUT`, `CMD` and the kinds `FILE`, `FOLDER`, `DATABASE`, `SQL` in
+  `tafl.api.endpoints`), for example
+  `endpoints=lambda p: [file_endpoint(p.file, endpoints.OUT, setting="file")]` after
+  `from tafl.api import endpoints, file_endpoint`. An import built with `source_params` gets the
+  endpoints of `source_endpoints` without `endpoints=` too (its own function can start from
+  `source_endpoints(p)`). An endpoint whose `mode` says how it is read or written ("to the
+  Recycle Bin") can name the setting that mode comes from with `mode_setting=`: Enter on a match
+  in it goes there. `folder_import=True` marks the folder of an import that notes the files it
+  read (`source_endpoints` sets it), so a later step on "the files the import read" is listed
+  with that folder. Whether a step is marked **in** or **out**
+  (on the map, and as the kind in the Find panel) goes by the action: exports
+  (`kind="export"`) and commands are **out**, other actions with such settings or `endpoints=`
+  are **in**. So an action that writes files should be an export.
 - Test actions with `tafl.api.testing.StubContext` (see `tests/plugins`).
 
 Plugins are ordinary Python code that runs with your rights when Tafl starts: only add plugins
