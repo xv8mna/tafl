@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.5.0 – 2026-10-28
 
 Four new steps: Check data, Pivot, Unpivot and Split column. The user guide describes them in
 chapter 4, "Actions".
