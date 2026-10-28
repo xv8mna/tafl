@@ -1,5 +1,8 @@
 import datetime as dt
+import math
 import random
+import struct
+import time
 from decimal import Decimal
 
 import polars as pl
@@ -365,3 +368,84 @@ def test_text_sort_key_sorts_like_excel():
     assert keys == [dtypes.text_key(w) for w in words]
     assert dtypes.text_sort_key(df["w"]).to_list() == keys
     assert dtypes.text_key("é") == dtypes.text_key("é") == "e"  # also with a separate accent
+
+
+def _texts(values, dtype=None) -> list:
+    s = pl.Series("v", values, dtype=dtype, strict=False)
+    return s.to_frame().select(dtypes.text_expr(pl.col("v"), s.dtype))["v"].to_list()
+
+
+def test_text_expr_writes_values_the_same_on_every_pc():
+    assert _texts(["x", " y ", None]) == ["x", " y ", None]
+    assert _texts([1234, -5, None]) == ["1234", "-5", None]
+    assert _texts([Decimal("5.00"), Decimal("-0.50")], pl.Decimal(10, 2)) == ["5.00", "-0.50"]
+    assert _texts([dt.date(2025, 12, 31)]) == ["2025-12-31"]
+    moments = [dt.datetime(2025, 12, 31, 8, 30), dt.datetime(2025, 12, 31, 8, 30, 0, 500_000)]
+    assert _texts(moments) == ["2025-12-31 08:30:00", "2025-12-31 08:30:00.500"]
+    zoned = pl.Series(moments).dt.replace_time_zone("Europe/Berlin")
+    assert _texts(zoned.to_list(), zoned.dtype) == ["2025-12-31 08:30:00", "2025-12-31 08:30:00.500"]  # no offset
+    assert _texts([dt.time(8, 30), dt.time(8, 30, 0, 500_000)]) == ["08:30:00", "08:30:00.500"]
+    assert _texts([dt.timedelta(days=1, hours=2, minutes=3)]) == ["1d 2h 3m"]
+    assert _texts([True, False]) == ["true", "false"]
+    assert _texts([b"\x01\xff"]) == ["0x01FF"]
+
+
+def test_text_expr_writes_decimal_numbers_with_all_their_digits_and_no_exponent():
+    values = [2.0, 1.5, -0.0, 0.1 + 0.2, 1 / 3, 1e16, -1e20, 1e-7, 2.5e-8, 123456789012345.0, 2.0**53, 2.0**53 + 2]
+    assert _texts(values) == [
+        "2", "1.5", "0", "0.30000000000000004", "0.3333333333333333", "10000000000000000", "-100000000000000000000",
+        "0.0000001", "0.000000025", "123456789012345", "9007199254740992", "9007199254740994",
+    ]
+    assert _texts([float("nan"), float("inf"), float("-inf"), None]) == ["NaN", "inf", "-inf", None]
+    assert _texts([0.1, 2.0, 1e16], pl.Float32) == ["0.1", "2", "10000000000000000"]  # the digits it shows
+    rng = random.Random(7)
+    numbers = [rng.gauss(0, 1e6) for _ in range(3000)] + [rng.random() for _ in range(3000)]
+    numbers += [10.0 ** rng.uniform(-30, 30) for _ in range(3000)]
+    assert [float(text) for text in _texts(numbers)] == numbers  # every value reads back as it was
+
+
+def test_text_expr_writes_the_digits_of_an_exponent_without_it():
+    """The same digits as Polars shows with the exponent (1.5e-7 is 0.00000015), also at the ends
+    of the range and for Float32 values."""
+    rng = random.Random(3)
+    doubles = [struct.unpack("<d", rng.getrandbits(64).to_bytes(8, "little"))[0] for _ in range(20_000)]
+    singles = [struct.unpack("<f", rng.getrandbits(32).to_bytes(4, "little"))[0] for _ in range(5_000)]
+    for dtype, values in (
+        (pl.Float64, [5e-324, -2.2250738585072014e-308, 1.7976931348623157e308, -1.2345678901234568e17, 1e16, *doubles]),
+        (pl.Float32, [3.4028234663852886e38, 1e-45, 1.1754943508222875e-38, -2.5e-8, *singles]),
+    ):
+        numbers = pl.Series([value for value in values if math.isfinite(value)], dtype=dtype)
+        with_exponent = numbers.filter(numbers.cast(pl.String).str.contains("e"))
+        assert with_exponent.len() > numbers.len() / 2
+        expected = [format(Decimal(text), "f") for text in with_exponent.cast(pl.String)]
+        assert _texts(with_exponent.to_list(), dtype) == expected
+
+
+def test_text_expr_of_decimal_numbers_is_quick():
+    rng = random.Random(1)
+    numbers = pl.Series("v", [rng.random() for _ in range(1_000_000)])
+    start = time.perf_counter()
+    numbers.to_frame().select(dtypes.text_expr(pl.col("v"), pl.Float64))
+    assert time.perf_counter() - start < 1.5  # Polars itself: about 0.1 s
+
+
+def test_text_expr_of_decimal_numbers_with_an_exponent_is_quick():
+    """Below 1e-4 and from 1e16 on, Polars writes most numbers with an exponent."""
+    rng = random.Random(2)
+    numbers = pl.Series("v", [rng.random() * 1e-5 for _ in range(500_000)] + [rng.uniform(1e16, 1e20) for _ in range(500_000)])
+    frame = numbers.to_frame()
+    assert numbers.cast(pl.String).str.contains("e").sum() > 990_000
+
+    def best(run) -> float:
+        times = []
+        for _ in range(3):
+            start = time.perf_counter()
+            run()
+            times.append(time.perf_counter() - start)
+        return min(times)
+
+    plain = best(lambda: frame.select(pl.col("v").cast(pl.String)))
+    step = best(lambda: frame.select(dtypes.text_expr(pl.col("v"), pl.Float64)))
+    texts = frame.select(dtypes.text_expr(pl.col("v"), pl.Float64))["v"]
+    assert not texts.str.contains("e").any() and texts.cast(pl.Float64).equals(numbers)
+    assert step < 10 * plain + 0.4, (step, plain)

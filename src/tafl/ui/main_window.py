@@ -531,8 +531,9 @@ class MainWindow(QMainWindow):
 
     def _run_finished(self, results: dict) -> None:
         failed = [r for r in results.values() if r.failed]  # a table that is off (skipped) is no error
+        warned = any(level == "warning" for r in results.values() for s in r.steps for level, _ in s.messages)
         self.run_dock.show()
-        text = "Run finished with errors" if failed else "Run finished"
+        text = "Run finished with errors" if failed else "Run finished with warnings" if warned else "Run finished"
         self.statusBar().showMessage(f"{text} — see Run results", 10000)
 
     def _run_stopped(self, _results: dict) -> None:

@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStyle,
     QStyleOptionComboBox,
+    QStyleOptionSpinBox,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -100,9 +101,12 @@ class Editor(QWidget):
 
     def allow_narrow(self) -> None:
         """In a row of a list, next to other fields: drop-down lists may get narrow (their texts
-        are cut off), so that the row fits a narrow settings panel."""
+        are cut off), and number fields are as wide as their number, without arrows, so that the row
+        fits a narrow settings panel."""
         for combo in self.findChildren(_Combo):
             combo.make_narrow()
+        for spin in self.findChildren(_Spin):
+            spin.make_narrow()
 
     def focus_input(self) -> QWidget:
         """Put the keyboard focus into the editor; returns the widget that has it (its focus proxy,
@@ -155,6 +159,46 @@ class _Combo(QComboBox):
         hint = super().minimumSizeHint()
         if self.narrow:
             hint.setWidth(min(hint.width(), self._width("MM")))
+        return hint
+
+
+class _Spin(QSpinBox):
+    """A whole number field; ``make_narrow`` makes it as wide as the number it shows (at least two
+    digits, also while a number is typed) and without arrows, instead of as wide as its largest
+    possible number. The mouse wheel and the arrow keys still change the number."""
+
+    narrow = False
+
+    def make_narrow(self) -> None:
+        if not self.narrow:
+            self.narrow = True
+            self.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+            self.lineEdit().textChanged.connect(lambda _text: self.updateGeometry())  # typing
+            # A new value from the wheel, the arrow keys or the restore of an emptied field: Qt
+            # writes its text with the line edit's signals blocked
+            self.valueChanged.connect(lambda _value: self.updateGeometry())
+            self.editingFinished.connect(self.updateGeometry)
+            self.updateGeometry()
+
+    def _width(self) -> int:
+        """The width for the number shown (also the one being typed), with the frame."""
+        option = QStyleOptionSpinBox()
+        self.initStyleOption(option)
+        metrics = self.fontMetrics()
+        digits = max(self.text(), "00", key=len)
+        content = QSize(metrics.horizontalAdvance(digits + " ") + 2, metrics.height())  # as Qt measures its range
+        return self.style().sizeFromContents(QStyle.ContentsType.CT_SpinBox, option, content, self).width()
+
+    def sizeHint(self) -> Any:
+        hint = super().sizeHint()
+        if self.narrow:
+            hint.setWidth(min(hint.width(), self._width()))
+        return hint
+
+    def minimumSizeHint(self) -> Any:
+        hint = super().minimumSizeHint()
+        if self.narrow:
+            hint.setWidth(min(hint.width(), self._width()))
         return hint
 
 
@@ -622,7 +666,7 @@ class ExpressionEditor(Editor):
 class IntEditor(Editor):
     def __init__(self, param: Param, ctx: FormContext, parent: QWidget | None = None) -> None:
         super().__init__(param, ctx, parent)
-        self._spin = QSpinBox(self)
+        self._spin = _Spin(self)
         low, high = getattr(param, "min", None), getattr(param, "max", None)
         self._spin.setRange(-2_000_000_000 if low is None else int(low), 2_000_000_000 if high is None else int(high))
         self._spin.setKeyboardTracking(False)
@@ -1009,6 +1053,7 @@ class ListEditor(Editor):
         self._wide = [f for f in self._fields if f.kind in ("expression", "code")]
         self._rows: list[dict[str, Editor]] = []
         self._row_widgets: list[list[QWidget]] = []
+        self._labels: dict[str, QLabel] = {}  # the header: field key -> label
         self._values: dict[str, Any] = {}
         self._grid = QGridLayout()
         self._grid.setContentsMargins(0, 0, 0, 0)
@@ -1016,7 +1061,7 @@ class ListEditor(Editor):
         self._grid.setVerticalSpacing(4)
         if not self._wide:  # a choice is as wide as its text, the other fields share the rest
             for column, f in enumerate(self._fields):
-                self._grid.setColumnStretch(column, 2 if f.kind == "text" else 0 if f.kind == "choice" else 1)
+                self._grid.setColumnStretch(column, _stretch(f))
         add = QPushButton("+ Add", self)
         add.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         add.clicked.connect(self._add_clicked)
@@ -1049,6 +1094,7 @@ class ListEditor(Editor):
             label = _ShortLabel(f.label, self)
             label.setObjectName("Dim")
             self._grid.addWidget(label, 0, column)
+            self._labels[f.key] = label
 
     def _rebuild(self, rows: list[dict[str, Any]]) -> None:
         for widgets in self._row_widgets:
@@ -1138,10 +1184,33 @@ class ListEditor(Editor):
         self.changed.emit()
 
     def _update_visibility(self) -> None:
+        """Each row shows its fields; the header names those that a row shows (none without rows).
+        The room of a field that no row shows stays where it is: the field before it gets it if
+        that one grows with the row, else it stays empty. So the fields before it keep their place,
+        and a choice that hides or shows a field stays under the mouse."""
+        shown: set[str] = set()
         for row in self._rows:
             values = {key: editor.value() for key, editor in row.items()}
             for f in self._fields:
-                row[f.key].setVisible(is_visible(f, values))
+                visible = is_visible(f, values)
+                row[f.key].setVisible(visible)
+                if visible:
+                    shown.add(f.key)
+        for key, label in self._labels.items():
+            label.setVisible(key in shown)
+        if not self._wide:
+            stretch = [_stretch(f) for f in self._fields]
+            for column in range(len(stretch) - 1, 0, -1):
+                if self._fields[column].key not in shown and stretch[column - 1]:
+                    stretch[column - 1] += stretch[column]
+                    stretch[column] = 0
+            for column, factor in enumerate(stretch):
+                self._grid.setColumnStretch(column, factor)
+
+
+def _stretch(field_: Param) -> int:
+    """How a field of a list row shares the room of the row: a choice is as wide as its text."""
+    return 2 if field_.kind == "text" else 0 if field_.kind == "choice" else 1
 
 
 class _ShortLabel(QLabel):

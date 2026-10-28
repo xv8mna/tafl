@@ -1,5 +1,50 @@
 # Changes
 
+## Unreleased
+
+Four new steps: Check data, Pivot, Unpivot and Split column. The user guide describes them in
+chapter 4, "Actions".
+
+- **Check data** (under Rows): checks the number of rows at this step (at least, at most,
+  exactly or between two numbers) and, when a check fails, either stops the table or only warns.
+  *Stop the table* is an error like any other: the steps after it, with the table's exports and
+  commands, don't run, the tables that use it get the error too, and a run fails (exit code 1).
+  *Only warn* shows a warning on the step and in Run results, and the data goes on. The data
+  itself never changes. A new step starts with "at least 1 row" and *Stop the table*.
+- **Pivot** (under Columns): turns the values of one column into columns, like an Excel pivot
+  table without totals: one row for each combination of the row keys, one column for each value,
+  and in each cell the Sum (the default), Count, Average, Minimum, Maximum, First or Last value of
+  the rows that meet there. Cells without rows stay empty. The new columns are sorted or come in
+  the order the values first appear, all empty values go into one column "(empty)", and there are
+  at most 1,000 of them (and at most 50,000,000 cells).
+- **Unpivot** (under Columns): turns columns into rows, the opposite of Pivot. The chosen
+  columns, or all columns except the chosen ones, become a column with their names and a column
+  with their values; empty values can be left out. Whole and decimal numbers become decimal
+  numbers, whole numbers and exact decimals exact decimals, and dates and date-times date-times,
+  when every value stays as it is; other mixes, also decimal numbers with exact decimals, become
+  text, and the step says so, so that no value is changed without notice. The result has at most
+  250,000,000 cells (rows × columns).
+- **Split column** (under Text): splits text at a separator (comma, semicolon, space, tab, line
+  break or any other text) into new columns ("Müller, Hans" into Last name and First name; the
+  last column gets the rest of the text as it is) or into rows ("A;B;C" into three rows, with the
+  other columns repeated).
+- Projects with these steps need this version: 0.4.0 shows them as unknown actions.
+- **Run results** show warnings without a click: a step with a warning is orange and open, the
+  table says "ok, 1 warning", the first line counts the warnings, and the status bar says "Run
+  finished with warnings". A double-click on a line goes to its table or step and no longer
+  opens or closes the line (the arrow in front of it does).
+- **Aggregate**: a *Sum* of whole numbers beyond 9,223,372,036,854,775,807, or of durations
+  beyond 292 years (106,751 days; Parquet files often keep durations in nanoseconds), stops the
+  step with a message instead of giving a wrong number, and *Minimum* and *Maximum* of lists and
+  records stop with a message instead of giving empty values. *Pivot* does the same.
+- The list of steps writes wide tables as "10,000 × 1,001".
+- In a list of settings, a field that no row shows has no column heading (e.g. *and* of Check
+  data's *between*), and number fields are as wide as their number, without arrows (the mouse
+  wheel and the Up and Down keys still change them), so that a row fits a narrow settings panel.
+- Plugins: `tafl.api.dtypes.text_expr(expr, dtype)` writes the values of any column as text that
+  is the same on every PC (as Pivot names its columns): 2 and not 2.0, every digit that tells a
+  decimal number apart and no exponent, dates as 2025-12-31.
+
 ## 0.4.0 – 2026-10-25
 
 A Find panel that lists what a project reads and writes and finds any step by its texts, marks

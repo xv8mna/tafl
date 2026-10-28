@@ -147,21 +147,58 @@ def aggregate(df, p, ctx):
     """Groups rows with equal values in the group columns and calculates one result row per
     group, like GROUP BY in SQL. Groups appear in the order they first occur."""
     aggregations = []
+    wide = []  # sums of whole numbers (durations) that might be beyond Int64: added up as Int128, checked below
     for calc in p.calculations:
         if calc.function != "count_rows" and not calc.column:
             raise ActionError(f"Choose a column for '{_FUNCTION_LABELS[calc.function]}'")
-        _check_type(calc, df.schema.get(calc.column))
-        aggregations.append(_aggregation(calc, p.separator).alias(_result_name(calc)))
+        dtype = df.schema.get(calc.column)
+        _check_type(calc, dtype)
+        aggregation = _aggregation(calc, p.separator)
+        if calc.function == "sum" and dtype in (pl.Int64, pl.UInt64, pl.Duration) and _sums_may_overflow(df[calc.column]):
+            aggregation = pl.col(calc.column).to_physical().cast(pl.Int128).sum()
+            wide.append((_result_name(calc), calc.column, dtype))
+        aggregations.append(aggregation.alias(_result_name(calc)))
     names = [*p.group_by, *(a.meta.output_name() for a in aggregations)]
     if duplicates := sorted({n for n in names if names.count(n) > 1}):
         raise ActionError(f"Result names used twice: {', '.join(duplicates)}")
     if p.group_by:
-        return df.group_by(p.group_by, maintain_order=True).agg(aggregations)
-    return df.select(aggregations)
+        out = df.group_by(p.group_by, maintain_order=True).agg(aggregations)
+    else:
+        out = df.select(aggregations)
+    for name, column, dtype in wide:
+        low, high = (0, 2**64 - 1) if dtype == pl.UInt64 else (-(2**63), 2**63 - 1)
+        beyond = out[name].filter((out[name] < low) | (out[name] > high))
+        if beyond.len():  # a wrong number would be worse
+            total, where = beyond[0], " in a group" if p.group_by else ""
+            if dtype == pl.Duration:
+                per_day = {"ns": 10**9, "us": 10**6, "ms": 10**3}[dtype.time_unit] * 86_400
+                raise ActionError(
+                    f"“{name}” is {'-' if total < 0 else ''}{abs(total) // per_day:,} days{where}: too long for a "
+                    f"duration (at most {high // per_day:,} days). Change “{column}” to hours before this step, "
+                    f"with the formula EPOCH([{column}]) / 3600."
+                )
+            limit = f"big for a whole number (at most {high:,})" if total > high else f"small for a whole number (at least {low:,})"
+            raise ActionError(
+                f"“{name}” is {total:,}{where}: too {limit}. Change “{column}” to a decimal number before this step."
+            )
+        out = out.with_columns(pl.col(name).cast(dtype))
+    return out
+
+
+def _sums_may_overflow(s: pl.Series) -> bool:
+    """Whether a sum of these whole numbers (or durations) might be beyond Int64 (Polars would let it
+    overflow)."""
+    s = s.to_physical()
+    low, high = s.min(), s.max()
+    return low is not None and max(-low, high) * s.len() > 2**63 - 1
 
 
 def _check_type(calc, dtype: pl.DataType | None) -> None:
-    """Sum needs numbers; average and median also take dates."""
+    """Sum needs numbers; average and median also take dates. Minimum and maximum can't compare
+    lists and records (Polars gives empty values)."""
+    if dtype is not None and calc.function in ("min", "max") and (dtype.is_nested() or dtype == pl.Object):
+        label = _FUNCTION_LABELS[calc.function]
+        raise ActionError(f"“{calc.column}” holds {dtypes.type_label(dtype)} values, which {label} can't compare")
     if dtype is None or calc.function not in ("sum", "mean", "median"):
         return
     if dtype.is_numeric() or dtype in (pl.Boolean, pl.Duration):

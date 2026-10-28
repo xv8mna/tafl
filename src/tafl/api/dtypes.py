@@ -343,6 +343,49 @@ def type_label(dtype: pl.DataType) -> str:
     return str(dtype).lower()
 
 
+def text_expr(expr: pl.Expr, dtype: pl.DataType) -> pl.Expr:
+    """The values of ``expr`` (of type ``dtype``) as text that is the same on every PC: text as it
+    is, 1234, 1.5 and 2 (not 2.0), 5.00 for an exact decimal, 2025-12-31, 2025-12-31 08:30:00
+    (fractions of a second only when there are some; a time zone's local time, without the
+    offset), 08:30:00.500, 1d 2h 3m, true and false, 0x01FF for binary values. Decimal numbers
+    keep every digit that tells them apart (the shortest text that reads back as the same number:
+    0.1, 0.30000000000000004), without an exponent (1e16 is 10000000000000000)."""
+    if dtype == pl.String:
+        return expr
+    if dtype.is_float():
+        return expr.map_batches(_float_texts, return_dtype=pl.String, is_elementwise=True)
+    if dtype == pl.Datetime:
+        return expr.dt.to_string("%Y-%m-%d %H:%M:%S%.f")
+    if dtype == pl.Time:
+        return expr.dt.to_string("%H:%M:%S%.f")
+    if dtype == pl.Duration:
+        return expr.dt.to_string("polars")
+    if dtype == pl.Binary:  # as hex digits, as Change type writes them (and keeping the name of expr)
+        return expr.bin.encode("hex").str.to_uppercase().str.replace("^", "0x")
+    return expr.cast(pl.String)
+
+
+def _float_texts(s: pl.Series) -> pl.Series:
+    """Decimal numbers as text (see ``text_expr``). Polars writes the shortest text that reads
+    back as the number (a Float32 value with its own digits: 0.1, not 0.10000000149011612); those
+    with an exponent are written again with the same digits, without it: -1.5e-7 is -0.00000015,
+    1e+16 is 10000000000000000."""
+    text = s.cast(pl.String)
+    rows = text.str.contains("e", literal=True).fill_null(False).arg_true()  # NaN and inf have no "e"
+    if rows.len():
+        number = text.gather(rows).str.split_exact("e", 1).struct.rename_fields(["mantissa", "exponent"])
+        mantissa = pl.col("mantissa")
+        digits = mantissa.str.strip_chars_start("-").str.replace(".", "", literal=True)
+        point = pl.col("exponent").cast(pl.Int64) + 1  # digits before the point: 1 + the exponent
+        zeros = (1 - point).clip(lower_bound=0)  # in front, so that there is a digit before the point
+        point = point + zeros
+        digits = digits.str.pad_start(digits.str.len_bytes() + zeros, "0").str.pad_end(point, "0")
+        sign = pl.when(mantissa.str.starts_with("-")).then(pl.lit("-")).otherwise(pl.lit(""))
+        written = pl.concat_str(sign, digits.str.slice(0, point), pl.lit("."), digits.str.slice(point))
+        text = text.scatter(rows, number.struct.unnest().select(written.str.strip_chars_end(".")).to_series())
+    return text.str.strip_suffix(".0").replace("-0", "0")
+
+
 def normalize(s: pl.Series, *, exact: bool = False) -> pl.Series:
     """Map other types to the app's standard ones (Decimal -> Int64/Float64, Int32 -> Int64, ...).
 

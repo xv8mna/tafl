@@ -121,6 +121,40 @@ class Examples:
         """The demo of the download (examples\\demo.tafl)."""
         return self._once("demo", lambda: make_examples.build_project().save(self._data("demo") / f"demo{EXTENSION}"))
 
+    def checked(self, empty: bool = False) -> Path:
+        """The demo with Check data right after the import of the orders: at least 100 and at most
+        10,000 rows, else stop. ``empty``: orders.csv has only its header row (a day without orders)."""
+        name = "checked-empty" if empty else "checked"
+        return self._once(name, lambda: self._checked(name, empty))
+
+    def _checked(self, name: str, empty: bool) -> Path:
+        folder = self._data(name)
+        if empty:
+            header, _rows = _order_rows(folder)
+            _write_rows(folder / "data" / "orders.csv", header, [])
+        project = make_examples.build_project()
+        checks = [
+            {"check": "rows", "compare": "at_least", "number": 100},
+            {"check": "rows", "compare": "at_most", "number": 10000},
+        ]
+        project.add_step(project.table("Orders"), REGISTRY.actions["check.data"], {"checks": checks}, index=1)
+        return project.save(folder / f"checked{EXTENSION}")
+
+    def pivot(self) -> Path:
+        """The demo with a table Revenue by month: the orders sorted by month, then the cities as
+        columns with the sum of Gross."""
+        return self._once("pivot", self._pivot)
+
+    def _pivot(self) -> Path:
+        folder = self._data("pivot")
+        project = make_examples.build_project()
+        _table(project, "Revenue by month", [
+            ("table.derive", {"table": project.table("Orders").id}),
+            ("rows.sort", {"by": [{"column": "Month"}]}),
+            ("reshape.pivot", {"rows": ["Month"], "column": "City", "value": "Gross"}),
+        ])
+        return project.save(folder / f"pivot{EXTENSION}")
+
     def excel_check(self) -> Path:
         return self._once(
             "excel-check",
@@ -1108,6 +1142,30 @@ def find_search(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
 
 
 # Chapter 4: actions
+
+
+@picture("check-data-settings", "Check data after the import of the orders: at least 100 and at most 10,000 rows")
+def check_data_settings(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot()
+    s.open(ex.checked(), "Orders", 2)
+    return s.settings_picture()
+
+
+@picture("check-data-run", "Run results on a day when orders.csv has only its header row: Check data stopped Orders")
+def check_data_run(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot(size=(1100, 800))
+    s.open(ex.checked(empty=True), "Orders", 2)
+    s.run()
+    s.show_run_results()
+    return s.picture().copy(s.rect(s.window.run_dock))
+
+
+@picture("pivot-result", "Pivot: the revenue of each month, one column per city")
+def pivot_result(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot()
+    s.open(ex.pivot(), "Revenue by month", 3)
+    s.fit_tables()
+    return s.picture()
 
 
 @picture("replace-settings", "Replace: empty names become (unknown customer)")

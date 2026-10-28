@@ -26,6 +26,7 @@ class RunPanel(QWidget):
     def __init__(self, session: Session, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.session = session
+        self._warnings = 0  # of the run shown
         self.summary = WrappedLabel("No run yet. Press F5 to run the project.", self)
         self.summary.setObjectName("Dim")
         self.tree = QTreeWidget(self)
@@ -35,6 +36,7 @@ class RunPanel(QWidget):
         self.tree.header().setStretchLastSection(False)
         self.tree.setColumnWidth(1, 260)
         self.tree.setColumnWidth(2, 70)
+        self.tree.setExpandsOnDoubleClick(False)  # a double-click goes to the step: its warnings stay open
         self.tree.itemDoubleClicked.connect(self._jump)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 6)
@@ -60,18 +62,23 @@ class RunPanel(QWidget):
         finished = dt.datetime.now().strftime("%H:%M:%S")
         tables = len(results)
         problems = f"{failed} with errors" if failed else "no errors"
+        if self._warnings:
+            problems += f", {_warnings_text(self._warnings)}"
         if skipped:
             problems += f", {skipped} skipped"
         total = seconds if seconds is not None else total
         self.summary.setText(f"Run finished at {finished}: {tables} table{'s' if tables != 1 else ''}, {problems}, {total:.2f} s")
-        self.summary.setStyleSheet(f"color: {theme.STATUS_TEXT['error' if failed else 'ok']};")
+        color = "error" if failed else "warning" if self._warnings else "ok"
+        self.summary.setStyleSheet(f"color: {theme.STATUS_TEXT[color]};")
 
     def _show_tables(self, results: dict[str, TableResult]) -> tuple[int, int, float]:
         """The tables and their steps. Returns how many tables have errors, how many were skipped,
-        and the time of their steps added up."""
+        and the time of their steps added up; ``_warnings`` is how many warnings the steps gave.
+        The steps with warnings are open, so that the warnings are seen."""
         self.tree.clear()
         failed = skipped = 0
         total = 0.0
+        self._warnings = 0
         for table_id, result in results.items():
             table = self.session.project.find_table(table_id)
             if table is None:
@@ -90,9 +97,13 @@ class RunPanel(QWidget):
             total += table_seconds
             ok = result.ok
             failed += result.failed
+            warnings = sum(level == "warning" for r in result.steps for level, _ in r.messages)
+            self._warnings += warnings
             text = "ok" if ok else (result.first_error or "error")
             if ok and (ended := result.skipped_from) is not None:
                 text = f"ok, rest skipped: {ended.skip_reason}"
+            if ok and warnings:
+                text += f", {_warnings_text(warnings)}"
             ran = {r.step_id for r in result.steps}
             not_run = [s for s in table.steps if s.id not in ran] if result.stopped else []
             if not_run:
@@ -102,16 +113,21 @@ class RunPanel(QWidget):
             top = QTreeWidgetItem([table.name, text, f"{table_seconds:.2f} s"])
             top.setToolTip(1, text)
             top.setIcon(0, theme.status_icon("warning" if result.stopped else "ok" if ok else "error"))
-            if result.stopped:
+            if result.stopped or (ok and warnings):
                 top.setForeground(1, theme.status_text_color("warning"))
             top.setData(0, Qt.ItemDataRole.UserRole, (table_id, None))
+            warned = []  # the steps with warnings: opened below
             for step_result in result.steps:
                 number, step = steps.get(step_result.step_id, (0, None))
                 if step is None:
                     continue
                 text = _result_text(step_result)
                 child = QTreeWidgetItem([f"{number}. {self.session.describe(step)}", text, f"{step_result.seconds:.2f} s"])
-                child.setIcon(0, theme.status_icon(_STATUS[step_result.status]))
+                status = _STATUS[step_result.status]
+                if any(level == "warning" for level, _ in step_result.messages):
+                    status = "warning" if status == "ok" else status  # as in the list of steps
+                    warned.append(child)
+                child.setIcon(0, theme.status_icon(status))
                 child.setToolTip(1, step_result.error or text)
                 child.setData(0, Qt.ItemDataRole.UserRole, (table_id, step.id))
                 for level, message in step_result.messages:
@@ -135,6 +151,8 @@ class RunPanel(QWidget):
                 top.addChild(child)
             self.tree.addTopLevelItem(top)
             top.setExpanded(not ok or any(r.messages for r in result.steps))
+            for child in warned:
+                child.setExpanded(True)
         return failed, skipped, total
 
     def _jump(self, item: QTreeWidgetItem, _column: int) -> None:
@@ -145,6 +163,10 @@ class RunPanel(QWidget):
         self.session.select_table(table_id)
         if step_id:
             self.session.select_step(step_id)
+
+
+def _warnings_text(count: int) -> str:
+    return "1 warning" if count == 1 else f"{count:,} warnings"
 
 
 def _result_text(result) -> str:

@@ -201,7 +201,7 @@ class StepsPanel(QWidget):
             elif result.status == Status.SKIPPED:
                 info = "on run"
             elif result.df is not None:
-                info = f"{result.df.height:,} × {result.df.width}"
+                info = f"{result.df.height:,} × {result.df.width:,}"
             if result.status == Status.OK and result.skip_rest:
                 tooltip = f"The steps after this one are skipped: {result.skip_reason}"
             if any(level == "warning" for level, _ in result.messages):

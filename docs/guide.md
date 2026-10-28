@@ -257,7 +257,7 @@ Cancelled orders don't count as revenue.
 glance where rows disappear: 200 × 5 after step 2, 156 × 5 after step 3.
 
 The other operators, and how to write numbers and dates in a condition, are in
-[chapter 4](#rows-filter-sort-and-fill).
+[chapter 4](#rows-filter-sort-fill-and-check).
 
 ### Calculate a column
 
@@ -530,8 +530,9 @@ nothing typed gets lost.
 
 The grid of the data panel shows the data after the selected step. Under each column name is its
 type: *text*, *integer*, *number*, *date*, *date-time*, *time* or *true/false*. **Change type /
-format** ([chapter 4](#columns-names-order-and-types)) calls them *Text*, *Whole number*
-(integer), *Decimal number* (number), *Date*, *Date and time* (date-time) and *True / false*.
+format** ([chapter 4](#columns-names-order-types-pivot-and-unpivot)) calls them *Text*, *Whole
+number* (integer), *Decimal number* (number), *Date*, *Date and time* (date-time) and *True /
+false*.
 Dates appear in your Windows date format and decimals with your decimal separator. An empty cell
 stays empty (its tooltip says "(empty)").
 
@@ -682,9 +683,10 @@ you select the table again (after another table), change one of its steps, or ru
 step, or the table that is already selected, only shows what was calculated.
 
 **Run results** open after every run (and with **View → Run results**). They list every table
-and its steps, with the result, the time and the messages, such as the file an export wrote.
-Double-click a line to go to that table and step. [Run and save](#run-and-save) in chapter 2 has a
-picture.
+and its steps, with the result, the time and the messages, such as the file an export wrote. A
+step with a warning is orange and open, so that the warning shows, and the first line counts the
+warnings ("…, no errors, 1 warning"). Double-click a line to go to that table and step; the
+arrow in front of a line opens and closes it. [Run and save](#run-and-save) in chapter 2 has a picture.
 
 If you close the window during a run, Tafl asks: **Wait, then close**, or **Stop the run**
 (after the step that is running), or **Cancel**.
@@ -824,7 +826,7 @@ SQLite connection: see [Read a table or a query](#read-a-table-or-a-query) in ch
 to branch off: the demo's *Revenue by customer* starts from *Orders* and adds up its orders per
 customer, while *Orders* is exported as it is. Changes to *Orders* flow through.
 
-### Rows: filter, sort and fill
+### Rows: filter, sort, fill and check
 
 **Fill empty values** fills the empty cells of the chosen **Columns** `*`. **Fill with**: *the
 value above (fill down)*, *the value below (fill up)* or *a fixed value* (**Value**). Example: an
@@ -883,7 +885,74 @@ date.
 Tip: numbers in a text column sort as text, so `12345` comes before `5000`. Change the column to a
 number first (**Change type / format**).
 
-### Columns: names, order and types
+**Check data** checks the table at this step, and stops the table or only warns when a check
+fails. The data itself passes the step unchanged.
+
+- **Checks**: one row per check. **Check**: *Number of rows*; **Must be**: *at least*, *at
+  most*, *exactly* or *between*; **Number**, and for *between* the second number in **and**.
+  *at least* `1` means that the table must not be empty. **+ Add** adds a check; the step checks
+  all of them.
+- **When a check fails**: *Stop the table* (the default) or *Only warn*.
+
+A new step starts with one check, at least 1 row, and *Stop the table*. The step list then shows
+"Check: at least 1 row, else stop".
+
+- *Stop the table*: the step has an error, like a step that fails, and says what is wrong, for
+  example "The table has no rows; it must have at least 100 rows". The steps after it are not
+  calculated, so the table's exports and commands don't run, and the tables that use this table
+  get the error too. A run fails: Run results show the message, and the command line ends with
+  exit code 1 ([chapter 11](#exit-codes)).
+- *Only warn*: the step shows the same text as a warning (orange), and so do Run results (the
+  step is open there, and the first line counts the warnings) and the command line (with `!`).
+  The data goes on, and a warning alone doesn't make a run fail.
+
+When every check passes, the box at the top of the settings says so: "The check passed: the
+table has 200 rows", or with two checks "All 2 checks passed: …". When several checks fail, the
+message names each of them: "The table has 37 rows; it must have at least 100 rows and between
+50 and 500 rows". What the step says:
+
+| At this step, the table has | Check | Message |
+|---|---|---|
+| 200 rows | at least 100 rows | The check passed: the table has 200 rows |
+| no rows | at least 100 rows | The table has no rows; it must have at least 100 rows |
+| 37 rows | at least 100 rows | The table has 37 rows; it must have at least 100 rows |
+| 25,000 rows | at most 10,000 rows | The table has 25,000 rows; it must have at most 10,000 rows |
+| 7 rows | between 10 and 100 rows | The table has 7 rows; it must have between 10 and 100 rows |
+
+An example: in the demo, *Orders* reads `orders.csv`, which has 200 orders. A **Check data** step
+right after the import, as step 2, checks that the file has at least 100 and at most 10,000 rows:
+
+![Check data after the import of the orders: at least 100 and at most 10,000 rows, else stop the table](guide/check-data-settings.png)
+
+On a day when `orders.csv` has only its header row, the check stops *Orders*. Its exports don't
+run, so `orders.xlsx` and `orders.csv` keep the data of the last good run. *Revenue by customer*,
+which starts from *Orders*, gets the error too ("Table 'Orders' has an error: …"), and its export
+doesn't run either:
+
+![Run results on a day when orders.csv has only its header row: the check stopped Orders, and no export ran](guide/check-data-run.png)
+
+Tips:
+
+- Put the step before the exports, so that bad input never overwrites a good file: right after
+  the import to check the input, or just before the exports to check what they would write. A
+  check after an export comes too late: the export has already written its file.
+- For a daily run ([chapter 11](#11-running-projects-on-a-schedule)), *at least* a number a bit
+  below a quiet day stops the table when the input file is empty or suspiciously small, for
+  example when another program wrote only half of it. Its exports, and those of the tables that
+  use it, keep the files of the last good run; tables that don't use it still run. The run ends
+  with exit code 1, so the Task Scheduler shows that it failed.
+- *Only warn* is for things to look at that shouldn't stop the run, for example a file that is
+  bigger than usual: *at most* `10000` with *Only warn*. **When a check fails** applies to all
+  checks of the step: to stop for one check and only warn for another, use two steps.
+- **Skip the rest if a table is empty** is for days when no data is normal, **Check data** for
+  days when no data is a mistake. A folder import with **When there are no files**: **Skip the
+  rest of the table** skips the steps after it, **Check data** too: a day without files is then no
+  error. To make it one, leave **When there are no files** at **Stop with an error**
+  ([chapter 10](#10-days-without-data-and-a-daily-inbox)).
+- The check runs while you edit too: the step turns red (or orange) as soon as the data at it
+  fails a check, before any run.
+
+### Columns: names, order, types, pivot and unpivot
 
 **Change type / format** converts columns to another type, or writes dates and numbers as
 formatted text.
@@ -924,7 +993,139 @@ Rename early, right after the import: later steps use the new names. A step that
 one stops with a hint, for example "Conditions, row 1 – Column: column 'Status' not found (did you
 mean 'State'?)".
 
-### Text: clean and replace
+**Pivot** turns the values of one column into columns, like an Excel pivot table without totals.
+
+- **Row keys (empty = one total row)**: one row for each combination of their values, in the
+  order they first appear.
+- **Column names from** `*`: each value of this column becomes a new column.
+- **Values from** `*`: the values that fill the new columns.
+- **Function**: how the values of the rows that meet in one cell are combined: *Sum* (the
+  default), *Count values (not empty)*, *Average*, *Minimum*, *Maximum*, *First value* or *Last
+  value*.
+- **Order of the new columns**: *Sorted (A→Z, 1→9)* (the default) or *As they first appear*.
+
+Example: sales by region and month, with **Row keys** Region, **Column names from** Month,
+**Values from** Amount and *Sum*:
+
+| Region | Month | Amount |
+|---|---|---|
+| North | 2026-01 | 10 |
+| South | 2026-01 | 5 |
+| North | 2026-02 | 7 |
+| South | 2026-02 | 20 |
+| North | 2026-01 | 1 |
+| West | 2026-03 | 3 |
+
+becomes
+
+| Region | 2026-01 | 2026-02 | 2026-03 |
+|---|---|---|---|
+| North | 11 | 7 | |
+| South | 5 | 20 | |
+| West | | | 3 |
+
+The two rows of North in 2026-01 are added up: 10 + 1. West has no rows in 2026-01 and 2026-02:
+these cells stay empty, not 0. With *Count values (not empty)*, North has 2 in 2026-01. Without
+row keys, the result is one total row: 16, 27 and 3.
+
+- The new columns are named after the values, the same on every PC: text as it is, numbers as
+  `1234` or `1.5` (`2`, not `2.0`; exact decimals with their decimal places, `2.00`), dates as
+  `2025-12-31`, true/false as `true` and `false`. All empty values, also text with nothing but
+  spaces, go into one column `(empty)`. A name that the table has already, such as the name of a
+  row key, gets a number, and the box at the top of the settings says so: "Two columns would be
+  named “Name”: the new one is named “Name (2)”". The number is never the name of another value:
+  with the row key `Name` and the values `Name` and `Name (2)`, the value `Name (2)` keeps its
+  column, and the value `Name` gets `Name (3)`. A value whose name is free always keeps it; the
+  number of a renamed value can change with the values of the day. Values
+  that differ only in spaces at the start or end, such as `Köln` and `Köln `, give two columns
+  that look alike; the box says so too, and **Clean text** before the step makes them one.
+- *Sorted (A→Z, 1→9)* sorts numbers by size (2 before 10), dates by time and text as **Sort**
+  does, with `(empty)` last. *As they first appear* keeps the order of the rows, for values that
+  don't sort well, such as month names: sort the table by date first.
+- *Sum* needs a number column and *Average* a number or date column ("Sum needs a number column;
+  “Amount” is text"). *Minimum* and *Maximum* can't compare lists and records (from Parquet
+  files or plugins): "“Tags” holds list(string) values, which Minimum can't compare". The other
+  functions take any column. *Count values (not empty)* counts the
+  values that are not empty; *First value* and *Last value* take the first and last value that is
+  not empty. Here, as in **Aggregate**, text with nothing but spaces counts as a value. A sum of
+  only empty values stays empty too.
+- At most 1,000 new columns: a column with more distinct values, such as an order number or a
+  date, stops the step with "… too many new columns (at most 1,000)". Group such values first,
+  for example dates by month with a formula. The result has at most 50,000,000 cells (rows ×
+  new columns): with many row keys, such as customer and day, fewer new columns fit.
+
+In the picture, a table *Revenue by month* starts from the demo's *Orders*, sorts it by Month and
+pivots City into columns, with the sum of Gross: one row per month, one column per city. An empty
+cell is a month without orders from that city. The orders of customer 09999, who has no city
+(see [Combine](#combine-merge-and-append-tables)), are in the column *(empty)*.
+
+![Pivot: the revenue of each month, one column per city, and the column (empty) for the orders without a city](guide/pivot-result.png)
+
+Tips:
+
+- The rows come in the order their keys first appear: sort the table first, as in the picture,
+  or sort the result.
+- The new columns come from the data. On a day without orders from Kiel, there is no column
+  *Kiel*, and a later step that names it stops with an error. On a day without rows, only the row
+  key columns are left.
+- **Unpivot** turns the new columns back into rows.
+
+**Unpivot** turns columns into rows, the opposite of **Pivot**: each row becomes one row for each
+chosen column, with the column's name in a new name column and its value in a new value column.
+The other columns are repeated.
+
+- **Turn into rows**: *These columns* (the ticked **Columns** `*`, in the order of the list) or
+  *All columns except these* (all columns that are not ticked, in the order of the table).
+- **New column for the names** `*` (`Column`): holds the name of the column each value comes
+  from. **New column for the values** `*` (`Value`).
+- **Leave out empty values** (off) leaves out the rows whose value is empty, also text with
+  nothing but spaces. Off, each row gives one row for every column, also for an empty cell.
+
+Example: *All columns except these* with Customer ticked, and the new columns Month and Amount:
+
+| Customer | Jan | Feb | Mar |
+|---|---|---|---|
+| Huber KG | 100 | 80 | |
+| Nord Logistik | 120 | | 95 |
+
+becomes
+
+| Customer | Month | Amount |
+|---|---|---|
+| Huber KG | Jan | 100 |
+| Huber KG | Feb | 80 |
+| Huber KG | Mar | |
+| Nord Logistik | Jan | 120 |
+| Nord Logistik | Feb | |
+| Nord Logistik | Mar | 95 |
+
+With **Leave out empty values**, the two rows without an amount are left out: 4 rows. The rows
+keep their order, and the values of a row come in the order of the columns. The columns that stay
+come first, then the two new ones.
+
+The result has at most 250,000,000 cells (rows × columns). A bigger one stops the step before it
+starts: "The result would have … cells (at most 250,000,000). Turn fewer columns into rows, or
+remove columns or rows before this step." With **Leave out empty values**, cells without a value
+don't count.
+
+The value column keeps the type of the columns when they all have the same. A mix of whole and
+decimal numbers becomes decimal numbers, a mix of whole numbers and exact decimals (from a
+database's `decimal` or `money` column) becomes exact decimals, and a mix of dates and date-times
+becomes date-times, as long as every value stays as it is. Any other mix, also decimal numbers
+with exact decimals, becomes text (numbers as `1.5`, exact decimals as `2.00`, dates as
+`2025-12-31`), and the step says so, for example "“Value” is text: the columns have different
+types (integer: Jan, Feb, Mar; date: Since)". So no value changes without a word: a date never
+becomes a number, and true never becomes 1.
+
+Tips:
+
+- Reports from other programs often have a column per month. Unpivot them, and you can filter,
+  aggregate and merge by month. *All columns except these* also turns the column of a new month
+  into rows, without a change to the step.
+- A new column can't have the name of a column that stays: "A column named “Customer” stays in
+  the table: choose another name for the new column".
+
+### Text: clean, replace and split
 
 **Clean text** tidies up the chosen **Columns (empty = all text columns)**:
 
@@ -952,6 +1153,74 @@ unlike in **Filter rows**.
   into `2026-02-27`.
 
 ![Replace: empty names become (unknown customer)](guide/replace-settings.png)
+
+**Split column** splits the text of a **Column** `*` at a separator, into columns or into rows.
+
+- **Into**: *Columns: one new column per part* (the default) or *Rows: one row per part*.
+- **Separator**: *Comma ,* (the default), *Semicolon ;*, *Space*, *Tab*, *Line break*, or *Other
+  text* with the **Separator text** `*`, for example `/` or `-` (as it is, not a pattern). With
+  *Space*, several spaces in a row are one separator. *Line break* splits a cell with several
+  lines into its lines.
+- **Remove spaces around the parts** (on).
+- Into columns: **New columns (one per part)**, a name for each new column. An empty name (it
+  shows *automatic*) gives *Name 1*, *Name 2*, … after the column. **Keep the original column**
+  (off) keeps the column, with the new columns right after it.
+
+Example into columns: **Column** Name, **Separator** *Comma ,*, and **New columns** Last name and
+First name:
+
+| No | Name |
+|---|---|
+| 1 | Müller, Hans |
+| 2 | Schmidt, Anna, Dr. |
+| 3 | Weiß |
+
+becomes
+
+| No | Last name | First name |
+|---|---|---|
+| 1 | Müller | Hans |
+| 2 | Schmidt | Anna, Dr. |
+| 3 | Weiß | |
+
+The new columns take the place of Name. There are as many parts as new columns: missing parts stay
+empty, and the last column gets the rest of the text as it is, with its own spaces and line
+breaks. The box at the top of the settings then
+says so: "1 value has more parts than there are new columns: the last column has the rest, e.g.
+“Schmidt, Anna, Dr.”". With a third row in **New columns**, Dr. gets a column of its own.
+
+Example into rows: **Column** Products, **Separator** *Semicolon ;*:
+
+| OrderNo | Products |
+|---|---|
+| 10001 | Bread;Cake;Coffee |
+| 10002 | Tea |
+
+becomes
+
+| OrderNo | Products |
+|---|---|
+| 10001 | Bread |
+| 10001 | Cake |
+| 10001 | Coffee |
+| 10002 | Tea |
+
+The column keeps its name and place, and the other columns are repeated. Empty parts are left
+out: `Bread;;Cake` gives two rows. A value without any part, such as an empty cell, keeps one row
+with an empty value, so no row is lost.
+
+The parts are text, and a part with nothing but spaces is empty. A column that is not text is
+turned into text first, as **Pivot** names its columns: a date splits as `2026-02-27`, so *Other
+text* `-` and three new columns give 2026, 02 and 27, and a date-time as
+`2026-02-27 08:30:00`, so *Space* gives the date and the time. **Change type / format** makes
+numbers or dates of the parts.
+
+Tips:
+
+- Codes such as `DE-2026-0017` split with *Other text* `-` into DE, 2026 and 0017: the parts are
+  text, so the leading zeros stay.
+- A new column can't have the name of a column the table has already: "New columns, row 1: the
+  table has a column named “No” already. Give the new column another name."
 
 ### Calculate: formulas, numbers and totals
 
@@ -1925,7 +2194,10 @@ files stay in `inbox` for the next run.
 | **Skip the rest if a table is empty** | A step under **Rows** | The steps after it, when this table (or another one) has no rows | A table that should export only when it has rows |
 | **Don't export an empty table** | Every export | Only this export; the steps after it still run | An export in a table that moves or deletes its files afterwards |
 
-None of them is an error: the run succeeds, and the skipped steps say why.
+None of them is an error: the run succeeds, and the skipped steps say why. When a day without
+rows is a mistake that someone should look at, use **Check data** instead
+([chapter 4](#rows-filter-sort-fill-and-check)): with *at least* 1 row and *Stop the table*, the
+table stops, its exports don't run, and the run fails with exit code 1.
 
 ## 11. Running projects on a schedule
 
@@ -2208,6 +2480,7 @@ On the command line, the failed step has a `✗` with the message below it, and 
 | "This step runs when you run the project (F5). Nothing is written while you edit." | Not an error: exports and commands run only with **Run project** (F5) or **Run this table** (Shift+F5). |
 | "File not found: C:\Reports\data\orders.csv", "Folder not found: …" | Check the path. Paths are relative to the project file: a project moved without its data no longer finds them. **File → Save as** keeps paths pointing at the same files. |
 | "No files named orders_*.csv in C:\Reports\daily-inbox\inbox" | If an empty folder is normal on some days, choose **When there are no files**: **Skip the rest of the table** ([chapter 10](#10-days-without-data-and-a-daily-inbox)). |
+| "The table has no rows; it must have at least 100 rows" | A **Check data** step stopped the table: look at its input, for example a file with only its header row. If such a day is normal, change the check, or choose **Only warn** ([chapter 4](#rows-filter-sort-fill-and-check)). |
 | "daily orders.xlsx is open in another program (e.g. Excel): close it and run again" | Close the file and run again. The old file stays as it was. |
 | "Formula error in [Gross]: column [Nett] not found (did you mean [Net]?)" | Correct the formula. [Chapter 5](#5-formulas) lists the common mistakes. |
 | "No suitable SQL Server ODBC driver is installed: install 'ODBC Driver 18 for SQL Server' (or 17) from Microsoft." | Install the driver (your IT department may have to). "The ODBC driver '…' is not installed": empty the connection's **ODBC driver** to use driver 18 or 17. |

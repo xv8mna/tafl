@@ -14,9 +14,12 @@ parameters, databases and scheduled runs, with pictures. The download has it as 
 - **Import** CSV / text files, Excel workbooks and Parquet files (one file or all files of a
   folder), SQL Server and SQLite tables or queries.
 - **Transform** with steps: filter, sort, remove duplicates, fill empty values, rename and
-  reorder columns, change types and formats, replace and clean text, calculated columns with SQL
-  formulas, numbering rows, aggregating, merging (lookup and joins) and appending tables, and
-  ending a table early when it is empty.
+  reorder columns, change types and formats, replace, clean and split text (into columns or
+  rows), calculated columns with SQL formulas, numbering rows, aggregating, pivoting and
+  unpivoting, merging (lookup and joins) and appending tables, and ending a table early when it
+  is empty.
+- **Check** the data before it is exported: a step stops the table (an error, so a scheduled run
+  fails) or only warns when the table has fewer or more rows than expected.
 - **Export** to CSV, formatted Excel files (or one sheet of an existing workbook) and databases
   (insert, replace, update, upsert, delete by key), and run file commands and SQL commands.
 - **Project map**: all tables and how they use each other, with groups for big projects.
@@ -379,6 +382,12 @@ never while you edit.
 - A step that uses a table which skipped its rest and has no rows (*Start from*, *Merge*,
   *Append*, …) doesn't run: there is no data for it. The rest of its own table is skipped too,
   so the tables that start from an import on a day without files skip their exports as well.
+- **Check data** (a step, under *Rows*) is for days when no data is a mistake: it checks the
+  number of rows at this step (at least, at most, exactly or between). When a check fails,
+  *Stop the table* makes it an error like any other: the steps after it, with the table's exports
+  and commands, don't run, the tables that use it get the error too, and `tafl run` exits with 1.
+  *Only warn* shows a warning on the step and in the run results instead, and the data goes on.
+  The data itself never changes.
 
 ## Exporting to a database
 
@@ -586,8 +595,8 @@ is 2025, `01.01.75` is 1975 (00–29 are 20xx, 30–99 are 19xx), also with a ti
 
 *Sort* orders text as Excel does: upper and lower case count the same, letters with accents sort
 with their base letter (`Äpfel` next to `apfel`, `Özdemir` between O and P), and `ß` like `ss`.
-Rows with equal values keep their order. *Number rows* and the value lists of the filter pane
-use the same order.
+Rows with equal values keep their order. *Number rows*, the new columns of *Pivot* (when sorted)
+and the value lists of the filter pane use the same order.
 
 ## Project files from other people
 

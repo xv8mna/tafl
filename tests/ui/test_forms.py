@@ -73,3 +73,23 @@ def test_missing_columns_are_kept(qapp, registry):
     form.set_values(json_ready(action.resolve({"columns": ["gone", "A"]})))
     assert form.values()["columns"] == ["gone", "A"]
     assert form.editor("columns")._list.item(0).text() == "gone  (missing)"
+
+
+def test_a_choice_that_hides_a_field_stays_under_the_mouse(qapp, registry):
+    """Filter rows: "is empty" hides the value. The operator stays where it was, so that the next
+    turns of the mouse wheel go on changing it, and not the column beside it."""
+    action = registry.actions["rows.filter"]
+    form = ParamForm(action.params, FormContext(columns=lambda source, v: ["Status", "Name"]))
+    form.resize(415, 400)
+    form.show()
+    form.set_values(json_ready(action.resolve({"conditions": [{"column": "Status", "operator": "!=", "value": "x"}]})))
+    qapp.processEvents()
+    conditions = form.editor("conditions")
+    operator = conditions.row_editor(1, "operator")
+    mouse = operator.mapTo(form, operator.rect().center())
+    for choice in ("empty", "not_empty", "="):
+        operator._combo.setCurrentIndex(operator._combo.findData(choice))
+        qapp.processEvents()
+        assert conditions.row_editor(1, "value").isVisibleTo(form) == (choice == "=")
+        assert operator.rect().contains(operator.mapFrom(form, mouse)), choice
+    form.close()

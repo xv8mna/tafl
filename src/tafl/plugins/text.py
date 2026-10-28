@@ -1,4 +1,4 @@
-"""Text: replace values, clean up text."""
+"""Text: replace values, clean up text, split columns."""
 
 from __future__ import annotations
 
@@ -192,3 +192,172 @@ def clean(df, p, ctx):
             text = pl.when(text == "").then(None).otherwise(text)
         updates.append(text.alias(name))
     return df.with_columns(updates)
+
+
+_SEPARATORS = [
+    (",", "Comma ,"),
+    (";", "Semicolon ;"),
+    ("space", "Space"),
+    ("tab", "Tab"),
+    ("line", "Line break"),
+    ("other", "Other text"),
+]
+_SEPARATOR_SHOWN = {",": "','", ";": "';'", "space": "spaces", "tab": "tabs", "line": "line breaks"}
+
+
+def _split_summary(p) -> str:
+    """E.g. "Split Name at ',' into Last name, First name"; a setting that is not filled in yet
+    shows as ? (the engine gives "?" for it), without quotes and without "? 1, ? 2"."""
+    if p.separator == "other":
+        separator = "?" if p.other == "?" else f"'{p.other}'"
+    else:
+        separator = _SEPARATOR_SHOWN[p.separator]
+    if p.into == "rows":
+        target = "rows"
+    elif p.column == "?" and any(not row["name"].strip() for row in p.parts):
+        target = f"{len(p.parts)} columns"
+    else:
+        target = ", ".join(_part_names(p))
+    return f"Split {p.column} at {separator} into {target}"
+
+
+@action(
+    "text.split",
+    "Split column",
+    category="Text",
+    params=[
+        P.Column("column", "Column"),
+        P.Choice("into", "Into", [("columns", "Columns: one new column per part"), ("rows", "Rows: one row per part")]),
+        P.Choice("separator", "Separator", _SEPARATORS),
+        P.Text(
+            "other",
+            "Separator text",
+            required=True,
+            visible_if={"separator": "other"},
+            help="Any text, e.g. / or - (as it is, not a pattern).",
+        ),
+        P.Bool("trim", "Remove spaces around the parts", default=True),
+        P.List(
+            "parts",
+            "New columns (one per part)",
+            fields=[P.Text("name", "Name", placeholder="automatic")],
+            default=({"name": ""}, {"name": ""}),
+            min_items=2,
+            visible_if={"into": "columns"},
+            help="The last one gets the rest of the text. Without a name: Name 1, Name 2, … after the column.",
+        ),
+        P.Bool("keep", "Keep the original column", default=False, visible_if={"into": "columns"}),
+    ],
+    summary=_split_summary,
+)
+def split(df, p, ctx):
+    """Splits the text of a column at a separator, into columns or into rows.
+
+    Into columns: "Müller, Hans" becomes Müller and Hans in two new columns, which take the place of
+    the column. There are as many parts as new columns: the last one gets the rest of the text
+    ("Müller, Hans, Dr." gives Müller and Hans, Dr.), and missing parts stay empty. Into rows: "A;B;C"
+    becomes three rows, with the other columns repeated; empty parts are left out, and a row without
+    any part stays, with an empty value.
+
+    The parts are text; a part with nothing but spaces is empty. With Space, several spaces in a row
+    are one separator. A column that is not text is turned into text first: 2.5 and 2 (not 2.0),
+    exact decimals with their decimal places (2.00), 2026-02-27, 2026-02-27 08:30:00 (fractions of a
+    second only when there are some).
+    """
+    text = _as_text(p.column, df.schema[p.column])
+    if df.schema[p.column] != pl.String:  # turned into text once, not for each use below
+        text = pl.lit(df.select(text).to_series())
+    if p.separator == "space":  # runs of spaces are one separator, and spaces at start and end make no parts
+        prepared, separator = text.str.replace_all(" {2,}", " ").str.strip_chars(" "), " "
+    elif p.separator == "line":  # Windows, Unix and old Mac line breaks
+        prepared, separator = text.str.replace_all(r"\r\n?", "\n"), "\n"
+    elif p.separator == "other":
+        if p.other == "":
+            raise ActionError("Separator text: required")
+        prepared, separator = text, p.other
+    else:
+        prepared, separator = text, {"tab": "\t"}.get(p.separator, p.separator)
+    if p.into == "rows":
+        part = pl.element()
+        if p.trim:
+            part = part.str.strip_chars()
+            kept = part.filter(part != "")
+        else:
+            kept = part.filter(part.str.strip_chars() != "")
+        parts = prepared.str.split(separator).list.eval(kept)
+        return df.with_columns(parts.alias(p.column)).explode(p.column, empty_as_null=True, keep_nulls=True)
+    names = _part_names(p)
+    _check_part_names(names, [c for c in df.columns if p.keep or c != p.column])
+    # each part in a column of its own, split once (an expression would split again for each use)
+    pieces = df.select(prepared.str.splitn(separator, len(names)).alias("pieces")).unnest("pieces")
+    rest = pieces.columns[-1]  # what is left after the other parts
+    more = _part(pl.col(rest), p.trim).str.contains(separator, literal=True).fill_null(False)  # as the column shows it
+    more = pieces.select(more).to_series()
+    count = more.sum()
+    if count:
+        example = " ".join(re.split(r"\r\n|\r|\n|\t", df.select(text.filter(more).first()).item()))
+        example = example if len(example) <= 30 else example[:30] + "…"
+        values = "1 value has" if count == 1 else f"{count:,} values have"
+        ctx.log(f"{values} more parts than there are new columns: the last column has the rest, e.g. “{example}”")
+    if p.separator in ("space", "line"):  # the rest as it is, with its own runs of spaces and line breaks
+        as_it_is = _rest_as_it_is(text, pieces[rest], p.separator, len(names) - 1)
+        pieces = pieces.with_columns(df.select(as_it_is.alias(rest)).to_series())
+    new = pieces.select(_part(pl.col(field), p.trim).alias(name) for field, name in zip(pieces.columns, names))
+    columns = []
+    for name in df.columns:
+        if name != p.column or p.keep:
+            columns.append(df[name])
+        if name == p.column:
+            columns += new.get_columns()
+    return pl.DataFrame(columns)
+
+
+def _as_text(column: str, dtype: pl.DataType) -> pl.Expr:
+    """The values of a column as text, for splitting: as Pivot names its columns (2, not 2.0;
+    2026-01-01 08:30:00)."""
+    if dtype.is_nested() or dtype in (pl.Binary, pl.Object, pl.Duration):
+        raise ActionError(f"“{column}” holds {dtypes.type_label(dtype)} values, which can't be split")
+    return dtypes.text_expr(pl.col(column), dtype)
+
+
+def _part_names(p) -> list[str]:
+    """The names of the new columns: as given, or Name 1, Name 2, … after the column."""
+    return [row["name"].strip() or f"{p.column} {number}" for number, row in enumerate(p.parts, start=1)]
+
+
+def _check_part_names(names: list[str], existing: list[str]) -> None:
+    if len(names) < 2:
+        raise ActionError("New columns (one per part): add at least 2 rows")
+    for number, name in enumerate(names, start=1):
+        first = names.index(name) + 1
+        if first != number:
+            raise ActionError(f"Two new columns are named “{name}” (rows {first} and {number}). Give each one its own name.")
+    taken = set(existing)
+    for number, name in enumerate(names, start=1):
+        if name in taken:
+            raise ActionError(
+                f"New columns, row {number}: the table has a column named “{name}” already. "
+                "Give the new column another name."
+            )
+
+
+def _part(part: pl.Expr, trim: bool) -> pl.Expr:
+    """One part of a split value: empty (null) when it has nothing but spaces."""
+    if trim:
+        return part.str.strip_chars().replace("", None)
+    return pl.when(part.str.strip_chars() != "").then(part)
+
+
+def _rest_as_it_is(text: pl.Expr, rest: pl.Series, separator: str, before: int) -> pl.Expr:
+    """At Space and Line break: the text after the first ``before`` parts and the separator after
+    each, as it is. ``rest`` is the same rest of the prepared text (spaces in a row as one, \\n for
+    each line break): null when there are fewer parts."""
+    if separator == "line":  # the length of the rest, from a text of the same length with \n for each line break
+        same_length = text.str.replace_all("\r\n", " \n", literal=True).str.replace_all("\r", "\n", literal=True)
+        after = same_length.str.splitn("\n", before + 1).struct.field(f"field_{before}")
+        return text.str.slice(text.str.len_chars() - after.str.len_chars())
+    after = text
+    while before:  # each part and the spaces after it, for at most 1,000 parts at a time (a longer pattern is too big)
+        step = min(before, 1000)
+        after, before = after.str.replace(rf"^ *(?:[^ ]+ +){{{step}}}", ""), before - step
+    return pl.when(rest.is_not_null()).then(after)

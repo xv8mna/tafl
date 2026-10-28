@@ -119,6 +119,56 @@ def test_aggregate_names_columns_of_the_wrong_type(act, people):
     assert act("calc.aggregate", people, {"calculations": [{"function": "max", "column": "City"}]}).item() == "Köln"
 
 
+def test_aggregate_sums_beyond_the_whole_numbers_stop_the_step(act):
+    """Polars lets a sum of Int64 overflow (-446744073709551616 here): a wrong number would be
+    worse than a message."""
+    big = 9_000_000_000_000_000_000
+    df = pl.DataFrame({"K": ["a", "a", "b", "b"], "V": [big, big, big, -big + 7]})
+    sums = {"calculations": [{"function": "sum", "column": "V"}, {"function": "count_rows"}]}
+    with pytest.raises(ActionError) as raised:
+        act("calc.aggregate", df, {"group_by": ["K"], **sums})
+    assert str(raised.value) == (
+        "“Sum of V” is 18,000,000,000,000,000,000 in a group: too big for a whole number "
+        "(at most 9,223,372,036,854,775,807). Change “V” to a decimal number before this step."
+    )
+    with pytest.raises(ActionError, match="^“Total” is 18,000,000,000,000,000,007: too big"):
+        act("calc.aggregate", df, {"calculations": [{"function": "sum", "column": "V", "name": "Total"}]})
+    fits = act("calc.aggregate", df.filter(pl.col("K") == "b"), {"group_by": ["K"], **sums})
+    assert fits.rows() == [("b", 7, 2)] and fits.schema == pl.Schema({"K": pl.String, "Sum of V": pl.Int64, "Count": pl.Int64})
+    small = act("calc.aggregate", pl.DataFrame({"V": [1, 2, None]}), sums)  # as before
+    assert small.rows() == [(3, 3)] and small.schema["Sum of V"] == pl.Int64
+
+
+def test_aggregate_minimum_and_maximum_of_lists_stop_the_step(act):
+    """Polars can't compare lists or records: it gave empty values (as Pivot does now)."""
+    df = pl.DataFrame({"K": ["a", "a", "b"], "L": [[3, 1], [2], [5]], "S": [{"a": 1}, {"a": 2}, {"a": 3}]})
+    with pytest.raises(ActionError) as raised:
+        act("calc.aggregate", df, {"group_by": ["K"], "calculations": [{"function": "min", "column": "L"}]})
+    assert str(raised.value) == "“L” holds list(int64) values, which Minimum can't compare"
+    with pytest.raises(ActionError, match="^“S” holds struct.* values, which Maximum can't compare$"):
+        act("calc.aggregate", df, {"calculations": [{"function": "max", "column": "S"}]})
+    first = act("calc.aggregate", df, {"group_by": ["K"], "calculations": [{"function": "first", "column": "L"}]})
+    assert first.rows() == [("a", [3, 1]), ("b", [5])]
+
+
+def test_aggregate_sums_of_durations_beyond_292_years_stop_the_step(act):
+    """A duration in nanoseconds (as Parquet files often have them) holds up to 292 years; Polars
+    lets a longer sum overflow, like one of whole numbers."""
+    days = pl.Series([dt.timedelta(days=d) for d in (60_000, 60_000, -60_000, -1)], dtype=pl.Duration("ns"))
+    df = pl.DataFrame({"Site": ["A", "A", "B", "B"], "Runtime": days})
+    sums = {"calculations": [{"function": "sum", "column": "Runtime"}]}
+    with pytest.raises(ActionError) as raised:
+        act("calc.aggregate", df, {"group_by": ["Site"], **sums})
+    assert str(raised.value) == (
+        "“Sum of Runtime” is 120,000 days in a group: too long for a duration (at most 106,751 days). "
+        "Change “Runtime” to hours before this step, with the formula EPOCH([Runtime]) / 3600."
+    )
+    total = act("calc.aggregate", df, sums)  # beyond only on the way
+    assert total.rows() == [(dt.timedelta(days=59_999),)] and total.schema["Sum of Runtime"] == pl.Duration("ns")
+    micro = act("calc.aggregate", df.with_columns(pl.col("Runtime").cast(pl.Duration("us"))), {"group_by": ["Site"], **sums})
+    assert micro.rows() == [("A", dt.timedelta(days=120_000)), ("B", dt.timedelta(days=-60_001))]
+
+
 def test_number_rows_in_text_order_like_sort(act):
     df = pl.DataFrame({"Name": ["Zebra", "Äpfel", "apfel", "Peter"]})
     out = act("calc.enumerate", df, {"order_by": [{"column": "Name"}]})
