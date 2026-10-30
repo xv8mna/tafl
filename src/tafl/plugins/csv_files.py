@@ -33,7 +33,7 @@ from tafl.api import (
 _DELIMITERS = [(";", "Semicolon ;"), (",", "Comma ,"), ("tab", "Tab"), ("|", "Pipe |")]
 _ENCODINGS = {"utf-8": "UTF-8", "cp1252": "Windows (ANSI)", "latin-1": "Latin-1", "utf-16": "UTF-16"}
 _CHUNK = 1 << 20
-_ONE_COLUMN = "\x1f"  # the delimiter for files that have none: text doesn't contain it
+_ONE_COLUMN = files.ONE_COLUMN
 
 # Numbers as text: 1.234,56 or 1234,56 (decimal comma) and 1,234.56 or 1234.56 (decimal point).
 # Thousands separators come after 1 to 3 digits that don't start with 0: 0.500 is a decimal.
@@ -149,10 +149,11 @@ def _read_text_file(path: Path, p, warn: Callable[[str], None]) -> tuple[pl.Data
     except OSError as error:  # e.g. open in a program that doesn't let others read it
         raise files.read_error(error, path) from None
     data, encoding = _to_utf8(raw, p.encoding, path.name, warn)
+    del raw  # after a byte order mark, ``data`` is a copy: the file would be in memory twice
     if b"\r\r\n" in data:  # line ends converted twice: one line end, not a \r at the end of the last value
         data = re.sub(rb"\r+\n", b"\r\n", data)
     sample = data[:65536].decode("utf-8", errors="ignore")
-    separator = _detect_delimiter(sample, p.skip_lines) if p.delimiter == "auto" else _separator(p.delimiter)
+    separator = files.detect_delimiter(sample, p.skip_lines) if p.delimiter == "auto" else _separator(p.delimiter)
     options = dict(separator=separator, has_header=False, skip_lines=p.skip_lines, raise_if_empty=False, encoding="utf8-lossy")
     try:
         try:
@@ -367,35 +368,6 @@ def _utf8_counts(raw: bytes) -> tuple[int, int]:
         characters += len(text)
         replaced += text.count("�")
     return len(raw) - characters, replaced - raw.count("�".encode())  # a � in the file is a character like any other
-
-
-def _detect_delimiter(sample: str, skip_lines: int) -> str:
-    """The delimiter of the first line that splits most lines the same way. Without any in the
-    first line, the file has one column (its values can still have commas, as in 12,50)."""
-    lines = [line for line in sample.splitlines()[skip_lines : skip_lines + 50] if line.strip()][:20]
-    candidates = (";", ",", "\t", "|")
-    if lines and not any(_count_outside_quotes(lines[0], candidate) for candidate in candidates):
-        return _ONE_COLUMN
-    best, best_score = ",", -1.0
-    for candidate in candidates:
-        counts = [_count_outside_quotes(line, candidate) for line in lines]
-        if not counts or counts[0] == 0:
-            continue
-        consistency = sum(c == counts[0] for c in counts) / len(counts)
-        score = consistency * 1000 + counts[0]
-        if score > best_score:
-            best, best_score = candidate, score
-    return best
-
-
-def _count_outside_quotes(line: str, char: str) -> int:
-    count, quoted = 0, False
-    for ch in line:
-        if ch == '"':
-            quoted = not quoted
-        elif ch == char and not quoted:
-            count += 1
-    return count
 
 
 def _guess_decimal(df: pl.DataFrame, separator: str) -> tuple[str, dict[str, str]]:

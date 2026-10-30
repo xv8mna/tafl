@@ -13,6 +13,8 @@ parameters, databases and scheduled runs, with pictures. The download has it as 
 
 - **Import** CSV / text files, Excel workbooks and Parquet files (one file or all files of a
   folder), SQL Server and SQLite tables or queries.
+- **Data sheet**: paste data that is in no file, copied from a spreadsheet program, an ERP system, a web
+  page or a mail, or type it. Tafl writes it into a file of yours, and a normal import reads it.
 - **Transform** with steps: filter, sort, remove duplicates, fill empty values, rename and
   reorder columns, change types and formats, replace, clean and split text (into columns or
   rows), calculated columns with SQL formulas, numbering rows, aggregating, pivoting and
@@ -119,8 +121,15 @@ Only in a source install (they need Python):
 The [user guide](docs/guide.md) explains all of this with pictures and examples (**Help → User
 guide** in the app). In short:
 
-- **Tables** (top left): **+ New table** starts a table with an import. Double-click to rename,
-  drag to reorder, right-click for more.
+- **Tables** (top left): **+ New table** starts a table with an import or a data sheet.
+  Double-click to rename, drag to reorder, right-click for more.
+- **Data sheet** (**+ New table → Paste from clipboard** or **Empty sheet**): a window of its own
+  with rows and named columns, to paste or type data into, with its own undo. It has no formulas
+  or cell formats: those are steps. **Add as table…** writes an `.xlsx`, CSV, TXT or Parquet file
+  and adds a table with one import of it; the data stays in that file, not in the project. Every
+  value stays text, exactly as pasted (`00123`, `1,50`, `27.02.2026`): *Change type / format*
+  converts it. **Edit in sheet**, on that import step, opens the file again: the file, not the
+  result of later steps. **Save** writes it back, and the table is calculated again.
 - **Steps** (bottom left): the steps of the selected table. Click a step to see the data after it.
   **+ Add step** adds a step after the selected one. Drag or Ctrl+↑/↓ to move, Del to delete,
   right-click to turn a step off or duplicate it. A step that still needs a setting is

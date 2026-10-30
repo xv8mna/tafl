@@ -3,7 +3,13 @@
 *Tafl* is Old Norse for "table".
 """
 
-__version__ = "0.5.0"
+import os
+
+__version__ = "0.6.0"
+
+# Polars keeps the memory of tables that are gone for later use (in its allocator, mimalloc). With
+# this option it gives that memory back at once: a big table should not hold the memory of the PC.
+os.environ.setdefault("MIMALLOC_PURGE_DELAY", "0")
 
 # The app's name in one place: window, dialogs, shortcut, command line, folders.
 APP_NAME = "Tafl"

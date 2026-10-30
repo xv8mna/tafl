@@ -41,7 +41,7 @@ from tafl.api import Action
 from tafl.core import Group, Link
 
 from .. import theme
-from ..action_menu import fill_action_menu
+from ..action_menu import fill_action_menu, fill_new_table_menu
 from ..data_panel import DataPanel
 from ..labels import ElidedLabel
 from ..session import Session, count
@@ -469,7 +469,7 @@ class MapView(QWidget):
         new_table = QPushButton("+ New table", self)
         new_menu = QMenu(new_table)
         new_menu.aboutToShow.connect(
-            lambda: fill_action_menu(new_menu, session.registry, sources=True, chosen=lambda a: self.new_table(a))
+            lambda: fill_new_table_menu(new_menu, session.registry, lambda a: self.new_table(a), self.new_sheet)
         )
         new_table.setMenu(new_menu)
         arrange = QPushButton("Arrange automatically", self)
@@ -1088,6 +1088,14 @@ class MapView(QWidget):
             spot, group = self._new_table_spot(position)
             self.session.add_table(action, position=spot, group=group)
 
+    def new_sheet(self, paste: bool, position: QPointF | None = None) -> None:
+        """A sheet for a new table; put at ``position`` (or below, if taken), it joins the group there."""
+        if position is None:
+            self.session.want_new_sheet(paste)
+        else:
+            spot, group = self._new_table_spot(position)
+            self.session.want_new_sheet(paste, spot, group)
+
     def _new_table_spot(self, point: QPointF) -> tuple[tuple[float, float], str | None]:
         group = next((gid for gid, frame in self.frames.items() if frame.rect.contains(point)), None)
         positions, heights, groups = self._unit_state()
@@ -1467,11 +1475,12 @@ class MapView(QWidget):
         selected = self.selected_tables()
         groups = self.session.project.groups
         menu = QMenu(self)
-        fill_action_menu(
+        place = scene_pos - QPointF(0, HEADER / 2)
+        fill_new_table_menu(
             menu.addMenu("New table here"),
             self.session.registry,
-            sources=True,
-            chosen=lambda a: self.new_table(a, scene_pos - QPointF(0, HEADER / 2)),
+            lambda a: self.new_table(a, place),
+            lambda paste: self.new_sheet(paste, place),
         )
         if selected:
             menu.addAction(f"Group the {len(selected)} selected tables…\tCtrl+G", lambda: self.group_tables(selected))

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
-from .action_menu import fill_action_menu
+from .action_menu import fill_new_table_menu
 from .session import Session, first_error, missing_settings, size_text, waiting_text
 
 _KIND = Qt.ItemDataRole.UserRole  # "table" or "group"
@@ -236,7 +236,7 @@ class TablesPanel(QWidget):
         return group, ident, None
 
     def _fill_new_menu(self, menu: QMenu) -> None:
-        fill_action_menu(menu, self.session.registry, sources=True, chosen=self.session.add_table)
+        fill_new_table_menu(menu, self.session.registry, self.session.add_table, self.session.want_new_sheet)
 
     def _context_menu(self, position: QPoint) -> None:
         item = self.tree.itemAt(position)

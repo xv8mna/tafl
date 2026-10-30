@@ -1,5 +1,63 @@
 # Changes
 
+## Unreleased
+
+The data sheet: a simple way to bring data that is in no file into a project. Chapter 10 of the
+user guide, "Data sheets", describes it; the chapters after it moved up by one number.
+
+- **Data sheet** (**+ New table → Paste from clipboard** or **Empty sheet**, also on the map):
+  copy data anywhere with Ctrl+C, in a spreadsheet program, an ERP system, a web page or a mail, and paste
+  it into a sheet. A sheet is a window of its own, so the map stays in view beside it. It has rows
+  and named columns; the first row can be the column names. You can type into cells, paste more
+  data, fill a selection with a value, and add and delete rows and columns, with an undo of its
+  own. It is no spreadsheet program: no formulas, no cell formats, no calculations. Those are
+  steps of the table.
+- Pasting reads the plain text of the clipboard, which is the same for every program: at tabs
+  first, otherwise at the separator that makes the biggest table, also with a title, a greeting or
+  a closing line around it. Quoted cells with line breaks, empty rows and cells at the end, and a
+  single column of values are fine. A list with decimal commas (`1,50`, `12,5 %`) stays one
+  column. A list in a frame of `|`, as in a list from an ERP system or a Markdown table, loses the frame and its
+  ruler lines. When the text was split at semicolons, commas or `|`, **Paste as one column** takes
+  the lines as they are.
+- **Add as table** asks for the file name, the format (`.xlsx` by default; CSV, TXT or Parquet)
+  and the folder, writes the file with the old file kept until the new one is complete, and adds
+  a normal table with one import of that file. It works on the map, in groups, merges, runs and
+  the Find panel like every other table. The file is the home of the data: nothing of it goes
+  into the project file or the undo of the project. Undo removes the table; the file stays. Rows
+  at the end without a value, and columns at the right with no value and no name of their own,
+  stay out of the file.
+- **Pasted data stays text**: every column is text, exactly as pasted (`00123`, `1,50`,
+  `27.02.2026`, `1E5`), and the import step reads the file back exactly as the sheet shows it.
+  Tafl doesn't guess: *Change type / format* converts a column.
+- **Edit in sheet**, a button on the import step of a table made by a sheet, opens the file in a
+  sheet: the data at the first step, never the result of later steps. **Save** writes the file
+  back, and the tables that read it are calculated again. Other files have no button: an edit
+  could lose their cell formats and formulas. When the file was changed or removed outside Tafl,
+  Tafl says so before it opens or overwrites the file.
+- A new sheet is a draft: Tafl asks before it closes the sheet or the app. Its data is only in
+  that window, so a crash loses it.
+- A sheet holds at most 40,000,000 cells and 16,384 columns. 1,000,000 rows of 20 columns work;
+  written as `.xlsx`, they take about 2 minutes, and about 2.6 GB of memory to read, and the dialog
+  says so. CSV and Parquet take seconds.
+- **Import Excel files**: a step made by a sheet keeps cells of only spaces and rows without a
+  value, and every column name, so that it shows exactly what the sheet shows. All other imports
+  read as before.
+- **Import Parquet files**: a `[` in a file or folder name is part of the name. It was read as a
+  pattern, so the import failed, or read a file with a similar name.
+- Projects with such tables open in 0.5.0 as well: the table is a normal table without the button,
+  and only an `.xlsx` file, or a Parquet file with `[` in its path, reads differently there (the
+  cases above).
+- Paths: a file in a folder whose name starts with `~`, or with a `%` in its name, below the folder
+  of the project, stays valid after Save as. The `~` was read as the home folder there.
+- Closing: when the run ended while the question about closing was open, **Wait** did not close
+  the window, and the next run did.
+- Plugins: `tafl.api.files` has `detect_delimiter` and `count_outside_quotes` (they moved there
+  from the CSV import), `ONE_COLUMN`, `SHEET_KEY`, `sheet_marked` and `in_folder`.
+- Memory: Tafl gives the memory of tables that are gone back to Windows at once, instead of
+  keeping it for later use. Very big tables can take a little longer to read.
+- Undo and Redo also calculate the tables they changed that are not selected, and the tables that
+  use them: such a table could show an old status until it was selected.
+
 ## 0.5.0 – 2026-10-28
 
 Four new steps: Check data, Pivot, Unpivot and Split column. The user guide describes them in

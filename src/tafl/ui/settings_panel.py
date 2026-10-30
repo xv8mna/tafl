@@ -6,9 +6,9 @@ from collections.abc import Callable
 
 import shiboken6
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
-from tafl.api import Kind
+from tafl.api import Kind, files
 from tafl.core import Status
 from tafl.core.index import NOTE
 
@@ -45,6 +45,13 @@ class SettingsPanel(QWidget):
         self.info = _box("InfoBox", self)
         self.enabled = QCheckBox("Step is on", self)
         self.enabled.toggled.connect(self._enabled_toggled)
+        self.sheet_button = QPushButton("Edit in sheet", self)
+        self.sheet_button.setToolTip(
+            "Open the file of this import in a sheet: the data as it is in the file, not after later steps. "
+            "Save writes the file back, and the table is calculated again."
+        )
+        self.sheet_button.clicked.connect(self._edit_in_sheet)
+        self.sheet_button.hide()
 
         self._form_host = QVBoxLayout()
         self._form_host.setContentsMargins(0, 0, 0, 0)
@@ -60,6 +67,7 @@ class SettingsPanel(QWidget):
         content_layout.setContentsMargins(0, 0, 8, 0)
         content_layout.setSpacing(6)
         content_layout.addWidget(self.enabled)
+        content_layout.addWidget(self.sheet_button, 0, Qt.AlignmentFlag.AlignLeft)
         content_layout.addLayout(self._form_host)
         content_layout.addSpacing(8)
         content_layout.addWidget(self.note)
@@ -113,7 +121,7 @@ class SettingsPanel(QWidget):
             self._form_key = key
         else:
             self._form.refresh(context)
-            if values != self._form_params:  # changed elsewhere, e.g. by undo; never while typing
+            if _settings(values) != _settings(self._form_params):  # changed elsewhere, e.g. by undo; never while typing
                 self._form.set_values(values)
                 self._form_params = values
         self.title.setText(action.name)
@@ -124,6 +132,7 @@ class SettingsPanel(QWidget):
         self.enabled.setChecked(step.enabled)
         self.enabled.setVisible(True)
         self.enabled.blockSignals(False)
+        self.sheet_button.setVisible(self.session.sheet_format(step) is not None)
         # The note field shows the step's note, unless it holds typing that is not applied yet
         # ("modified": reset when it is applied). Also while it has the focus: after Undo took
         # back the typing just applied, it would else show that typing and apply it again.
@@ -293,6 +302,7 @@ class SettingsPanel(QWidget):
         self.subtitle.setText("")
         self.description.setText(text)
         self.enabled.setVisible(False)
+        self.sheet_button.setVisible(False)
         self.note.setVisible(False)
         for box in (self.error, self.warning, self.info):
             box.hide()
@@ -319,6 +329,11 @@ class SettingsPanel(QWidget):
         if step is not None:
             self.session.set_enabled(step.id, checked)
 
+    def _edit_in_sheet(self) -> None:
+        step = self.session.step
+        if step is not None:
+            self.session.want_sheet_edit(step.id)
+
     def _note_changed(self) -> None:
         """Enter, or the note field was left: what is typed in it goes to its step."""
         if self._note_step is not None and self.note.isModified():
@@ -326,6 +341,11 @@ class SettingsPanel(QWidget):
             # keeps what is typed (the field may be left only for a moment, e.g. by a save)
             self._note_to(self._note_step, self.note.text().strip())
             self.note.setModified(False)
+
+
+def _settings(values: dict) -> dict:
+    """What the form shows: not the mark of a data sheet, which changes when the file is saved."""
+    return {key: value for key, value in values.items() if key != files.SHEET_KEY}
 
 
 def _reflow(text: str) -> str:

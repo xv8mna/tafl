@@ -101,6 +101,15 @@ def test_numbers_of_more_than_38_digits_become_text(act, tmp_path):
     assert ctx.warnings == [f"Long becomes text: its numbers are too long to be kept exactly, e.g. '{long}'"]
 
 
+@pytest.mark.parametrize("name", ["x[1]/data.parquet", "Data [old]/data.parquet", "x[1].parquet", "a[b.parquet"])
+def test_a_bracket_in_a_path_is_part_of_the_name(act, tmp_path, name):
+    path = tmp_path / name
+    path.parent.mkdir(exist_ok=True)
+    pl.DataFrame({"mine": [1]}).write_parquet(path)
+    pl.DataFrame({"other": [2]}).write_parquet(tmp_path / "x1.parquet")
+    assert act("parquet.import", None, {"file": str(path)}).columns == ["mine"]
+
+
 def test_a_file_that_isnt_parquet(act, tmp_path):
     (tmp_path / "broken.parquet").write_text("no parquet", encoding="utf-8")
     with pytest.raises(ActionError, match=r"^Could not read broken\.parquet: "):

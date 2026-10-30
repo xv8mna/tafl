@@ -192,13 +192,14 @@ def _chosen_sheets(names: list[str], p, path: Path, several_files: bool) -> list
 
 
 def _read_sheet(reader, sheet: str, p, path: Path, warn) -> pl.DataFrame:
+    exact = files.sheet_marked(p)  # a file of a data sheet: the table is exactly what the sheet showed
     try:
         loaded = reader.load_sheet(
             sheet,
             header_row=p.header_row - 1 if p.header_row > 0 else None,
             schema_sample_rows=None,
             dtype_coercion="coerce",
-            whitespace_as_null=True,
+            whitespace_as_null=not exact,
         )
         out = loaded.to_polars()
     except Exception as e:
@@ -206,12 +207,16 @@ def _read_sheet(reader, sheet: str, p, path: Path, warn) -> pl.DataFrame:
     if not out.width and p.header_row > 1:
         warn(f"Sheet '{sheet}' of {path.name} has nothing in row {p.header_row} (the row with the column names) or below")
 
-    # Header cells without text get "Column N"; such columns are dropped when they are empty.
-    generated = [name.startswith("__UNNAMED__") or not name.strip() for name in out.columns]
+    # Header cells without text get "Column N"; such columns are dropped when they are empty. In a
+    # file of a data sheet, every column has a name: only the number of the column itself is such a cell.
+    generated = [
+        (name == f"__UNNAMED__{index}" if exact else name.startswith("__UNNAMED__")) or not name.strip()
+        for index, name in enumerate(out.columns)
+    ]
     names = [f"Column {i}" if gen else name.strip() for i, (name, gen) in enumerate(zip(out.columns, generated), 1)]
     out = out.rename(dict(zip(out.columns, unique_names(names))))
     out = out.drop([name for name, gen in zip(out.columns, generated) if gen and out[name].null_count() == out.height])
-    if out.width:
+    if out.width and not exact:
         out = out.filter(~pl.all_horizontal(pl.all().is_null()))
     return out.with_columns([_time_only(dtypes.normalize(out[c])) for c in out.columns])
 

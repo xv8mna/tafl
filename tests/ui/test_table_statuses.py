@@ -95,6 +95,52 @@ def test_turning_off_or_deleting_a_used_table_refreshes_the_tables_that_use_it(w
     assert session.table_status(revenue.id) == "error"
 
 
+def test_undo_refreshes_a_table_outside_the_selection(window, settle, session, demo):
+    window.open_path(demo)
+    customers, _orders, revenue = session.project.tables
+    for table in (revenue, customers):
+        session.select_table(table.id)
+        settle(session)
+    session.set_table_enabled([revenue.id], False)
+    settle(session)
+    assert session.table_status(revenue.id) == "disabled"
+    session.undo()
+    settle(session)
+    assert session.table_id == customers.id and session.table_status(revenue.id) == "ok"
+    session.redo()
+    settle(session)
+    assert session.table_status(revenue.id) == "disabled"
+
+
+def test_undo_of_a_broken_path_refreshes_a_table_outside_the_selection(window, settle, session, demo):
+    window.open_path(demo)
+    customers, orders, revenue = session.project.tables
+    for table in (revenue, orders, customers):
+        session.select_table(table.id)
+        settle(session)
+    session.set_params(orders.steps[0].id, {"file": "gone.csv"})
+    session.select_table(orders.id)
+    settle(session)
+    assert session.table_status(orders.id) == "error"
+    session.select_table(customers.id)
+    settle(session)
+    session.undo()
+    settle(session)
+    assert session.table_status(orders.id) == "ok"
+
+
+def test_undo_keeps_a_table_it_did_not_touch_out_of_the_calculation(window, settle, session, demo):
+    window.open_path(demo)
+    customers, orders, revenue = session.project.tables
+    for table in (customers, orders, revenue):
+        session.select_table(table.id)
+        settle(session)
+    session.set_note(revenue.steps[0].id, "a note")
+    settle(session)
+    session.undo()
+    assert session._recheck == {revenue.id}  # no table uses it
+
+
 @pytest.fixture
 def two_inputs(tmp_path):
     (tmp_path / "orders.csv").write_text("Id;Amount\n1;5\n2;7\n", encoding="utf-8")

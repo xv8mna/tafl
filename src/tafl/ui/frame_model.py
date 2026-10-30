@@ -148,7 +148,7 @@ class FrameModel(QAbstractTableModel):
         if self._df is None:
             return None
         full = {
-            name: (_excel_text if dtype == pl.String else self.display.formatter(dtype)) for name, dtype in self._df.schema.items()
+            name: (excel_text if dtype == pl.String else self.display.formatter(dtype)) for name, dtype in self._df.schema.items()
         }
 
         def texts(column: pl.Series) -> list[str]:
@@ -158,7 +158,7 @@ class FrameModel(QAbstractTableModel):
         return texts
 
 
-def _excel_text(text: str) -> str:
+def excel_text(text: str) -> str:
     if "\t" in text or "\n" in text or "\r" in text or text.startswith('"'):
         return '"' + text.replace('"', '""') + '"'
     return text

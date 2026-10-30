@@ -7,6 +7,7 @@ the panels to update and schedules a recalculation in the background.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 import time
@@ -15,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QSettings, QTimer, Signal
 
-from tafl.api import Action, Mode
+from tafl.api import Action, ActionError, Context, Kind, Mode, files
 from tafl.api.parameters import PLACE
 from tafl.api.params import List, Param
 from tafl.core import (
@@ -33,6 +34,7 @@ from tafl.core import (
     Table,
     TableResult,
     parameters,
+    sheet,
 )
 
 from .labels import shortened
@@ -44,6 +46,7 @@ _UNDO_LIMIT = 100
 _KEY_NAME = re.compile(r"(?i)(id|nr|no|number|key|code|nummer)$")
 _REQUIRED = ": required"  # how the check of a setting says that it is empty (tafl.api.params)
 _SUMMARY = 300  # characters of a step's summary the window shows at most
+_SHEET_STAMPS = 200  # files whose stamp is remembered
 
 # How one table can use another, as created from the project map: kind -> (action, preset).
 LINK_KINDS: dict[str, tuple[str, dict[str, Any]]] = {
@@ -71,6 +74,8 @@ class Session(QObject):
     undo_changed = Signal()
     layout_changed = Signal()  # table positions on the project map changed
     filters_changed = Signal(str)  # the instant filters of a table changed: table id
+    new_sheet_wanted = Signal(bool, object, object)  # paste?, map position or None, group id or None
+    sheet_edit_wanted = Signal(str)  # step id
     error = Signal(str)  # unexpected problems (tracebacks)
 
     def __init__(self, registry: Registry, parent: QObject | None = None) -> None:
@@ -94,6 +99,10 @@ class Session(QObject):
         # are calculated again after the selected table, so that no table shows an old status.
         self._recheck: set[str] = set()
         self._waiting: dict[str, tuple[str, int, list[str]] | None] = {}  # waits_for, until results change
+        # The last stamp of the files that sheets wrote, or that the user was told about (normalised
+        # path -> stamp). It outlives the project: after an undo or a project that wasn't saved, a
+        # step holds an older stamp, though nobody else changed the file.
+        self._sheet_stamps: dict[str, str | None] = _saved_sheet_stamps()
 
         self._worker = Worker(self)
         self._worker.finished.connect(self._on_results)
@@ -630,6 +639,150 @@ class Session(QObject):
                 group.position = _rounded(position)
         self._edited(structure=True, calculate=False)
 
+    # --- data sheets -------------------------------------------------------------------------
+
+    def want_new_sheet(self, paste: bool, position: tuple[float, float] | None = None, group: str | None = None) -> None:
+        """Open a sheet for a new table, with the clipboard's data if ``paste``. The panels ask for
+        it here, the main window opens it."""
+        self.new_sheet_wanted.emit(paste, position, group)
+
+    def want_sheet_edit(self, step_id: str) -> None:
+        """Open the file of an import step in a sheet."""
+        self.sheet_edit_wanted.emit(step_id)
+
+    def sheet_format(self, step: Step | None) -> sheet.SheetFormat | None:
+        """The format of the file of ``step``, if it is an import of a file that a sheet wrote."""
+        return sheet.source_format(step.action, step.params) if step is not None else None
+
+    def sheet_file(self, step: Step, settings: dict[str, Any] | None = None) -> Path:
+        """The full path of the file of an import step, or that these settings of the step give.
+        A wrong path is an ActionError."""
+        values = step.params if settings is None else settings
+        params = parameters.fill(self.action(step).params, values, self.parameter_values())
+        return Path(os.path.normpath(Context(project_dir=self.project.directory).resolve_path(params["file"])))
+
+    def sheet_outdated(self, step: Step) -> bool:
+        """Whether the file of ``step`` is no longer as Tafl last wrote it (see ``sheet_seen``)."""
+        path = self.sheet_file(step)
+        known = (self._sheet_stamps.get(os.path.normcase(path)), step.params[files.SHEET_KEY].get("stamp"))
+        return sheet.stamp_of(path) not in known
+
+    def sheet_seen(self, path: Path) -> None:
+        """The user was told that the file has changed, and opens it: the question comes once."""
+        self._remember_stamp(path, sheet.stamp_of(path))
+
+    def sheet_path_problem(self, path: Path) -> str | None:
+        """Why the import of a sheet's file could not read it back as it is stored in a step: a
+        setting with ``%NAME%`` or ``{Name}`` gets another value, and a path is such a setting."""
+        action = self.registry.actions[sheet.FORMATS[path.suffix.lower()].action]
+        raw = {"source": "file", "file": self._stored_path(path)}
+        try:
+            filled = parameters.fill(action.params, raw, self.parameter_values())
+            found = Context(project_dir=self.project.directory).resolve_path(filled["file"])
+        except ActionError:
+            found = None
+        if found is not None and _same_path(found, path):
+            return None
+        return "This path can't be used: %NAME% and {Name} have a meaning in the settings of a step. Choose another folder."
+
+    def add_sheet_table(
+        self, path: Path, suffix: str, position: tuple[float, float] | None = None, group: str | None = None
+    ) -> Table:
+        """A new table with one import of ``path``, a file that a sheet has just written. It is a
+        normal table from then on. Undo removes the table; the file stays."""
+        sheet_format = sheet.FORMATS[suffix]
+        action = self.registry.actions[sheet_format.action]
+        name = self._free_name(path.stem)
+        self._checkpoint()
+        table = self.project.add_table(name)
+        table.position = _rounded(position)
+        table.group = group if group and self.project.group(group) is not None else ""
+        params = {
+            **_initial_params(action),
+            **sheet_format.settings,
+            "source": "file",
+            "file": self._stored_path(path),
+            files.SHEET_KEY: sheet.mark(path),
+        }
+        self.project.add_step(table, action, params)
+        self.table_id, self.step_id = table.id, None
+        self._edited(structure=True)
+        self.selection_changed.emit()
+        return table
+
+    def sheet_saved(self, path: Path) -> None:
+        """A sheet has written ``path``: the imports of that file read it again. A file can't be
+        undone, so this is no undo step; the new stamp belongs into the project file."""
+        stamp = sheet.stamp_of(path)
+        self._remember_stamp(path, stamp)
+        first: dict[str, int] = {}  # of the tables that the new data reaches, the first step it reaches
+        for table in self.project.tables:
+            for index, step in enumerate(table.steps):
+                if self._imports(step, path):
+                    first.setdefault(table.id, index)
+                    if self.sheet_format(step) is not None:
+                        # New settings, not changed in place: the undo steps hold the old ones
+                        step.params = {**step.params, files.SHEET_KEY: {**step.params[files.SHEET_KEY], "stamp": stamp}}
+                        self._set_dirty(True)
+        if first:
+            stale = set(first) | self.users(first)
+            for link in self.engine.links():
+                if link.enabled and link.source in stale:
+                    first[link.target] = min(first.get(link.target, link.index), link.index)
+            # A file can't be undone: the results of the old file would only take up memory. Steps
+            # before these keep theirs: a database that they read isn't asked again.
+            self.engine.cache.forget(s.id for t in self.project.tables if t.id in first for s in t.steps[first[t.id] :])
+            self._recheck |= stale & set(self.results)
+            self.calculate_now()
+
+    def reads_file(self, path: Path) -> bool:
+        """Whether an import of the project reads this file."""
+        return any(self._imports(step, path) for table in self.project.tables for step in table.steps)
+
+    def _imports(self, step: Step, path: Path) -> bool:
+        """Whether this step reads the file: an import of it, or of a folder that holds it."""
+        action = self.registry.actions.get(step.action)
+        if action is None or action.kind != Kind.SOURCE:
+            return False
+        if step.params.get("source", "file" if "file" in step.params else "folder") == "file":
+            return "file" in step.params and self._reads(step, path)
+        return "folder" in step.params and self._lists(step, action, path)
+
+    def _lists(self, step: Step, action: Action, path: Path) -> bool:
+        try:
+            params = parameters.fill(action.params, step.params, self.parameter_values())
+            folder = Context(project_dir=self.project.directory).resolve_path(params["folder"])
+        except ActionError:
+            return False
+        return files.in_folder(path, Path(os.path.normpath(folder)), params.get("pattern", "*"), params.get("subfolders", False))
+
+    def _remember_stamp(self, path: Path, stamp: str | None) -> None:
+        stamps = self._sheet_stamps
+        key = os.path.normcase(path)
+        stamps.pop(key, None)
+        stamps[key] = stamp
+        for old in list(stamps)[:-_SHEET_STAMPS]:
+            del stamps[old]
+        QSettings().setValue("sheet_stamps", json.dumps(stamps))
+
+    def _reads(self, step: Step, path: Path) -> bool:
+        try:
+            return _same_path(self.sheet_file(step), path)
+        except ActionError:  # a path that can't be read: it isn't this one
+            return False
+
+    def _stored_path(self, path: Path) -> str:
+        """As a file chosen in a step's settings: relative to the project's folder for a file in
+        or below it, else the full path (see ``_rebase``, which does the same on Save as)."""
+        folder = self.project.directory
+        if folder is None:
+            return str(path)
+        try:
+            relative = os.path.relpath(path, folder)
+        except ValueError:  # on another drive
+            return str(path)
+        return str(path) if relative.startswith(("..", "~")) else Path(relative).as_posix()
+
     # --- the project map ---------------------------------------------------------------------
 
     def add_link(self, source_id: str, target_id: str, kind: str) -> Step:
@@ -784,11 +937,23 @@ class Session(QObject):
         merged = {**step.params, **params}
         if _json_equal(merged, step.params):
             return
+        if files.SHEET_KEY in merged and not self._reads_the_same_file(step, merged):
+            del merged[files.SHEET_KEY]  # a normal import from now on; Undo brings the mark back
         self._checkpoint()
         step.params = merged
         if table.steps[0] is step:
             self._name_table_after_file(table, step)
         self._edited(step_id=step_id)
+
+    def _reads_the_same_file(self, step: Step, settings: dict[str, Any]) -> bool:
+        if settings.get("file") == step.params.get("file"):
+            return True
+        if not files.sheet_marked(settings):
+            return False
+        try:
+            return _same_path(self.sheet_file(step), self.sheet_file(step, settings))
+        except ActionError:
+            return False
 
     def set_enabled(self, step_id: str, enabled: bool) -> None:
         _, step = self.find_step(step_id)
@@ -879,6 +1044,8 @@ class Session(QObject):
         if not renames and [p.to_dict() for p in self.project.parameters] == [p.to_dict() for p in new]:
             return
         self._checkpoint()
+        marked = [step for table in self.project.tables for step in table.steps if self.sheet_format(step) is not None]
+        files_before = {step.id: self._file_or_none(step) for step in marked}
         self.project.parameters = [Parameter(p.name, parameters.renamed(p.value, renames)) for p in new]
         if renames:
             for table in self.project.tables:
@@ -886,7 +1053,17 @@ class Session(QObject):
                     step.params = parameters.renamed(step.params, renames)
             for connection in self.project.connections:
                 connection.settings = parameters.renamed(connection.settings, renames)
+        for step in marked:
+            before, now = files_before[step.id], self._file_or_none(step)
+            if before is None or now is None or not _same_path(before, now):  # as in ``set_params``
+                step.params = {key: value for key, value in step.params.items() if key != files.SHEET_KEY}
         self._edited(structure=True)
+
+    def _file_or_none(self, step: Step) -> Path | None:
+        try:
+            return self.sheet_file(step)
+        except ActionError:
+            return None
 
     # --- undo --------------------------------------------------------------------------------
 
@@ -920,12 +1097,16 @@ class Session(QObject):
     def _restore(self, state: dict[str, Any]) -> None:
         restored = Project.from_dict(state["project"], path=self.project.path)
         filters = {t.id: t.filters for t in self.project.tables}  # undo is for edits, not for filters
+        before = {t.id: t.to_dict() for t in self.project.tables}
         for table in restored.tables:
             table.filters = filters.get(table.id, table.filters)
         self.project = restored
         self.engine.project = restored
         self.table_id = state["table"] if restored.find_table(state["table"] or "") else None
         self.step_id = state["step"]
+        after = {t.id: t.to_dict() for t in restored.tables}
+        changed = {id_ for id_ in before.keys() | after.keys() if before.get(id_) != after.get(id_)}
+        self._recheck |= (self.users(changed) | changed) & set(self.results)  # no table keeps an old status
         self._waiting.clear()
         self._set_dirty(True)
         self.structure_changed.emit()
@@ -1014,6 +1195,18 @@ class Session(QObject):
             for connection in data["connections"]:
                 if (connector := self.registry.connectors.get(connection["type"])) is not None:
                     connection["settings"] = rebased(connection["settings"], connector.params)
+
+
+def _same_path(one: Path, other: Path) -> bool:
+    return os.path.normcase(os.path.normpath(one)) == os.path.normcase(os.path.normpath(other))
+
+
+def _saved_sheet_stamps() -> dict[str, str | None]:
+    try:
+        stamps = json.loads(str(QSettings().value("sheet_stamps", "{}")))
+    except ValueError:
+        return {}
+    return stamps if isinstance(stamps, dict) else {}
 
 
 def _stamp(path: Path | None) -> tuple[int, int] | None:
@@ -1109,7 +1302,7 @@ def _rebase(values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | Non
         if param.kind not in ("file", "folder"):
             continue
         text = str(values.get(param.key) or "").strip()
-        if not text or "%" in text or text.startswith("~") or PLACE.match(text):
+        if not text or re.search(r"%[^%\\/]+%", text) or text.startswith("~") or PLACE.match(text):
             continue
         path = Path(text)
         if not path.is_absolute():
@@ -1121,4 +1314,4 @@ def _rebase(values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | Non
         except ValueError:  # on another drive
             relative = ".."
         # Files inside the project folder are stored relative to it, all others with their full path.
-        values[param.key] = str(path) if relative.startswith("..") else relative
+        values[param.key] = str(path) if relative.startswith(("..", "~")) else relative

@@ -66,7 +66,7 @@ def _standard_types(data: pl.DataFrame) -> pl.DataFrame:
 
 def _read(path: Path, warn) -> pl.DataFrame:
     try:
-        return pl.read_parquet(path)
+        return pl.read_parquet(path, glob=False)  # a [ is part of the name, not a pattern
     except Exception as e:
         if isinstance(e, OSError) or "(os error " in str(e):  # e.g. open in a program that doesn't let others read it
             raise files.read_error(e, path) from None

@@ -915,7 +915,7 @@ class PathEditor(Editor):
             relative = os.path.relpath(chosen, self.ctx.project_dir)
         except ValueError:
             return str(Path(chosen))
-        return str(Path(chosen)) if relative.startswith("..") else Path(relative).as_posix()
+        return str(Path(chosen)) if relative.startswith(("..", "~")) else Path(relative).as_posix()
 
     def _commit(self) -> None:
         if self.value() != self._last:

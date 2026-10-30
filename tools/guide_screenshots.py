@@ -65,6 +65,7 @@ from tafl.ui.formula_window import FormulaWindow
 from tafl.ui.main_window import MainWindow
 from tafl.ui.parameters_dialog import ParametersDialog
 from tafl.ui.session import Session
+from tafl.ui.sheet_window import AddSheetDialog, SheetWindow
 
 HERE = Path(__file__).resolve().parents[1]
 OUT = HERE / "docs" / "guide"
@@ -331,6 +332,14 @@ class Examples:
             ]}),
         ])
         return project.save(folder / f"folders{EXTENSION}")
+
+    def budgets(self) -> Path:
+        """The demo, before chapter 10 adds its list of budgets. Built again each time (the sheet
+        writes its file next to the project)."""
+        folder = self.root / "budgets"
+        shutil.rmtree(folder, ignore_errors=True)
+        self._data("budgets")
+        return make_examples.build_project().save(folder / f"demo{EXTENSION}")
 
     def inbox(self) -> Path:
         """A daily inbox, as it is before its first run: three days with orders, and a file with
@@ -752,6 +761,8 @@ class Shot:
     def close(self) -> None:
         for window in functions_window.FunctionsWindow.open_windows():
             window.close()
+        for sheet in list(self.window._sheets):
+            sheet.close_now()
         self.session._set_dirty(False)  # closing must not ask about unsaved changes
         if self.session.running:
             self.session.cancel_run()
@@ -1499,7 +1510,113 @@ def folder_import(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
     return s.picture()
 
 
-# Chapter 10: days without data
+# Chapter 10: data sheets
+
+
+BUDGETS = """CustomerNo;Name;Budget;Valid from
+00017;Müller GmbH;12.500,00;01.03.2026
+00023;Schröder & Söhne;8.250,50;01.03.2026
+00105;Nord Logistik;1.200,00;15.04.2026
+"""
+CHANGE_BUDGETS = {"decimal": ",", "columns": [
+    {"column": "Budget", "type": "number", "format": ""},
+    {"column": "Valid from", "type": "date", "format": "dd.mm.yyyy"},
+]}
+SHEET_SIZE = (1000, 290)
+
+
+def wait_for(sheet: SheetWindow) -> None:
+    """Until the sheet has read or written its file."""
+    deadline = time.monotonic() + 30
+    while sheet.busy:
+        if time.monotonic() > deadline:
+            raise TimeoutError("the sheet was still busy")
+        settle(0.05)
+    settle(0.2)
+
+
+def pasted_budgets(s: Shot) -> SheetWindow:
+    """+ New table → Paste from clipboard, with the example's text: the real clipboard stays out of it."""
+    s.window.new_sheet(False)
+    sheet = s.window._sheets[-1]
+    sheet.resize(*SHEET_SIZE)
+    sheet.clipboard_text = lambda: BUDGETS
+    sheet.paste()
+    settle(0.3)
+    return sheet
+
+
+def add_budgets(s: Shot) -> None:
+    """The sheet of the example added as the table budgets: an .xlsx file in the project's folder."""
+    sheet = pasted_budgets(s)
+    sheet.ask_add = lambda: (s.session.project.directory / "budgets.xlsx", ".xlsx")
+    sheet.add_as_table()
+    wait_for(sheet)
+    s.wait()
+
+
+def change_budgets(s: Shot) -> None:
+    """The Change type / format step after the import of the budgets."""
+    add_budgets(s)
+    s.session.add_step(REGISTRY.actions["columns.change_type"], params=CHANGE_BUDGETS)
+    s.wait()
+    s.select("budgets", 2)
+    s.fit_tables()
+    s.quiet()
+
+
+@picture("sheet-pasted", "a data sheet with the list of budgets, pasted: the first row has the column names")
+def sheet_pasted(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot()
+    s.open(ex.budgets())
+    return s.widget_picture(pasted_budgets(s))
+
+
+@picture("sheet-add-dialog", "Add as table: the file name, the format and the folder")
+def sheet_add_dialog(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot()
+    s.open(ex.budgets())
+    sheet = pasted_budgets(s)
+    dialog = AddSheetDialog(sheet.sheet, sheet.title, s.session.project.directory, False, sheet)
+    dialog.set_name("budgets")
+    return dialog_picture(s, dialog, lambda: True)
+
+
+@picture("sheet-table", "the new table budgets: one import step, every column text, and Edit in sheet")
+def sheet_table(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot(size=(1280, 640))
+    s.open(ex.budgets())
+    add_budgets(s)
+    s.select("budgets", 1)
+    s.fit_tables()
+    return s.picture()
+
+
+@picture("sheet-change-type", "Change type / format after the import: Budget a decimal number, Valid from a date")
+def sheet_change_type(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot(size=(1280, 640))
+    s.set_panels(280, 560)  # the names in the list of columns fit
+    s.open(ex.budgets())
+    change_budgets(s)
+    return s.picture()
+
+
+@picture("sheet-edit", "Edit in sheet: the file as it is, not after the steps, with one budget changed")
+def sheet_edit(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
+    s = shot()
+    s.open(ex.budgets())
+    change_budgets(s)
+    s.session.want_sheet_edit(s.step("budgets", 1).id)
+    sheet = s.window._sheets[-1]
+    sheet.resize(*SHEET_SIZE)
+    wait_for(sheet)
+    sheet.grid.go_to(1, 2)
+    sheet.model.setData(sheet.model.index(1, 2), "8.750,50")
+    settle(0.2)
+    return s.widget_picture(sheet)
+
+
+# Chapter 11: days without data
 
 
 @picture("inbox-import", "the daily inbox: all orders_*.csv files of the folder inbox")
@@ -1553,7 +1670,7 @@ def skip_if_empty(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
     return s.picture()
 
 
-# Chapter 13: troubleshooting
+# Chapter 14: troubleshooting
 
 
 def demo_error(s: Shot) -> None:

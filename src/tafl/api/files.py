@@ -58,6 +58,10 @@ from .endpoints import FOLDER, IN, Endpoint, file_endpoint
 from .errors import ActionError, SkipRest
 
 _IN_FOLDER = {"source": "folder"}
+ONE_COLUMN = "\x1f"  # the delimiter for files that have none: text doesn't contain it
+# In the settings of an import step: the file was written by a data sheet of the app. Its value
+# is {"file": the file's name, "stamp": ...}. A mark that names another file counts for nothing.
+SHEET_KEY = "_sheet"
 
 
 def source_params(filter: str, patterns: str) -> list[P.Param]:
@@ -99,14 +103,24 @@ def find_files(folder: Path, patterns: str = "*", subfolders: bool = False) -> l
     """Files in ``folder`` (and all subfolders) whose names match one of the patterns
     (``*.csv;*.txt``, not case sensitive), sorted by their path below the folder, with numbers
     in natural order (day2 before day10). Office lock files (``~$...``) are left out."""
-    wanted = [p.strip().lower() for p in re.split(r"[;,]", patterns or "") if p.strip()] or ["*"]
+    wanted = _name_patterns(patterns)
     candidates = folder.rglob("*") if subfolders else folder.glob("*")
-    found = [
-        path
-        for path in candidates
-        if not path.name.startswith("~$") and any(fnmatch.fnmatchcase(path.name.lower(), w) for w in wanted) and path.is_file()
-    ]
+    found = [path for path in candidates if _name_matches(path.name, wanted) and path.is_file()]
     return sorted(found, key=lambda path: _natural(path.relative_to(folder).as_posix().lower()))
+
+
+def in_folder(path: Path, folder: Path, patterns: str = "*", subfolders: bool = False) -> bool:
+    """Whether ``find_files`` would find the file ``path``, without a look at the other files."""
+    below = path.parent == folder or (subfolders and path.is_relative_to(folder))
+    return below and _name_matches(path.name, _name_patterns(patterns))
+
+
+def _name_patterns(patterns: str) -> list[str]:
+    return [p.strip().lower() for p in re.split(r"[;,]", patterns or "") if p.strip()] or ["*"]
+
+
+def _name_matches(name: str, wanted: list[str]) -> bool:
+    return not name.startswith("~$") and any(fnmatch.fnmatchcase(name.lower(), w) for w in wanted)
 
 
 def _natural(text: str) -> list[Any]:
@@ -269,6 +283,44 @@ def _free_names(names: Sequence[str], taken: set[str]) -> list[str]:
         result.append(candidate)
         taken = taken | {candidate}
     return result
+
+
+def detect_delimiter(sample: str, skip_lines: int = 0) -> str:
+    """The delimiter of the first line that splits most lines the same way. Without any in the
+    first line, the file has one column (its values can still have commas, as in 12,50)."""
+    lines = [line for line in sample.splitlines()[skip_lines : skip_lines + 50] if line.strip()][:20]
+    candidates = (";", ",", "\t", "|")
+    if lines and not any(count_outside_quotes(lines[0], candidate) for candidate in candidates):
+        return ONE_COLUMN
+    best, best_score = ",", -1.0
+    for candidate in candidates:
+        counts = [count_outside_quotes(line, candidate) for line in lines]
+        if not counts or counts[0] == 0:
+            continue
+        consistency = sum(c == counts[0] for c in counts) / len(counts)
+        score = consistency * 1000 + counts[0]
+        if score > best_score:
+            best, best_score = candidate, score
+    return best
+
+
+def count_outside_quotes(line: str, char: str) -> int:
+    count, quoted = 0, False
+    for ch in line:
+        if ch == '"':
+            quoted = not quoted
+        elif ch == char and not quoted:
+            count += 1
+    return count
+
+
+def sheet_marked(params: Any) -> bool:
+    """Whether the settings of an import step read one file that a data sheet wrote: they hold
+    the mark (``SHEET_KEY``), and it names this file. After another file was chosen, it doesn't."""
+    mark, file = params.get(SHEET_KEY), params.get("file")
+    if not (isinstance(mark, dict) and isinstance(file, str)) or params.get("source", "file") != "file":
+        return False
+    return str(mark.get("file", "")).lower() == Path(file).name.lower()
 
 
 # --- names --------------------------------------------------------------------------------------

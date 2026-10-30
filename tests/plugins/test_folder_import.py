@@ -8,6 +8,7 @@ import pytest
 import xlsxwriter
 
 from tafl.api import ActionError, Mode, SkipRest, find_files, sources_fingerprint
+from tafl.api.files import in_folder
 from tafl.api.params import resolve
 from tafl.api.testing import StubContext
 from tafl.core import Engine, Project, Status
@@ -195,3 +196,13 @@ def test_daily_exports_on_a_day_without_files(registry, tmp_path, no_files):
         else:
             assert [s.status for s in result.steps] == [Status.OK, Status.SKIPPED, Status.SKIPPED]
     assert (tmp_path / "out" / "daily.csv").read_bytes() == exported
+
+
+def test_in_folder_answers_as_find_files_does(tmp_path):
+    (tmp_path / "sub").mkdir()
+    for name in ("a.csv", "B.CSV", "c.txt", "~$d.csv", "sub/e.csv"):
+        (tmp_path / name).touch()
+    paths = [p for p in tmp_path.rglob("*") if p.is_file()]
+    for patterns, subfolders in (("*.csv", False), ("*.csv; *.txt", True), ("", True), ("a*", False)):
+        found = find_files(tmp_path, patterns, subfolders)
+        assert [p for p in paths if in_folder(p, tmp_path, patterns, subfolders)] == [p for p in paths if p in found]

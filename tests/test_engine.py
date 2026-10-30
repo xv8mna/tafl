@@ -1,4 +1,6 @@
 import os
+import subprocess
+import sys
 import threading
 import time
 import types
@@ -697,6 +699,28 @@ def test_the_cache_keeps_the_last_two_settings_of_a_step(project, registry):
     engine.evaluate("Orders")
     assert engine.cache.get(keys[2]) is None and engine.cache.get(keys[1]) is not None
     assert engine.evaluate("Orders").steps[0].cached  # the steps before it keep theirs
+
+
+def test_the_memory_of_freed_tables_goes_back_at_once():
+    """Set when the package is imported: polars reads the option when it is loaded."""
+    code = "import os, sys; import tafl; print(os.environ['MIMALLOC_PURGE_DELAY'], 'polars' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.split() == ["0", "False"]
+
+
+def test_forgetting_the_results_of_steps():
+    cache = ResultCache()
+    df = pl.DataFrame({"a": [1]})
+    cache.put("one", df, step="s1")
+    cache.put("two", df, step="s1")
+    cache.put("shared", df, step="s1")
+    cache.put("shared", df, step="s2")
+    cache.put("other", df, step="s2")
+    cache.forget(["s1", "gone"])
+    assert cache.get("one") is None and cache.get("two") is None
+    assert cache.get("shared") is df and cache.get("other") is df  # still results of s2
+    cache.forget(["s2"])
+    assert len(cache) == 0 and cache._bytes == 0
 
 
 def test_a_result_that_another_step_still_has_stays():

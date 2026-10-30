@@ -28,8 +28,10 @@ from PySide6.QtWidgets import (
 )
 
 from tafl import APP_NAME, GUIDE_FILE, GUIDE_URL, PROJECT_URL, __version__
+from tafl.api import ActionError
 from tafl.core import EXTENSION, ProjectError
 from tafl.core.registry import default_plugin_folders
+from tafl.core.sheet import stamp_of
 
 from . import functions_window, theme
 from .checks import checks
@@ -41,6 +43,7 @@ from .parameters_dialog import ParametersDialog
 from .run_panel import RunPanel
 from .session import Session
 from .settings_panel import SettingsPanel
+from .sheet_window import SheetWindow, ask, problem
 from .steps_panel import StepsPanel
 from .tables_panel import TablesPanel
 
@@ -79,6 +82,10 @@ class MainWindow(QMainWindow):
         self.map_view.message_update.connect(self._update_message)
         self.data_panel.status_message.connect(lambda text: self.statusBar().showMessage(text, 10000))
         self._close_after_run = False  # closing waits for the run to end
+        self._going_on_closing = False  # a sheet ended the writing that closing waited for
+        self._close_answers: dict[SheetWindow, int] = {}  # the sheets that closing has passed, as they were then
+        self._sheets: list[SheetWindow] = []  # the open sheets
+        self._sheet_number = 0
         self.views = QStackedWidget(self)
         self.views.addWidget(self.splitter)
         self.views.addWidget(self.map_view)
@@ -121,6 +128,8 @@ class MainWindow(QMainWindow):
         session.run_finished.connect(self._run_finished)
         session.run_stopped.connect(self._run_stopped)
         session.error.connect(self._show_error)
+        session.new_sheet_wanted.connect(self.new_sheet)
+        session.sheet_edit_wanted.connect(self.edit_sheet)
         self._restore_layout()
         self._update_title()
         self._update_actions()
@@ -455,6 +464,78 @@ class MainWindow(QMainWindow):
         )
         self._update_actions()
 
+    # --- data sheets -------------------------------------------------------------------------
+
+    def new_sheet(self, paste: bool, position: tuple[float, float] | None = None, group: str | None = None) -> None:
+        """A sheet for a new table, with the clipboard's data if ``paste``. An open sheet stays open
+        when another project is opened: adding it adds to the project that is open then."""
+        self._sheet_number += 1
+        window = SheetWindow(self.session, self, title=f"Sheet {self._sheet_number}", position=position, group=group)
+        self._keep_sheet(window)
+        window.show()
+        if paste:
+            window.paste()
+
+    def edit_sheet(self, step_id: str) -> None:
+        """The file of an import step in a sheet, unless it is open already: two windows on one
+        file could overwrite each other."""
+        session = self.session
+        _, step = session.find_step(step_id)
+        sheet_format = session.sheet_format(step)
+        if sheet_format is None:
+            return
+        try:
+            path = session.sheet_file(step)
+            outdated = session.sheet_outdated(step)
+        except ActionError as error:
+            self.show_sheet_problem(str(error))
+            return
+        for window in self._sheets:
+            if window.shows_file(path):
+                window.raise_()
+                window.activateWindow()
+                return
+        if stamp_of(path) is None:
+            self.show_sheet_problem(
+                f"“{path.name}” is not there any more:\n{path}\n\nPut the file back, or choose another file in the step's settings."
+            )
+            return
+        if outdated:
+            if not self.ask_open_changed(path):
+                return
+            session.sheet_seen(path)
+        window = SheetWindow(session, self, file=path, file_format=sheet_format)
+        self._keep_sheet(window)
+        window.show()
+        window.load_file()
+
+    def _keep_sheet(self, window: SheetWindow) -> None:
+        self._sheets.append(window)
+        window.closed.connect(self._sheet_closed)
+        window.message.connect(lambda text: self.statusBar().showMessage(text, 10000))
+
+    def _sheet_closed(self, window: SheetWindow) -> None:
+        if window in self._sheets:
+            self._sheets.remove(window)
+
+    def ask_open_changed(self, path: Path) -> bool:
+        answer = ask(
+            self,
+            "Edit in sheet",
+            f"“{path.name}” has changed since Tafl wrote it.",
+            "The sheet shows its values as text. Saving replaces the file with these values: "
+            "formulas, cell formats and added sheets are lost.",
+            {
+                "open": ("Open in sheet", QMessageBox.ButtonRole.DestructiveRole),
+                "cancel": ("Cancel", QMessageBox.ButtonRole.RejectRole),
+            },
+            "cancel",
+        )
+        return answer == "open"
+
+    def show_sheet_problem(self, text: str) -> None:
+        problem(self, text)
+
     # --- views -------------------------------------------------------------------------------
 
     def show_map(self, on: bool) -> None:
@@ -664,6 +745,18 @@ class MainWindow(QMainWindow):
         box.exec()
         return "wait" if box.clickedButton() is wait else "stop" if box.clickedButton() is stop else "cancel"
 
+    def go_on_closing(self) -> None:
+        """A sheet has finished the writing that the closing of the app waited for."""
+        self._going_on_closing = True
+        self.close()
+
+    def _closing_stopped(self) -> None:
+        """A Cancel: the next closing is a new one, and a sheet that is writing doesn't go on with it."""
+        self._going_on_closing = False
+        self._close_answers = {}
+        for window in self._sheets:
+            window.closes_app = False
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.session.running:  # closes when the run is over: it may be writing files
             event.ignore()
@@ -671,6 +764,10 @@ class MainWindow(QMainWindow):
                 return
             answer = self.ask_close_while_running()
             if answer == "cancel":
+                self._closing_stopped()
+                return
+            if not self.session.running:  # it ended during the question
+                QTimer.singleShot(0, self.close)
                 return
             self._close_after_run = True
             if answer == "stop" or self.session.stopping:
@@ -679,9 +776,33 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("The window closes when the run is finished…")
             return
         self._close_after_run = False
+        # A sheet is asked once, as long as it stays as it was then. A click on X during the write
+        # that closing waits for belongs to the same closing.
+        going_on = self._going_on_closing or any(window.busy and window.closes_app for window in self._sheets)
+        answered = self._close_answers if going_on else {}
+        self._going_on_closing = False
+        for window in list(self._sheets):
+            if not window.busy:
+                window.apply_typing()
+            if answered.get(window) == window.sheet.state_id:
+                continue
+            window.raise_()
+            if not window.may_close(app=True):
+                if window.busy:
+                    self.statusBar().showMessage(window.status_text, 10000)
+                    self._close_answers = answered
+                    self._going_on_closing = False  # a write may have ended during the question
+                else:
+                    self._closing_stopped()
+                event.ignore()
+                return
+            answered[window] = window.sheet.state_id
         if not self.maybe_save("before closing"):
+            self._closing_stopped()
             event.ignore()
             return
+        for window in list(self._sheets):  # only now: a Cancel above keeps them with their data
+            window.close_now()
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("window_state", self.saveState())
         for key, splitter in self._splitters().items():

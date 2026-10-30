@@ -241,6 +241,15 @@ class ResultCache:
             self._steps.clear()
             self._bytes = 0
 
+    def forget(self, steps: Iterable[str]) -> None:
+        """Drop the results of these steps: their source has changed for good, so no calculation
+        finds them again, and they would only hold on to memory."""
+        with self._lock:
+            for step in steps:
+                for key in self._steps.pop(step, ()):
+                    if key in self._items and not any(key in other for other in self._steps.values()):
+                        self._bytes -= self._items.pop(key)[1]
+
     def __len__(self) -> int:
         return len(self._items)
 

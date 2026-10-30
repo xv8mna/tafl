@@ -6,7 +6,7 @@ saved as a `.tafl` file, and you run it by hand or every morning with the Window
 
 This guide is for people who prepare data for reports, exports and databases, and who know Excel
 and some SQL, but not Tafl. It starts with a first project, then explains the window, every
-action, formulas, the project map, parameters, databases, files and scheduled runs. The
+action, formulas, the project map, parameters, databases, files, data sheets and scheduled runs. The
 [README](../README.md) has more technical details, and [CHANGELOG.md](../CHANGELOG.md) lists what
 changed in each version.
 
@@ -21,10 +21,11 @@ changed in each version.
 - [7. Parameters](#7-parameters)
 - [8. Databases](#8-databases)
 - [9. Excel and files](#9-excel-and-files)
-- [10. Days without data and a daily inbox](#10-days-without-data-and-a-daily-inbox)
-- [11. Running projects on a schedule](#11-running-projects-on-a-schedule)
-- [12. Plugins](#12-plugins)
-- [13. Troubleshooting](#13-troubleshooting)
+- [10. Data sheets](#10-data-sheets)
+- [11. Days without data and a daily inbox](#11-days-without-data-and-a-daily-inbox)
+- [12. Running projects on a schedule](#12-running-projects-on-a-schedule)
+- [13. Plugins](#13-plugins)
+- [14. Troubleshooting](#14-troubleshooting)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 
 ## 1. Getting started
@@ -39,7 +40,7 @@ The download needs no Python and no installation. Tafl runs on Windows 10 and 11
     so you get `C:\Tools\Tafl`. Keep the files in this folder together: the programs need the
     files next to them.
 3. Start `tafl-app.exe` in that folder. This is the window. `tafl.exe` next to it is the
-    command line program, for scheduled runs ([chapter 11](#11-running-projects-on-a-schedule)).
+    command line program, for scheduled runs ([chapter 12](#12-running-projects-on-a-schedule)).
 
 The programs are not signed. The first time you start one, Windows may say "Windows protected
 your PC". Click **More info**, then **Run anyway**. Some organizations don't allow programs from
@@ -81,7 +82,8 @@ py -3.14 -m venv .venv
 At the first start the window is empty. The **Tables** panel at the top left says "No tables
 yet". There are two ways to begin:
 
-- **+ New table** starts a new table with an import, in a new, unsaved project.
+- **+ New table** starts a new table, in a new, unsaved project: with an import, or with data you
+  copied ([chapter 10](#10-data-sheets)).
 - **File → Open** (Ctrl+O) opens a project file (`*.tafl`).
 
 ![Tafl at its first start: no tables yet, with the + New table button at the top left](guide/first-start.png)
@@ -136,7 +138,7 @@ Tafl keeps three things outside its folder:
 |---|---|
 | Window size, panel layout, recent projects | the registry key `HKEY_CURRENT_USER\Software\Tafl` |
 | The log of the window (details of unexpected errors) | `%LOCALAPPDATA%\Tafl\tafl.log` (**Help → Open log folder**) |
-| Your own plugins, if any ([chapter 12](#12-plugins)) | `%APPDATA%\Tafl\plugins` |
+| Your own plugins, if any ([chapter 13](#13-plugins)) | `%APPDATA%\Tafl\plugins` |
 
 **Update to a new version**: close Tafl, delete (or rename) the old folder `Tafl`, and unzip
 the new version in its place. Settings, log and plugins stay, as they are not in that folder.
@@ -187,7 +189,7 @@ path; saving into the folder later makes it relative too.)
 
 1. Click **+ New table** below the Tables panel and choose **Import CSV / text files**.
 
-    ![The + New table menu with the imports, Import CSV / text files highlighted](guide/first-new-table-menu.png)
+    ![The + New table menu with the data sheets and the imports, Import CSV / text files highlighted](guide/first-new-table-menu.png)
 
     A new table *Table 1* appears with one step, *Import CSV / text files*. Its dot is grey-blue
     and the settings say "Not complete yet: fill in File.": nothing is wrong, the step just needs
@@ -395,8 +397,9 @@ was.
 ### What next
 
 - See the project as a map of its tables: press Ctrl+2 ([chapter 6](#6-the-project-map-and-groups)).
-- Run it every morning without opening Tafl ([chapter 11](#11-running-projects-on-a-schedule)).
+- Run it every morning without opening Tafl ([chapter 12](#12-running-projects-on-a-schedule)).
 - Look up the other actions in [chapter 4](#4-actions).
+- Bring in data that is in no file, such as a list in a mail ([chapter 10](#10-data-sheets)).
 
 ## 3. The window
 
@@ -425,7 +428,8 @@ Drag the borders between the panels to change their sizes. Tafl keeps the layout
 Click a table to see the data after its last step.
 
 - **+ New table** starts a table. Its menu lists the imports, and **Start from another table**
-  to continue from the result of another table.
+  to continue from the result of another table. **Paste from clipboard** and **Empty sheet** open
+  a data sheet, for data that is in no file ([chapter 10](#10-data-sheets)).
 - **+ Group** makes a group. In the Tables panel, groups are folders: drag tables into them.
   Groups are most useful on the map ([chapter 6](#6-the-project-map-and-groups)).
 - Double-click a table (or press F2) to rename it. Drag a table to move it.
@@ -702,12 +706,16 @@ note, as saving and running do, so Undo takes back just that typing. Redo while 
 nothing to redo: what you typed is a new change, and the status bar says so. Inside a text
 field, Ctrl+Z and Ctrl+Y undo and redo the typing in the field.
 
+A data sheet has an undo of its own, in its window. The undo of the project holds nothing of its
+data ([chapter 10](#10-data-sheets)).
+
 ### Saving and opening projects
 
 - **File → Save** (Ctrl+S) saves the project. A `•` in the title bar ("first.tafl •") means
   there are unsaved changes.
 - Before another project replaces the open one, or the window closes, Tafl asks whether to save:
-  **Save**, **Don't save** or **Cancel**.
+  **Save**, **Don't save** or **Cancel**. When the window closes, it first asks about each
+  [data sheet](#an-unsaved-sheet-is-a-draft) that is still open with unsaved data.
 - **File → Save as** (Ctrl+Shift+S) into another folder keeps every file path pointing at the
   same files. Files in the new folder (or below it) are stored relative to the project, others
   with their full path. So a copy saved elsewhere still reads and writes the same files as the
@@ -745,7 +753,9 @@ command. This chapter is a reference of all actions, grouped as in the menus.
 menus.
 
 **+ New table** in the Tables panel lists the imports: every table starts with one (in a table
-without steps, **+ Add step** lists them too). **+ Add step** lists all other actions in the
+without steps, **+ Add step** lists them too). Above them, **Paste from clipboard** and **Empty
+sheet** bring in data that is in no file: the table then imports a file that the sheet wrote
+([chapter 10](#10-data-sheets)). **+ Add step** lists all other actions in the
 submenus **Rows**, **Columns**, **Text**, **Calculate**, **Combine**, **Export** and **Files**.
 The new step goes after the selected step. Right-click a step for the same menu under **Add step
 after this**.
@@ -777,7 +787,7 @@ a folder, or to choose the files for a file command: filter the table, then **Co
 table.
 
 - **Read**: *One file* or *All files in a folder* (see [All files of a folder](#all-files-of-a-folder)
-  and [chapter 10](#10-days-without-data-and-a-daily-inbox)).
+  and [chapter 11](#11-days-without-data-and-a-daily-inbox)).
 - **Delimiter**, **Encoding** and **Decimal separator**: *Detect automatically*, or the one the
   file uses.
 - **First row has the column names** (on); off, the columns are *Column 1*, *Column 2*, …
@@ -816,8 +826,8 @@ are further down. Empty rows are left out. Merged cells keep their value in the 
 by another program may have none: open it in Excel and save it.
 
 **Import Parquet files** reads a Parquet file, or all Parquet files of a folder. Parquet files
-store the type of every column, so nothing has to be detected. (Tafl reads Parquet files, but
-doesn't write them.)
+store the type of every column, so nothing has to be detected. (No export writes Parquet files;
+only a [data sheet](#add-as-table) does.)
 
 **Import from database** reads a table, a view or the result of a SQL query from a SQL Server or
 SQLite connection: see [Read a table or a query](#read-a-table-or-a-query) in chapter 8.
@@ -874,7 +884,7 @@ each customer. For the latest order instead, **Sort** by Date *Descending* first
 **Skip the rest if a table is empty** ends the table at this step when **Which table** (*This
 table (the data at this step)* or *Another table*) has no rows. The steps after it are skipped;
 that is not an error. Put it before the exports, so a day without data writes nothing
-([chapter 10](#10-days-without-data-and-a-daily-inbox)).
+([chapter 11](#11-days-without-data-and-a-daily-inbox)).
 
 **Sort** sorts the rows by the columns in **Sort by**, each *Ascending (A→Z, 1→9)* or
 *Descending (Z→A, 9→1)*. **Empty values last** (on) puts empty cells at the end. Text sorts as in
@@ -901,7 +911,7 @@ A new step starts with one check, at least 1 row, and *Stop the table*. The step
   example "The table has no rows; it must have at least 100 rows". The steps after it are not
   calculated, so the table's exports and commands don't run, and the tables that use this table
   get the error too. A run fails: Run results show the message, and the command line ends with
-  exit code 1 ([chapter 11](#exit-codes)).
+  exit code 1 ([chapter 12](#exit-codes)).
 - *Only warn*: the step shows the same text as a warning (orange), and so do Run results (the
   step is open there, and the first line counts the warnings) and the command line (with `!`).
   The data goes on, and a warning alone doesn't make a run fail.
@@ -936,7 +946,7 @@ Tips:
 - Put the step before the exports, so that bad input never overwrites a good file: right after
   the import to check the input, or just before the exports to check what they would write. A
   check after an export comes too late: the export has already written its file.
-- For a daily run ([chapter 11](#11-running-projects-on-a-schedule)), *at least* a number a bit
+- For a daily run ([chapter 12](#12-running-projects-on-a-schedule)), *at least* a number a bit
   below a quiet day stops the table when the input file is empty or suspiciously small, for
   example when another program wrote only half of it. Its exports, and those of the tables that
   use it, keep the files of the last good run; tables that don't use it still run. The run ends
@@ -948,7 +958,7 @@ Tips:
   days when no data is a mistake. A folder import with **When there are no files**: **Skip the
   rest of the table** skips the steps after it, **Check data** too: a day without files is then no
   error. To make it one, leave **When there are no files** at **Stop with an error**
-  ([chapter 10](#10-days-without-data-and-a-daily-inbox)).
+  ([chapter 11](#11-days-without-data-and-a-daily-inbox)).
 - The check runs while you edit too: the step turns red (or orange) as soon as the data at it
   fails a check, before any run.
 
@@ -1364,7 +1374,7 @@ undone)*.
 
 All files are checked before the first one is changed: a missing file (unless you chose *Skip
 it*) or a name that Windows doesn't allow stops the step with nothing changed. The daily inbox in
-[chapter 10](#10-days-without-data-and-a-daily-inbox) moves the files it has loaded to an
+[chapter 11](#11-days-without-data-and-a-daily-inbox) moves the files it has loaded to an
 archive.
 
 ## 5. Formulas
@@ -1773,7 +1783,7 @@ tafl.exe run monthly.tafl --set "Day==TODAY() - 7" --set Limit=2000
 with `Day=2026-02-28`, `Month` is `2026-02`. The run first lists the values it used
 (`{Day} = 2026-02-28` …). A name that is no parameter stops it ("Error: The project has no
 parameter 'Foo' (its parameters: Day, Month, Limit)"). In a batch file, write `%` as `%%`
-([chapter 11](#11-running-projects-on-a-schedule)).
+([chapter 12](#12-running-projects-on-a-schedule)).
 
 ### Rename a parameter, and mistakes
 
@@ -2028,12 +2038,234 @@ Calculated columns take more from **Path** and **File**:
 
 A folder without matching files stops the import with "No files named orders_*.csv in …". For a
 folder that is empty on some days, choose what happens in **When there are no files**
-([chapter 10](#10-days-without-data-and-a-daily-inbox)).
+([chapter 11](#11-days-without-data-and-a-daily-inbox)).
 
 To list the files of a folder without reading them, for example to check what arrived, start a table
 with **Files in a folder** ([chapter 4](#imports-the-first-step-of-a-table)).
 
-## 10. Days without data and a daily inbox
+## 10. Data sheets
+
+Some data is in no file: a list in a mail, a table on a web page, some lines from an ERP system. A data sheet
+brings it into a project: copy the data with Ctrl+C, paste it into a sheet, and add the sheet as a
+table.
+
+The sheet is only the way in. **Add as table** writes the data into a file of yours, and a normal
+table with one import step reads that file. The table then works like every other: on the map,
+in groups, merges, runs and the Find panel. The file is the home of the data: nothing of the data
+goes into the project file.
+
+### Paste data into a sheet
+
+The example is a list of budgets that came in a mail. To try it, open the demo, select these
+lines and press Ctrl+C:
+
+```
+CustomerNo;Name;Budget;Valid from
+00017;Müller GmbH;12.500,00;01.03.2026
+00023;Schröder & Söhne;8.250,50;01.03.2026
+00105;Nord Logistik;1.200,00;15.04.2026
+```
+
+Then click **+ New table** and choose **Paste from clipboard**. On the map, **+ New table** has the
+same entry, and a right-click on an empty spot has it under **New table here**: the table then
+goes to that spot, or into the group there.
+
+A sheet opens in a window of its own, with the data in it. It doesn't block the main window, so
+you can keep the map in view beside it.
+
+![A data sheet with the list of budgets: First row has the column names is on, and the line at the bottom says how the text was split](guide/sheet-pasted.png)
+
+- **First row has the column names** is on when the sheet has at least 2 rows and 2 columns and the
+  first row has no empty cell and no cell that is only a number or a date. Click it to change that:
+  off, the first row is data, and the columns are named *Column 1*, *Column 2*, … Nothing moves, so
+  you can try it.
+- The line at the bottom says the size of the sheet and how the text was split: "Pasted 3 rows × 4
+  columns, split at semicolons".
+
+Tafl reads only the plain text of the clipboard, which is the same for every program:
+
+- Text with tabs is split at the tabs. Spreadsheet programs write this, on every line. A tab on
+  only some lines gives way to semicolons, commas or `|` when those make a bigger table.
+- Other text is split at the semicolons, commas or `|` that make the biggest table. A comma in a
+  number (`1,50`) or in a sentence (`Hallo Hans,`) doesn't count for that.
+- A title, a greeting or a closing line around the table stays in the first column: delete its
+  row, then click **First row has the column names**. So does a line between two tables: both
+  tables land in one sheet.
+- Text without a table, such as one row, goes by its first line: the separator that splits it
+  most. A separator at the end of the line doesn't count.
+- A list in a frame of `|`, as in a list from an ERP system or a Markdown table, loses the `|` at the start and
+  the end of each line and its ruler lines (`-----`). The cells keep their spaces.
+- Cells in quotes with line breaks in them, as spreadsheet programs write them, stay one cell. A
+  line break shows as `↵`.
+- Rows at the end and columns at the right without a value are left out.
+- One column of values is fine, also with decimal commas, units or other texts among them: `1,50`,
+  `1.234,50 €`, `12,5 %`, `12,-`, `1,234.50`, `$1,234,567` and `n/a` are not split at the comma.
+
+A list such as `Müller, Hans` has no other separator, so it is split at its commas. So is a list
+of forms that Tafl doesn't read as numbers: `EUR12,00`, `1,5-2,5`, `100,200,300`. Then **Paste
+as one column**, at the bottom of the window, takes the lines as they are. It is there after a split at semicolons, commas or `|`,
+after a list in a frame and after tabs on only some lines, until the next change.
+
+**Empty sheet**, the next entry of the menu, opens a sheet with 3 columns and 20 rows to type into.
+
+### Change the sheet
+
+| To do this | Do this |
+|---|---|
+| Change a cell | Type: the text replaces the cell. F2 or a double-click keeps the text. Enter applies and goes down, Tab goes right, Esc cancels. |
+| Put a line break into a cell | Shift+Enter while you edit the cell. |
+| Paste more data | **Paste** (Ctrl+V) pastes at the selected cell, and the sheet grows when needed. In an empty sheet, Paste at the first cell replaces the sheet, and the first row can become the column names; columns that you named stay, and the data goes into them. **Paste below** pastes below the last row with a value. |
+| Write one value into many cells | Select the cells, then **Fill…**. Or edit one of them and press Ctrl+Enter. **Paste** of one value does the same. |
+| Copy cells down or to the right | Ctrl+D copies the top row of the selection into the rows below it, Ctrl+R the left column into the columns on its right. With one row or column selected, the one above or on the left is copied. |
+| Clear cells | Del. |
+| Add rows and columns | **+ Row** adds a row below the selected cell, **+ Column** a column to its right. Right-click a cell or a row header for **Insert row above** and **Insert row below**, a column header for **Insert column left** and **Insert column right**. Enter in the last row adds a row, and so does Tab at its end. |
+| Delete rows and columns | **Delete rows** and **Delete columns** delete those of the selected cells. |
+| Rename a column | Double-click its name, or right-click it and choose **Rename…**. With **First row has the column names** on, this changes the first row. |
+| Take back a change | **Undo** (Ctrl+Z) and **Redo** (Ctrl+Y), up to 100 changes back. A sheet has an undo of its own: the undo of the project doesn't touch it. |
+
+Ctrl+C copies the selected cells as the data panel does it, for pasting into Excel or into another
+sheet. All keys are in [Keyboard shortcuts](#keyboard-shortcuts).
+
+### Add as table
+
+1. Click **Add as table…** (Ctrl+S).
+2. Enter the **File name**, here `budgets`, and choose the **Format** and the **Folder**.
+
+    ![Add as table: the file name budgets, the format Excel workbook (.xlsx), and the folder](guide/sheet-add-dialog.png)
+
+3. Click **Add as table**.
+
+Tafl writes the file, adds a table named after it, and closes the sheet. The status bar says where
+the data is. The table has one import step, and every column is text.
+
+![The new table budgets: one step, Import Excel files, every column text, and the button Edit in sheet in the step's settings](guide/sheet-table.png)
+
+| Format | What Tafl writes | The step that reads it |
+|---|---|---|
+| **Excel workbook (.xlsx)**, the default | one sheet, `Sheet1`, every cell as text | **Import Excel files** |
+| **CSV file (.csv)** | UTF-8, with semicolons | **Import CSV / text files**, with **Detect numbers and dates** off |
+| **Text file with tabs (.txt)** | UTF-8, with tabs | the same |
+| **Parquet file (.parquet)** | every column as text | **Import Parquet files** |
+
+Every format gives back exactly what the sheet shows. Only what is spare stays out of the file:
+rows at the end without a value, and columns at the right with no value and no name of their own.
+An Excel file holds at most 1,048,575 rows below the column names and 32,767 characters in a
+cell: for more, the dialog asks for another format. It also takes long: 1,000,000 rows of 20 columns
+take about 2 minutes to write and about 2.6 GB of memory to read, and the dialog says so. CSV and
+Parquet take seconds.
+
+- **Folder**: the folder of the project. A project that is not saved yet starts in the folder of
+  the last project, keeps the file's full path, and says so. A file in the project's folder, or
+  below it, is stored relative to the project, as in
+  [Start a project](#start-a-project).
+- A file of that name that exists already: Tafl asks. **Replace it** overwrites the file, and the
+  tables that read it get the new data.
+- A file name can't contain `{`, `}` or `%` and can't start with `~`, as they have a meaning in the
+  settings of a step, and it has no `/` or `\`: the **Folder** says where the file goes. A folder
+  with a `%NAME%` that Windows knows, or with the `{Name}` of a parameter, can't be used either:
+  choose another one.
+- The old file stays until the new one is complete, and **Stop**, while the file is written, leaves
+  it as it was. For a big `.xlsx` file, the last part of the writing takes some seconds: Stop waits
+  for it. When something goes wrong, for example the file is open in another program, Tafl
+  says so, and the sheet stays open with its data.
+- **Undo** in the main window takes the table away, and the file stays. The file also stays when
+  you delete the table: Tafl doesn't delete it.
+
+### Text stays text
+
+Every column of a sheet is text, exactly as pasted: `00123`, `1,50`, `27.02.2026` and `1E5` stay
+as they are. Tafl doesn't guess, so no leading zero gets lost, and no value turns into something
+else without notice.
+
+The plain text of the clipboard has no types. A date or a number arrives as the characters that
+the other program shows: a cell that holds 1,4999 and shows `1,50` arrives as `1,50`. A cell that
+shows `####`, because its column is too narrow, may arrive as `####`: make the column wider before
+you copy.
+
+To turn a column into numbers or dates, add a **Change type / format** step after the import:
+
+1. Select the table *budgets* and click **+ Add step → Columns → Change type / format**.
+2. In **Columns**, fill in one row for each column:
+
+    | Column | New type | Format | Text in the sheet | Result |
+    |---|---|---|---|---|
+    | Budget | Decimal number | (empty) | `12.500,00` | 12500 |
+    | Valid from | Date | `dd.mm.yyyy` | `01.03.2026` | 1 March 2026 |
+
+3. **Decimal separator in text**: *Comma: 1.234,56* for numbers like these, *Point: 1,234.56* for
+    numbers like `12,500.00`.
+
+The grid now shows *number* and *date* under the names of the two columns. CustomerNo stays text,
+with its leading zeros, so it still matches the customer numbers of the demo's orders in a merge.
+
+![Change type / format after the import: Budget is a decimal number and Valid from a date, with the text comma as decimal separator](guide/sheet-change-type.png)
+
+A value that can't be converted becomes empty, and a warning names it ("Budget: 1 value(s) could
+not be converted to Decimal number, e.g. 'n/a' (now empty)"); **Values that can't be converted**
+can make it an error instead. [Change type / format](#columns-names-order-types-pivot-and-unpivot)
+has all formats. To correct the value itself, use **Edit in sheet**.
+
+### Edit in sheet
+
+Click the import step of the table: its settings have a button **Edit in sheet**. It opens the
+source: the file as it is, which is the data at the first step of the table. The sheet never
+shows the result of later steps, and they stay as they are.
+
+![Edit in sheet: the budgets as text, with one budget changed, and the button Save](guide/sheet-edit.png)
+
+Change what you need and click **Save** (Ctrl+S). Tafl writes the file back, again with the old
+file kept until the new one is complete, and every table that reads the file is calculated again,
+with the tables that use it. The window stays open. The project now has unsaved changes, as it
+notes the state of the file.
+
+This window differs from a new sheet in two ways: it has **Save** instead of **Add as table…**, and
+no **First row has the column names**, because the first row of the file holds the names. Rename a
+column as before; the later steps that name the old column then stop with their usual message.
+
+- The button is there only for a file that a sheet wrote. Other files can have cell formats and
+  formulas, which saving would lose. When you choose another file in the step, the button goes,
+  and it comes back with **Undo**.
+- **Undo** in the main window doesn't bring back the old file. **Undo** in the sheet does, with
+  another **Save**, while the window is open.
+- A second click on the button brings the open window to the front: one file has one window.
+- When you open another project, the window stays open and says so: **Save** then writes only the
+  file.
+
+Tafl doesn't overwrite a change made outside Tafl without a question:
+
+| When | Tafl says | What you can do |
+|---|---|---|
+| You click **Edit in sheet**, and the file is not as Tafl last wrote it | "“budgets.xlsx” has changed since Tafl wrote it." | **Open in sheet** shows its values as text. Saving then replaces the file with these values: formulas, cell formats and added sheets are lost. |
+| You click **Edit in sheet**, and the file is gone | "“budgets.xlsx” is not there any more" | Put the file back, or choose another file in the step's settings. |
+| You save, and the file has changed since the sheet read it | "“budgets.xlsx” has changed since it was opened in this sheet." | **Save anyway** replaces those changes. **Cancel** keeps the sheet open. |
+| You save, and the file is gone | "“budgets.xlsx” was moved or removed since it was opened in this sheet." | **Save** writes it again. |
+| You save, and the file is open in Excel | "budgets.xlsx is open in another program (e.g. Excel): close it and try again" | Close the file and click **Save** again. Nothing is lost. |
+
+The first question comes once for each change of the file: after **Open in sheet**, the next click
+opens the file without it. Tafl tells a change by the time and the size of the file, so a copy of
+the file with a new time counts as a change as well. Then **Open in sheet** is safe.
+
+### An unsaved sheet is a draft
+
+Until you add a new sheet as a table, its data is only in that window: Tafl keeps no copy, and it
+is gone if the app crashes. A `•` in the title bar marks a sheet with unsaved data.
+
+- Closing a sheet with unsaved data asks first: **Add as table…**, **Don't keep** or **Cancel**.
+  After **Edit in sheet**, it asks **Save**, **Don't save** or **Cancel**.
+- Closing Tafl asks this for each such sheet, then about the project.
+- Opening another project leaves the sheets open: **Add as table** adds to the project that is open
+  then.
+
+### What a sheet is not
+
+A sheet is no spreadsheet program. It has no formulas, no cell formats and no calculations: `=A1+B1`
+is a text like any other. Filters, calculations and formats are steps of the table
+([chapter 4](#4-actions)), so that they work on the new data as well when the file changes.
+
+A sheet holds at most 40,000,000 cells and 16,384 columns. For data that a program writes again and
+again, a sheet is the wrong tool: import its file, so that every run reads the new data.
+
+## 11. Days without data and a daily inbox
 
 Many jobs work on files that another program drops into a folder every day. Some days nothing
 arrives, and some files have no rows. This chapter builds such a project and shows the three
@@ -2147,7 +2379,7 @@ skipped)": a table that starts from, merges or appends such a table skips its re
 ![Run results on a day without files: the run succeeds, the exports and the move are skipped](guide/inbox-run-skipped.png)
 
 On the command line, the skipped steps have a `–`, and the run ends with exit code 0, so a
-scheduled run ([chapter 11](#11-running-projects-on-a-schedule)) doesn't report an error on a
+scheduled run ([chapter 12](#12-running-projects-on-a-schedule)) doesn't report an error on a
 quiet day.
 
 ### A day without rows
@@ -2199,7 +2431,7 @@ rows is a mistake that someone should look at, use **Check data** instead
 ([chapter 4](#rows-filter-sort-fill-and-check)): with *at least* 1 row and *Stop the table*, the
 table stops, its exports don't run, and the run fails with exit code 1.
 
-## 11. Running projects on a schedule
+## 12. Running projects on a schedule
 
 `tafl.exe`, next to `tafl-app.exe` in the Tafl folder, runs a project without the window: it
 calculates the tables, writes the exports and runs the commands, as **Run project** (F5) does.
@@ -2246,7 +2478,7 @@ export or command that didn't run), `·` not run because of an earlier error, `�
 | `… --preview` | Calculates only: exports and commands say "(runs only when the project is run)" and write nothing. |
 | `… --set Name=value` | Gives a parameter another value for this run ([chapter 7](#7-parameters)). |
 | `tafl.exe show PROJECT --table NAME --step N --rows 20` | Prints the steps of a table and the first 20 rows after step N (without `--step`: the last step). |
-| `tafl.exe plugins` | Lists the plugins and their actions ([chapter 12](#12-plugins)). |
+| `tafl.exe plugins` | Lists the plugins and their actions ([chapter 13](#13-plugins)). |
 | `tafl.exe --help`, `tafl.exe run --help` | The commands, or the options and exit codes of one. |
 
 For example, `tafl.exe run examples\demo.tafl --table "Revenue by customer"` also runs *Orders*
@@ -2261,7 +2493,7 @@ In PowerShell, write `.\tafl.exe`, and put `&` before a program path in quotes:
 
 | Exit code | Meaning |
 |---|---|
-| 0 | Done. Tables that are turned off, or that skipped their rest ([chapter 10](#10-days-without-data-and-a-daily-inbox)), count as done. |
+| 0 | Done. Tables that are turned off, or that skipped their rest ([chapter 11](#11-days-without-data-and-a-daily-inbox)), count as done. |
 | 1 | A step failed; the output shows which. Tables without errors still ran, with their exports. |
 | 2 | Nothing ran: the project file doesn't exist ("Error: There is no project file …"), `--table` or `--set` names no table or parameter of the project, or an option is wrong. |
 | 130 | Stopped with Ctrl+C. The output shows what ran before the stop. |
@@ -2317,7 +2549,7 @@ for the number (for `0x2`, "The system cannot find the file specified"); go by t
 The task runs with the rights of its Windows account. SQL Server connections sign in with that
 account ([chapter 8](#8-databases)), and it must be able to read the input files and write the
 exports. `tafl.exe` loads the plugins of that account's `%APPDATA%\Tafl\plugins`: for another
-account, add `set TAFL_PLUGINS=C:\Tafl plugins` to the batch file ([chapter 12](#12-plugins)).
+account, add `set TAFL_PLUGINS=C:\Tafl plugins` to the batch file ([chapter 13](#13-plugins)).
 
 ### Parameters in a scheduled run
 
@@ -2353,12 +2585,12 @@ task again with **Run**. The most common cause is a file that is open in Excel:
 ```
 
 The old file stays as it was, and the steps after the export don't run: in the inbox example of
-[chapter 10](#10-days-without-data-and-a-daily-inbox), the files stay in `inbox` for the next
+[chapter 11](#11-days-without-data-and-a-daily-inbox), the files stay in `inbox` for the next
 run. Other tables still write their exports, so a run with exit code 1 may have written some
 files: the log says which.
-[Chapter 13](#13-troubleshooting) lists more messages.
+[Chapter 14](#14-troubleshooting) lists more messages.
 
-## 12. Plugins
+## 13. Plugins
 
 This chapter is for people who write Python. Every action in Tafl, from **Import CSV / text
 files** to **Move files**, is a plugin, and your own actions are a Python file away.
@@ -2420,7 +2652,7 @@ category that Tafl doesn't have gets a submenu of its own.
 - Exports and commands (`kind="export"` or `kind="command"`) run only when the project runs.
 - `raise ActionError("...")` for a problem the user can fix: the message shows on the step.
   `raise SkipRest("No new orders")` ends the table at this step without an error, as in
-  [chapter 10](#10-days-without-data-and-a-daily-inbox). Both come from `tafl.api`:
+  [chapter 11](#11-days-without-data-and-a-daily-inbox). Both come from `tafl.api`:
   `from tafl.api import ActionError, SkipRest`.
 
 The README's section [Writing a plugin](../README.md#writing-a-plugin) has more,
@@ -2440,7 +2672,7 @@ it is, so the project works again once the plugin is there.
 Plugins are ordinary Python code that runs with your rights when Tafl starts: add only plugins
 you trust.
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 Where Tafl reports a problem, and the common messages with what to do.
 
@@ -2479,7 +2711,7 @@ On the command line, the failed step has a `✗` with the message below it, and 
 | "Waits for “Orders”, whose step 9 is not complete yet" (a grey-blue table, *waiting*) | Fill in that step of the other table. |
 | "This step runs when you run the project (F5). Nothing is written while you edit." | Not an error: exports and commands run only with **Run project** (F5) or **Run this table** (Shift+F5). |
 | "File not found: C:\Reports\data\orders.csv", "Folder not found: …" | Check the path. Paths are relative to the project file: a project moved without its data no longer finds them. **File → Save as** keeps paths pointing at the same files. |
-| "No files named orders_*.csv in C:\Reports\daily-inbox\inbox" | If an empty folder is normal on some days, choose **When there are no files**: **Skip the rest of the table** ([chapter 10](#10-days-without-data-and-a-daily-inbox)). |
+| "No files named orders_*.csv in C:\Reports\daily-inbox\inbox" | If an empty folder is normal on some days, choose **When there are no files**: **Skip the rest of the table** ([chapter 11](#11-days-without-data-and-a-daily-inbox)). |
 | "The table has no rows; it must have at least 100 rows" | A **Check data** step stopped the table: look at its input, for example a file with only its header row. If such a day is normal, change the check, or choose **Only warn** ([chapter 4](#rows-filter-sort-fill-and-check)). |
 | "daily orders.xlsx is open in another program (e.g. Excel): close it and run again" | Close the file and run again. The old file stays as it was. |
 | "Formula error in [Gross]: column [Nett] not found (did you mean [Net]?)" | Correct the formula. [Chapter 5](#5-formulas) lists the common mistakes. |
@@ -2487,21 +2719,26 @@ On the command line, the failed step has a `✗` with the message below it, and 
 | "The table has 2,000,000 rows, but an Excel sheet holds at most 1,048,575 below its header row: filter the table, or export it to a CSV file" | Filter the table, or export it to a CSV file. |
 | "This step was saved by a newer version of 'Import CSV / text files' (v4); this app has v3." | Update Tafl: a newer version saved the project. |
 | "Opened report.tafl — 2 step(s) were updated to newer action versions; save to keep this" (status bar) | Not an error: steps saved by an older Tafl were brought up to date. Save to keep this. |
-| "Unknown action 'my.prefix'. Is the plugin that provides it installed?" | Install the plugin ([chapter 12](#12-plugins)). |
+| "Unknown action 'my.prefix'. Is the plugin that provides it installed?" | Install the plugin ([chapter 13](#13-plugins)). |
 | "“report.tafl” has changed since it was opened or saved here, for example in another window." (when you save) | **Save anyway** replaces the other changes. To keep both, click **Cancel** and use **File → Save as**. |
 | "Windows protected your PC" (when Tafl starts) | Click **More info**, then **Run anyway** ([chapter 1](#1-getting-started)). |
+| "The clipboard holds no text. Copy some data, then press Ctrl+V here." (in a data sheet) | The clipboard is empty, or it holds something else, such as a picture. Copy the data again. |
+| "“budgets.xlsx” has changed since Tafl wrote it." (**Edit in sheet**) | The file was changed outside Tafl, or copied with a new time. Saving the sheet replaces those changes: see [Edit in sheet](#edit-in-sheet). |
+| "The project is running: save when the run has finished." (in a data sheet) | Wait for the end of the run, then save again. |
 
 ### Things that look wrong but are not
 
 - **An export wrote nothing.** Exports and file commands run only when you run the project (F5).
   While you edit, they say **on run**.
 - **Grey steps that say "skipped".** A day without files or rows
-  ([chapter 10](#10-days-without-data-and-a-daily-inbox)); the step's settings say why. A table
+  ([chapter 11](#11-days-without-data-and-a-daily-inbox)); the step's settings say why. A table
   that uses a table that is turned off is *skipped* too.
 - **The output file has old data.** Its export was skipped, or said "Not exported: the table is
   empty". Look at Run results.
 - **A file changed, but the data didn't.** **Reload data** (Ctrl+R) reads files and databases
   again ([Running a project](#running-a-project)).
+- **The numbers or dates of a data sheet are text.** A sheet never guesses: a **Change type /
+  format** step converts them ([Text stays text](#text-stays-text)).
 
 ### Unexpected errors and the log file
 
@@ -2509,7 +2746,7 @@ An error that Tafl doesn't expect shows a dialog "Unexpected error" with a short
 details are under **Show Details...**. Each error is shown once, and all of them go to the log
 file, `%LOCALAPPDATA%\Tafl\tafl.log`: **Help → Open log folder** opens its folder. When the log
 reaches 1 MB, the older entries move to `tafl.log.1` (up to `tafl.log.3`). The command line
-writes no log ([chapter 11](#11-running-projects-on-a-schedule)).
+writes no log ([chapter 12](#12-running-projects-on-a-schedule)).
 
 ### Reporting a problem
 
@@ -2543,4 +2780,6 @@ of the repository → **Report a vulnerability**.
 | Formula window | Enter starts a new line, Ctrl+Enter applies, Esc cancels |
 | Data panel | Ctrl+C copies the selected cells, Ctrl+A selects all |
 | Filter pane | Enter applies the selected values |
+| Data sheet | Ctrl+V paste at the selected cell, Ctrl+C copy, Ctrl+X cut, Del clear, Ctrl+Z undo, Ctrl+Y redo, Ctrl+D fill down, Ctrl+R fill right, Ctrl+A select all, Ctrl+Space the whole columns of the selection, Shift+Space the whole rows, Ctrl+S **Add as table…** or **Save**; typing or F2 edits a cell |
+| Cell of a data sheet | Enter applies and goes down, Tab goes right, Shift+Tab left, Shift+Enter starts a new line, Ctrl+Enter writes the text into all selected cells, Esc cancels |
 | Project map | Ctrl+F find a table, Ctrl+G group the selected tables, 1–9 jump to a group, 0 show all, H show what the selected table uses and what uses it, F2 rename, Del delete, Esc clear the search, the selection and the highlight, Ctrl + mouse wheel zoom |
