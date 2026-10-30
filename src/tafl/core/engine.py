@@ -26,7 +26,7 @@ import threading
 import time
 import traceback
 import uuid
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -363,6 +363,7 @@ class Engine:
         mode: Mode | str = Mode.RUN,
         cancel: threading.Event | None = None,
         done: Callable[[str, TableResult], None] | None = None,
+        keep_results: bool = True,
     ) -> dict[str, TableResult]:
         """Calculate tables (default: all) and the tables they use, in dependency order.
 
@@ -373,17 +374,26 @@ class Engine:
         stopped (Cancelled), it also gets the table that was being calculated, with ``stopped``
         set, the steps that ran before the stop, and the messages of the step that was running
         (``stopped_messages``).
+
+        Without ``keep_results`` the data of a table goes once ``done`` has had it and no table
+        after it uses it, so that a run of many tables doesn't need the memory of all of them. The
+        results have no ``df`` then, and of the cache only what tables read from outside stays,
+        for the tables that read the same.
         """
         if Mode(mode) == Mode.RUN:
             self.reload()
         evaluation = _Evaluation(self, Mode(mode), self.cancel if cancel is None else cancel)
         wanted = None if tables is None else [self.project.table(t).id for t in tables]
         results = {}
+        order = self.execution_order(wanted)
+        users = Counter() if keep_results else Counter(used for table_id in order for used in self.dependencies(table_id))
         try:
-            for table_id in self.execution_order(wanted):
+            for table_id in order:
                 results[table_id] = evaluation.table(table_id)
                 if done is not None:
                     done(table_id, results[table_id])
+                if not keep_results:
+                    self._let_go(table_id, results, users)
         except (Cancelled, KeyboardInterrupt):
             stopped, evaluation.stopped = evaluation.stopped, None
             if done is not None and stopped is not None:
@@ -391,6 +401,19 @@ class Engine:
                 done(stopped.table_id, stopped)
             raise
         return results
+
+    def _let_go(self, table_id: str, results: dict[str, TableResult], users: Counter[str]) -> None:
+        """``table_id`` is done: drops its data, and that of the tables it used, if no later table
+        needs them. ``users``: how many tables to come use each table."""
+        used = self.dependencies(table_id)
+        users.subtract(used)
+        for finished in (table_id, *used):
+            if finished in results and users[finished] <= 0:
+                steps = results[finished].steps
+                copies = any(link.index == 0 for link in self.links(finished))  # its first step is another table's data
+                self.cache.forget(step.step_id for step in steps[0 if copies else 1 :])
+                for step in steps:
+                    step.df = None
 
     def links(self, table: str | None = None) -> list[Link]:
         """Which step uses which other table (of one table, or of all tables)."""

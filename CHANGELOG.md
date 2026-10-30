@@ -60,6 +60,9 @@ user guide, "Data sheets", describes it; the chapters after it moved up by one n
 - **Pivot** needs far less memory with many new columns and few rows in the result: 1,000 new
   columns over 12 row keys took about 5.6 GB on a PC with 16 threads, and could stop the app on a
   PC short of memory. The new columns are now made 32 at a time, and the result is the same.
+- `tafl run` needs less memory with many tables: the data of a table goes as soon as no later
+  table uses it. What a table imported stays until the end of the run, for the tables that import
+  the same. A test project of 14 tables with 1,000,000 rows each needs 1.5 GB instead of 2.7 GB.
 - When memory runs out, Tafl says so:
   - A step doesn't start with less than 0.5 GB of memory free. It fails with a normal error that
     says how much is free, and calculates again like any other step.

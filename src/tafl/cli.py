@@ -291,7 +291,8 @@ def _run(engine: Engine, args: argparse.Namespace, console: Console, stop: threa
         failed |= _print_table(engine, engine.project.table(table_id), result, console)
 
     try:
-        engine.run(args.table, mode=Mode.PREVIEW if args.preview else Mode.RUN, cancel=stop, done=done)
+        mode = Mode.PREVIEW if args.preview else Mode.RUN
+        engine.run(args.table, mode=mode, cancel=stop, done=done, keep_results=False)  # printed: nothing here needs them
     except (KeyboardInterrupt, Cancelled):
         console.print(f"Stopped after {time.perf_counter() - started:.2f}s")
         raise
