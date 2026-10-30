@@ -57,6 +57,9 @@ user guide, "Data sheets", describes it; the chapters after it moved up by one n
   keeping it for later use. Very big tables can take a little longer to read.
 - Undo and Redo also calculate the tables they changed that are not selected, and the tables that
   use them: such a table could show an old status until it was selected.
+- **Pivot** needs far less memory with many new columns and few rows in the result: 1,000 new
+  columns over 12 row keys took about 5.6 GB on a PC with 16 threads, and could stop the app on a
+  PC short of memory. The new columns are now made 32 at a time, and the result is the same.
 
 ## 0.5.0 – 2026-10-28
 

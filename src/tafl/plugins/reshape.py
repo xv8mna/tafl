@@ -20,6 +20,10 @@ _ORDER = [("sorted", "Sorted (A→Z, 1→9)"), ("first", "As they first appear")
 _EMPTY = "(empty)"  # the new column of the empty values
 _MAX_COLUMNS = 1_000  # more is almost always the wrong column (an ID, an amount), and slow to show
 _MAX_CELLS = 50_000_000  # result rows x new columns: about 400 MB as whole numbers
+# Pivot makes this many new columns at a time. When Polars expects few row keys, every thread works
+# out every new column apart, with up to 0.4 MB each: 5.6 GB for 1,000 new columns on 16 threads,
+# however small the table and the result are. The two limits above can't see that.
+_PIVOT_PIECE = 32
 # Unpivot: result rows x columns, about 2 GB as whole numbers (a long table is cheaper to show than
 # a wide one). It holds Pivot's widest result turned back into rows (150,000,000 cells).
 _MAX_LONG_CELLS = 250_000_000
@@ -122,14 +126,18 @@ def pivot(df, p, ctx):
     )
     if p.function == "sum" and work.schema["value"] in (pl.Int64, pl.UInt64, pl.Duration):
         _check_sums(work, names, p.value)
-    out = work.pivot(
-        on="name",
-        on_columns=pl.Series(places, dtype=pl.UInt32),
-        index=keys,
-        values="value",
-        aggregate_function=_aggregation(p.function),
-        maintain_order=True,
-    )
+    pieces = [
+        work.pivot(
+            on="name",
+            on_columns=pl.Series(places[start : start + _PIVOT_PIECE], dtype=pl.UInt32),
+            index=keys,
+            values="value",
+            aggregate_function=_aggregation(p.function),
+            maintain_order=True,
+        )
+        for start in range(0, len(places), _PIVOT_PIECE)
+    ]
+    out = pl.concat([pieces[0], *(piece.drop(keys) for piece in pieces[1:])], how="horizontal")  # same rows, same order
     out.columns = [*rows, *names]
     return out
 

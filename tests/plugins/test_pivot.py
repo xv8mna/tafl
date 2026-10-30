@@ -1,6 +1,8 @@
 """Pivot: the values of one column become columns."""
 
 import datetime as dt
+import subprocess
+import sys
 import time
 from decimal import Decimal as D
 
@@ -402,6 +404,44 @@ def test_the_limits(act, monkeypatch):
     assert pivot(act, six, column="O", value="V").shape == (1, 6)  # one total row: 6 cells
 
 
+def test_a_wide_pivot_comes_in_pieces(act, monkeypatch):
+    monkeypatch.setattr(reshape, "_PIVOT_PIECE", 2)
+    asked = []
+    polars_pivot = pl.DataFrame.pivot
+
+    def spy(self, *args, on_columns, **kwargs):
+        asked.append(on_columns.to_list())
+        return polars_pivot(self, *args, on_columns=on_columns, **kwargs)
+
+    monkeypatch.setattr(pl.DataFrame, "pivot", spy)
+    df = pl.DataFrame({"K": ["b", "a", "b", "c", "a"], "O": ["w", "x", "y", "z", "v"], "V": [1, 2, 3, 4, 5]})
+    out = pivot(act, df, rows=["K"], column="O", value="V")
+    assert asked == [[0, 1], [2, 3], [4]]
+    assert out.columns == ["K", "v", "w", "x", "y", "z"]
+    assert out.rows() == [("b", None, 1, None, 3, None), ("a", 5, None, 2, None, None), ("c", None, None, None, None, 4)]
+
+
+@pytest.mark.parametrize("function", ["sum", "count", "mean", "min", "max", "first", "last"])
+@pytest.mark.parametrize("rows", [["Region"], ["Region", "Month"], []], ids=["one key", "two keys", "no key"])
+def test_the_pieces_fit_together(act, monkeypatch, function, rows):
+    """Each piece has all rows in the same order, also a row key without a value in that piece."""
+    df = pl.DataFrame(
+        {
+            "Region": ["Süd", "Nord", None, "Süd", "West", "Nord", "Ost"],
+            "Month": [1, 1, 2, 1, 2, 1, 2],
+            "Code": ["e", "d", "c", None, "a", "b", "e"],
+            "Amount": [1, None, 3, 4, 5, 6, 7],
+        }
+    )
+    params = {"rows": rows, "column": "Code", "value": "Amount", "function": function, "order": "first"}
+    whole = pivot(act, df, **params)
+    assert whole.width == len(rows) + 6
+    for size in (1, 2, 5):
+        monkeypatch.setattr(reshape, "_PIVOT_PIECE", size)
+        out = pivot(act, df, **params)
+        assert out.schema == whole.schema and out.equals(whole), size
+
+
 def test_unpivot_then_pivot_gives_the_table_back(act):
     df = pl.DataFrame(
         {"Customer": ["B", "A", "C"], "City": ["X", None, "Y"], "Mar": [1, None, 3], "Jan": [4, 5, None], "Feb": [7, 8, 9]}
@@ -456,7 +496,7 @@ def test_a_million_rows_stay_fast(act):
 
 def test_long_names_stay_fast(act):
     """1,000 keys x 999 date-times (names of 19 characters): Polars pivots slowly on long names,
-    the step on the place of each name (measured 0.17 s against 0.16 s; 1.3 s on the names)."""
+    the step on the place of each name (measured 0.37 s against 0.17 s, in pieces; 1.3 s on the names)."""
     rows = 1_000_000
     df = pl.select(
         K=pl.int_range(rows).hash(1) % 1_000,
@@ -470,3 +510,58 @@ def test_long_names_stay_fast(act):
     assert out.shape == (1_000, 1_000) and out.columns[1:3] == ["2020-01-01 00:00:00", "2020-01-01 00:01:00"]
     assert out.select(pl.sum_horizontal(pl.exclude("K")).sum()).item() == df["V"].sum()
     assert step < 3 * plain + 0.2, (step, plain)
+
+
+_WIDE_PIVOT = """
+import ctypes
+from ctypes import wintypes
+
+import polars as pl
+
+from tafl.api.testing import StubContext
+from tafl.core.registry import Registry
+
+
+class Counters(ctypes.Structure):  # PROCESS_MEMORY_COUNTERS
+    _fields_ = [("size", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
+        (name, ctypes.c_size_t) for name in ("peak_set", "set", "a", "b", "c", "d", "used", "peak")
+    ]
+
+
+def memory():
+    counters = Counters(ctypes.sizeof(Counters))
+    process = ctypes.WinDLL("kernel32").GetCurrentProcess
+    process.restype = wintypes.HANDLE
+    read = ctypes.WinDLL("psapi").GetProcessMemoryInfo
+    read.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+    read(process(), ctypes.byref(counters), counters.size)
+    return counters
+
+
+place = pl.int_range(20_000, eager=True)
+df = pl.DataFrame(
+    {
+        "Month": (place % 12).cast(pl.String).str.zfill(7),
+        "Code": ((place * 7919 + place // 12) % 200).cast(pl.String).str.zfill(4),
+        "Qty": place % 100,
+    }
+)
+registry = Registry()
+registry.load_builtin()
+params = {"rows": ["Month"], "column": "Code", "value": "Qty"}
+before = memory().used
+out = registry.actions["reshape.pivot"](df, params, StubContext())
+assert out.shape == (12, 201)
+print((memory().peak - before) >> 20, pl.thread_pool_size())
+"""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="reads the peak of the process with a Windows call")
+def test_many_new_columns_with_few_row_keys_stay_small_in_memory():
+    """Polars needs memory per new column and thread here, however small the table and the result
+    (12 rows x 200 columns from 20,000 rows: 1.1 GB on 16 threads in one go, measured 0.3 GB in
+    pieces). In a process of its own, because only there the peak says something."""
+    done = subprocess.run([sys.executable, "-c", _WIDE_PIVOT], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr[-500:]
+    grown, threads = (int(number) for number in done.stdout.split())
+    assert grown < 50 + 30 * threads, (grown, threads)
