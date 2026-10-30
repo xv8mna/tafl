@@ -1,3 +1,4 @@
+import json
 import logging
 import sys
 
@@ -5,7 +6,7 @@ import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from tafl import APP_FOLDER, APP_NAME, COMMAND
+from tafl import APP_FOLDER, APP_NAME, COMMAND, crash
 from tafl.core import Engine
 from tafl.ui import app as app_module
 from tafl.ui.main_window import MainWindow
@@ -44,6 +45,46 @@ def test_app_starts_and_opens_a_project(start, tmp_path, demo):
     code, window = start(demo)
     assert code == 0 and window.session.project.name == "Demo"
     assert (tmp_path / APP_FOLDER / f"{COMMAND}.log").exists()
+
+
+def test_the_next_start_says_why_the_program_ended(start, monkeypatch, tmp_path, demo):
+    """Once, and before the project opens: it may calculate the same step at once."""
+    folder = tmp_path / APP_FOLDER
+    folder.mkdir()
+    step = {"project": "Demo", "table": "Orders", "number": 6, "action": "Pivot", "free": 2**30}
+    (folder / "running-1.json").write_text(json.dumps([step]), encoding="utf-8")
+    (folder / "running-1.txt").write_text("memory allocation of 196656 bytes failed\n", encoding="utf-8")
+    shown = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda parent, title, text, *rest: shown.append((title, text, parent.session.project.path))
+    )
+    code, window = start(demo)
+    text = (
+        f"{APP_NAME} stopped in table “Orders”, step 6 (Pivot) of project Demo: the computer ran out of memory. "
+        "1.0 GB was free when the step started."
+    )
+    assert code == 0 and window.session.project.name == "Demo"
+    assert shown == [(f"{APP_NAME} stopped the last time", text, None)]
+    logged = (folder / f"{COMMAND}.log").read_text(encoding="utf-8")
+    assert text in logged and "memory allocation of 196656 bytes failed" in logged
+    assert list(folder.glob("running-*")) == []
+    start(demo)
+    assert len(shown) == 1
+
+
+def test_the_startup_check_only_logs_why_the_program_ended(start, window, tmp_path):
+    start()
+    app_module._report_stopped(window, [crash.Stopped([])], dialogs=False)
+    logged = (tmp_path / APP_FOLDER / f"{COMMAND}.log").read_text(encoding="utf-8")
+    assert f"{APP_NAME} stopped, without a message. The usual cause is too little memory." in logged
+
+
+def test_a_window_without_a_console_keeps_what_a_library_prints(start, monkeypatch):
+    seen = []
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(crash, "start", lambda **options: seen.append(options))
+    start()
+    assert seen == [{"catch_errors": True}]  # a test run's own stderr would be replaced, so only the call
 
 
 def test_open_dialogs_offer_project_files():

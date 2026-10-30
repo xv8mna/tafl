@@ -12,7 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
-from tafl import APP_FOLDER, APP_NAME, COMMAND
+from tafl import APP_FOLDER, APP_NAME, COMMAND, crash
 from tafl.core import Registry, Status
 
 from . import theme
@@ -24,6 +24,15 @@ log = logging.getLogger("tafl")
 
 def main(argv: list[str] | None = None) -> int:
     """Start the app; an optional argument is a project file to open."""
+    stopped = crash.last_words()  # first: this program's own file comes next
+    crash.start(catch_errors=sys.stderr is None)
+    try:
+        return _main(argv, stopped)
+    finally:
+        crash.stop()
+
+
+def _main(argv: list[str] | None, stopped: list[crash.Stopped]) -> int:
     argv = list(sys.argv if argv is None else argv)
     log_file = _setup_logging()
     _set_windows_app_id()
@@ -57,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         session.error.disconnect(window._show_error)
         session.error.connect(background_error)
     window.show()
+    _report_stopped(window, stopped, dialogs=not check)
     if len(argv) > 1:
         try:
             if check:
@@ -83,6 +93,16 @@ def main(argv: list[str] | None = None) -> int:
 
         QTimer.singleShot(0, finish)
     return app.exec()
+
+
+def _report_stopped(window: QWidget, stopped: list[crash.Stopped], dialogs: bool = True) -> None:
+    """Says why the program ended the last time, if it ended without a word: before a project
+    opens, because that project may calculate the same step at once."""
+    for report in stopped:
+        text = report.says(f"{APP_NAME} stopped")
+        log.error("%s\n%s", text, report.errors)
+        if dialogs:
+            QMessageBox.warning(window, f"{APP_NAME} stopped the last time", text)
 
 
 def _check_problems(session: Session) -> list[str]:

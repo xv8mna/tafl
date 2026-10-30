@@ -2496,6 +2496,7 @@ In PowerShell, write `.\tafl.exe`, and put `&` before a program path in quotes:
 | 0 | Done. Tables that are turned off, or that skipped their rest ([chapter 11](#11-days-without-data-and-a-daily-inbox)), count as done. |
 | 1 | A step failed; the output shows which. Tables without errors still ran, with their exports. |
 | 2 | Nothing ran: the project file doesn't exist ("Error: There is no project file …"), `--table` or `--set` names no table or parameter of the project, or an option is wrong. |
+| 3 | The run stopped before its end, usually because the computer ran out of memory. The output and the log file say at which step. What ran before it stays done; the steps after it did not run. |
 | 130 | Stopped with Ctrl+C. The output shows what ran before the stop. |
 
 The exit code of the last command: `echo %ERRORLEVEL%` in a command prompt, `$LASTEXITCODE` in
@@ -2543,7 +2544,7 @@ Double-click the batch file to test it, then open the log.
 8. Click **OK**.
 
 To test it, right-click the task and choose **Run**. Then look at the log and at the column
-**Last Run Result**: `0x0` is exit code 0, `0x1` is 1, `0x2` is 2. Windows may show its own words
+**Last Run Result**: `0x0` is exit code 0, `0x1` is 1, `0x2` is 2, `0x3` is 3. Windows may show its own words
 for the number (for `0x2`, "The system cannot find the file specified"); go by the number.
 
 The task runs with the rights of its Windows account. SQL Server connections sign in with that

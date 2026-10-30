@@ -60,6 +60,13 @@ user guide, "Data sheets", describes it; the chapters after it moved up by one n
 - **Pivot** needs far less memory with many new columns and few rows in the result: 1,000 new
   columns over 12 row keys took about 5.6 GB on a PC with 16 threads, and could stop the app on a
   PC short of memory. The new columns are now made 32 at a time, and the result is the same.
+- When memory runs out, Tafl says so:
+  - A step doesn't start with less than 0.5 GB of memory free. It fails with a normal error that
+    says how much is free, and calculates again like any other step.
+  - `tafl run` does its work in a second process. If that ends without a word, the run says at
+    which step it stopped, on the screen and in the log file, and ends with the new exit code 3.
+    In the Task Manager a run now shows two `tafl.exe`.
+  - If the window closes without a word during a calculation, the next start says at which step.
 
 ## 0.5.0 – 2026-10-28
 

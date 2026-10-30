@@ -53,7 +53,7 @@ Homepage = "https://github.com/xv8mna/tafl"
 Issues = "https://github.com/xv8mna/tafl/issues"
 
 [project.scripts]
-tafl = "tafl.cli:main"
+tafl = "tafl.crash:main"
 
 [project.gui-scripts]
 tafl-app = "tafl.ui.app:main"

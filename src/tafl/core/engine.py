@@ -22,8 +22,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
-import sys
 import threading
 import time
 import traceback
@@ -37,6 +35,7 @@ from typing import Any, NamedTuple
 
 import polars as pl
 
+from tafl import crash
 from tafl.api import (
     Action,
     ActionError,
@@ -53,6 +52,7 @@ from tafl.api import (
 )
 from tafl.api.expressions import is_panic
 from tafl.api.parameters import fill_sql
+from tafl.crash import installed_memory
 
 from . import parameters
 from .cancel import stopping_queries
@@ -268,29 +268,6 @@ def default_cache_bytes() -> int:
     """A quarter of the installed memory (2 GB if it can't be told), at least 512 MB."""
     installed = installed_memory()
     return max(installed // 4, 512 * 1024**2) if installed else 2 * 1024**3
-
-
-def installed_memory() -> int | None:
-    """The bytes of memory the computer has, or None if it can't be told."""
-    if sys.platform == "win32":
-        import ctypes
-
-        class MemoryStatus(ctypes.Structure):  # MEMORYSTATUSEX
-            _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [
-                (name, ctypes.c_ulonglong)
-                for name in ("total", "free", "page_total", "page_free", "virtual_total", "virtual_free", "extended")
-            ]
-
-        status = MemoryStatus()
-        status.length = ctypes.sizeof(MemoryStatus)
-        try:
-            return int(status.total) if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)) else None
-        except OSError:
-            return None
-    try:
-        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-    except (AttributeError, OSError, ValueError):
-        return None
 
 
 # What plugin code can raise. A migrate, summary or fingerprint function that calls sys.exit() or
@@ -693,10 +670,13 @@ class _Evaluation:
         if problems:
             return _error(step, "\n".join(problems), messages=warnings)
         ctx.messages.extend(warnings)
+        if (short := crash.short_of_memory()) is not None:
+            return _error(step, short, messages=warnings)
 
         started = time.perf_counter()
         try:
-            with stopping_queries(self.cancel):  # Stop and Ctrl+C also stop a formula that runs
+            # Stop and Ctrl+C also stop a formula that runs
+            with stopping_queries(self.cancel), crash.running(self.project.name, table.name, index + 1, action.name):
                 out = action.run(df.clone() if df is not None else None, params, ctx)
         except Cancelled:
             self.stopped_messages = list(ctx.messages)

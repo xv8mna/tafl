@@ -5,7 +5,7 @@
     tafl plugins
 
 Exit codes: 0 done, 1 a table has an error (plugins: a plugin failed to load), 2 the project or
-the command line can't be used, 130 stopped with Ctrl+C.
+the command line can't be used, 3 a run ended without a word (see crash.py), 130 stopped with Ctrl+C.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from tafl.core import (
     parameters,
 )
 from tafl.core.cancel import CancelEvent, stopping_queries
+from tafl.crash import CRASHED
 
 STOPPED = 130  # Ctrl+C
 _SUMMARY = 300  # characters of a step's summary that are printed at most, as in the window
@@ -49,7 +50,13 @@ def _codes(*codes: tuple[int, str]) -> str:
 
 
 _USAGE = ((2, "the project or the command line can't be used"), (STOPPED, "stopped with Ctrl+C"))
-_RUN_CODES = _codes((0, "done (tables that are turned off are skipped)"), (1, "a table has an error"), *_USAGE)
+_RUN_CODES = _codes(
+    (0, "done (tables that are turned off are skipped)"),
+    (1, "a table has an error"),
+    _USAGE[0],
+    (CRASHED, "the run stopped before its end, usually because the computer ran out of memory"),
+    _USAGE[1],
+)
 _SHOW_CODES = _codes((0, "done (also for a table that is turned off)"), (1, "the table has an error"), *_USAGE)
 _PLUGIN_CODES = _codes((0, "all plugins loaded"), (1, "a plugin failed to load"))
 _CODES = (

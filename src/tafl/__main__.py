@@ -1,3 +1,3 @@
-from tafl.cli import main
+from tafl.crash import main
 
 raise SystemExit(main())

@@ -16,7 +16,7 @@ import sys  # noqa: E402
 if multiprocessing.spawn.is_forking(sys.argv):  # a plugin's worker process: Python's own handling
     signal.signal(signal.SIGINT, signal.default_int_handler)
 
-from tafl.cli import main  # noqa: E402
+from tafl.crash import main  # noqa: E402
 
 
 def use_python_io_variables() -> None:
