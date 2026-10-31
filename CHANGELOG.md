@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.6.0 – 2026-10-31
 
 The data sheet: a simple way to bring data that is not in a file into a project. Chapter 10 of the
 user guide, "Data sheets", describes it; the chapters after it moved up by one number.
