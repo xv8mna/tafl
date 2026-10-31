@@ -693,6 +693,8 @@ class _Evaluation:
         if problems:
             return _error(step, "\n".join(problems), messages=warnings)
         ctx.messages.extend(warnings)
+        if crash.short_of_memory() is not None:
+            self.engine.cache.clear()  # results that can be calculated again must not stop a step
         if (short := crash.short_of_memory()) is not None:
             return _error(step, short, messages=warnings)
 

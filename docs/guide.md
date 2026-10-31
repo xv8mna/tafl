@@ -399,7 +399,7 @@ was.
 - See the project as a map of its tables: press Ctrl+2 ([chapter 6](#6-the-project-map-and-groups)).
 - Run it every morning without opening Tafl ([chapter 12](#12-running-projects-on-a-schedule)).
 - Look up the other actions in [chapter 4](#4-actions).
-- Bring in data that is in no file, such as a list in a mail ([chapter 10](#10-data-sheets)).
+- Bring in data that is not in a file, such as a list in a mail ([chapter 10](#10-data-sheets)).
 
 ## 3. The window
 
@@ -429,7 +429,7 @@ Click a table to see the data after its last step.
 
 - **+ New table** starts a table. Its menu lists the imports, and **Start from another table**
   to continue from the result of another table. **Paste from clipboard** and **Empty sheet** open
-  a data sheet, for data that is in no file ([chapter 10](#10-data-sheets)).
+  a data sheet, for data that is not in a file ([chapter 10](#10-data-sheets)).
 - **+ Group** makes a group. In the Tables panel, groups are folders: drag tables into them.
   Groups are most useful on the map ([chapter 6](#6-the-project-map-and-groups)).
 - Double-click a table (or press F2) to rename it. Drag a table to move it.
@@ -754,7 +754,7 @@ menus.
 
 **+ New table** in the Tables panel lists the imports: every table starts with one (in a table
 without steps, **+ Add step** lists them too). Above them, **Paste from clipboard** and **Empty
-sheet** bring in data that is in no file: the table then imports a file that the sheet wrote
+sheet** bring in data that is not in a file: the table then imports a file that the sheet wrote
 ([chapter 10](#10-data-sheets)). **+ Add step** lists all other actions in the
 submenus **Rows**, **Columns**, **Text**, **Calculate**, **Combine**, **Export** and **Files**.
 The new step goes after the selected step. Right-click a step for the same menu under **Add step
@@ -1124,7 +1124,7 @@ database's `decimal` or `money` column) becomes exact decimals, and a mix of dat
 becomes date-times, as long as every value stays as it is. Any other mix, also decimal numbers
 with exact decimals, becomes text (numbers as `1.5`, exact decimals as `2.00`, dates as
 `2025-12-31`), and the step says so, for example "“Value” is text: the columns have different
-types (integer: Jan, Feb, Mar; date: Since)". So no value changes without a word: a date never
+types (integer: Jan, Feb, Mar; date: Since)". So no value changes without a message: a date never
 becomes a number, and true never becomes 1.
 
 Tips:
@@ -2045,14 +2045,14 @@ with **Files in a folder** ([chapter 4](#imports-the-first-step-of-a-table)).
 
 ## 10. Data sheets
 
-Some data is in no file: a list in a mail, a table on a web page, some lines from an ERP system. A data sheet
+Some data is not in a file: a list in a mail, a table on a web page, some lines from an ERP system. A data sheet
 brings it into a project: copy the data with Ctrl+C, paste it into a sheet, and add the sheet as a
 table.
 
 The sheet is only the way in. **Add as table** writes the data into a file of yours, and a normal
 table with one import step reads that file. The table then works like every other: on the map,
-in groups, merges, runs and the Find panel. The file is the home of the data: nothing of the data
-goes into the project file.
+in groups, merges, runs and the Find panel. The data stays in that file: none of it goes into
+the project file.
 
 ### Paste data into a sheet
 
@@ -2496,7 +2496,7 @@ In PowerShell, write `.\tafl.exe`, and put `&` before a program path in quotes:
 | 0 | Done. Tables that are turned off, or that skipped their rest ([chapter 11](#11-days-without-data-and-a-daily-inbox)), count as done. |
 | 1 | A step failed; the output shows which. Tables without errors still ran, with their exports. |
 | 2 | Nothing ran: the project file doesn't exist ("Error: There is no project file …"), `--table` or `--set` names no table or parameter of the project, or an option is wrong. |
-| 3 | The run stopped before its end, usually because the computer ran out of memory. The output and the log file say at which step. What ran before it stays done; the steps after it did not run. |
+| 3 | The run stopped before its end, usually because the computer ran out of memory. The output and the file `%LOCALAPPDATA%\Tafl\tafl.log` say at which step. What ran before it stays done; the steps after it did not run. |
 | 130 | Stopped with Ctrl+C. The output shows what ran before the stop. |
 
 The exit code of the last command: `echo %ERRORLEVEL%` in a command prompt, `$LASTEXITCODE` in
@@ -2504,8 +2504,9 @@ PowerShell.
 
 ### Keep the output in a log file
 
-`tafl.exe` writes no log file: what it prints is all there is. A batch file sends it to a file.
-Save these lines as `C:\Reports\report.bat` (in Notepad: **Save as type**: **All files**):
+`tafl.exe` keeps no log of a run: what it prints is all there is. Only a run that stops without a
+word (exit code 3) also writes one line to `%LOCALAPPDATA%\Tafl\tafl.log`. A batch file sends the
+output to a file. Save these lines as `C:\Reports\report.bat` (in Notepad: **Save as type**: **All files**):
 
 ```bat
 @echo off
@@ -2713,6 +2714,8 @@ On the command line, the failed step has a `✗` with the message below it, and 
 | "This step runs when you run the project (F5). Nothing is written while you edit." | Not an error: exports and commands run only with **Run project** (F5) or **Run this table** (Shift+F5). |
 | "File not found: C:\Reports\data\orders.csv", "Folder not found: …" | Check the path. Paths are relative to the project file: a project moved without its data no longer finds them. **File → Save as** keeps paths pointing at the same files. |
 | "No files named orders_*.csv in C:\Reports\daily-inbox\inbox" | If an empty folder is normal on some days, choose **When there are no files**: **Skip the rest of the table** ([chapter 11](#11-days-without-data-and-a-daily-inbox)). |
+| "Only 300 MB of memory is free on this computer, so this step did not start" | Tafl doesn't start a step with under 512 MB free, even after it has let go of its stored results: a program without memory ends at once. Close other programs, then calculate again. |
+| "Tafl stopped the last time" (when the window opens) | The window ended without an error message during a calculation, and the text says at which step. The usual cause is too little memory: close other programs, then look at that step. |
 | "The table has no rows; it must have at least 100 rows" | A **Check data** step stopped the table: look at its input, for example a file with only its header row. If such a day is normal, change the check, or choose **Only warn** ([chapter 4](#rows-filter-sort-fill-and-check)). |
 | "daily orders.xlsx is open in another program (e.g. Excel): close it and run again" | Close the file and run again. The old file stays as it was. |
 | "Formula error in [Gross]: column [Nett] not found (did you mean [Net]?)" | Correct the formula. [Chapter 5](#5-formulas) lists the common mistakes. |
@@ -2747,7 +2750,7 @@ An error that Tafl doesn't expect shows a dialog "Unexpected error" with a short
 details are under **Show Details...**. Each error is shown once, and all of them go to the log
 file, `%LOCALAPPDATA%\Tafl\tafl.log`: **Help → Open log folder** opens its folder. When the log
 reaches 1 MB, the older entries move to `tafl.log.1` (up to `tafl.log.3`). The command line
-writes no log ([chapter 12](#12-running-projects-on-a-schedule)).
+writes there only when a run stops without an error message ([chapter 12](#12-running-projects-on-a-schedule)).
 
 ### Reporting a problem
 

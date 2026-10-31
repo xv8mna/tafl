@@ -1,6 +1,6 @@
 # Tafl
 
-A desktop app for preparing data. A table is built step by step (import → transform → export),
+A desktop ETL app for preparing data. A table is built step by step (import → transform → export),
 and the data after every step is right there to look at. Projects are saved as `*.tafl` files
 and can also be run from the command line, e.g. by the Windows Task Scheduler. *Tafl* is Old Norse
 for "table".
@@ -13,7 +13,7 @@ parameters, databases and scheduled runs, with pictures. The download has it as 
 
 - **Import** CSV / text files, Excel workbooks and Parquet files (one file or all files of a
   folder), SQL Server and SQLite tables or queries.
-- **Data sheet**: paste data that is in no file, copied from a spreadsheet program, an ERP system, a web
+- **Data sheet**: paste data that is not in a file, copied from a spreadsheet program, an ERP system, a web
   page or a mail, or type it. Tafl writes it into a file of yours, and a normal import reads it.
 - **Transform** with steps: filter, sort, remove duplicates, fill empty values, rename and
   reorder columns, change types and formats, replace, clean and split text (into columns or
@@ -97,15 +97,17 @@ In the download's folder, write `tafl.exe` instead of `.venv\Scripts\tafl` (in P
   [parameter](#parameters) another value for this run (the demo has none). For a project with
   parameters it lists the values the run used. It exits with 0 when everything worked (tables
   that are turned off or skip their rest count as working), 1 when a step failed, 2 when the
-  project can't be opened or has no such table or parameter, and 130 when Ctrl+C stopped it.
+  project can't be opened or has no such table or parameter, 3 when the run stopped before its
+  end, usually because the computer ran out of memory, and 130 when Ctrl+C stopped it.
   It prints each table as soon as it is calculated, so after Ctrl+C the output shows what ran
   (e.g. which exports were written).
 - `show` prints the steps of a table and the data after one step (also with `--set`).
 - `plugins` lists all actions and shows plugins that failed to load.
 - `--help` lists the commands; `run --help` (and `show`, `plugins`) shows the options and exit
   codes of one.
-- The command line writes no log file: what it prints is all there is. To keep it, send it to a
-  file (the download's `README.txt` shows a batch file for the Task Scheduler).
+- The command line keeps no log of a run: what it prints is all there is. To keep it, send it to a
+  file (the download's `README.txt` shows a batch file for the Task Scheduler). Only a run that
+  stops without an error message also writes one line to `%LOCALAPPDATA%\Tafl\tafl.log`.
 
 Only in a source install (they need Python):
 
@@ -688,6 +690,20 @@ The settings form is built from `params`. Rules for plugins:
 
 Plugins are ordinary Python code that runs with your rights when Tafl starts: only add plugins
 you trust.
+
+## How it is built
+
+- `src/tafl/api` is the plugin API, the stable contract. Every action imports only from here, the
+  built-in ones too, so a plugin can do what they do.
+- `src/tafl/core` holds the project model, the plugin registry and the engine, without Qt.
+- `src/tafl/plugins` holds the built-in actions, and `src/tafl/cli.py` the command line.
+- `src/tafl/ui` is the PySide6 window. All edits go through one controller (`session.py`), which
+  gives undo, the unsaved-changes flag and the recalculation; the panels listen to its signals.
+
+The engine stores each step's result under a key that hashes all it depends on: the key of the
+step before, the action and its settings, the keys of the tables it uses, and for an import a
+fingerprint of the file. An edit changes the keys from that step on, so only those steps are
+calculated again. Tables are Polars frames, and formulas run on a locked-down DuckDB connection.
 
 ## Development
 

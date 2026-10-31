@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The data sheet: a simple way to bring data that is in no file into a project. Chapter 10 of the
+The data sheet: a simple way to bring data that is not in a file into a project. Chapter 10 of the
 user guide, "Data sheets", describes it; the chapters after it moved up by one number.
 
 - **Data sheet** (**+ New table → Paste from clipboard** or **Empty sheet**, also on the map):
@@ -22,8 +22,8 @@ user guide, "Data sheets", describes it; the chapters after it moved up by one n
 - **Add as table** asks for the file name, the format (`.xlsx` by default; CSV, TXT or Parquet)
   and the folder, writes the file with the old file kept until the new one is complete, and adds
   a normal table with one import of that file. It works on the map, in groups, merges, runs and
-  the Find panel like every other table. The file is the home of the data: nothing of it goes
-  into the project file or the undo of the project. Undo removes the table; the file stays. Rows
+  the Find panel like every other table. The data stays in that file: none of it goes into the
+  project file or the undo of the project. Undo removes the table; the file stays. Rows
   at the end without a value, and columns at the right with no value and no name of their own,
   stay out of the file.
 - **Pasted data stays text**: every column is text, exactly as pasted (`00123`, `1,50`,
@@ -48,7 +48,8 @@ user guide, "Data sheets", describes it; the chapters after it moved up by one n
   and only an `.xlsx` file, or a Parquet file with `[` in its path, reads differently there (the
   cases above).
 - Paths: a file in a folder whose name starts with `~`, or with a `%` in its name, below the folder
-  of the project, stays valid after Save as. The `~` was read as the home folder there.
+  of the project, stays valid after Save as. The `~` was read as the home folder there, and with
+  a `%` the import failed, or a run wrote to the same place below the new folder.
 - Closing: when the run ended while the question about closing was open, **Wait** did not close
   the window, and the next run did.
 - Plugins: `tafl.api.files` has `detect_delimiter` and `count_outside_quotes` (they moved there
@@ -62,14 +63,16 @@ user guide, "Data sheets", describes it; the chapters after it moved up by one n
   PC short of memory. The new columns are now made 32 at a time, and the result is the same.
 - `tafl run` needs less memory with many tables: the data of a table goes as soon as no later
   table uses it. What a table imported stays until the end of the run, for the tables that import
-  the same. A test project of 14 tables with 1,000,000 rows each needs 1.5 GB instead of 2.7 GB.
+  the same. A test project of 14 tables with 1,000,000 rows each needs 1.6 GB instead of 2.6 GB.
 - When memory runs out, Tafl says so:
-  - A step doesn't start with less than 0.5 GB of memory free. It fails with a normal error that
-    says how much is free, and calculates again like any other step.
-  - `tafl run` does its work in a second process. If that ends without a word, the run says at
-    which step it stopped, on the screen and in the log file, and ends with the new exit code 3.
+  - A step doesn't start with less than 0.5 GB of memory free, even after Tafl has let go of its
+    stored results. It fails with a normal error that says how much is free, and calculates again
+    like any other step.
+  - On Windows, `tafl run` does its work in a second process. If that ends without an error message, the run says at
+    which step it stopped, on the screen and in `%LOCALAPPDATA%\Tafl\tafl.log`, and ends with the
+    new exit code 3.
     In the Task Manager a run now shows two `tafl.exe`.
-  - If the window closes without a word during a calculation, the next start says at which step.
+  - If the window closes without an error message during a calculation, the next start says at which step.
 
 ## 0.5.0 – 2026-10-28
 

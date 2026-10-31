@@ -1302,9 +1302,14 @@ def _rebase(values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | Non
         if param.kind not in ("file", "folder"):
             continue
         text = str(values.get(param.key) or "").strip()
-        if not text or re.search(r"%[^%\\/]+%", text) or text.startswith("~") or PLACE.match(text):
+        path, expanded = Path(text), os.path.expandvars(text)
+        # A variable that says where the path starts means the same in the new folder
+        if not text or text.startswith("~") or PLACE.match(text) or Path(expanded).anchor != path.anchor:
             continue
-        path = Path(text)
+        first = re.split(r"[\\/]", expanded, maxsplit=1)[0]
+        # A variable of a batch file or another PC, if no file or folder has that name
+        if re.match(r"%[^%]+%", first) and not (old_dir is not None and (old_dir / first).exists()):
+            continue
         if not path.is_absolute():
             if old_dir is None:
                 continue

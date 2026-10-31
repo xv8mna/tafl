@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QMenu, QPushButton
 from tafl.api import files
 from tafl.core import Parameter, Project
 from tafl.core import sheet as sheet_module
+from tafl.ui import main_window as main_window_module
 from tafl.ui import session as session_module
 from tafl.ui import sheet_window
 from tafl.ui.action_menu import fill_new_table_menu
@@ -1108,15 +1109,38 @@ def test_a_folder_with_a_tilde_stays_valid_after_the_first_save(session, settle,
     assert session.results[session.table.id].df.rows() == [("1", "2")]
 
 
-def test_a_folder_with_a_percent_sign_stays_valid_after_save_as(session, settle, add, tmp_path):
-    (tmp_path / "p" / "100%").mkdir(parents=True)
+@pytest.mark.parametrize("folder", ["100%", "10% - 20%", "%NOSUCHVARIABLE%"])
+def test_a_folder_with_a_percent_sign_stays_valid_after_save_as(session, settle, add, tmp_path, folder):
+    (tmp_path / "p" / folder).mkdir(parents=True)
     (tmp_path / "q").mkdir()
     session.save_project(tmp_path / "p" / "p.tafl")
-    path = add("p/100%/s.csv", "a\tb\n1\t2\n")
-    assert session.table.steps[0].params["file"] == "100%/s.csv"
+    path = add(f"p/{folder}/s.csv", "a\tb\n1\t2\n")
+    assert session.table.steps[0].params["file"] == f"{folder}/s.csv"
     session.save_project(tmp_path / "q" / "p.tafl")
     step = session.table.steps[0]
     assert step.params["file"] == str(path) and session.sheet_file(step) == path
+
+
+def test_a_variable_that_says_where_the_path_starts_stays_at_save_as(session, add, registry, tmp_path, monkeypatch):
+    monkeypatch.setenv("TAFL_TEST_PLACE", str(tmp_path / "elsewhere"))
+    (tmp_path / "p").mkdir()
+    (tmp_path / "q").mkdir()
+    session.save_project(tmp_path / "p" / "p.tafl")
+    table = session.add_table(registry.actions["csv.import"], name="plain")
+    session.set_params(table.steps[0].id, {"source": "file", "file": "%TAFL_TEST_PLACE%/x.csv"})
+    session.save_project(tmp_path / "q" / "p.tafl")
+    assert session.table.steps[0].params["file"] == "%TAFL_TEST_PLACE%/x.csv"
+
+
+@pytest.mark.parametrize("text", ["%BATCH_ONLY%/x.csv", "%BATCH_ONLY%", "%BATCH-ONLY%\\x.csv", "%A%%B%\\x.csv", "%BATCH_ONLY%.csv"])
+def test_a_variable_of_a_batch_file_stays_at_save_as(session, registry, tmp_path, text):
+    (tmp_path / "p").mkdir()
+    (tmp_path / "q").mkdir()
+    session.save_project(tmp_path / "p" / "p.tafl")
+    table = session.add_table(registry.actions["csv.import"], name="plain")
+    session.set_params(table.steps[0].id, {"source": "file", "file": text})
+    session.save_project(tmp_path / "q" / "p.tafl")
+    assert session.table.steps[0].params["file"] == text
 
 
 def test_a_file_chosen_in_a_folder_with_a_tilde_stays_a_full_path(qapp, registry, tmp_path):
@@ -1352,11 +1376,13 @@ def slow_write(monkeypatch):
     """Once a test clears this event, the writes of the sheets wait until it sets it again."""
     gate = threading.Event()
     gate.set()
+    gate.only = None  # the name of the one file that waits
     real = sheet_module.write_file
 
-    def write(*args, **settings):
-        assert gate.wait(30)
-        return real(*args, **settings)
+    def write(frame, path, *args, **settings):
+        if gate.only in (None, path.name):
+            assert gate.wait(30)
+        return real(frame, path, *args, **settings)
 
     monkeypatch.setattr(sheet_window, "write_file", write)
     yield gate
@@ -1384,9 +1410,8 @@ def test_a_sheet_changed_during_the_write_that_closing_waits_for_is_asked(
     assert asked == ["e.csv"] and second.busy
     first.model.setData(first.model.index(0, 0), "typed later")
     slow_write.set()
-    qtbot.waitUntil(lambda: "c.csv" in asked or "project" in asked, timeout=10_000)
-    assert asked == ["e.csv", "c.csv"]
     qtbot.waitUntil(lambda: "project" in asked, timeout=10_000)
+    assert asked == ["e.csv", "c.csv", "project"]
     assert "typed later" in (session.project.directory or first.file.parent).joinpath("c.csv").read_text(encoding="utf-8-sig")
 
 
@@ -1475,6 +1500,180 @@ def test_a_cancel_during_the_write_reaches_the_sheet_that_writes(
     qtbot.waitUntil(lambda: not writer.busy, timeout=10_000)
     qapp.processEvents()
     assert window.isVisible() and other in window._sheets and "project" not in asked
+
+
+def test_a_sheet_that_closes_itself_during_a_question_doesn_t_end_the_closing(
+    window, session, add, draft, edit, qtbot, slow_write, tmp_path, monkeypatch
+):
+    """The project question still comes, and no error."""
+    asked = []
+    add("b.csv", "a\tb\n1\t2\n")
+    other = edit(session.table.steps[0])
+    writer = draft("a\tb\n3\t4\n")
+    monkeypatch.setattr(writer, "ask_add", lambda: (tmp_path / "w.csv", ".csv"))
+
+    def question(self) -> str:
+        asked.append(self.file.name)
+        slow_write.set()
+        qtbot.waitUntil(lambda: not shiboken6.isValid(writer) or writer not in window._sheets, timeout=10_000)
+        qtbot.wait(20)
+        return "discard"
+
+    monkeypatch.setattr(SheetWindow, "ask_close_edit", question)
+    monkeypatch.setattr(window, "ask_save", lambda reason: asked.append("project") or "discard")
+    other.model.setData(other.model.index(0, 0), "x")
+    window.show()
+    slow_write.clear()
+    assert writer.add_as_table()
+    window.close()
+    qtbot.waitUntil(lambda: "project" in asked, timeout=10_000)
+    assert asked == ["b.csv", "project"] and not window.isVisible()
+
+
+def test_a_write_by_hand_after_the_answer_is_waited_for(window, session, add, edit, qtbot, slow_write, monkeypatch):
+    """Ctrl+S in a sheet that was answered with Don't save: the file is written, then closing goes on."""
+    asked = []
+    first, second = two_sheets(session, add, edit)
+    answers = {"c.csv": "discard", "e.csv": "save"}
+    monkeypatch.setattr(SheetWindow, "ask_close_edit", lambda self: asked.append(self.file.name) or answers[self.file.name])
+    monkeypatch.setattr(window, "ask_save", lambda reason: asked.append("project") or "discard")
+    first.model.setData(first.model.index(0, 0), "kept after all")
+    second.model.setData(second.model.index(0, 0), "new")
+    path = first.file
+    window.show()
+    slow_write.clear()
+    assert not window.close()
+    assert asked == ["c.csv", "e.csv"] and first.save()
+    slow_write.set()
+    qtbot.waitUntil(lambda: "project" in asked, timeout=10_000)
+    assert "kept after all" in path.read_text(encoding="utf-8-sig") and not window.isVisible()
+
+
+def test_a_write_by_hand_that_fails_during_the_closing_keeps_the_app(
+    window, session, add, edit, qtbot, slow_write, problems, monkeypatch
+):
+    asked = []
+    first, second = two_sheets(session, add, edit)
+    answers = {"c.csv": "discard", "e.csv": "save"}
+    monkeypatch.setattr(SheetWindow, "ask_close_edit", lambda self: asked.append(self.file.name) or answers[self.file.name])
+    monkeypatch.setattr(window, "ask_save", lambda reason: asked.append("project") or "discard")
+    first.model.setData(first.model.index(0, 0), "x")
+    second.model.setData(second.model.index(0, 0), "new")
+    window.show()
+    slow_write.only = "e.csv"
+    slow_write.clear()
+    assert not window.close()
+    answers["c.csv"] = "cancel"
+    with held(first.file):
+        assert first.save()
+        qtbot.waitUntil(lambda: bool(problems), timeout=10_000)
+    slow_write.set()
+    qtbot.waitUntil(lambda: asked == ["c.csv", "e.csv", "c.csv"], timeout=10_000)
+    qtbot.wait(150)
+    assert "project" not in asked and window.isVisible() and first in window._sheets
+
+
+@pytest.mark.parametrize("route", ["question", "refused"])
+def test_a_try_by_hand_after_don_t_save_is_asked_about_again(window, session, add, edit, qtbot, slow_write, monkeypatch, route):
+    """A Cancel at a question by hand, or a save that the run refuses: the answer before is void."""
+    asked = []
+    first, second = two_sheets(session, add, edit)
+    answers = {"c.csv": "discard", "e.csv": "save"}
+    monkeypatch.setattr(SheetWindow, "ask_close_edit", lambda self: asked.append(self.file.name) or answers[self.file.name])
+    monkeypatch.setattr(window, "ask_save", lambda reason: asked.append("project") or "discard")
+    first.model.setData(first.model.index(0, 0), "x")
+    second.model.setData(second.model.index(0, 0), "new")
+    window.show()
+    slow_write.clear()
+    assert not window.close()
+    answers["c.csv"] = "cancel"
+    if route == "question":
+        assert not first.close()
+    else:
+        monkeypatch.setattr(type(session), "running", property(lambda self: True))
+        assert not first.save()
+        monkeypatch.setattr(type(session), "running", property(lambda self: False))
+    asked.clear()
+    slow_write.set()
+    qtbot.waitUntil(lambda: "c.csv" in asked, timeout=10_000)
+    assert window.isVisible() and first in window._sheets and "project" not in asked
+
+
+def test_closing_waits_for_a_sheet_that_reads(window, session, add, edit, qtbot, monkeypatch):
+    """A read that started during the wait: the closing goes on when it has ended."""
+    asked = []
+    add("c.csv", "a\tb\n1\t2\n")
+    edit(session.table.steps[0])
+    reading = {"on": True}
+    monkeypatch.setattr(SheetWindow, "busy", property(lambda self: reading["on"]))
+    monkeypatch.setattr(window, "ask_save", lambda reason: asked.append("project") or "discard")
+    window.show()
+    window.go_on_closing()
+    qtbot.wait(150)
+    assert window.isVisible() and not asked
+    reading["on"] = False
+    qtbot.waitUntil(lambda: "project" in asked, timeout=10_000)
+
+
+def test_a_sheet_saved_by_hand_during_the_wait_goes_on_with_the_closing(
+    window, session, add, edit, qtbot, slow_write, monkeypatch
+):
+    asked = []
+    first, second = two_sheets(session, add, edit)
+    monkeypatch.setattr(SheetWindow, "ask_close_edit", lambda self: asked.append(self.file.name) or "save")
+    monkeypatch.setattr(window, "ask_save", lambda reason: asked.append("project") or "discard")
+    first.model.setData(first.model.index(0, 0), "x")
+    window.show()
+    slow_write.clear()
+    assert not window.close()
+    second.model.setData(second.model.index(0, 0), "y")
+    assert not second.close()
+    slow_write.set()
+    qtbot.waitUntil(lambda: "project" in asked, timeout=10_000)
+    assert asked == ["c.csv", "e.csv", "project"] and not window.isVisible()
+
+
+def test_closing_goes_on_only_when_no_question_is_open(window, session, add, edit, qtbot, monkeypatch):
+    """The write ends while a question of the sheet is open: its answer can be a Cancel."""
+    asked = []
+    two_sheets(session, add, edit)
+    open_box = {"box": window}
+    monkeypatch.setattr(main_window_module.QApplication, "activeModalWidget", lambda: open_box["box"])
+    monkeypatch.setattr(window, "ask_save", lambda reason: asked.append("project") or "discard")
+    window.show()
+    window.go_on_closing()
+    qtbot.wait(150)
+    assert window.isVisible() and not asked
+    open_box["box"] = None
+    qtbot.waitUntil(lambda: "project" in asked, timeout=10_000)
+    assert not window.isVisible()
+
+
+def test_the_answers_of_a_closing_that_ended_are_gone(window, session, add, edit, qtbot, slow_write, monkeypatch):
+    """Stop ends a closing. A later closing that waits for a run starts with no answers."""
+    asked = []
+    first, second = two_sheets(session, add, edit)
+    answers = {"c.csv": "discard", "e.csv": "save"}
+    monkeypatch.setattr(SheetWindow, "ask_close_edit", lambda self: asked.append(self.file.name) or answers[self.file.name])
+    first.model.setData(first.model.index(0, 0), "old")
+    second.model.setData(second.model.index(0, 0), "new")
+    window.show()
+    slow_write.clear()
+    assert not window.close()
+    assert asked == ["c.csv", "e.csv"]
+    second.stop()
+    slow_write.set()
+    qtbot.waitUntil(lambda: not second.busy, timeout=10_000)
+    assert not second.closes_app
+    asked.clear()
+    answers["c.csv"] = "cancel"
+    monkeypatch.setattr(type(session), "running", property(lambda self: True))
+    monkeypatch.setattr(window, "ask_close_while_running", lambda: "wait")
+    assert not window.close()
+    monkeypatch.setattr(type(session), "running", property(lambda self: False))
+    window._run_busy(False)
+    qtbot.waitUntil(lambda: bool(asked), timeout=10_000)
+    assert asked == ["c.csv"] and window.isVisible()
 
 
 def test_a_window_with_its_question_open_is_not_asked_twice(window, session, add, edit, monkeypatch):

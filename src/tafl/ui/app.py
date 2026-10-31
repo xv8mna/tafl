@@ -96,7 +96,7 @@ def _main(argv: list[str] | None, stopped: list[crash.Stopped]) -> int:
 
 
 def _report_stopped(window: QWidget, stopped: list[crash.Stopped], dialogs: bool = True) -> None:
-    """Says why the program ended the last time, if it ended without a word: before a project
+    """Says why the program ended the last time, if it ended without an error message: before a project
     opens, because that project may calculate the same step at once."""
     for report in stopped:
         text = report.says(f"{APP_NAME} stopped")

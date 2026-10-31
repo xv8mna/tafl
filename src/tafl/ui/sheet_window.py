@@ -1,4 +1,4 @@
-"""The data sheet: a window to paste or type data that is in no file. Its data goes into a file, and
+"""The data sheet: a window to paste or type data that is not in a file. Its data goes into a file, and
 a normal table with one import step reads that file (see ``tafl.core.sheet``).
 
 A sheet is a draft until it is added as a table. "Edit in sheet" opens such a file again: the data
@@ -698,6 +698,7 @@ class SheetWindow(QMainWindow):
         self._closing = False  # no more questions
         self._close_after_write = False
         self.closes_app = False  # the app was closing: it goes on after this window
+        self.answered_state: int | None = None  # how the sheet was when closing the app passed it, until the next try
         self._asking = False  # the question about closing is open
         self._choice: tuple[Path, str] | None = None  # what the Add as table popup last gave
 
@@ -784,6 +785,10 @@ class SheetWindow(QMainWindow):
     @property
     def busy(self) -> bool:
         return self._worker.busy
+
+    @property
+    def writing(self) -> bool:
+        return self.busy and not self.stop_button.isHidden()
 
     @property
     def status_text(self) -> str:
@@ -1088,7 +1093,7 @@ class SheetWindow(QMainWindow):
         if replaces:
             sheet.undo()
         state = sheet.state_id
-        fills = fill and frame.height == 1 and frame.width == 1 and cells > 1
+        fills = fill and frame.height == 1 and frame.width == 1 and cells > 1 and not pasted.framed
         blank = self.is_draft and sheet.blank and (row, column) == (0, 0) and not fills
         try:
             if blank:
@@ -1201,6 +1206,7 @@ class SheetWindow(QMainWindow):
 
     def add_as_table(self) -> bool:
         """Write the file, and add a table that imports it. Returns whether the writing started."""
+        self.answered_state = None
         if not self.sheet.has_values:
             self._status("The sheet is empty: paste or type some data first.")
             return False
@@ -1220,6 +1226,7 @@ class SheetWindow(QMainWindow):
 
     def save(self) -> bool:
         """Write the file back. Returns whether the writing started."""
+        self.answered_state = None
         path, suffix = self.file, self.file_format.suffix
         if self.session.running:  # a run may read this file
             self._status("The project is running: save when the run has finished.")
@@ -1280,7 +1287,7 @@ class SheetWindow(QMainWindow):
         self.session.sheet_saved(path)
         self._show_state()
         self._status(f"Saved {path.name}")
-        if self._close_after_write:
+        if self._close_after_write or self.closes_app:
             self._close_as_asked()
 
     def _close_as_asked(self) -> None:
@@ -1332,10 +1339,10 @@ class SheetWindow(QMainWindow):
         an answer starts writing, the window closes when that has worked, and with ``app`` the
         main window then goes on closing."""
         if self.busy:
-            writing = not self.stop_button.isHidden()
+            self.closes_app = self.closes_app or (app and self.writing)
             self._close_refused = (
                 "The sheet is being written: wait, or press Stop."
-                if writing
+                if self.writing
                 else "The data is being read: wait a moment."
             )
             self._status(self._close_refused)
@@ -1349,6 +1356,7 @@ class SheetWindow(QMainWindow):
             self._asking = False
 
     def _answer_about_closing(self, app: bool) -> bool:
+        self.answered_state = None
         self.apply_typing()
         self._close_after_write = self.closes_app = False
         if self.is_draft:

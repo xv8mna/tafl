@@ -1,4 +1,4 @@
-"""When the program ends without a word: the memory check, the file of the running step, the
+"""When the program ends without an error message: the memory check, the file of the running step, the
 parent of a run."""
 
 import ctypes
@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -133,8 +134,8 @@ def test_a_step_does_not_start_when_memory_is_short(registry, folder, tmp_path, 
     first, second = engine.run(mode="preview")[table.id].steps
     assert first.status == Status.ERROR
     assert first.error == (
-        "Only 0.3 GB of memory is free on this computer, so this step did not start (it needs at least "
-        "0.5 GB). Close other programs, then calculate again."
+        "Only 300 MB of memory is free on this computer, so this step did not start (it needs at least "
+        "512 MB). Close other programs, then calculate again."
     )
     assert second.status == Status.BLOCKED
 
@@ -143,6 +144,41 @@ def test_a_step_does_not_start_when_memory_is_short(registry, folder, tmp_path, 
 
     monkeypatch.setattr(crash, "free_memory", lambda: 300 * 1024**2)  # a step in the cache needs no memory
     assert engine.run(mode="preview")[table.id].ok
+
+
+def test_a_step_short_of_memory_first_lets_go_of_the_cache(registry, folder, tmp_path, monkeypatch):
+    """Results that can be calculated again must not stop a step."""
+    project = Project.load(_project(tmp_path, "rows.sort"))
+    table = project.tables[0]
+    table.steps[1].params = {"by": [{"column": "Id"}]}
+    engine = Engine(project, registry)
+    crash.start()
+    monkeypatch.setattr(crash, "free_memory", lambda: GB if len(engine.cache) == 0 else 300 * 1024**2)
+    assert engine.run(mode="preview")[table.id].ok
+
+
+def test_linux_counts_the_memory_it_can_hand_out(tmp_path, monkeypatch):
+    """Its free memory alone is small on a healthy computer: the files it read stay in memory."""
+    info = tmp_path / "meminfo"
+    info.write_text("MemTotal:  16000000 kB\nMemFree:  200000 kB\nMemAvailable:  9000000 kB\n", encoding="ascii")
+    monkeypatch.setattr(crash, "_MEMINFO", info)
+    assert crash._available() == 9000000 * 1024
+
+
+def test_without_a_free_figure_the_installed_memory_stays_known(tmp_path, monkeypatch):
+    monkeypatch.setattr(crash.sys, "platform", "darwin")
+    monkeypatch.setattr(crash, "_MEMINFO", tmp_path / "none")
+    pages = {"SC_PAGE_SIZE": 4096, "SC_PHYS_PAGES": 1000}
+    monkeypatch.setattr(crash.os, "sysconf", pages.__getitem__, raising=False)
+    assert crash._memory_status() == (4096000, None)
+
+
+def test_only_windows_runs_a_project_in_a_child(monkeypatch):
+    monkeypatch.setattr(crash.sys, "platform", "linux")
+    monkeypatch.setattr(sys, "argv", ["tafl", "run", "a.tafl"])
+    monkeypatch.setattr(crash, "_run_in_child", lambda ctrl_c: pytest.fail("a child"))
+    monkeypatch.setattr("tafl.cli.main", lambda argv, ctrl_c: 0)
+    assert crash.main() == 0
 
 
 def test_without_start_nothing_is_checked_or_written(registry, folder, tmp_path, monkeypatch):
@@ -308,7 +344,7 @@ def test_the_child_is_this_program_again(frozen, folder, monkeypatch):
         def wait(self) -> int:
             return 0
 
-    def popen(command, env, stderr):
+    def popen(command, env, **handles):
         started.append((command, env[crash._CHILD]))
         return Child()
 
@@ -321,6 +357,93 @@ def test_the_child_is_this_program_again(frozen, folder, monkeypatch):
     assert crash._run_in_child() == 0
     arguments = ["run", "a.tafl"] if frozen else ["-X", "utf8", "-m", "tafl", "run", "a.tafl"]
     assert started == [([sys.executable, *arguments], f"run-{os.getpid()}")]
+
+
+@pytest.mark.parametrize(
+    ("before", "during", "code", "result", "killed"),
+    [
+        (True, False, 1, 130, True),  # while the program loaded: the child would not hear it
+        (False, True, 0xC000013A, 130, False),  # while the child started
+        (False, True, 0xFFFFFFFF, 130, False),
+        (False, True, 130, 130, False),
+        (False, True, 1, 1, False),  # it ended by itself first
+        (False, False, 0xC000013A, crash.CRASHED, False),
+    ],
+)
+def test_a_ctrl_c_stops_the_run_at_every_moment(before, during, code, result, killed, folder, monkeypatch):
+    heard, ended = threading.Event(), []
+    if before:
+        heard.set()
+
+    class Child:
+        pid, stderr = 1, io.BytesIO(b"")
+
+        def kill(self) -> None:
+            ended.append(True)
+
+        def wait(self) -> int:
+            if during:
+                heard.set()
+            return code
+
+    monkeypatch.setattr(crash.subprocess, "Popen", lambda command, env, **handles: Child())
+    monkeypatch.setattr(crash, "_end_with_this_program", lambda process: None)
+    monkeypatch.setattr(crash.signal, "signal", lambda *arguments: None)
+    monkeypatch.setattr(sys, "argv", ["tafl", "run", "a.tafl"])
+    assert crash._run_in_child(heard) == result
+    assert bool(ended) is killed
+
+
+@pytest.mark.parametrize("stream", [None, io.StringIO()])
+def test_a_program_without_handles_gives_the_child_empty_ones(stream, folder, monkeypatch):
+    """Windows gives a program that was started without handles no output: the child would get a pipe
+    that nobody reads, and end at the first line it prints."""
+    given = []
+
+    class Child:
+        pid, stderr = 1, io.BytesIO(b"")
+
+        def wait(self) -> int:
+            return 0
+
+    def popen(command, env, stdin, stdout, stderr):
+        given.append((stdin, stdout))
+        return Child()
+
+    monkeypatch.setattr(crash.subprocess, "Popen", popen)
+    monkeypatch.setattr(crash, "_end_with_this_program", lambda process: None)
+    monkeypatch.setattr(crash.signal, "signal", lambda *arguments: None)
+    monkeypatch.setattr(sys, "argv", ["tafl", "run", "a.tafl"])
+    monkeypatch.setattr(sys, "stdin", stream)
+    monkeypatch.setattr(sys, "stdout", stream)
+    assert crash._run_in_child() == 0
+    empty = subprocess.DEVNULL if stream is None else None
+    assert given == [(empty, empty)]
+
+
+@pytest.mark.parametrize(("code", "result"), [(0, 0), (120, 120), (7, 7), (0xC0000409, crash.CRASHED), (0xFFFFFFFF, crash.CRASHED)])
+def test_only_the_end_of_a_program_from_outside_counts_as_a_stop(code, result, folder, monkeypatch):
+    class Child:
+        pid, stderr = 1, io.BytesIO(b"")
+
+        def wait(self) -> int:
+            return code
+
+    told = []
+    monkeypatch.setattr(crash.subprocess, "Popen", lambda command, env, **handles: Child())
+    monkeypatch.setattr(crash, "_end_with_this_program", lambda process: None)
+    monkeypatch.setattr(crash, "_tell", told.append)
+    monkeypatch.setattr(crash.signal, "signal", lambda *arguments: None)
+    monkeypatch.setattr(sys, "argv", ["tafl", "run", "a.tafl"])
+    assert crash._run_in_child() == result
+    assert bool(told) is (result == crash.CRASHED)
+
+
+def test_a_run_that_was_ended_from_outside_tells_the_window_nothing(folder):
+    folder.mkdir(parents=True)
+    file = folder / "running-run-7.json"
+    file.write_text(json.dumps([{"project": "p", "table": "t", "number": 2, "action": "a"}]), encoding="utf-8")
+    assert crash.last_words() == [] and not file.exists()
 
 
 def _ended_soon(process: int, seconds: float) -> bool:

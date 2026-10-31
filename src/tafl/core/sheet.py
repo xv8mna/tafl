@@ -1,4 +1,4 @@
-"""The data sheet: rows and named columns of plain text, to bring data that is in no file into a
+"""The data sheet: rows and named columns of plain text, to bring data that is not in a file into a
 project. The data is pasted or typed, and goes into a file: an import step reads it back exactly.
 
 Every column is one immutable Polars text column. An edit builds new columns from slices of the
@@ -38,11 +38,12 @@ _CACHED_BLOCKS = 512
 _SAMPLE = 65536  # characters looked at to find the separator, as the CSV import does
 _QUOTED = r'[^"]*(?:""[^"]*)*"'  # from the first character of a quoted cell to its closing quote
 _QUOTED_CELL = re.compile(rf'(?:^|(?<=[;,|]))"{_QUOTED}(?=[;,|]|$)', re.MULTILINE)  # of a table without tabs
+_QUOTED_WORD = re.compile(rf'(?:^|[\s;,|])"{_QUOTED}(?=[\s;,|]|$)', re.MULTILINE)  # an inch mark starts no word
 # One word that is a number with a comma in it, with marks around it: 1,50 and 1.234,50€ and (2,5) and 12,-
 # and 1,234.50. A whole number with groups only with a mark at it, $1,234,567: 100,200,300 is three values.
 _NUMBER_WITH_COMMA = re.compile(
     r"(?<![^\s;|])(?:"
-    r"[^\w\s,;|]*(?:\d+(?:[.']\d{3})*,(?:\d+|-+)|\d{1,3}(?:,\d{3})+\.\d+)[^\d\s,;|]*"
+    r"[^\w\s,;|]*(?:\d+(?:[.']\d{3})*,(?:\d+|[-–—])|\d{1,3}(?:,\d{3})+\.\d+)[^\d\s,;|]*"
     r"|[^\w\s,;|]+\d{1,3}(?:,\d{3})+[^\d\s,;|]*"
     r"|\d{1,3}(?:,\d{3})+[^\w\s,;|]+"
     r")(?![^\s;|])"
@@ -173,7 +174,7 @@ def _separated(text: str, one_column: bool) -> _Split:
     plain, hidden = _protect(text, "\t", strict=True)
     looked_at = _whole_lines(plain)
     if plain is text:  # no cells of a table with tabs: they can be cells of another separator
-        looked_at = _QUOTED_CELL.sub("", looked_at)
+        looked_at = _QUOTED_CELL.sub("0", looked_at)
     tabs = "\t" in looked_at
     if tabs and _tabs_on_most_lines(looked_at):
         return _Split("\t", plain, hidden)
@@ -213,26 +214,34 @@ def _biggest(sizes: dict[str, int], sample: str) -> str:
     if not size:
         return ""
     equal = [separator for separator in sizes if sizes[separator] == size]
-    rule = files.detect_delimiter(sample) if len(equal) > 1 and '"' in sample else ""
+    rule = files.detect_delimiter(sample) if len(equal) > 1 and _QUOTED_WORD.search(sample) else ""
     return rule if rule in equal else equal[0]
 
 
 def _table_size(sample: str, separator: str) -> int:
     """How many lines the separator splits, if they make a table: at least 2 of them split the
     same way, and at most 1 in 5 of the lines from the first to the last one doesn't split, or at
-    least half of all lines split (two tables, a title per group). A list of single values can
-    hold a separator now and then. Commas must not cut more numbers than they split lines."""
+    least half of all lines split, without a space after the separator as in a sentence (two
+    tables, a title per group). A list of single values can hold a separator now and then. Commas
+    must not cut more numbers than they split lines."""
     rows = _table_lines(sample, separator)
     counts = [_splits(row, separator) for row in rows]
     lines = [index for index, count in enumerate(counts) if count]
     if len(lines) < 2 or Counter(filter(None, counts)).most_common(1)[0][1] < 2:
         return 0
     if separator == ",":
-        cut = sum(not count and _NUMBER_WITH_COMMA.search(row) is not None for row, count in zip(rows, counts, strict=True))
-        if cut >= len(lines):
+        # A plain number counts too in a list of numbers only: a table can have a date or a total around it
+        only_numbers = all(_NUMBER_OR_DATE.fullmatch(rows[index].strip()) for index in lines)
+        cut = _is_number if only_numbers else _NUMBER_WITH_COMMA.search
+        if sum(not count and bool(cut(row)) for row, count in zip(rows, counts, strict=True)) >= len(lines):
             return 0
     close_together = len(lines) * 5 >= (lines[-1] - lines[0] + 1) * 4
-    return len(lines) if close_together or len(lines) * 2 >= len(rows) else 0
+    half_of_all = sum(f"{separator} " not in rows[index] for index in lines) * 2 >= len(rows)
+    return len(lines) if close_together or half_of_all else 0
+
+
+def _is_number(line: str) -> bool:
+    return _NUMBER_WITH_COMMA.search(line) is not None or _NUMBER_OR_DATE.fullmatch(line.strip()) is not None
 
 
 def _first_line_separator(sample: str) -> str:

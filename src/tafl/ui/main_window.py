@@ -83,7 +83,6 @@ class MainWindow(QMainWindow):
         self.data_panel.status_message.connect(lambda text: self.statusBar().showMessage(text, 10000))
         self._close_after_run = False  # closing waits for the run to end
         self._going_on_closing = False  # a sheet ended the writing that closing waited for
-        self._close_answers: dict[SheetWindow, int] = {}  # the sheets that closing has passed, as they were then
         self._sheets: list[SheetWindow] = []  # the open sheets
         self._sheet_number = 0
         self.views = QStackedWidget(self)
@@ -605,7 +604,7 @@ class MainWindow(QMainWindow):
         if running:
             self.statusBar().showMessage("Running the project…")
         elif self._close_after_run:
-            QTimer.singleShot(0, self.close)  # after the results are shown
+            QTimer.singleShot(0, self, self.go_on_closing)  # after the results are shown
 
     def _calc_busy(self, busy: bool) -> None:
         self.busy_label.setText("Calculating…  " if busy else "")
@@ -746,18 +745,32 @@ class MainWindow(QMainWindow):
         return "wait" if box.clickedButton() is wait else "stop" if box.clickedButton() is stop else "cancel"
 
     def go_on_closing(self) -> None:
-        """A sheet has finished the writing that the closing of the app waited for."""
+        """The writing of a sheet or the run that the closing of the app waited for has ended."""
         self._going_on_closing = True
-        self.close()
+        self._go_on()
+
+    def _go_on(self) -> None:
+        """Closing goes on when no question is open: the answer can be a Cancel, and a close()
+        inside a closing that is still running does nothing."""
+        if self._going_on_closing:
+            reading = any(window.busy and not window.writing for window in self._sheets)
+            if QApplication.activeModalWidget() is None and not reading:
+                self.close()
+            else:
+                QTimer.singleShot(100, self, self._go_on)
 
     def _closing_stopped(self) -> None:
         """A Cancel: the next closing is a new one, and a sheet that is writing doesn't go on with it."""
         self._going_on_closing = False
-        self._close_answers = {}
         for window in self._sheets:
             window.closes_app = False
+            window.answered_state = None
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        # A click on X during the write that closing waits for belongs to the same closing
+        if not (self._going_on_closing or any(window.busy and window.closes_app for window in self._sheets)):
+            for window in self._sheets:
+                window.answered_state = None
         if self.session.running:  # closes when the run is over: it may be writing files
             event.ignore()
             if self._close_after_run:
@@ -776,31 +789,28 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("The window closes when the run is finished…")
             return
         self._close_after_run = False
-        # A sheet is asked once, as long as it stays as it was then. A click on X during the write
-        # that closing waits for belongs to the same closing.
-        going_on = self._going_on_closing or any(window.busy and window.closes_app for window in self._sheets)
-        answered = self._close_answers if going_on else {}
         self._going_on_closing = False
         for window in list(self._sheets):
+            if window not in self._sheets:  # it closed itself during a question
+                continue
             if not window.busy:
                 window.apply_typing()
-            if answered.get(window) == window.sheet.state_id:
-                continue
+                if window.answered_state == window.sheet.state_id:  # a sheet is asked once
+                    continue
             window.raise_()
             if not window.may_close(app=True):
                 if window.busy:
                     self.statusBar().showMessage(window.status_text, 10000)
-                    self._close_answers = answered
-                    self._going_on_closing = False  # a write may have ended during the question
                 else:
                     self._closing_stopped()
                 event.ignore()
                 return
-            answered[window] = window.sheet.state_id
+            window.answered_state = window.sheet.state_id
         if not self.maybe_save("before closing"):
             self._closing_stopped()
             event.ignore()
             return
+        self._going_on_closing = False
         for window in list(self._sheets):  # only now: a Cancel above keeps them with their data
             window.close_now()
         self.settings.setValue("geometry", self.saveGeometry())

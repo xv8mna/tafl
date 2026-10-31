@@ -5,7 +5,7 @@
     tafl plugins
 
 Exit codes: 0 done, 1 a table has an error (plugins: a plugin failed to load), 2 the project or
-the command line can't be used, 3 a run ended without a word (see crash.py), 130 stopped with Ctrl+C.
+the command line can't be used, 3 a run ended without an error message (see crash.py), 130 stopped with Ctrl+C.
 """
 
 from __future__ import annotations
@@ -50,17 +50,18 @@ def _codes(*codes: tuple[int, str]) -> str:
 
 
 _USAGE = ((2, "the project or the command line can't be used"), (STOPPED, "stopped with Ctrl+C"))
+_STOPPED_EARLY = (CRASHED, "the run stopped before its end, usually because the computer ran out of memory")
 _RUN_CODES = _codes(
     (0, "done (tables that are turned off are skipped)"),
     (1, "a table has an error"),
     _USAGE[0],
-    (CRASHED, "the run stopped before its end, usually because the computer ran out of memory"),
+    _STOPPED_EARLY,
     _USAGE[1],
 )
 _SHOW_CODES = _codes((0, "done (also for a table that is turned off)"), (1, "the table has an error"), *_USAGE)
 _PLUGIN_CODES = _codes((0, "all plugins loaded"), (1, "a plugin failed to load"))
 _CODES = (
-    _codes((0, "done"), (1, "a table has an error (plugins: a plugin failed to load)"), *_USAGE)
+    _codes((0, "done"), (1, "a table has an error (plugins: a plugin failed to load)"), _USAGE[0], _STOPPED_EARLY, _USAGE[1])
     + f"\n\n'{COMMAND} COMMAND --help' tells more about a command."
 )
 

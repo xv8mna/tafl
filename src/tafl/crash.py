@@ -1,4 +1,4 @@
-"""When the program ends without a word.
+"""When the program ends without an error message.
 
 When a library written in Rust (Polars) gets no memory, it prints one line and ends the whole
 program at once: no ``except``, ``finally`` or ``atexit`` runs, so the program can't report that
@@ -7,9 +7,9 @@ itself. Three things make up for it:
 - ``short_of_memory``: a step doesn't start when too little memory is left, and fails with a
   normal error. It can't see a step that suddenly needs much more than is free.
 - ``running``: a small file says which step runs, and a clean end removes it. The file of a program
-  that ended without a word tells the next start what happened (``last_words``).
-- ``main``: ``tafl run`` works in a child process. A small parent waits for it and says how it
-  ended, because nobody is there to start a scheduled run again.
+  that ended without an error message tells the next start what happened (``last_words``).
+- ``main``: on Windows, ``tafl run`` works in a child process. A small parent waits for it and
+  says how it ended, because nobody is there to start a scheduled run again.
 
 This module needs only the standard library: the parent must stay small, as memory may be short,
 and it must start fast.
@@ -34,11 +34,13 @@ from typing import IO, Any
 from tafl import APP_FOLDER, COMMAND
 
 MIN_FREE = 512 * 1024**2  # a step doesn't start with less memory left
-CRASHED = 3  # exit code of a run that ended without a word
-_ENDINGS = (0, 1, 2, 130)  # the exit codes of a run that ended by itself (see cli.py)
+CRASHED = 3  # exit code of a run that ended without an error message
+_STOPPED = 130  # exit code of a run that Ctrl+C stopped
+_STATUS = 0xC0000000  # from here on, exit codes are the status of a Windows program that was ended
 _CHILD = "TAFL_RUN_CHILD"  # set for the child process of a run
 _NO_MEMORY = "memory allocation of"  # the start of the line Rust prints before it ends the program
 _STD_ERROR = 0xFFFFFFF4  # STD_ERROR_HANDLE
+_MEMINFO = Path("/proc/meminfo")
 
 _lock = threading.Lock()
 _watching = False  # between start and stop
@@ -47,11 +49,11 @@ _errors: IO[bytes] | None = None  # see _catch_errors
 _steps: dict[object, dict[str, Any]] = {}  # the steps that run now (a run beside a calculation: two)
 
 
-def _memory_status() -> tuple[int, int] | None:
+def _memory_status() -> tuple[int | None, int | None]:
     """The bytes of memory the computer has, and the bytes a program can still get: the free
     memory or what Windows can still promise with its page file, whichever is less. A program
-    ends when the second runs out, and the computer gets very slow when the first does. None if
-    they can't be told."""
+    ends when the second runs out, and the computer gets very slow when the first does. None for
+    what can't be told."""
     if sys.platform == "win32":
         import ctypes
 
@@ -66,25 +68,32 @@ def _memory_status() -> tuple[int, int] | None:
         try:
             known = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
         except OSError:
-            return None
-        return (int(status.total), int(min(status.free, status.page_free))) if known else None
-    try:
-        size = os.sysconf("SC_PAGE_SIZE")
-        return size * os.sysconf("SC_PHYS_PAGES"), size * os.sysconf("SC_AVPHYS_PAGES")
-    except (AttributeError, OSError, ValueError):
-        return None
+            return None, None
+        return (int(status.total), int(min(status.free, status.page_free))) if known else (None, None)
+    installed = None
+    with contextlib.suppress(AttributeError, OSError, ValueError):
+        installed = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    return installed, _available()
+
+
+def _available() -> int | None:
+    """What Linux can hand out, the files it keeps in memory included: its free memory alone is
+    small on a healthy computer. None elsewhere."""
+    with contextlib.suppress(OSError, ValueError, IndexError):
+        for line in _MEMINFO.read_text(encoding="ascii").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    return None
 
 
 def installed_memory() -> int | None:
     """The bytes of memory the computer has, or None if it can't be told."""
-    status = _memory_status()
-    return status[0] if status is not None else None
+    return _memory_status()[0]
 
 
 def free_memory() -> int | None:
     """The bytes of memory a program can still get, or None if it can't be told."""
-    status = _memory_status()
-    return status[1] if status is not None else None
+    return _memory_status()[1]
 
 
 def _gb(size: int) -> str:
@@ -152,8 +161,8 @@ def short_of_memory() -> str | None:
     if free is None or free >= MIN_FREE:
         return None
     return (
-        f"Only {_gb(free)} of memory is free on this computer, so this step did not start (it needs at "
-        f"least {_gb(MIN_FREE)}). Close other programs, then calculate again."
+        f"Only {free // 1024**2} MB of memory is free on this computer, so this step did not start (it needs at "
+        f"least {MIN_FREE // 1024**2} MB). Close other programs, then calculate again."
     )
 
 
@@ -184,7 +193,7 @@ def _save() -> None:
 
 @dataclass
 class Stopped:
-    """What a program that ended without a word left: the steps that ran at the end, and the last
+    """What a program that ended without an error message left: the steps that ran at the end, and the last
     things it printed."""
 
     steps: list[dict[str, Any]]
@@ -205,9 +214,10 @@ class Stopped:
 
 
 def last_words(name: str | None = None) -> list[Stopped]:
-    """What programs that ended without a word left (with ``name``, only that one), once: the
+    """What programs that ended without an error message left (with ``name``, only that one), once: the
     files are removed then. Windows doesn't remove the file of a program that still runs. A
-    program that ended between two steps and printed nothing has nothing to tell."""
+    program that ended between two steps and printed nothing has nothing to tell, and neither has
+    a run whose parent is gone: it was ended from outside, as the parent tells all the others."""
     found = []
     for path in sorted(_folder().glob(f"running-{name or '*'}.json")):
         try:
@@ -223,17 +233,18 @@ def last_words(name: str | None = None) -> list[Stopped]:
             steps = json.loads(text)
         except ValueError:
             steps = []
-        if steps or errors.strip():
+        if (steps or errors.strip()) and (name is not None or not path.stem.startswith("running-run-")):
             found.append(Stopped(steps, errors))
     return found
 
 
 def main(argv: list[str] | None = None, *, ctrl_c: threading.Event | None = None) -> int:
-    """The program ``tafl``: ``cli.main``, and ``tafl run`` in a child process, which starts this
-    program again."""
+    """The program ``tafl``: ``cli.main``, and on Windows ``tafl run`` in a child process, which
+    starts this program again. Elsewhere a run is one process: a signal for the parent would not
+    reach a child, and no job ends the child with its parent."""
     name = os.environ.pop(_CHILD, None)
-    if argv is None and name is None and _is_run(sys.argv[1:]):
-        return _run_in_child()
+    if argv is None and name is None and sys.platform == "win32" and _is_run(sys.argv[1:]):
+        return _run_in_child(ctrl_c)
     from tafl.cli import main as command_line
 
     if name is None:
@@ -258,14 +269,22 @@ def _is_run(args: list[str]) -> bool:
     return False
 
 
-def _run_in_child() -> int:
-    """Starts this program again for the work, and tells how it ended if it ended without a word.
+def _run_in_child(ctrl_c: threading.Event | None = None) -> int:
+    """Starts this program again for the work, and tells how it ended if it ended without an error message.
     The child's output goes where this program's goes; its errors come through here, to be read."""
-    signal.signal(signal.SIGINT, lambda signum, frame: None)  # Ctrl+C reaches the child too, which ends the run
+    heard = ctrl_c or threading.Event()  # also a Ctrl+C from before the child could hear it
+    signal.signal(signal.SIGINT, lambda signum, frame: heard.set())  # it reaches the child too, which ends the run
     arguments = sys.argv[1:] if getattr(sys, "frozen", False) else sys.orig_argv[1:]
     name = f"run-{os.getpid()}"  # not the child's id: Python in a virtual environment is a second process
-    child = subprocess.Popen([sys.executable, *arguments], env={**os.environ, _CHILD: name}, stderr=subprocess.PIPE)
+    # A program started without handles has neither: the child would get a dead pipe, or no start at all
+    given, output = (subprocess.DEVNULL if stream is None else None for stream in (sys.stdin, sys.stdout))
+    child = subprocess.Popen(
+        [sys.executable, *arguments], env={**os.environ, _CHILD: name}, stdin=given, stdout=output, stderr=subprocess.PIPE
+    )
     _end_with_this_program(child.pid)
+    too_early = heard.is_set()
+    if too_early:
+        child.kill()
     printed: deque[str] = deque(maxlen=20)
     # In a thread: a program that a step started may keep the errors open after the child has ended
     reader = threading.Thread(target=_pass_on, args=(child.stderr, printed), daemon=True)
@@ -273,7 +292,12 @@ def _run_in_child() -> int:
     code = child.wait()
     reader.join(2)
     left = last_words(name)  # also after an end by itself: nothing for the next start to tell
-    if code in _ENDINGS:
+    by_itself = 0 <= code < _STATUS
+    if too_early or (heard.is_set() and not by_itself):  # the child had no time to say so
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            print("Error: Stopped", file=sys.stderr, flush=True)
+        return _STOPPED
+    if by_itself:
         return code
     stopped = left[0] if left else Stopped([])
     stopped.errors = "".join(printed)
@@ -306,8 +330,6 @@ def _end_with_this_program(process: int) -> None:
     """Puts the child in a Windows job that ends with this program: stopping a run (Task Scheduler,
     Task Manager) ends the parent, and the child must not go on alone. Programs that the child
     starts stay out of the job, and go on after the run as they always did."""
-    if sys.platform != "win32":
-        return
     import ctypes
     from ctypes import wintypes
 

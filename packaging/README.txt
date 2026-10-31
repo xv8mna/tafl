@@ -49,7 +49,8 @@ To remove Tafl, delete the folder Tafl. That leaves the three places above: dele
 
 Scheduled runs
 --------------
-tafl.exe writes no log file: what it prints is all there is. To keep it, send its output to a
+tafl.exe keeps no log of a run: what it prints is all there is. Only a run that stops without a
+word also writes one line to %LOCALAPPDATA%\Tafl\tafl.log. To keep the output, send it to a
 file. A batch file for the Task Scheduler (the folder C:\Logs must exist):
 
   @echo off
@@ -59,7 +60,8 @@ file. A batch file for the Task Scheduler (the folder C:\Logs must exist):
 
 The echo line puts the date and time before each run's output. The last line's exit code is
 the batch file's: 0 when the run worked, 1 when a step failed, 2 when the project can't be
-used (e.g. the file isn't there) or the command line is wrong.
+used (e.g. the file isn't there) or the command line is wrong, 3 when the run stopped before
+its end, usually because the computer ran out of memory.
 
 Keep the quotes around the paths: without them, a path with a space in it (e.g. a folder
 "My Reports") is split at the space, and Windows doesn't find tafl.exe, or tafl.exe stops

@@ -298,6 +298,17 @@ def test_a_value_on_a_selection_from_the_first_cell_of_an_empty_sheet_fills_it(s
     assert not opened.sheet.has_values
 
 
+def test_one_value_in_a_frame_is_no_fill_and_the_button_gives_it_back(sheets, clipboard):
+    opened = sheets("a\tb\n1\t2\n3\t4\n")
+    clipboard["text"] = "|abc|"
+    select(opened, (0, 1, 0, 0))
+    opened.paste_action.trigger()
+    assert opened.status_text == "Pasted 1 row × 1 column, without the frame"
+    assert opened.sheet.text(0, 0) == "abc" and opened.sheet.text(1, 0) == "3"
+    opened.one_column_button.click()
+    assert opened.sheet.text(0, 0) == "|abc|"
+
+
 def test_a_value_at_the_first_cell_alone_still_replaces_an_empty_sheet(sheets, clipboard):
     opened = sheets("")
     clipboard["text"] = "x"
@@ -1279,6 +1290,7 @@ def test_closing_while_busy_waits(window, sheets, qtbot, tmp_path, monkeypatch):
 def test_the_reason_stays_while_the_file_is_written(window, sheets, qtbot, tmp_path, monkeypatch):
     """Closing the app waits for the file, and both windows go on saying why."""
     monkeypatch.setattr(SheetWindow, "ask_add", lambda self: (tmp_path / "a.xlsx", ".xlsx"))
+    monkeypatch.setattr(window, "ask_save", lambda reason: "discard")
     opened = sheets("a\tb\n1\t2\n")
     opened.add_as_table()
     window.close()

@@ -465,6 +465,9 @@ def test_a_comma_of_a_sentence_gives_way_to_the_semicolon_of_a_single_row():
         ["987.00", "1,234.50", "1,234,567", "2,000,000", "12.50", "5,000.00"],
         ["1,50", "2,50", "offen,gesperrt", "offen,storno", "3,50", "4,50", "5,50"],
         ["1,5"] * 100 + ["1,5-2,5", "3,5-4,5"] + ["2,5"] * 100,
+        ["125.00", "1,250,000", "980.50", "2,000,000"],
+        ["125.00", "1,250,000", "2,000,000", "980.50"],
+        ["- Text", "- Lieferung kommt am 12.03.; Rest folgt", "- Ende", "- noch Text; mehr"],
     ],
 )
 def test_two_lines_that_split_don_t_cut_a_list_of_numbers(lines):
@@ -473,7 +476,15 @@ def test_two_lines_that_split_don_t_cut_a_list_of_numbers(lines):
 
 
 @pytest.mark.parametrize(
-    "lines", [["12,-", "3,-", "7,50"], ["$1,234,567", "$12,345,678"], ["(1,234,567)", "(12,345,678)"], ["1,234,567€", "2,000,000€"]]
+    "lines",
+    [
+        ["12,-", "3,-", "7,50"],
+        ["12,–", "15,–", "7,50"],
+        ["12,— €", "15,— €", "99,— €"],
+        ["$1,234,567", "$12,345,678"],
+        ["(1,234,567)", "(12,345,678)"],
+        ["1,234,567€", "2,000,000€"],
+    ],
 )
 def test_one_column_of_other_number_forms_stays_one_column(lines):
     pasted = parse_text("\n".join(lines))
@@ -513,6 +524,7 @@ def test_a_tab_in_a_quoted_cell_of_another_separator_is_no_tab_of_the_table(text
         ('1,"a;b"\n2,"c;d"\n3,"e;f"', ",", [("1", "a;b"), ("2", "c;d"), ("3", "e;f")]),
         ('"Müller GmbH; Berlin","1,50"\n"Nord AG; Köln","2,50"', ",", [("Müller GmbH; Berlin", "1,50"), ("Nord AG; Köln", "2,50")]),
         ('"a;b",c', ",", [("a;b", "c")]),
+        ('Modell "X;Y",rot\nModell "Z;W",blau\nModell "Q;R",grün', ",", [('Modell "X;Y"', "rot"), ('Modell "Z;W"', "blau"), ('Modell "Q;R"', "grün")]),
         ('1;"a,b"\n2;"c,d"', ";", [("1", "a,b"), ("2", "c,d")]),
         ('1|"a,b"\n2|"c,d"', "|", [("1", "a,b"), ("2", "c,d")]),
     ],
@@ -520,6 +532,22 @@ def test_a_tab_in_a_quoted_cell_of_another_separator_is_no_tab_of_the_table(text
 def test_a_separator_in_quoted_cells_of_another_one_doesn_t_win(text, first, rows):
     pasted = parse_text(text)
     assert pasted.separator == first and pasted.frame.rows() == rows
+
+
+def test_lines_of_only_a_quoted_value_count_as_lines_without_a_tab():
+    pasted = parse_text('"Müller"\n"Meier"\tx\n"Schmidt"\n"Weber"')
+    assert pasted.separator == "\t" and pasted.few_tabs
+
+
+def test_an_inch_mark_decides_no_tie():
+    pasted = parse_text('Rohr,1/2";10\nRohr,3/4";12\nRohr,1";14')
+    assert pasted.separator == ";" and pasted.frame.rows()[0] == ('Rohr,1/2"', "10")
+
+
+def test_a_word_of_many_dashes_is_quick():
+    start = time.perf_counter()
+    assert parse_text("1," + "-" * 65_000 + "1").frame.height == 1
+    assert time.perf_counter() - start < 1
 
 
 def test_a_tab_table_with_quotes_at_the_start_and_the_end_of_a_row_stays_a_tab_table():
@@ -530,6 +558,17 @@ def test_two_tables_in_a_mail_land_in_one_sheet():
     text = "Hallo Hans\n\nTabelle 1\nName;Wert\na;1\nb;2\n\nText\nnoch Text\n\nTabelle 2\nName;Wert\nc;3\nd;4\n"
     pasted = parse_text(text)
     assert pasted.separator == ";" and ("a", "1") in pasted.frame.rows() and ("d", "4") in pasted.frame.rows()
+
+
+def test_a_date_and_totals_around_a_small_comma_table_stay_in_the_first_column():
+    pasted = parse_text("31.10.2026\nArtikel,Menge,Preis\nApfel,3,1.50\nBirne,2,2.00\n5\n3.50\n")
+    assert pasted.separator == "," and pasted.frame.rows()[2] == ("Apfel", "3", "1.50")
+    assert pasted.frame.rows()[0] == ("31.10.2026", None, None)
+
+
+def test_a_title_per_row_doesn_t_hide_the_table():
+    pasted = parse_text("Januar\n10;20;30\nFebruar\n40;50;60\nMärz\n70;80;90\n")
+    assert pasted.separator == ";" and pasted.frame.rows()[:2] == [("Januar", None, None), ("10", "20", "30")]
 
 
 def test_a_title_per_group_doesn_t_hide_the_table():
