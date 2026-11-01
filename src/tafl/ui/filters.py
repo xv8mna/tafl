@@ -28,7 +28,7 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Context, Decimal
 from typing import Any
 
 import polars as pl
@@ -283,10 +283,13 @@ def _convert(value: Any, dtype: pl.DataType) -> Any:
     if dtype.is_float():
         return float(value)
     if isinstance(dtype, pl.Decimal):
+        # quantize refuses what has too many digits or isn't finite. Polars would round the decimal
+        # places, and stop at some values with a panic that no except sees.
         number = Decimal(str(value))
-        if not number.is_finite() or number.copy_abs() >= Decimal(1).scaleb((dtype.precision or 38) - dtype.scale):
-            raise ValueError(value)  # Polars would stop, for an infinite value with a panic that no except sees
-        return number
+        exact = number.quantize(Decimal(1).scaleb(-dtype.scale), context=Context(prec=dtype.precision or 38))
+        if exact != number:
+            raise ValueError(value)
+        return exact
     if dtype == pl.Date:
         return value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value)[:10])
     if dtype == pl.Datetime:

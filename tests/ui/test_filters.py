@@ -507,11 +507,69 @@ def test_a_project_file_with_malformed_filters_opens_and_refreshes(window, settl
 
 def test_a_value_that_a_column_can_not_hold_is_left_out():
     numbers = pl.DataFrame({"Amount": pl.Series([D("1.50"), D("2.50")], dtype=pl.Decimal(10, 2)), "Stamp": [dt.datetime(2025, 1, 1)] * 2})
-    wrong = ["Infinity", "-Infinity", "NaN", "sNaN", 10**400, "1e20", "1.5"]
+    wrong = ["Infinity", "-Infinity", "NaN", "sNaN", 10**400, "1e20", "1e-400", 5e-324, "1.5"]
     assert from_json(wrong, pl.Decimal(10, 2)) == [D("1.5")]
     assert apply(numbers, [Filter("Amount", wrong)])["Amount"].to_list() == [D("1.50")]
     assert apply(numbers, [Filter("Stamp", ["2025-01-01T00:00:00+01:00"])]).height == 0  # with a time zone
     assert apply(numbers, [Filter("Stamp", ["2025-01-01T00:00:00+01:00"], excluded=True)]).height == 2
+
+
+@pytest.mark.parametrize("dtype", [pl.Decimal(38, 0), pl.Decimal(38, 2), pl.Decimal(10, 2), pl.Decimal(18, 3), pl.Decimal(38, 38), pl.Decimal(5, 5)])
+@pytest.mark.parametrize("value", ["1e-400", "1e-40", "0." + "0" * 60 + "1", "0." + "1" * 45, 5e-324, 1e-300, 1.2345678901234567e-30])
+def test_a_value_with_too_many_decimal_places_is_left_out(dtype, value):
+    """Before, some of them stopped each refresh with a panic of Polars, which no except sees."""
+    numbers = pl.DataFrame({"Amount": pl.Series([D("0"), None], dtype=dtype)})
+    assert apply(numbers, [Filter("Amount", [value])]).height == 0
+    assert apply(numbers, [Filter("Amount", [value], excluded=True)]).height == 2
+    assert apply(numbers, [Filter("Amount", [value, None])]).height == 1
+    assert isinstance(formula(Filter("Amount", [value]), dtype), str)
+
+
+def test_a_decimal_value_is_compared_with_all_its_digits():
+    """Polars would round it to the decimal places of the column: 1.555 is not 1.56."""
+    numbers = pl.DataFrame({"Amount": pl.Series([D("1.55"), D("1.56")], dtype=pl.Decimal(10, 2))})
+    assert apply(numbers, [Filter("Amount", ["1.554"])]).height == 0
+    assert apply(numbers, [Filter("Amount", ["1.555"])]).height == 0
+    assert apply(numbers, [Filter("Amount", ["1.555"], excluded=True)]).height == 2
+    for same in ("1.56", "1.560", "1.56" + "0" * 45, 1.56, "156e-2"):
+        assert apply(numbers, [Filter("Amount", [same])])["Amount"].to_list() == [D("1.56")]
+
+
+@pytest.mark.parametrize(
+    "dtype, cells",
+    [
+        (pl.Decimal(10, 2), ["1.50", "-2.25", "0"]),
+        (pl.Decimal(38, 38), ["0.5", "0.00000000000000000000000000000000000001", "0"]),
+        (pl.Decimal(38, 0), ["1", "9" * 38, "0"]),
+        (pl.Decimal(38, 2), ["9" * 36 + ".99", "0.01", "0"]),
+    ],
+)
+def test_the_values_of_a_decimal_column_find_their_rows(act, dtype, cells):
+    numbers = pl.DataFrame({"Amount": pl.Series([D(c) for c in cells], dtype=dtype)})
+    for cell in numbers["Amount"]:
+        chosen = Filter("Amount", [to_json(cell)])
+        assert apply(numbers, [chosen])["Amount"].to_list() == [cell], chosen
+        assert apply(numbers, [Filter("Amount", chosen.values, excluded=True)]).height == 2
+        made = act("rows.filter_formula", numbers, {"condition": formula(chosen, dtype), "keep": "keep"})
+        assert made["Amount"].to_list() == [cell], chosen  # the step made from the filter: the same rows
+
+
+@pytest.mark.parametrize("value", ["1.50", "1e-400"])
+def test_a_project_file_with_a_decimal_filter_opens_and_refreshes(window, settle, session, registry, tmp_path, value):
+    data = tmp_path / "exact.parquet"
+    pl.DataFrame({"Exact": pl.Series([D("1.50"), D("2.50")], dtype=pl.Decimal(18, 2))}).write_parquet(data)
+    project = Project(name="Exact")
+    table = project.add_table("T")
+    project.add_step(table, registry.actions["parquet.import"], {"file": str(data)})
+    table.filters = [{"column": "Exact", "values": [value]}]
+    project.save(tmp_path / "exact.tafl")
+    assert window.open_path(tmp_path / "exact.tafl")
+    settle(session)
+    panel = window.data_panel
+    panel.filter_button.setChecked(True)
+    panel.refresh()
+    assert panel.model.frame["Exact"].to_list() == ([D("1.50")] if value == "1.50" else [])
+    panel.filter_button.setChecked(False)
 
 
 def test_a_column_of_lists_or_records_is_not_filtered(session, qtbot):
