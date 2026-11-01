@@ -180,6 +180,43 @@ def test_a_wal_database_without_its_other_files(project, registry, tmp_path):
     assert database.read_bytes() == before
 
 
+def test_a_wal_database_that_a_program_has_open(project, registry, tmp_path):
+    """An import sees what the program has committed so far, and leaves the program alone."""
+    with closing(sqlite3.connect(tmp_path / "data.db", autocommit=True)) as con:
+        con.execute("PRAGMA journal_mode = WAL")
+        con.execute("BEGIN")
+        con.execute("INSERT INTO orders (id) VALUES (3)")
+        assert import_table(project, registry, table="orders").df.height == 2
+        con.execute("COMMIT")
+        assert import_table(project, registry, table="orders").df.height == 3
+        con.execute("INSERT INTO orders (id) VALUES (4)")
+    assert import_table(project, registry, table="orders").df.height == 4
+
+
+@pytest.mark.parametrize(
+    ("create", "query"),
+    [
+        ("CREATE VIRTUAL TABLE t USING fts5(a)", "SELECT rowid AS n FROM t WHERE t MATCH 'word'"),
+        ("CREATE VIRTUAL TABLE t USING fts4(a)", "SELECT rowid AS n FROM t WHERE t MATCH 'word'"),
+        ("CREATE VIRTUAL TABLE t USING rtree(id, x1, x2)", "SELECT id AS n FROM t"),
+        ("CREATE VIEW t AS SELECT 1 AS n", "SELECT n FROM t"),
+        ("CREATE TABLE t (a, b GENERATED ALWAYS AS (a) VIRTUAL, PRIMARY KEY (a)) WITHOUT ROWID", "SELECT b AS n FROM t"),
+    ],
+)
+def test_what_sqlite_runs_by_itself_for_a_query_is_allowed(project, registry, tmp_path, create, query):
+    """Its virtual tables read PRAGMAs of their own, such as data_version, on the same connection."""
+    with closing(sqlite3.connect(tmp_path / "data.db")) as con:
+        con.execute(create)
+        if "VIEW" not in create:
+            con.execute("INSERT INTO t VALUES (1, 2, 3)" if "rtree" in create else "INSERT INTO t (a) VALUES ('word')")
+        con.commit()
+    before = (tmp_path / "data.db").read_bytes()
+    result = import_table(project, registry, mode="query", query=query)
+    assert result.ok, result.first_error
+    assert result.df.height == 1
+    assert (tmp_path / "data.db").read_bytes() == before
+
+
 def test_an_import_can_use_temporary_storage(project, registry, tmp_path):
     before = (tmp_path / "data.db").read_bytes()
     assert import_table(project, registry, mode="query", query="CREATE TEMP TABLE t AS SELECT * FROM orders").ok
