@@ -335,6 +335,13 @@ def _peak(folder, code: str, *args: str) -> int:
     return int(done.stdout.split()[-1])
 
 
+def _rows(folder) -> None:
+    """A file of 1 million rows for the tables below."""
+    place = pl.int_range(1_000_000, eager=True)
+    columns = {"Id": place, "Amount": (place.hash(1) % 1_000_000) / 100, "Cost": (place.hash(2) % 1_000_000) / 100}
+    pl.DataFrame(columns).write_parquet(folder / "rows.parquet")
+
+
 def _sorts(folder, count: int):
     project = Project(name="Sorts")
     table = project.add_table("Rows")
@@ -345,16 +352,33 @@ def _sorts(folder, count: int):
     return project.save(folder / f"sorts{count}.tafl")
 
 
+def _formulas(folder, count: int):
+    project = Project(name="Formulas")
+    table = project.add_table("Rows")
+    project.add_step(table, "parquet.import", {"file": "rows.parquet"})
+    for number in range(count):
+        project.add_step(table, "calc.columns", {"columns": [{"name": f"Column {number}", "formula": f"[Amount] * {number + 2}"}]})
+    return project.save(folder / f"formulas{count}.tafl")
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="reads the peak of the process with a Windows call")
 def test_the_memory_of_a_run_doesnt_grow_with_the_steps_of_a_table(tmp_path):
     """Each step of a table would otherwise stay until the end of the table, in its result and in
     the cache (1 million rows: 1.6 to 1.8 times the peak of one sort, by the number of threads)."""
-    place = pl.int_range(1_000_000, eager=True)
-    columns = {"Id": place, "Amount": (place.hash(1) % 1_000_000) / 100, "Cost": (place.hash(2) % 1_000_000) / 100}
-    pl.DataFrame(columns).write_parquet(tmp_path / "rows.parquet")
+    _rows(tmp_path)
     one = _peak(tmp_path, _RUN, str(_sorts(tmp_path, 1)))
     six = _peak(tmp_path, _RUN, str(_sorts(tmp_path, 6)))
     assert six < 1.3 * one, (six, one)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="reads the peak of the process with a Windows call")
+def test_the_memory_of_a_run_grows_only_by_the_columns_its_formulas_add(tmp_path):
+    """The steps go, but the columns they add stay to the end: 5 more columns of 8 MB here. A column
+    from a formula would otherwise hold 9 times that (2.2 to 2.6 times the peak of one formula)."""
+    _rows(tmp_path)
+    one = _peak(tmp_path, _RUN, str(_formulas(tmp_path, 1)))
+    six = _peak(tmp_path, _RUN, str(_formulas(tmp_path, 6)))
+    assert six < 1.5 * one, (six, one)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="reads the peak of the process with a Windows call")

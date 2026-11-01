@@ -94,6 +94,9 @@ _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 _VIEW = "__input"
 _ROW = "__etl_row__"
 _FRAME = "__frame"  # the data of a formula that is calculated on a table (see _needs_table)
+# The rows of one part of a result, as DuckDB makes them. Each part keeps room for the rows asked
+# for, so DuckDB's default of a million makes a column hold 8 MB per part, however few rows it has.
+_PART_ROWS = 122_880
 _SAFE = {"enable_external_access": False, "autoinstall_known_extensions": False, "autoload_known_extensions": False}
 # DuckDB's settings and catalog: no use in a formula, and they show paths of this computer. The
 # same for functions that run or plan a text as a query (what it calls can't be seen) and for
@@ -363,7 +366,7 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
         if condition and result_type != "BOOLEAN":
             raise ActionError(_not_a_condition(_type_word(result_type)))
         try:
-            result = relation.pl()
+            result = relation.pl(_PART_ROWS)
         except duckdb.Error as e:
             raise ActionError(_clean_error(e, formula, df.columns)) from None
         except Exception as e:  # e.g. a result type Polars can't take
