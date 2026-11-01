@@ -43,6 +43,11 @@ _SQLSERVER_DRIVERS = (
     "SQL Server Native Client 11.0",
 )
 _GET_DRIVER = "install 'ODBC Driver 18 for SQL Server' (or 17) from Microsoft"
+# A value must stay one value in the connection text: a keyword of the driver in a project's setting
+# can write a file (SAVEFILE) or lead the login to another server (Address). A server name needs none
+# of these characters; a database name goes in braces, with each } doubled.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_NOT_IN_A_SERVER = re.compile(rf"[;={{}}]|{_CONTROL.pattern}")
 _PYTHON_TYPES = {
     str: pl.String,
     int: pl.Int64,
@@ -101,6 +106,13 @@ class SqlServer(Connector):
     def connect(self, settings, ctx, *, create=False):
         import pyodbc
 
+        if _NOT_IN_A_SERVER.search(settings.server):
+            raise ActionError(
+                f"A server name can't hold ; = {{ }} or control characters: {settings.server!r}. "
+                r"Write it like .\SQLEXPRESS, host,1433 or host\instance."
+            )
+        if _CONTROL.search(settings.database):
+            raise ActionError(f"A database name can't hold control characters: {settings.database!r}")
         installed = pyodbc.drivers()
         driver = (settings.driver or "").strip()
         if driver and driver.lower() not in (d.lower() for d in installed):
@@ -116,10 +128,11 @@ class SqlServer(Connector):
                 else ""
             )
             raise ActionError(f"No suitable SQL Server ODBC driver is installed: {_GET_DRIVER}.{old}")
+        database = settings.database.strip().replace("}", "}}")
         parts = [
             f"DRIVER={{{driver}}}",
             f"SERVER={settings.server}",
-            f"DATABASE={settings.database}",
+            f"DATABASE={{{database}}}",
             "Trusted_Connection=yes",
             f"APP={APP_NAME}",
         ]

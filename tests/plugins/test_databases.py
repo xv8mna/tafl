@@ -987,6 +987,122 @@ def test_sqlserver_uses_windows_own_driver_only_when_chosen(registry, monkeypatc
     )
 
 
+def _connection_text(registry, monkeypatch, settings: dict, driver: str = "ODBC Driver 17 for SQL Server") -> str:
+    """The text that the driver gets for these connection settings."""
+    pyodbc = pytest.importorskip("pyodbc")
+    used = []
+
+    class Connection:
+        def add_output_converter(self, sql_type, convert):
+            pass
+
+    def connect(text, **options):
+        used.append(text)
+        return Connection()
+
+    monkeypatch.setattr(pyodbc, "drivers", lambda: [driver])
+    monkeypatch.setattr(pyodbc, "connect", connect)
+    registry.connectors["sqlserver"].open(settings, Context())
+    return used[-1]
+
+
+@pytest.mark.parametrize("server", [r".\SQLEXPRESS", "host", "host,1433", r"host\instance", "tcp:host.example.org,1433", "[::1],1433"])
+def test_sqlserver_connection_text(registry, monkeypatch, server):
+    text = _connection_text(registry, monkeypatch, {"server": server, "database": "Sales"})
+    assert text == (
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={{Sales}};Trusted_Connection=yes;APP=Tafl;"
+        "TrustServerCertificate=yes"
+    )
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        r".\SQLEXPRESS;SAVEFILE=C:\x",
+        r".\SQLEXPRESS;",
+        "Address=127.0.0.1,9",
+        "{host}",
+        "ho{st",
+        "ho}st",
+        "host\nTrusted_Connection=no",
+        "host\r",
+        "host\t",
+        "host\0",
+        "host\x7f",
+        "host\x85",
+    ],
+)
+def test_a_server_name_cant_add_keywords(registry, monkeypatch, server):
+    with pytest.raises(ActionError) as error:
+        _connection_text(registry, monkeypatch, {"server": server, "database": "Sales"})
+    assert str(error.value).startswith("A server name can't hold ; = { } or control characters: ")
+    assert str(error.value).endswith(r"Write it like .\SQLEXPRESS, host,1433 or host\instance.")
+
+
+@pytest.mark.parametrize(
+    ("database", "written"),
+    [
+        ("My Sales", "{My Sales}"),
+        ("  Sales ", "{Sales}"),  # as without the braces: the driver left spaces around a value out
+        ("Sales;SAVEFILE=C:\\x", "{Sales;SAVEFILE=C:\\x}"),
+        ("a=b", "{a=b}"),
+        ("a{b", "{a{b}"),
+        ("a}b", "{a}}b}"),
+        ("a};SAVEFILE=C:\\x;", "{a}};SAVEFILE=C:\\x;}"),
+        ("a}", "{a}}}"),
+        ("}};", "{}}}};}"),
+        ("", "{}"),
+    ],
+)
+def test_a_database_name_cant_add_keywords(registry, monkeypatch, database, written):
+    """In braces a value ends only at a } that isn't doubled: the Driver Manager, which writes
+    the file of SAVEFILE, and both drivers read it so."""
+    text = _connection_text(registry, monkeypatch, {"server": ".", "database": database})
+    assert text == f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER=.;DATABASE={written};Trusted_Connection=yes;APP=Tafl;TrustServerCertificate=yes"
+
+
+@pytest.mark.parametrize("database", ["a\nb", "a\rb", "a\0", "a\x1f"])
+def test_a_database_name_has_no_control_characters(registry, monkeypatch, database):
+    with pytest.raises(ActionError, match="^A database name can't hold control characters: "):
+        _connection_text(registry, monkeypatch, {"server": ".", "database": database})
+
+
+def test_the_check_of_the_connection_text_sees_the_filled_values(registry, monkeypatch):
+    """Parameters fill the settings of a connection, also when a run changes them."""
+    project = Project(name="Db")
+    project.parameters.append(Parameter("Server", value=r".\SQLEXPRESS;SAVEFILE=C:\x"))
+    project.add_connection("server", "sqlserver", server="{Server}", database="Sales")
+    table = project.add_table("T")
+    project.add_step(table, "db.import", {"connection": "server", "mode": "query", "query": "SELECT 1 AS a"})
+    pyodbc = pytest.importorskip("pyodbc")
+    monkeypatch.setattr(pyodbc, "drivers", lambda: ["ODBC Driver 17 for SQL Server"])
+    monkeypatch.setattr(pyodbc, "connect", lambda *args, **options: pytest.fail("connected"))
+    result = Engine(project, registry).evaluate(table.id)
+    assert result.first_error.startswith("A server name can't hold ; = { } or control characters: ")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+@pytest.mark.parametrize("value", ["tempdb;SAVEFILE={file}", "tempdb};SAVEFILE={file}", "a};SAVEFILE={file};", "a}}};SAVEFILE={file};"])
+def test_a_database_name_writes_no_file(registry, tmp_path, value):
+    """On a real server, with each driver: this name is a name, and no keyword of the driver."""
+    pyodbc = pytest.importorskip("pyodbc")
+    written = tmp_path / "written"
+    for driver in {"ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server", "SQL Server"} & set(pyodbc.drivers()):
+        settings = {"server": os.environ["TAFL_TEST_SQLSERVER"], "database": value.replace("{file}", str(written)), "driver": driver}
+        with pytest.raises(ActionError):
+            registry.connectors["sqlserver"].open(settings, Context())
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_connects_with_the_database_in_braces(registry):
+    pyodbc = pytest.importorskip("pyodbc")
+    for driver in {"ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server", "SQL Server"} & set(pyodbc.drivers()):
+        settings = {"server": os.environ["TAFL_TEST_SQLSERVER"], "database": "tempdb", "driver": driver}
+        with registry.connectors["sqlserver"].open(settings, Context()) as db:
+            assert db.read("SELECT DB_NAME() AS name")["name"].to_list() == ["tempdb"]
+
+
 def test_sqlserver_go_with_a_repeat_count_and_a_comment(registry):
     """As in SSMS: GO 3 runs the batch before it three times, and a -- comment may follow GO."""
     connector = registry.connectors["sqlserver"]
