@@ -1,5 +1,90 @@
 # Changes
 
+## Unreleased
+
+A project from somewhere else is now read first and trusted after that. The rest is fixes: text
+stays exactly as it is in Excel files and in the window, imports only read, and runs need less
+memory.
+
+- **Protected view**: a project file that Tafl doesn't know opens so that you can read all its
+  tables, steps and settings, the map and the Find panel, but nothing is calculated, no path is
+  looked at and no database is opened. A bar at the top of the window says so. **Trust this
+  project** in the bar makes the project work as always, and a run asks first. The demo opens this
+  way too: click the button once.
+  - Tafl knows a file by its content, in a list in the settings of this computer. A file that was
+    changed elsewhere asks again, and a project that is saved in protected view stays protected.
+  - New projects are trusted, and a file you save from a trusted project is known.
+  - The projects in **File → Open recent** count as known once, when this version starts for the
+    first time.
+  - `tafl run` and `tafl show` work as before: you start them on purpose.
+  - "Projects from other people" in chapter 3 of the user guide says what trust means, and what it
+    doesn't: a SQL Server query that commits by itself keeps its changes, and a rollback can't undo
+    that.
+- **Excel export: text stays text**, exactly as it is, in the cells and in the column names, in a
+  new file, a replaced file, a replaced or added sheet and a workbook with macros. No text becomes
+  a formula or a link any more, and a text with special characters can't move other values or
+  damage the file.
+  - **A column of web addresses is no longer clickable in the file.** In return, no address is
+    lost: very long addresses, and addresses in a table with very many of them, left empty cells,
+    and `mailto:` and `file:` lost their prefix.
+- **Excel export**: column names that differ only in upper and lower case, such as `Name` and
+  `NAME`, now stop the export with a message, before it touches a file. An Excel table can't hold
+  them: the step said it had written the rows, the cells were not written, and **Replace only this
+  sheet** lost the old sheet. Control characters in column names no longer damage the file.
+- **Replace only this sheet**: a workbook with very big drawings or charts no longer causes a long
+  wait that nothing could stop, and a workbook with a part of 2 GiB or more works.
+- **The window shows names and values as plain text**: in labels, tooltips and message boxes, a
+  text from a project or a data file is never read as HTML. Normal text looks as it did, with its
+  `&`, `<`, quotes and line breaks. Ctrl+C in a message box copies the text as it reads. A tooltip
+  stops after 12 lines with "…", and the tooltip of a cell after 40.
+- **SQLite imports only read**, in the window and in a run, and so does **Test connection**.
+  - A file that a program left unfinished stays as it is, and the message says how to repair it.
+  - A WAL database is read with its `-wal` file, which stays as it is.
+  - A query that changes data stops with a message, and so do `ATTACH` and a PRAGMA that does more
+    than read. Plain reads, such as `PRAGMA table_info`, work. An `ATTACH` in an import used to
+    work in a run: put such work into a **Run SQL command**.
+- **SQL Server connections**: a value in **Server** or **Database** can't add anything to the
+  connection. A **Server** with `;`, `=`, `{`, `}` or a control character stops with a plain
+  message. `.\SQLEXPRESS`, `host,1433` and `host\instance` work as before.
+- **Stop and low memory now end a database import** between its rows: a read no longer goes on
+  until the last row. On SQLite, Stop also ends a query or a **Run SQL command** that gives no
+  row for a long time (the command is rolled back). SQL Server can stop a query only when rows
+  arrive. When memory runs out in a step, the step says so in plain words.
+- **Formulas** are read exactly as DuckDB reads them, and DuckDB confirms each formula just before
+  it runs: it must be one `SELECT`. What one project's formula does can't reach the next project.
+  A formula can't read DuckDB's settings or run a text as a query any more. Each formula takes about
+  1 ms longer.
+- **Formulas need less memory**: DuckDB gets only the columns a formula uses (a formula on one
+  column of a table of 2 million rows, 30 columns and 200 parts took 646 MB and now takes 207 MB),
+  and a calculated column keeps room for its own rows only.
+- **`tafl run` needs less memory on long tables**: a step lets go of its data once the next step
+  has run, and only the last step of a table keeps it. The window keeps its results as before.
+- **Filter rows**: time columns work, with values like `08:30`, in all operators; text that is no
+  time gives a clear message. **Is one of** on a whole-number column leaves out values that the
+  column can't hold, such as `1,5`, instead of stopping. **Fill empty values** takes times too.
+  Very big whole numbers keep all their digits in both steps.
+- **Merge**: a full join on several keys works with any suffix, also an empty one.
+- **Import CSV / text files**: the message on decimals names only columns that became numbers. A
+  file with very long runs of line ends no longer causes a long wait.
+- A file with thousands of equal column names no longer takes minutes.
+- **Filter pane**: a filter that a project file holds in a wrong form counts as not set, and is no
+  error on each refresh. A filter on a column of lists or records says that such a column can't be
+  filtered. A value with more decimal places than an exact decimal column has is left out: `1.555`
+  found the rows with `1.56`.
+- A project file with data nested too deeply is refused when it opens, as a damaged file.
+- The report after a program that ended without a message keeps each name on one line.
+- Plugins: `ctx.database` has a keyword `read_only` (a connector can override `connect_read_only`;
+  one that doesn't gets a normal connection, so plugins work as before). `ctx.check_memory` is
+  new for plugins that read in batches. `Database.read`, `Database.read_table` and
+  `frame_from_cursor` take an optional `between`, and `Database.run_script` runs a command with
+  the error handling of the other methods. `tafl.api.xlsx` has `write_frame`, `cell_text` and
+  `escaped`, for writing text as text.
+- The user guide: a warning at the CSV export (a file for people goes to Excel, CSV goes to
+  programs), a known limit in chapter 10 (a small, unusual file can end the program, and an unsaved
+  sheet is then lost), and features it didn't explain yet: the search and sort of the filter pane,
+  the menus of the map, of a group in the Tables panel and of a sheet cell, `tafl --version`, the
+  exit codes of `tafl show`, and more.
+
 ## 0.6.0 – 2026-10-31
 
 The data sheet: a simple way to bring data that is not in a file into a project. Chapter 10 of the

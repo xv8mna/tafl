@@ -8,9 +8,9 @@ minutes. The data is the invented demo data.
 ## 1. Write the data sheet
 
 1. Open `examples\excel-check.tafl` in Tafl (in the Windows download, or in a source install).
-   Its table *Data* imports the demo orders, keeps those with a net amount above 500 (step 3)
-   and writes them to sheet *Data* of `examples\output\excel-check.xlsx`, with "Replace only this
-   sheet".
+   It opens in protected view: click **Trust this project** once. Its table *Data* imports the
+   demo orders, keeps those with a net amount above 500 (step 3) and writes them to sheet *Data*
+   of `examples\output\excel-check.xlsx`, with "Replace only this sheet".
 2. **Run project** (F5). The workbook now has the sheet *Data* with an Excel table named *Data*
    (columns OrderNo, CustomerNo, Date, Net, Status, 161 rows).
 

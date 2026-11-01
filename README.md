@@ -80,7 +80,9 @@ paths above (`.venv/bin/…` elsewhere).
 `.venv\Scripts\tafl-app examples\demo.tafl` opens the demo project (or **File → Open** in the
 app). The download has it in the `examples` folder next to the programs: start `tafl-app.exe`
 and open it with **File → Open** (Ctrl+O), or drag `demo.tafl` onto `tafl-app.exe` in Explorer
-(`.tafl` files are not linked to Tafl, so a double-click doesn't open them). On the command line:
+(`.tafl` files are not linked to Tafl, so a double-click doesn't open them). It opens in protected
+view, as every project file that Tafl doesn't know: click **Trust this project** in the bar, once
+([Project files from other people](#project-files-from-other-people)). On the command line:
 
 ```
 .venv\Scripts\tafl run examples\demo.tafl
@@ -104,7 +106,7 @@ In the download's folder, write `tafl.exe` instead of `.venv\Scripts\tafl` (in P
 - `show` prints the steps of a table and the data after one step (also with `--set`).
 - `plugins` lists all actions and shows plugins that failed to load.
 - `--help` lists the commands; `run --help` (and `show`, `plugins`) shows the options and exit
-  codes of one.
+  codes of one. `--version` prints the version.
 - The command line keeps no log of a run: what it prints is all there is. To keep it, send it to a
   file (the download's `README.txt` shows a batch file for the Task Scheduler). Only a run that
   stops without an error message also writes one line to `%LOCALAPPDATA%\Tafl\tafl.log`.
@@ -123,6 +125,9 @@ Only in a source install (they need Python):
 The [user guide](docs/guide.md) explains all of this with pictures and examples (**Help → User
 guide** in the app). In short:
 
+- **Protected view**: a project file that Tafl doesn't know opens with a bar at the top of the
+  window. It can be read, but nothing is calculated until you click **Trust this project** (see
+  [Project files from other people](#project-files-from-other-people)).
 - **Tables** (top left): **+ New table** starts a table with an import or a data sheet.
   Double-click to rename, drag to reorder, right-click for more.
 - **Data sheet** (**+ New table → Paste from clipboard** or **Empty sheet**): a window of its own
@@ -166,11 +171,12 @@ guide** in the app). In short:
 - **Run project** (F5) calculates all tables and executes the exports and commands; **Run this
   table** (Shift+F5) does the same for the selected table and the tables it uses. While you edit,
   exports and commands never run. **Run results** list every table and step, with how long the
-  run took. **Stop** stops a formula that is running at once; another step that is running
-  finishes first (an export can take a while). The run results then list the tables calculated
-  before the stop (their exports and commands are done) and, for the stopped table, the steps
-  that ran, the step where it stopped (a file command says how many files it had copied, moved,
-  renamed or deleted) and the steps that did not run. Closing the window
+  run took. **Stop** stops a formula that is running at once, and an import from a database
+  within a moment (SQL Server can stop a query only when rows arrive); another step that is
+  running finishes first (an export can take a while). The run results then list the tables
+  calculated before the stop (their exports and commands are done) and, for the stopped table,
+  the steps that ran, the step where it stopped (a file command says how many files it had
+  copied, moved, renamed or deleted) and the steps that did not run. Closing the window
   during a run asks whether to wait or to stop. **Reload data** (Ctrl+R) reads files and
   databases again and brings the status of every table up to date. A changed file is also read
   again by itself when the table is calculated again: when you select the table again, change a
@@ -381,6 +387,9 @@ never while you edit.
 - CSV: decimal numbers are written with at most 15 significant digits, as Excel shows and saves
   them (`0.37 * 3` gives `1,11`, not `1,1099999999999999`); whole numbers and exact decimals keep
   all their digits.
+- CSV is for programs. Values are written as they are, and a spreadsheet program that opens the
+  file can read a cell that starts with `=` as a formula, also when the text comes from outside.
+  For a file that people open, use the Excel export: there, text stays text.
 - Binary values (e.g. from a `varbinary` column) are written as hex text, `0x0102FF`.
 - **Don't export an empty table** (in every export, off by default): when the table has no rows,
   the file or the database table is left as it is, and the step says "Not exported: the table is
@@ -456,17 +465,23 @@ are.
 Database imports: numbers keep all their digits. SQL Server `decimal`, `numeric` and `money`
 columns become whole numbers or decimal numbers when that keeps every value, else exact
 decimals. A whole SQL Server table reads `sql_variant`, `geography`, `geometry` and
-`hierarchyid` columns as text; a query needs a `CAST` for them (the message shows it). In
-SQLite, an import's `ATTACH` works only when the project is run, as it could create a file.
+`hierarchyid` columns as text; a query needs a `CAST` for them (the message shows it). A SQLite
+file is opened for reading only: a query that changes data stops with a message, and so do
+`ATTACH` and a PRAGMA that does more than read, also in a run. A file that a program left
+unfinished stays as it is, and the message says how to repair it.
 
 ## Exporting to Excel
 
 **Export to Excel file** writes the table as an Excel table (filter buttons, and banded rows if
 you pick a table style) with formats for dates and numbers. The Excel table is named after the
 sheet (sheet *Sales* → table `Sales`). Empty and not-a-number values become empty cells;
-date-times with a time zone are written in that zone's local time. A sheet holds 1,048,575 rows
+date-times with a time zone are written in that zone's local time. Text stays text, exactly as it
+is, in the cells and in the column names, however the file is written: `=1+1` is no formula, and
+a column of web addresses is not clickable in the file. A sheet holds 1,048,575 rows
 below its header: a bigger table stops the export (filter it, or export to CSV). A cell holds
-32,767 characters: longer texts are cut, with a warning. If the file exists:
+32,767 characters: longer texts are cut, with a warning. Column names must differ in more than
+upper and lower case, as an Excel table can't tell `Name` from `NAME`: the export stops before it
+changes a file. If the file exists:
 
 - **Replace the whole file**, or
 - **Replace only this sheet, keep the other sheets**: for a report workbook whose other sheets
@@ -611,18 +626,37 @@ and the value lists of the filter pane use the same order.
 
 ## Project files from other people
 
-Tafl calculates a table as soon as you look at it, with your rights: when a project opens, its
-first table and the tables that one uses; then every table you select, and all of them while
-the map is shown. Its imports read the files and databases the project names, and the SQL
-queries of database imports run on those databases. Exports and commands only run when you run
-the project.
+A project file that Tafl doesn't know opens in **protected view**: all its tables, steps and
+settings, the map and the Find panel can be read, but nothing is calculated, no path is looked
+at, no database is opened and no formula of a parameter is worked out. A bar at the top of the
+window says so, with the button **Trust this project**. **Reload data** is off, a run asks first
+("Trust this project and run it?"), and **Test connection**, **Edit in sheet** and the **Problems**
+filter of the Find panel say that they need trust. A project that is changed and saved in
+protected view stays protected.
 
-Tafl rolls back what an import's query changed, and formulas can only use the data of their
-step. This is no protection against a project made to do harm, though: a query can read
-whatever your Windows login can read, and on SQL Server it can commit by itself or call
-procedures with lasting effects. Open project files only from people you trust. If in doubt,
-open the `.tafl` file in a text editor first: it is JSON, and its connections, SQL queries and
-file paths can be read there.
+Trust means that the file may do what it says: Tafl doesn't check it. After that, Tafl calculates
+a table as soon as you look at it, with your rights: when a project opens, its first table and
+the tables that one uses; then every table you select, and all of them while the map is shown.
+Its imports read the files and databases the project names, and the SQL queries of database
+imports run on those databases. Exports and commands only run when you run the project.
+
+A SQLite import only reads, Tafl rolls back what an import's query changed on SQL Server, and
+formulas can only use the data of their step. This is no protection against a project made to do
+harm, though: a query can read whatever your Windows login can read, a SQL Server connection signs
+in with your Windows account on the server the project names, and on SQL Server a query can commit
+by itself or call procedures with lasting effects, which a rollback can't undo. A formula can take
+a long time or a lot of memory. Trust a project file only when it comes from someone you trust and
+you have read it.
+
+Tafl knows a project by the SHA-256 value of its file, in a list of the last 1,000 in its settings
+on this computer, not in the project: a project can't answer for itself. A file that was changed
+elsewhere opens in protected view again, a copy of a known file is known, and a file saved from a
+trusted project is known. New projects are trusted. The projects of the recent list count as known
+once when a version with protected view starts for the first time; their files aren't read for
+that.
+
+`tafl run` and `tafl show` have no protected view: a person starts them on purpose, for one
+project.
 
 ## Writing a plugin
 

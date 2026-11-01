@@ -24,7 +24,8 @@ files next to them), and start:
 .tafl files are not linked to Tafl: a double-click on one doesn't open it.
 
 To try it: start tafl-app.exe, choose File > Open and open examples\demo.tafl in this folder.
-On the command line, in this folder:
+It opens in protected view, as every project file that Tafl doesn't know: click "Trust this
+project" in the bar at the top of the window, once. On the command line, in this folder:
 
   tafl.exe run examples\demo.tafl
   tafl.exe show examples\demo.tafl --table Orders --step 4
@@ -38,9 +39,19 @@ The programs are not signed. When Windows shows "Windows protected your PC", cli
 "More info", then "Run anyway". Your organization's settings may not allow programs from
 the internet at all: then ask your IT department.
 
+Projects from other people
+--------------------------
+A project file that Tafl doesn't know opens in protected view: you can read all of it, but
+nothing is calculated, and none of its files or databases is touched. After "Trust this project",
+it works as always: Tafl calculates a table as soon as you look at it, with your Windows rights.
+So trust a project only when you trust the person it comes from and you have read it. Tafl doesn't
+check it for you. A file that was changed elsewhere asks again. tafl.exe has no protected view: it
+runs the project you name. "Projects from other people" in chapter 3 of the guide has the details.
+
 Settings, log and removing Tafl
 -------------------------------
-- Settings (window layout, recent projects): the registry key HKEY_CURRENT_USER\Software\Tafl
+- Settings (window layout, recent projects, trusted projects): the registry key
+  HKEY_CURRENT_USER\Software\Tafl
 - The log of tafl-app.exe: %LOCALAPPDATA%\Tafl\tafl.log (Help > Open log folder)
 - Your plugins, if any: %APPDATA%\Tafl\plugins
 

@@ -9,6 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from tafl.ui.main_window import _PROTECTED_BAR
+from tafl.ui.session import PROTECTED
+
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs" / "guide.md"
 
@@ -52,6 +55,19 @@ def test_links_of_the_guide_lead_somewhere():
         assert target.is_relative_to(ROOT), link
         if fragment:
             assert fragment in _anchors(target), link
+
+
+def test_the_guide_quotes_protected_view_as_the_window_says_it():
+    text = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert _PROTECTED_BAR in text
+    assert PROTECTED in text
+
+
+@pytest.mark.parametrize("heading", ["Open the demo", "Replace only one sheet", "Paste data into a sheet"])
+def test_a_walk_through_that_opens_an_example_says_to_trust_it(heading):
+    text = GUIDE.read_text(encoding="utf-8")
+    start = text.index(f"### {heading}\n")
+    assert "**Trust this project**" in text[start : text.index("\n### ", start + 1)]
 
 
 def test_anchors_are_those_of_github():

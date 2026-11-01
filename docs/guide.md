@@ -98,12 +98,15 @@ file, and the revenue per customer.
 1. Start `tafl-app.exe`.
 2. Choose **File → Open** (Ctrl+O) and open `examples\demo.tafl` in the Tafl folder (in a
     source install: in the folder `examples` of the source code).
+3. The demo opens in protected view, as every project file that Tafl doesn't know: a bar at the
+    top of the window says so, and the data panel shows no data yet. Click **Trust this project**
+    in the bar. You do this once: from then on, Tafl knows this file.
+    [Projects from other people](#projects-from-other-people) explains why.
 
 You can also drag `demo.tafl` onto `tafl-app.exe` in Explorer (not onto the open window).
 A double-click on a `.tafl` file doesn't open it: `.tafl` files are not linked to Tafl.
 
-The status bar says "Opened demo.tafl", and the first table, *Customers*, is selected. Now look
-around:
+The first table, *Customers*, is selected, and the data panel shows its data. Now look around:
 
 - Click a table in **Tables** (top left). Its steps show below it in **Steps**, and the data
   panel in the middle shows the data after its last step.
@@ -128,7 +131,8 @@ calculates all tables and writes `orders.xlsx`, `orders.csv` and `revenue.xlsx` 
   example ([chapter 5](#5-formulas)).
 - Many buttons and settings show a short explanation when you rest the mouse on them. The
   bottom of the settings panel explains the selected step.
-- **Help → About Tafl** shows the version.
+- **Help → About Tafl** shows the version of Tafl and of the libraries it uses (Python, Polars,
+  DuckDB, PySide6 and Qt), and the path of the log file.
 
 ### Where Tafl keeps its settings
 
@@ -136,7 +140,7 @@ Tafl keeps three things outside its folder:
 
 | What | Where |
 |---|---|
-| Window size, panel layout, recent projects | the registry key `HKEY_CURRENT_USER\Software\Tafl` |
+| Window size, panel layout, recent projects, the [projects you trust](#projects-from-other-people) | the registry key `HKEY_CURRENT_USER\Software\Tafl` |
 | The log of the window (details of unexpected errors) | `%LOCALAPPDATA%\Tafl\tafl.log` (**Help → Open log folder**) |
 | Your own plugins, if any ([chapter 13](#13-plugins)) | `%APPDATA%\Tafl\plugins` |
 
@@ -419,9 +423,13 @@ was.
     **Find** ([the Find panel](#the-find-panel)), **Undo**, **Redo**, **Run project**, **Stop**,
     **Reload data**, **Connections** and **Parameters**.
 
-The menus are **File**, **Edit**, **Project**, **View** and **Help**. The status bar at the
-bottom shows short messages, such as "Opened demo.tafl" or "Run finished — see Run results".
-Drag the borders between the panels to change their sizes. Tafl keeps the layout.
+The menus are **File**, **Edit**, **Project**, **View** and **Help**. **File → Exit** closes the
+window. The status bar at the bottom shows short messages, such as "Opened demo.tafl" or "Run
+finished — see Run results". Drag the borders between the panels to change their sizes. Tafl keeps
+the layout.
+
+A project that Tafl doesn't know opens with a bar at the top of the window:
+[Projects from other people](#projects-from-other-people) explains it.
 
 ### The Tables panel
 
@@ -439,6 +447,15 @@ Click a table to see the data after its last step.
 Right-click a table for **New table**, **New group…**, **Rename**, **Duplicate**, **Run this
 table**, **Turn table off**, **Move to group** and **Delete**.
 
+- **Duplicate** makes a copy of the table, named for example *Orders (copy)*, in the same group,
+  with all its steps, notes and filters. Its exports and commands are copied too: they write to
+  the same files as those of the original until you change them.
+- **Move to group** lists the groups and **New group…**, and for a table in a group **Remove from
+  group**.
+
+Right-click a group for **Rename**, **Color**, **Turn all its tables off** (or on) and **Ungroup
+(the tables stay)**.
+
 A table that is turned off is shown in grey italics. It is not calculated, and its exports
 don't run. A table that uses it can't be calculated either: it shows as *skipped*, "it uses
 “Orders”, which is turned off". That is no error. Turning a table off is handy while you work
@@ -446,7 +463,8 @@ on a big project, or to keep a table you don't need right now.
 
 Tables are calculated when you look at them: when a project opens, its first table and the
 tables it uses; then each table you click. A table that wasn't calculated yet has a blue dot
-and the tooltip "Not calculated yet". On the map, all tables are calculated.
+and the tooltip "Not calculated yet". On the map, all tables are calculated. In
+[protected view](#projects-from-other-people), nothing is calculated until you trust the project.
 
 ### The Steps panel
 
@@ -536,7 +554,8 @@ The grid of the data panel shows the data after the selected step. Under each co
 type: *text*, *integer*, *number*, *date*, *date-time*, *time* or *true/false*. **Change type /
 format** ([chapter 4](#columns-names-order-types-pivot-and-unpivot)) calls them *Text*, *Whole
 number* (integer), *Decimal number* (number), *Date*, *Date and time* (date-time) and *True /
-false*.
+false*. Two more types come only from imports: *duration*, a length of time, for example an Excel
+cell with the format `[h]:mm:ss`, and *empty*, a database column without a value in any row.
 Dates appear in your Windows date format and decimals with your decimal separator. An empty cell
 stays empty (its tooltip says "(empty)").
 
@@ -565,13 +584,23 @@ blue), and the button says **Filters (2)**.
 
 - **Revert** goes back to the values that are applied. **Clear** stops filtering by the column.
   **✕** removes the card.
-- **All** · **Possible** · **Excluded** · **None** select values quickly. **Possible** are the
-  values that the other filters leave; **Excluded** inverts a selection.
+- **Search values…** shows only the values that contain the text you type, without regard to
+  upper and lower case.
+- **All** · **Possible** · **Excluded** · **None** select values quickly, of the ones shown if you
+  searched. **Possible** are the values that the other filters leave; **Excluded** inverts a
+  selection.
+- Click **Value** or **Count** above the list to sort by it, and again for the other way round.
+  Values that are applied stay at the top.
 - Colors: the selected values are blue, the possible ones white, the others grey. The counts are
   the rows that pass the *other* filters.
 - The button next to the column name switches the mode: **Values**, **Time periods** (dates by
   Year, Year-Quarter, Year-Month, Year-Week (ISO) or Date), **Number ranges** (thresholds such as
   `500; 1000`), **Text length** and **Pattern (regex)**.
+- With **Number ranges**, the list next to the thresholds says where a value equal to a threshold
+  goes. With `< x | ≥ x` (the default), 500 is in the range that starts at 500; with `≤ x | > x`,
+  in the range that ends at 500.
+- A column can have more than one filter, for example a date by month and by value: **+ Filter**
+  offers the column again as "Date (another filter)".
 - Several values of one card: rows with any of them. Several cards: rows that pass all of them.
 - At a step that doesn't have the column, the card says "Not used at this step".
 - **⋯ → Add as step (Filter rows by formula)** turns a card into a real step after the selected
@@ -630,12 +659,12 @@ uses (the **Problems** filter calculates the others).
 had opened it, and Ctrl+Z closes it again). The panel stays open, so you can click through the
 results. Enter or a double-click also puts the cursor into the setting that matched, and marks it
 for a moment; for a step that is not complete yet, into the setting to fill in. F3 and Shift+F3
-go to the next and the previous result from anywhere in the window, also while you type in a
-setting or a note: what you typed is applied to its step first (Ctrl+Z takes it back and shows
-that step again), and the keyboard stays in the step settings instead of moving into a setting
-of the next step. When the current result leaves the list, for example because you fixed its
-problem, F3 goes on with the result after its place (such as the next error of the same table)
-and Shift+F3 with the one before, also after you change **Group by**.
+(**Edit → Find next** and **Find previous**) go to the next and the previous result from anywhere
+in the window, also while you type in a setting or a note: what you typed is applied to its step
+first (Ctrl+Z takes it back and shows that step again), and the keyboard stays in the step settings
+instead of moving into a setting of the next step. When the current result leaves the list, for
+example because you fixed its problem, F3 goes on with the result after its place (such as the next
+error of the same table) and Shift+F3 with the one before, also after you change **Group by**.
 
 ![A search for CustomerNo: Enter went to the merge step of Orders, and the setting that matched is marked](guide/find-search.png)
 
@@ -730,22 +759,60 @@ data ([chapter 10](#10-data-sheets)).
   older versions of their actions, the status bar says so, for example "1 step(s) were updated to
   newer action versions; save to keep this".
 
-A `.tafl` file is a text file (JSON): you can open it in a text editor to see what it does.
+A `.tafl` file is a text file (JSON): you can open it in a text editor to see what it does. If
+you change it there, Tafl takes it for another file and opens it in protected view.
 
 ### Projects from other people
 
-Tafl calculates a table as soon as you look at it, with your Windows rights. When you open a
-project, its imports read the files and databases the project names, and the SQL queries of
-database imports run on those databases. Exports and commands run only when you run the
-project.
+A project can name any file, folder, server or database, and it works with your Windows rights.
+So a project file that Tafl doesn't know opens in **protected view**: you read it first, and
+nothing happens until you say so. A bar at the top of the window says "Protected view: this project
+comes from somewhere else. Tafl has calculated nothing and touched none of its files or databases.
+Read its steps first."
 
-Tafl rolls back what an import's query changes, and formulas can only use the data of their
-step. Still, a project can read whatever your Windows login can read. Open projects only from
-people you trust. If in doubt, open the `.tafl` file in a text editor first: its connections,
-SQL queries and file paths can be read there. Before you run a project from someone else, look
-at its exports and commands, above all **Delete files** and **Run SQL command**. The
-[Find panel](#the-find-panel) lists them all when its search field is empty, with every file,
-folder and database the project reads or writes.
+In protected view:
+
+- You can read everything: all tables, steps and settings, the map, the connections and the
+  parameters. The [Find panel](#the-find-panel) with an empty search field lists every file,
+  folder and database the project reads or writes, and all its exports and commands.
+- Nothing is calculated. The data panel says "Protected view: nothing is calculated until you trust
+  this project." No file or folder is looked at, no database is opened, no query runs, and no
+  formula of a parameter is worked out.
+- **Reload data** is off. **Test connection**, **Edit in sheet** and the **Problems** filter of
+  the Find panel say that they need trust.
+- A run asks first: "Trust this project and run it?"
+- You can change and save the project. It stays in protected view, and Tafl doesn't know the
+  saved file either.
+
+**Trust this project**, the button in the bar, says: this file may do what it says. Tafl doesn't
+check the project for you. From then on it works like a project of your own:
+
+- Tafl calculates a table as soon as you look at it: its first table when the project opens, with
+  the tables that one uses, then each table you click, and all tables on the map.
+- Its imports read the files and databases that the project names. A project can read whatever
+  your Windows login can read, and a SQL Server connection signs in with your Windows account on
+  the server that the project names.
+- The SQL queries of database imports run at once, while you look. A SQLite file is opened for
+  reading only, and Tafl rolls back what a query changes on SQL Server. But a SQL Server query
+  that commits by itself keeps its changes: a rollback can't undo them.
+- Formulas can only use the data of their step, but a formula can take a long time or a lot of
+  memory.
+- Exports and commands run only when you run the project.
+
+So trust a project only when you trust the person it comes from and you have read it. Before you
+run it, look at its exports and commands, above all **Delete files** and **Run SQL command**.
+
+Tafl knows a project by the content of its file (a SHA-256 value). The list of the last 1,000 files
+is in the settings of this computer, not in the project: a project can't answer for itself.
+
+- A new project is trusted, and a file that you save from a trusted project is known.
+- A copy of a known file is known too, wherever it is.
+- A file that was changed elsewhere, also by a colleague, opens in protected view again.
+- A project that was in **File → Open recent** before Tafl had a protected view opens as before.
+
+`tafl.exe run` and `tafl.exe show` have no protected view: you start them on purpose, for one
+project, and they calculate it at once ([chapter 12](#12-running-projects-on-a-schedule)). Read a
+project in the window before you run it there.
 
 ## 4. Actions
 
@@ -790,8 +857,10 @@ table.
 
 - **Read**: *One file* or *All files in a folder* (see [All files of a folder](#all-files-of-a-folder)
   and [chapter 11](#11-days-without-data-and-a-daily-inbox)).
-- **Delimiter**, **Encoding** and **Decimal separator**: *Detect automatically*, or the one the
-  file uses.
+- **Delimiter**: *Detect automatically*, *Semicolon ;*, *Comma ,*, *Tab* or *Pipe |*.
+- **Encoding**: *Detect automatically*, *UTF-8*, *Windows (ANSI)*, *Latin-1 (ISO-8859-1)* or
+  *UTF-16*.
+- **Decimal separator**: *Detect automatically*, or the one the file uses.
 - **First row has the column names** (on); off, the columns are *Column 1*, *Column 2*, …
 - **Skip lines at the top**: for a title line above the column names.
 - **Detect numbers and dates** (on): a column becomes an integer, number, date or date-time
@@ -813,7 +882,7 @@ OpenDocument spreadsheet (ods), or the workbooks of a folder.
 - **Read**: as for CSV. For a folder, add `;*.ods` to **File names** to read ods files too.
 - **Sheets**: *One sheet* (**Sheet**: empty = the first sheet), *All sheets*, or *Sheets whose name
   matches* (**Sheet names**, e.g. `2025*` or `Jan;Feb`). With several sheets, a column **Sheet**
-  names the sheet of each row.
+  names the sheet of each row; **Add a column with the sheet name** turns it off.
 - **Row with the column names** (`1`): the rows above it are skipped; `0` = no header row.
 - **Whole numbers as integers** and **Date-times at midnight as dates** (both on): Excel stores
   every number as a decimal number and every date as a date-time. These turn columns with only
@@ -1326,8 +1395,9 @@ or Excel file is replaced only when the new one is complete.
 
 **Export to CSV / text file** writes a delimited text **File** `*`.
 
-- **Delimiter** (*Semicolon ;*), **Encoding** (*UTF-8 with BOM (Excel opens it correctly)*) and
-  **Decimal separator** (*Comma: 1234,56*).
+- **Delimiter** (*Semicolon ;*; also *Comma ,*, *Tab* and *Pipe |*), **Encoding** (*UTF-8 with BOM
+  (Excel opens it correctly)*; also *UTF-8* and *Windows (ANSI)*) and **Decimal separator** (*Comma:
+  1234,56*).
 - **Date format** (`dd.mm.yyyy`) and **Date-time format** (`dd.mm.yyyy hh:mm:ss`).
 - **Write column names** (on), **Put every value in quotes** (off).
 
@@ -1335,10 +1405,16 @@ The defaults give `10001;01001;27.02.2026;82,03;geliefert`, which Excel opens di
 regional settings. For a program that wants `2026-02-27` and `82.03`, choose *Point: 1234.56* and
 `yyyy-mm-dd`. Decimal numbers get at most 15 significant digits, as in Excel.
 
+A CSV file is for programs. Tafl writes every value as it is, and a spreadsheet program that opens
+the file can read a cell that starts with `=` as a formula, also when the text comes from outside,
+for example from a web form. For a file that people open, use **Export to Excel file**: there, text
+stays text.
+
 **Export to Excel file** writes an `.xlsx` **File** `*` with a **Sheet name**, as an Excel table:
 **If the file exists** (*Replace the whole file* or *Replace only this sheet, keep the other
 sheets*), header and table style, and formats for dates and numbers, also for single columns.
-Details: [chapter 9](#export-a-formatted-excel-file).
+Text stays text, exactly as it is: `=1+1` is no formula, and a column of web addresses is not
+clickable in the file. Details: [chapter 9](#export-a-formatted-excel-file).
 
 **Export to database** writes into a table of a **Connection**: add the rows, replace them all or
 those with the same key values, update, or delete, in one transaction. Details:
@@ -1367,7 +1443,8 @@ an error*.
 
 **Rename files** gives the files in **Column with the files** the names in **Column with the new
 names** `*`; they stay in their folder. Calculate the names first, for example `REPLACE([File],
-'.csv', '.done')`.
+'.csv', '.done')`. **If a file of that name is there already** has the same choices as for
+**Copy files**.
 
 **Delete files**: **Delete** *To the Recycle Bin (can be restored)* or *For good (can't be
 undone)*.
@@ -1581,12 +1658,18 @@ example "Orders (derived)".
 - **Double-click a box** to open its table in the table view, or one of its rows to open that
   step.
 - **Select several boxes** with Ctrl+click, or hold Shift and drag a rectangle around them.
-- **Right-click a box** for its menu. **Add step** adds a step after the table's selected step
-  (at the end if none is selected). **Turn table off** and **Delete…** work as in the Tables
-  panel ([chapter 3](#the-tables-panel)).
+- **Right-click a box** for its menu. **Open in table view** opens the table. **Add step** adds a
+  step after the table's selected step (at the end if none is selected). **New table starting from
+  this one** adds a table next to the box that starts from it. **Group** adds the table to a group
+  or a **New group…**, and **Remove from group** takes it out. **Turn table off** and **Delete…**
+  work as in the Tables panel ([chapter 3](#the-tables-panel)).
+- **Right-click one of several selected boxes**: the menu starts with **Group these 3 tables…** and
+  **Turn these 3 tables off** (or on), and **Group** and **Delete…** take all of them.
 
 Right-click the empty background for **New table here**: the table appears where you clicked, in
-the group whose frame you clicked in.
+the group whose frame you clicked in. The same menu has **Group the 3 selected tables…** when
+tables are selected, **Collapse all groups**, **Expand all groups**, **Arrange automatically** and
+**Show all**.
 
 ![The right-click menu of a table on the map](guide/map-box-menu.png)
 
@@ -1606,11 +1689,12 @@ on the map to jump to it".
 The **group bar** above the map has a chip per group, for example `1  Sources (3)`. Click a chip, or
 press its number (1 to 9), to jump to the group; 0 shows everything again. The keys work anywhere on
 the map, but not while you type in a field. A chip that shows `✗ 2` has two tables with errors.
+When not all chips fit, the arrows ◀ and ▶ beside them show the others.
 
-Right-click a chip, or a frame's title, to collapse the group, select its tables, add the selected
-tables to it, rename it, change its **Color**, **Turn all its tables off**, or **Ungroup (the
-tables stay)**. Drag a box into a frame to add it to the group, or out of the frame to take it
-out; drag a frame by its title to move the whole group.
+Right-click a chip, or a frame's title, to **Jump to group**, collapse the group, select its
+tables, add the selected tables to it, rename it, change its **Color**, **Turn all its tables
+off**, or **Ungroup (the tables stay)**. Drag a box into a frame to add it to the group, or out
+of the frame to take it out; drag a frame by its title to move the whole group.
 
 The pictures of this section and the next show a bigger version of the demo: seven tables in the
 groups *Sources*, *Reports* and *Checks*.
@@ -1887,9 +1971,12 @@ FROM customers
 WHERE City <> 'Wien'
 ```
 
-Filter big tables in the query: only the rows you need are read. Imports run while you edit, so
-Tafl rolls back whatever a query changes (on SQL Server, a query that commits by itself keeps its
-changes). Numbers keep all their digits.
+Filter big tables in the query: only the rows you need are read. Numbers keep all their digits.
+
+Imports run while you edit, so they must change nothing. A SQLite file is opened for reading only:
+a query that changes data stops with a message, and so do `ATTACH` and a PRAGMA that does more than
+read. On SQL Server, Tafl rolls back whatever a query changes, but a query that commits by itself
+keeps its changes ([Projects from other people](#projects-from-other-people)).
 
 A program that stops during a change leaves a SQLite file unfinished. An import only reads, so it
 doesn't repair the file: it says so, and the file stays as it is. To repair the file, open it once
@@ -1961,7 +2048,8 @@ how to replace one sheet of a workbook, and how to read all files of a folder.
 
 **Export → Export to Excel file** writes the table as an Excel table, with a bold and frozen
 header row, filter buttons and fitting column widths (each can be turned off), and an optional
-**Table style** with banded rows. The table is named after the sheet.
+**Table style** with banded rows: *Light grey*, *Light blue*, *Medium blue*, *Medium green* or
+*Medium orange*. The table is named after the sheet.
 
 Formats use Excel's codes. **Date format**, **Date-time format**, **Whole number format** and
 **Decimal number format** apply to all columns of a type; **Formats for single columns** to one
@@ -1977,11 +2065,13 @@ way:
   stays as it was. A missing folder is created.
 - A sheet holds 1,048,575 rows below its header: a bigger table stops the export (filter it, or
   export to CSV). Texts longer than 32,767 characters are cut, with a warning.
-- A sheet name has at most 31 characters, without `[ ] : * ? / \`.
+- A sheet name has at most 31 characters, without `[ ] : * ? / \`, and it can't start or end with
+  `'`.
 - An Excel table can't tell `Name` from `NAME`: with two such column names, the export stops
   before it changes a file. Add a **Rename columns** step for one of them.
-- Text stays text, exactly as it is, in the cells and in the column names: `=1+1` is text and no
-  formula, and a web address is text and no clickable link.
+- Text stays text, exactly as it is, in the cells and in the column names, also when only one
+  sheet is replaced: `=1+1` is text and no formula, and a web address is text and no clickable
+  link, so a column of web addresses is not clickable in the file.
 
 ### Replace only one sheet
 
@@ -1989,7 +2079,8 @@ A report workbook often has a data sheet and other sheets with formulas, charts 
 built on it. With **If the file exists**: **Replace only this sheet, keep the other sheets**, the
 export writes only its sheet; everything else in the workbook stays as it is.
 
-The example is `examples\excel-check.tafl` in the Tafl folder. Its table *Data* keeps the orders
+The example is `examples\excel-check.tafl` in the Tafl folder. It opens in protected view: click
+**Trust this project** once, as for [the demo](#open-the-demo). Its table *Data* keeps the orders
 above 500 (161 rows) and exports them to the sheet *Data* of `output/excel-check.xlsx`.
 
 1. Run the export once. When the file doesn't exist yet, it is created with this one sheet.
@@ -2067,8 +2158,8 @@ the project file.
 
 ### Paste data into a sheet
 
-The example is a list of budgets that came in a mail. To try it, open the demo, select these
-lines and press Ctrl+C:
+The example is a list of budgets that came in a mail. To try it, open the demo (the first time,
+click **Trust this project**), select these lines and press Ctrl+C:
 
 ```
 CustomerNo;Name;Budget;Valid from
@@ -2115,7 +2206,8 @@ Tafl reads only the plain text of the clipboard, which is the same for every pro
 A list such as `Müller, Hans` has no other separator, so it is split at its commas. So is a list
 of forms that Tafl doesn't read as numbers: `EUR12,00`, `1,5-2,5`, `100,200,300`. Then **Paste
 as one column**, at the bottom of the window, takes the lines as they are. It is there after a split at semicolons, commas or `|`,
-after a list in a frame and after tabs on only some lines, until the next change.
+after a list in a frame and after tabs on only some lines, until the next change. Undo then takes
+back the whole paste: paste again for the split table.
 
 **Empty sheet**, the next entry of the menu, opens a sheet with 3 columns and 20 rows to type into.
 
@@ -2125,14 +2217,14 @@ after a list in a frame and after tabs on only some lines, until the next change
 |---|---|
 | Change a cell | Type: the text replaces the cell. F2 or a double-click keeps the text. Enter applies and goes down, Tab goes right, Esc cancels. |
 | Put a line break into a cell | Shift+Enter while you edit the cell. |
-| Paste more data | **Paste** (Ctrl+V) pastes at the selected cell, and the sheet grows when needed. In an empty sheet, Paste at the first cell replaces the sheet, and the first row can become the column names; columns that you named stay, and the data goes into them. **Paste below** pastes below the last row with a value. |
+| Paste more data | **Paste** (Ctrl+V) pastes at the selected cell, and the sheet grows when needed. In an empty sheet whose columns still have their automatic names, Paste at the first cell replaces the sheet, and the first row can become the column names. After you name a column, Paste puts the data into the cells as they are: your names stay, the first pasted row stays data, and the sheet keeps its rows. **Paste below** pastes below the last row with a value. |
 | Write one value into many cells | Select the cells, then **Fill…**. Or edit one of them and press Ctrl+Enter. **Paste** of one value does the same. |
 | Copy cells down or to the right | Ctrl+D copies the top row of the selection into the rows below it, Ctrl+R the left column into the columns on its right. With one row or column selected, the one above or on the left is copied. |
-| Clear cells | Del. |
+| Clear cells | Del. Right-click a cell for **Copy**, **Paste**, **Fill…** and **Clear** too. |
 | Add rows and columns | **+ Row** adds a row below the selected cell, **+ Column** a column to its right. Right-click a cell or a row header for **Insert row above** and **Insert row below**, a column header for **Insert column left** and **Insert column right**. Enter in the last row adds a row, and so does Tab at its end. |
 | Delete rows and columns | **Delete rows** and **Delete columns** delete those of the selected cells. |
 | Rename a column | Double-click its name, or right-click it and choose **Rename…**. With **First row has the column names** on, this changes the first row. |
-| Take back a change | **Undo** (Ctrl+Z) and **Redo** (Ctrl+Y), up to 100 changes back. A sheet has an undo of its own: the undo of the project doesn't touch it. |
+| Take back a change | **Undo** (Ctrl+Z) and **Redo** (Ctrl+Y or Ctrl+Shift+Z), up to 100 changes back. A sheet has an undo of its own: the undo of the project doesn't touch it. |
 
 Ctrl+C copies the selected cells as the data panel does it, for pasting into Excel or into another
 sheet. All keys are in [Keyboard shortcuts](#keyboard-shortcuts).
@@ -2260,6 +2352,10 @@ the file with a new time counts as a change as well. Then **Open in sheet** is s
 
 Until you add a new sheet as a table, its data is only in that window: Tafl keeps no copy, and it
 is gone if the app crashes. A `•` in the title bar marks a sheet with unsaved data.
+
+A known limit: a small, unusual file can end the program. A damaged Excel or Parquet file of a few
+kilobytes can make Tafl close at once while it reads the file, without a question. An unsaved sheet
+is then lost. So add a sheet as a table before you open a file or a project that you don't know.
 
 - Closing a sheet with unsaved data asks first: **Add as table…**, **Don't keep** or **Cancel**.
   After **Edit in sheet**, it asks **Save**, **Don't save** or **Cancel**.
@@ -2447,7 +2543,8 @@ table stops, its exports don't run, and the run fails with exit code 1.
 `tafl.exe`, next to `tafl-app.exe` in the Tafl folder, runs a project without the window: it
 calculates the tables, writes the exports and runs the commands, as **Run project** (F5) does.
 The Windows Task Scheduler can start it every day. It runs the project file as it is saved, so
-save your changes first (Ctrl+S).
+save your changes first (Ctrl+S). It has no [protected view](#projects-from-other-people): you
+start it on purpose, for one project, so it calculates at once.
 
 ### The command line program
 
@@ -2488,9 +2585,10 @@ export or command that didn't run), `·` not run because of an earlier error, `�
 | `… --table NAME` | Runs only this table and the tables it uses, with their exports and commands. Several `--table` for several tables. |
 | `… --preview` | Calculates only: exports and commands say "(runs only when the project is run)" and write nothing. |
 | `… --set Name=value` | Gives a parameter another value for this run ([chapter 7](#7-parameters)). |
-| `tafl.exe show PROJECT --table NAME --step N --rows 20` | Prints the steps of a table and the first 20 rows after step N (without `--step`: the last step). |
+| `tafl.exe show PROJECT --table NAME --step N --rows 20` | Prints the steps of a table and the first 20 rows after step N (without `--step`: the last step). It takes `--set` too. |
 | `tafl.exe plugins` | Lists the plugins and their actions ([chapter 13](#13-plugins)). |
 | `tafl.exe --help`, `tafl.exe run --help` | The commands, or the options and exit codes of one. |
+| `tafl.exe --version` | Prints the version. |
 
 For example, `tafl.exe run examples\demo.tafl --table "Revenue by customer"` also runs *Orders*
 and *Customers*, which that table uses, and writes their exports too. And
@@ -2509,6 +2607,9 @@ In PowerShell, write `.\tafl.exe`, and put `&` before a program path in quotes:
 | 2 | Nothing ran: the project file doesn't exist ("Error: There is no project file …"), `--table` or `--set` names no table or parameter of the project, or an option is wrong. |
 | 3 | The run stopped before its end, usually because the computer ran out of memory. The output and the file `%LOCALAPPDATA%\Tafl\tafl.log` say at which step. What ran before it stays done; the steps after it did not run. |
 | 130 | Stopped with Ctrl+C. The output shows what ran before the stop. |
+
+`tafl.exe show` has the same codes without 3: 0 also for a table that is turned off, 1 when the
+table has an error.
 
 The exit code of the last command: `echo %ERRORLEVEL%` in a command prompt, `$LASTEXITCODE` in
 PowerShell.
@@ -2720,6 +2821,7 @@ On the command line, the failed step has a `✗` with the message below it, and 
 
 | Message | What to do |
 |---|---|
+| "Protected view: nothing is calculated until you trust this project." | Not an error. Read the project, then click **Trust this project** in the bar at the top ([Projects from other people](#projects-from-other-people)). |
 | "Not complete yet: fill in Other table, …" (a grey-blue step, *incomplete*) | Fill in the settings it names. A run counts an incomplete step as an error. |
 | "Waits for “Orders”, whose step 9 is not complete yet" (a grey-blue table, *waiting*) | Fill in that step of the other table. |
 | "This step runs when you run the project (F5). Nothing is written while you edit." | Not an error: exports and commands run only with **Run project** (F5) or **Run this table** (Shift+F5). |
@@ -2795,6 +2897,6 @@ of the repository → **Report a vulnerability**.
 | Formula window | Enter starts a new line, Ctrl+Enter applies, Esc cancels |
 | Data panel | Ctrl+C copies the selected cells, Ctrl+A selects all |
 | Filter pane | Enter applies the selected values |
-| Data sheet | Ctrl+V paste at the selected cell, Ctrl+C copy, Ctrl+X cut, Del clear, Ctrl+Z undo, Ctrl+Y redo, Ctrl+D fill down, Ctrl+R fill right, Ctrl+A select all, Ctrl+Space the whole columns of the selection, Shift+Space the whole rows, Ctrl+S **Add as table…** or **Save**; typing or F2 edits a cell |
+| Data sheet | Ctrl+V paste at the selected cell, Ctrl+C copy, Ctrl+X cut, Del clear, Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo, Ctrl+D fill down, Ctrl+R fill right, Ctrl+A select all, Ctrl+Space the whole columns of the selection, Shift+Space the whole rows, Ctrl+S **Add as table…** or **Save**; typing or F2 edits a cell |
 | Cell of a data sheet | Enter applies and goes down, Tab goes right, Shift+Tab left, Shift+Enter starts a new line, Ctrl+Enter writes the text into all selected cells, Esc cancels |
 | Project map | Ctrl+F find a table, Ctrl+G group the selected tables, 1–9 jump to a group, 0 show all, H show what the selected table uses and what uses it, F2 rename, Del delete, Esc clear the search, the selection and the highlight, Ctrl + mouse wheel zoom |
