@@ -184,7 +184,7 @@ def fill(df, p, ctx):
                     f"'{p.value}' has too many decimal places for the values of column '{name}' (e.g. {example}): "
                     f"an exact decimal holds {_DECIMAL_DIGITS} digits, decimal places included"
                 )
-            updates.append(column.fill_null(value).alias(name))
+            updates.append(column.fill_null(_for_polars(value, df.schema[name])).alias(name))
         else:
             updates.append(column.fill_null(strategy="forward" if p.method == "down" else "backward").alias(name))
     return df.with_columns(updates)
@@ -222,8 +222,8 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
         if isinstance(dtype, pl.Decimal):  # values the column can't hold aren't in it
             values = [v for v in (_on_scale(v, dtype.scale) for v in values) if v is not None]
         elif dtype.is_integer():  # the same for whole numbers: not 1,5, and 300 not for an Int8
-            low, high = pl.select(low=dtype.min(), high=dtype.max()).row(0)
-            values = [int(v) for v in values if v.is_integer() and low <= v <= high]
+            low, high = _limits(dtype)
+            values = [v for v in values if isinstance(v, int) and low <= v <= high]
         listed = pl.Series(values, dtype=dtype).implode() if dtype.is_integer() else values
         found = column.is_in(listed) if values else pl.lit(False)
         return found if op == "in" else (~found).fill_null(True)
@@ -235,8 +235,14 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
     if isinstance(value, Decimal):
         compared = _decimal_comparison(column, op, value, dtype.scale)
     else:
-        compared = _COMPARE[op](column, value)
+        compared = _COMPARE[op](column, _for_polars(value, dtype))
     return compared.fill_null(True) if op == "!=" else compared
+
+
+def _for_polars(value: Any, dtype: pl.DataType) -> Any:
+    """A typed value as Polars takes it: a Python number only below 2^127, so a higher one (only
+    ``_whole`` gives those, for a UInt128 column) needs the column's type."""
+    return pl.lit(value, dtype=dtype) if isinstance(value, int) and value >= 2**127 else value
 
 
 def _decimal_comparison(column: pl.Expr, op: str, value: Decimal, scale: int) -> pl.Expr:
@@ -295,7 +301,7 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
             exact = dtypes.parse_decimal(value, _decimal_of(value))
             return number if exact is None else exact
         if dtype.is_integer() and number.is_integer():  # all digits, also beyond 15
-            whole = dtypes.parse_integers(pl.Series([value]), _decimal_of(value))[0]
+            whole = _whole(value, dtype)
             return number if whole is None else whole
         return number
     if dtype == pl.Date or dtype == pl.Datetime:
@@ -326,6 +332,23 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
             raise ActionError(f"'{text}' is not true/false (column '{column}')")
         return parsed
     return text
+
+
+def _whole(value: str, dtype: pl.DataType) -> int | None:
+    """A typed whole number with all its digits. None when it has decimal places, or when neither
+    an Int64 nor the column can hold it: it is then beyond all values of the column."""
+    number = dtypes.parse_decimal(value, _decimal_of(value))
+    if number is None or number != number.to_integral_value():
+        return None
+    if -(2**63) <= number < 2**63:
+        return int(number)
+    low, high = _limits(dtype)
+    return int(number) if low <= number <= high else None
+
+
+def _limits(dtype: pl.DataType) -> tuple[int, int]:
+    """The lowest and the highest value of a whole-number column."""
+    return pl.select(low=dtype.min(), high=dtype.max()).row(0)
 
 
 def _decimal_of(value: str) -> str:

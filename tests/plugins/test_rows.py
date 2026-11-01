@@ -248,6 +248,68 @@ def test_lists_of_long_whole_numbers(act):
     assert names(flt(act, wide, ("Code", "in", f"2; {2**70}"))) == ["a", "b"]  # a list Polars can't build by itself
 
 
+LONG = [12345678901234567890, 12345678901234567891, 18446744073709551615, 7, None]  # beyond an Int64
+
+
+@pytest.mark.parametrize("dtype", [pl.UInt64, pl.Int128, pl.UInt128])
+def test_whole_numbers_beyond_int64_keep_all_their_digits(act, dtype):
+    """Before, they became decimal numbers: lists lost them without a word, and = found the row next to it too."""
+    df = pl.DataFrame({"Name": list("abcde"), "V": pl.Series(LONG, dtype=dtype)})
+    assert names(flt(act, df, ("V", "in", "12345678901234567890"))) == ["a"]
+    assert names(flt(act, df, ("V", "not_in", "12345678901234567890"))) == ["b", "c", "d", "e"]
+    assert names(flt(act, df, ("V", "in", "18446744073709551615; 7"))) == ["c", "d"]
+    assert names(flt(act, df, ("V", "not_in", "18446744073709551615; 7"))) == ["a", "b", "e"]
+    assert names(flt(act, df, ("V", "=", "12345678901234567890"))) == ["a"]
+    assert names(flt(act, df, ("V", "!=", "12345678901234567890"))) == ["b", "c", "d", "e"]
+    assert names(flt(act, df, ("V", ">", "12345678901234567890"))) == ["b", "c"]
+    assert names(flt(act, df, ("V", "<=", "12345678901234567890"))) == ["a", "d"]
+    filled = act("rows.fill", df, {"columns": ["V"], "method": "value", "value": "12345678901234567892"})
+    assert filled.schema["V"] == dtype and filled["V"][4] == 12345678901234567892
+
+
+def test_the_limits_of_wide_whole_numbers(act):
+    wide = pl.DataFrame({"Name": ["low", "high", "b"], "V": pl.Series([-(2**127), 2**127 - 1, 7], dtype=pl.Int128)})
+    assert names(flt(act, wide, ("V", "in", f"{-(2**127)}; {2**127 - 1}"))) == ["low", "high"]
+    assert names(flt(act, wide, ("V", "=", str(2**127 - 1)))) == ["high"]
+    assert names(flt(act, wide, ("V", "in", f"{2**127}; {-(2**127) - 1}"))) == []
+    highest = pl.DataFrame({"Name": ["high", "b", "c"], "V": pl.Series([2**128 - 1, 2**127 + 5, None], dtype=pl.UInt128)})
+    assert names(flt(act, highest, ("V", "in", str(2**128 - 1)))) == ["high"]
+    assert names(flt(act, highest, ("V", "=", str(2**127 + 5)))) == ["b"]
+    assert names(flt(act, highest, ("V", "<", str(2**128 - 1)))) == ["b"]
+    assert act("rows.fill", highest, {"columns": ["V"], "method": "value", "value": str(2**127 + 6)})["V"][2] == 2**127 + 6
+
+
+@pytest.mark.parametrize("dtype", [pl.Int8, pl.Int64, pl.UInt64, pl.Int128, pl.UInt128])
+@pytest.mark.parametrize("value", ["1e39", "1e300", "-1e39", str(2**128), str(2**200)])
+def test_whole_numbers_beyond_every_column(act, dtype, value):
+    """Polars takes no such Python number: they stay decimal numbers, and are beyond all values."""
+    df = pl.DataFrame({"Name": ["a", "b"], "V": pl.Series([1, None], dtype=dtype)})
+    assert names(flt(act, df, ("V", "=", value))) == []
+    assert names(flt(act, df, ("V", "!=", value))) == ["a", "b"]
+    assert names(flt(act, df, ("V", "<", value))) == ([] if value.startswith("-") else ["a"])
+    assert names(flt(act, df, ("V", ">", value))) == (["a"] if value.startswith("-") else [])
+    assert names(flt(act, df, ("V", "in", value))) == []
+    assert names(flt(act, df, ("V", "not_in", value))) == ["a", "b"]
+
+
+def test_a_decimal_number_in_many_digits_is_no_whole_number(act):
+    """A Float64 has no room for its decimal places: it can't be the value before or after it."""
+    cells = [9007199254740993, 9007199254740994, 12345678901234567168, 12345678901234567890, 5]
+    df = pl.DataFrame({"Name": list("abcde"), "V": pl.Series(cells, dtype=pl.UInt64)})
+    assert names(flt(act, df, ("V", "in", "9007199254740993,5"))) == []
+    assert names(flt(act, df, ("V", "in", "12345678901234567890.5"))) == []
+    assert names(flt(act, df, ("V", "not_in", "12345678901234567890.5"))) == list("abcde")
+    assert names(flt(act, df, ("V", "in", "5,0; 0." + "0" * 60 + "1"))) == ["e"]
+
+
+def test_filling_a_whole_number_column(act):
+    """What the column can hold keeps its type, other values widen it as they always did."""
+    df = pl.DataFrame({"V": pl.Series([1, None], dtype=pl.Int8)})
+    for value, dtype, cell in [("7", pl.Int8, 7), ("300", pl.Int16, 300), ("1,5", pl.Float64, 1.5), ("1e30", pl.Float64, 1e30), (str(2**64), pl.Float64, 2.0**64)]:
+        filled = act("rows.fill", df, {"columns": ["V"], "method": "value", "value": value})
+        assert filled.schema["V"] == dtype and filled["V"][1] == cell
+
+
 def test_a_list_with_a_value_the_column_can_not_hold(act):
     df = pl.DataFrame({"Name": ["a", "b"], "Qty": pl.Series([1, 2], dtype=pl.Int8)})
     assert names(flt(act, df, ("Qty", "in", "1; 300; -1"))) == ["a"]
