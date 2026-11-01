@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 SHOWN = 1000  # characters a one-line label works with at most: more never fit on a screen
 _TIP_WIDTH = 100  # characters per line of a tooltip
 _TIP_LINES = 12
+CELL_TIP_LINES = 40  # lines of the tooltip of a cell: the grid shows 500 characters, the rest is read here
 
 
 def shortened(text: str, limit: int) -> str:

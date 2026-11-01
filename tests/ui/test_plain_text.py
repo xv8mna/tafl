@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QToolTip,
+    QWidget,
 )
 
 from tafl import crash
@@ -28,8 +29,11 @@ from tafl.api import Kind
 from tafl.ui import app, labels
 from tafl.ui.checks import checks
 from tafl.ui.connections_dialog import ConnectionsDialog
+from tafl.ui.filter_pane import _Values
+from tafl.ui.filters import COUNT, VALUE, Filter
 from tafl.ui.forms import ExpressionEditor
-from tafl.ui.labels import WrappedLabel, plain_html, tooltip_text
+from tafl.ui.frame_model import FrameModel
+from tafl.ui.labels import CELL_TIP_LINES, WrappedLabel, plain_html, tooltip_text
 from tafl.ui.map.items import GroupFrame, GroupNode, TableNode
 from tafl.ui.parameters_dialog import ParametersDialog
 from tafl.ui.sheet_window import SheetWindow, ask, problem
@@ -506,6 +510,28 @@ def test_the_tooltip_of_a_long_list_keeps_all_its_lines(qapp):
     lines = "\n".join(f"table {number}" for number in range(30))
     assert reads(tooltip_text(lines, 30)) == lines
     assert len(reads(tooltip_text(lines)).splitlines()) == 12 and reads(tooltip_text(lines)).endswith("…")
+
+
+NOTE = "\n".join(f"Line {number}: a note on the order" for number in range(1, 21))
+
+
+def test_the_tooltip_of_a_cell_has_what_the_grid_leaves_out(qapp):
+    words = "A long comment on a customer and more " * 80
+    model = FrameModel()
+    model.set_frame(pl.DataFrame({"Note": [NOTE, words, "x" * 9000]}))
+
+    def tip(row: int) -> str:
+        return reads(model.data(model.index(row, 0), Qt.ItemDataRole.ToolTipRole))
+
+    assert tip(0) == NOTE and tip(1).replace("\n", " ") == words.strip()
+    assert len(tip(2).splitlines()) == CELL_TIP_LINES and tip(2).endswith("…")
+
+
+def test_the_tooltip_of_a_value_in_a_filter_has_all_its_lines(qapp):
+    holder = QWidget()
+    model = _Values(holder)
+    model.set_values(pl.DataFrame({VALUE: [NOTE], COUNT: [1]}), 1, Filter(column="Note"), str)
+    assert reads(model.data(model.index(0, 0), Qt.ItemDataRole.ToolTipRole)) == NOTE
 
 
 def test_a_box_takes_its_informative_text_as_it_is_too(qapp):
