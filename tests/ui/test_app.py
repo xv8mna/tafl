@@ -103,6 +103,19 @@ def test_a_damaged_project_shows_a_message_and_the_window_stays_usable(window, m
     assert window.open_path(demo) and window.session.project.name == "Demo"
 
 
+def test_a_project_nested_too_deeply_shows_a_message_and_the_window_stays_usable(window, monkeypatch, tmp_path, demo):
+    """Before, a filter or a setting of some hundred levels stopped each calculation with a RecursionError."""
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *rest: warnings.append(text))
+    data = json.loads(demo.read_text(encoding="utf-8"))
+    data["tables"][0]["filters"] = [{"column": "City", "values": "VALUE"}]
+    deep = tmp_path / "deep.tafl"
+    deep.write_text(json.dumps(data).replace('"VALUE"', "[" * 500 + '"x"' + "]" * 500), encoding="utf-8")
+    assert not window.open_path(deep)
+    assert warnings == [f"Could not open {deep}:\n\nThe project file deep.tafl is damaged: its data is nested too deeply"]
+    assert window.open_path(demo) and window.session.project.name == "Demo"
+
+
 def test_a_damaged_project_given_at_the_start_leaves_the_app_open(start, monkeypatch, tmp_path):
     """E.g. a project file dropped onto the program."""
     warnings = []

@@ -148,6 +148,44 @@ def test_binary_or_too_deeply_nested_files_are_refused(tmp_path):
         Project.load(deep)
 
 
+def nested(levels: int, inner=1):
+    for _ in range(levels):
+        inner = [inner]
+    return inner
+
+
+NESTED_PLACES = [
+    pytest.param(lambda data, value: data["tables"][0].update(filters=[{"column": "A", "values": value}]), id="filter values"),
+    pytest.param(lambda data, value: data["tables"][0].update(filters=[{"column": value}]), id="filter column"),
+    pytest.param(lambda data, value: data["tables"][0].update(filters=[{"column": "A", "options": {"x": value}}]), id="filter options"),
+    pytest.param(lambda data, value: data["tables"][0]["steps"][0]["params"].update(file=value), id="step setting"),
+    pytest.param(lambda data, value: data["tables"][0].update(note=value), id="note"),
+    pytest.param(lambda data, value: data.update(other={"a": [{"b": value}]}), id="elsewhere"),
+]
+
+
+@pytest.mark.parametrize("change", NESTED_PLACES)
+@pytest.mark.parametrize("levels", [150, 500, 5000])
+def test_data_nested_too_deeply_is_refused(tmp_path, change, levels):
+    """A copy of the project recurses into all of it, so at some hundred levels it stopped with
+    a RecursionError on each calculation. No project needs more than a few levels."""
+    data = sample_project().to_dict()
+    change(data, "VALUE")
+    path = tmp_path / "deep.tafl"
+    path.write_text(json.dumps(data).replace('"VALUE"', "[" * levels + "1" + "]" * levels), encoding="utf-8")
+    with pytest.raises(ProjectError) as caught:
+        Project.load(path)
+    assert str(caught.value) == "The project file deep.tafl is damaged: its data is nested too deeply"
+
+
+def test_data_nested_a_few_levels_opens(tmp_path):
+    data = sample_project().to_dict()
+    data["tables"][0]["filters"] = [{"column": "A", "values": nested(50)}]
+    path = tmp_path / "nested.tafl"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert Project.load(path).tables[0].filters == [{"column": "A", "values": nested(50)}]
+
+
 def test_a_project_file_with_a_byte_order_mark_opens(tmp_path):
     """Some editors (e.g. Notepad of older Windows versions) write UTF-8 with a BOM."""
     data = sample_project().to_dict()

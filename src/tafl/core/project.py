@@ -16,6 +16,7 @@ from tafl.api import Action
 FORMAT = "tafl-project"
 FORMAT_VERSION = 1
 EXTENSION = ".tafl"
+_MAX_NESTING = 100  # a project needs a few levels; a copy of it recurses, and stops at some hundred
 
 
 class ProjectError(Exception):
@@ -325,6 +326,8 @@ class Project:
             data = json.loads(text)
         except (ValueError, RecursionError) as e:  # ValueError includes json.JSONDecodeError
             raise ProjectError(f"The project file {file.name} is damaged: {e}") from e
+        if _nested_too_deeply(data):
+            raise ProjectError(f"The project file {file.name} is damaged: its data is nested too deeply")
         try:
             return cls.from_dict(data, path=file)
         except ProjectError:
@@ -353,6 +356,16 @@ class Project:
             for step in table.steps:
                 if not step.id:
                     step.id = self._new_id("s")
+
+
+def _nested_too_deeply(data: Any) -> bool:
+    """Whether lists and objects go deeper than ``_MAX_NESTING`` levels. It goes through them
+    level by level: recursing is what such data stops."""
+    level = [data]
+    for _ in range(_MAX_NESTING + 1):
+        inner = [part.values() if isinstance(part, dict) else part for part in level if isinstance(part, (dict, list))]
+        level = [value for values in inner for value in values]
+    return bool(level)
 
 
 def _content_problem(data: Any) -> str | None:
