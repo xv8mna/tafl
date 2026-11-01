@@ -58,6 +58,21 @@ def test_the_test_only_reads(session, qtbot, tmp_path, leave_journal):
     assert named.exists() and (tmp_path / "a.db-journal").exists()
 
 
+def test_the_test_leaves_a_wal_file_beside_an_empty_file(session, qtbot, tmp_path):
+    database, wal = tmp_path / "a.db", tmp_path / "a.db-wal"
+    database.write_bytes(b"")
+    wal.write_text("rows", encoding="utf-8")
+    session.project.connections = [Connection("a", "sqlite", {"file": str(database)})]
+    dialog = ConnectionsDialog(session)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.list.setCurrentRow(0)
+    dialog._test()
+    qtbot.waitUntil(lambda: dialog.test_button.isEnabled(), timeout=10_000)
+    assert "the file a.db-wal lies beside it" in dialog.test_result.toPlainText()
+    assert wal.read_text(encoding="utf-8") == "rows"
+
+
 def test_the_test_says_how_many_tables_and_views(session, qtbot, tmp_path):
     for name, tables in (("one.db", ["a"]), ("two.db", ["a", "b"])):
         with closing(sqlite3.connect(tmp_path / name)) as db:

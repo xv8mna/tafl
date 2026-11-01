@@ -818,11 +818,20 @@ class SQLite(Connector):
     def connect_read_only(self, settings, ctx):
         """Nothing is written, also not by the recovery after an interrupted change, which SQLite
         starts on the first read (a journal that came with the file can name any file to delete).
-        A WAL database is read with its -wal file, which stays as it is. No ATTACH: SQLite opens
-        an attached file for writing, also from a read-only connection. Only PRAGMAs that read."""
+        A WAL database is read with its -wal file, which stays as it is. An empty file with a -wal
+        file beside it stops here: for SQLite that -wal file belongs to no database, and it deletes
+        it on the first read, also from a read-only connection. No ATTACH: SQLite opens an
+        attached file for writing, also from a read-only connection. Only PRAGMAs that read."""
         path = ctx.resolve_path(settings.file)
         if not path.is_file():
             raise ActionError(f"SQLite file not found: {path}")
+        wal = Path(f"{path}-wal")
+        if path.stat().st_size == 0 and wal.exists():
+            raise ActionError(
+                f"This SQLite file is empty, and the file {wal.name} lies beside it. SQLite would delete that file on "
+                f"the first read, so {APP_NAME} doesn't open the database. Put the complete database file back, or move "
+                f"{wal.name} to another folder."
+            )
         connection = sqlite3.connect(_read_only_uri(path), uri=True, autocommit=False)
         connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
         connection.set_authorizer(_authorize_reading)

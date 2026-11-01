@@ -180,6 +180,34 @@ def test_a_wal_database_without_its_other_files(project, registry, tmp_path):
     assert database.read_bytes() == before
 
 
+@pytest.mark.parametrize("mode", ["preview", "run"])
+def test_an_empty_file_keeps_the_wal_file_beside_it(project, registry, tmp_path, mode):
+    """SQLite deletes a -wal file beside a database without pages on the first read, also from a
+    read-only connection: here all rows of a copy that failed, or a file with another use."""
+    database, wal = tmp_path / "data.db", tmp_path / "data.db-wal"
+    _wal_database(database)
+    database.write_bytes(b"")
+    before = wal.read_bytes()
+    table = project.add_table("Look")
+    project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": "SELECT 1 AS a"})
+    result = Engine(project, registry).evaluate(table.id, mode=mode)
+    assert result.first_error == (
+        "This SQLite file is empty, and the file data.db-wal lies beside it. SQLite would delete that file on the "
+        "first read, so Tafl doesn't open the database. Put the complete database file back, or move data.db-wal to "
+        "another folder."
+    )
+    assert database.read_bytes() == b"" and wal.read_bytes() == before
+
+
+def test_an_empty_file_is_an_empty_database(project, registry, tmp_path):
+    database, journal = tmp_path / "data.db", tmp_path / "data.db-journal"
+    database.write_bytes(b"")
+    journal.write_text("a file with another use", encoding="utf-8")
+    assert import_table(project, registry, mode="query", query="SELECT 1 AS a").df["a"].to_list() == [1]
+    assert "no such table: orders" in import_table(project, registry, table="orders").first_error
+    assert database.read_bytes() == b"" and journal.read_text(encoding="utf-8") == "a file with another use"
+
+
 def test_a_wal_database_that_a_program_has_open(project, registry, tmp_path):
     """An import sees what the program has committed so far, and leaves the program alone."""
     with closing(sqlite3.connect(tmp_path / "data.db", autocommit=True)) as con:
