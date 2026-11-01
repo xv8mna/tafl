@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -43,7 +42,7 @@ from tafl.core import Group, Link
 from .. import theme
 from ..action_menu import fill_action_menu, fill_new_table_menu
 from ..data_panel import DataPanel
-from ..labels import ElidedLabel, plain_html, tooltip_text
+from ..labels import ElidedLabel, message_box, tooltip_text
 from ..session import Session, count
 from ..settings_panel import SettingsPanel
 from ..steps_panel import StepsPanel
@@ -1156,7 +1155,7 @@ class MapView(QWidget):
             try:
                 self.session.rename_table(table_id, name)
             except ValueError as e:
-                QMessageBox.warning(self, "Rename table", plain_html(str(e)))
+                message_box(self, "Rename table", str(e))
 
     def delete_tables(self, table_ids: list[str]) -> None:
         if len(table_ids) == 1:
@@ -1164,7 +1163,7 @@ class MapView(QWidget):
             return
         names = ", ".join(self.session.project.table(t).name for t in table_ids)
         text = f"Delete these {len(table_ids)} tables?\n\n{names}\n\n(Edit → Undo brings them back.)"
-        if QMessageBox.question(self, "Delete tables", plain_html(text)) == QMessageBox.StandardButton.Yes:
+        if message_box(self, "Delete tables", text, question=True):
             self.session.delete_tables(table_ids)
 
     # --- finding and jumping -----------------------------------------------------------------

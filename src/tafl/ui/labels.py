@@ -3,7 +3,8 @@ never ask for more room than they need, so a long text can't make the window wid
 
 Text from a project or a data file is plain text everywhere. Qt reads a label, a tooltip or a message
 box with a tag in it as HTML, and then loads the images the tag names, also from another computer.
-So a label that takes such text is PlainText, and what can't be told so gets ``plain_html``."""
+So a label or a box that takes such text is PlainText, and a tooltip, which can't be told so, gets
+``plain_html``."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import textwrap
 from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
+from PySide6.QtWidgets import QLabel, QMessageBox, QSizePolicy, QWidget
 
 SHOWN = 1000  # characters a one-line label works with at most: more never fit on a screen
 _TIP_WIDTH = 100  # characters per line of a tooltip
@@ -25,15 +26,14 @@ def shortened(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def plain_html(text: str, wrap: bool = True) -> str:
-    """``text`` for a tooltip or a message box of QMessageBox.warning and the like, which look for HTML
-    by themselves: as HTML that reads exactly as ``text``, with its spaces and line breaks. The <p> makes
-    sure that Qt takes it as HTML: an escaped text alone would show &amp;. With ``wrap`` long lines wrap
-    at the spaces, as in a plain text; without it the lines stay as they are. No text stays no text (an
-    empty paragraph would be an empty tooltip)."""
+def plain_html(text: str) -> str:
+    """``text`` for a tooltip, which looks for HTML by itself: as HTML that reads exactly as ``text``,
+    with its spaces and line breaks; the lines stay as they are. The <p> makes sure that Qt takes it as
+    HTML: an escaped text alone would show &amp;. No text stays no text (an empty paragraph would be an
+    empty tooltip)."""
     if not text:
         return ""
-    return f"<p style='white-space:{'pre-wrap' if wrap else 'pre'}'>{html.escape(text, quote=False)}</p>"
+    return f"<p style='white-space:pre'>{html.escape(text, quote=False)}</p>"
 
 
 def tooltip_text(text: str, most_lines: int = _TIP_LINES) -> str:
@@ -45,7 +45,22 @@ def tooltip_text(text: str, most_lines: int = _TIP_LINES) -> str:
         lines += textwrap.wrap(paragraph, _TIP_WIDTH, break_on_hyphens=False) or [""]
     if len(lines) > most_lines:
         lines = [*lines[: most_lines - 1], lines[most_lines - 1].rstrip("…") + "…"]
-    return plain_html("\n".join(lines), wrap=False)
+    return plain_html("\n".join(lines))
+
+
+def message_box(parent: QWidget | None, title: str, text: str, question: bool = False) -> bool:
+    """A warning with OK, or with ``question`` a question with Yes and No, that takes ``text`` as it is:
+    QMessageBox.warning and QMessageBox.question can't be told so, and HTML in them would also be what
+    Ctrl+C copies from the box. Returns whether the answer is Yes."""
+    button = QMessageBox.StandardButton
+    icon = QMessageBox.Icon.Question if question else QMessageBox.Icon.Warning
+    box = QMessageBox(icon, title, "", button.Yes | button.No if question else button.Ok, parent)
+    box.setTextFormat(Qt.TextFormat.PlainText)
+    box.setText(text)
+    box.exec()
+    answer = box.standardButton(box.clickedButton())
+    box.deleteLater()
+    return answer == button.Yes
 
 
 class ElidedLabel(QLabel):

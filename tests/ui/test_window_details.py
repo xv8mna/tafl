@@ -11,7 +11,6 @@ from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox, QToolBar,
 from tafl.core import Connection, Project, Status, StepResult, TableResult
 from tafl.ui import theme
 from tafl.ui.connections_dialog import ConnectionsDialog
-from tafl.ui.labels import plain_html
 from tafl.ui.session import Session
 from tafl.ui.settings_panel import SettingsPanel
 
@@ -47,11 +46,11 @@ def test_an_empty_name_is_refused(window, session, demo, monkeypatch):
     orders = session.project.table("Orders")
     group = session.add_group("Inputs", [orders.id])
     warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text: warnings.append(text))
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: warnings.append(box.text()))
     panel = window.tables_panel
     item = next(i for i in panel._table_items() if i.text(0) == "Orders")
     item.setText(0, "   ")  # what typing over the name does
-    assert item.text(0) == "Orders" and orders.name == "Orders" and warnings == [plain_html("A table needs a name")]
+    assert item.text(0) == "Orders" and orders.name == "Orders" and warnings == ["A table needs a name"]
     item = next(i for i in panel._table_items() if i.text(0) == "Orders")
     item.setText(0, " Orders ")  # the same name: no rename, the name is shown as it is
     assert item.text(0) == "Orders" and len(warnings) == 1
@@ -60,7 +59,7 @@ def test_an_empty_name_is_refused(window, session, demo, monkeypatch):
     assert group_item.text(0) == "Inputs" and session.project.group(group.id).name == "Inputs"
     monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("", True))
     window.map_view.rename_table(orders.id)  # on the map
-    assert orders.name == "Orders" and warnings[-1] == plain_html("A table needs a name")
+    assert orders.name == "Orders" and warnings == ["A table needs a name"] * 2
 
 
 def test_map_keys_work_from_the_panels_beside_it(window, settle, session, demo):

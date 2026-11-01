@@ -52,6 +52,7 @@ def main() -> None:
 
     for name in ("question", "warning", "critical", "information"):
         setattr(QMessageBox, name, staticmethod(lambda *a, **k: print("message box:", *a[1:3], file=sys.stderr)))
+    QMessageBox.exec = lambda box: print("message box:", box.windowTitle(), box.text(), file=sys.stderr)
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, tempfile.mkdtemp())
     QApplication.setOrganizationName(f"{APP_NAME} Screenshot")

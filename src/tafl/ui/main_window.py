@@ -38,7 +38,7 @@ from .checks import checks
 from .connections_dialog import ConnectionsDialog
 from .data_panel import DataPanel
 from .find_panel import FindPanel
-from .labels import plain_html, tooltip_text
+from .labels import message_box, tooltip_text
 from .map import MapView
 from .parameters_dialog import ParametersDialog
 from .run_panel import RunPanel
@@ -307,7 +307,7 @@ class MainWindow(QMainWindow):
         try:
             upgraded = self.session.open_project(path)
         except (ProjectError, OSError) as e:
-            QMessageBox.warning(self, "Open project", plain_html(f"Could not open {path}:\n\n{e}"))
+            message_box(self, "Open project", f"Could not open {path}:\n\n{e}")
             return False
         self._remember(Path(path))
         message = f"Opened {Path(path).name}"
@@ -338,7 +338,7 @@ class MainWindow(QMainWindow):
         try:
             saved = self.session.save_project(path)
         except (ProjectError, OSError) as e:
-            QMessageBox.warning(self, "Save project", plain_html(f"Could not save {path}:\n\n{e}"))
+            message_box(self, "Save project", f"Could not save {path}:\n\n{e}")
             return False
         self._remember(saved)
         self._update_title()

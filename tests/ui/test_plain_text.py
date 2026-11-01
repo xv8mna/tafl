@@ -10,9 +10,10 @@ from pathlib import Path
 import polars as pl
 import pytest
 import xlsxwriter
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QGuiApplication, QTextDocument
 from PySide6.QtGui import Qt as GuiQt
-from PySide6.QtGui import QTextDocument
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tafl import crash
+from tafl import APP_NAME, crash
 from tafl.api import Kind
 from tafl.ui import app, labels
 from tafl.ui.checks import checks
@@ -33,7 +34,7 @@ from tafl.ui.filter_pane import _Values
 from tafl.ui.filters import COUNT, VALUE, Filter
 from tafl.ui.forms import ExpressionEditor
 from tafl.ui.frame_model import FrameModel
-from tafl.ui.labels import CELL_TIP_LINES, WrappedLabel, plain_html, tooltip_text
+from tafl.ui.labels import CELL_TIP_LINES, WrappedLabel, message_box, plain_html, tooltip_text
 from tafl.ui.map.items import GroupFrame, GroupNode, TableNode
 from tafl.ui.parameters_dialog import ParametersDialog
 from tafl.ui.sheet_window import SheetWindow, ask, problem
@@ -187,6 +188,7 @@ class Survey:
     def __init__(self) -> None:
         self.found: dict[str, str] = {}
         self.where = ""
+        self.titles: set[str] = set()  # of the boxes looked at
 
     def note(self, kind: str, text: str) -> None:
         self.found.setdefault(kind, f"{self.where}: {text[:70]}")
@@ -249,6 +251,7 @@ def boxes(monkeypatch):
     survey = Survey()
 
     def shown(box) -> None:
+        survey.titles.add(box.windowTitle())
         for label in box.findChildren(QLabel):
             survey.label(label, f"message box “{box.windowTitle()}”")
 
@@ -438,6 +441,7 @@ def test_no_message_box_reads_a_name_as_html(marked_window, session, boxes, tmp_
     app._report_stopped(window, [crash.Stopped([stopped])])
     app._excepthook(window)(ValueError, ValueError(marked("unexpected")), None)
     assert not survey.found, survey.found
+    assert survey.titles >= {"Delete table", "Delete tables", "Rename table", "Open project", "Save project", f"{APP_NAME} stopped the last time"}
 
 
 # --- normal text stays as it is -------------------------------------------------------------------
@@ -466,8 +470,7 @@ def reads(rich: str) -> str:
     ],
 )
 def test_normal_text_reads_as_it_is(qapp, text):
-    assert GuiQt.mightBeRichText(plain_html(text)) and reads(plain_html(text)) == text
-    assert reads(plain_html(text, wrap=False)) == reads(tooltip_text(text)) == text
+    assert GuiQt.mightBeRichText(plain_html(text)) and reads(plain_html(text)) == reads(tooltip_text(text)) == text
     label = WrappedLabel(text)
     assert label.text() == text and label.textFormat() == Qt.TextFormat.PlainText
 
@@ -501,9 +504,18 @@ def test_a_path_in_a_tooltip_stays_on_one_line(qapp):
     assert tip_height(tooltip_text("D:/Data/2026-01/sales-2026-01.csv")) == tip_height(tooltip_text("short"))
 
 
-def test_a_long_text_wraps_in_a_box_as_a_plain_one_does(qapp):
+def test_a_long_text_wraps_in_a_box_as_a_plain_one_does(qapp, monkeypatch):
     text = "Could not open D:/some/folder/project.tafl:\n\nThe project file is damaged: " + "words and words " * 20
-    assert box_width(plain_html(text)) == box_width(text)
+    widths = []
+
+    def shown(box) -> None:
+        box.show()
+        widths.append(box.width())
+        box.close()
+
+    monkeypatch.setattr(QMessageBox, "exec", shown)
+    message_box(None, "Title", text)
+    assert widths == [box_width(text)]
 
 
 def test_the_tooltip_of_a_long_list_keeps_all_its_lines(qapp):
@@ -534,6 +546,84 @@ def test_the_tooltip_of_a_value_in_a_filter_has_all_its_lines(qapp):
     assert reads(model.data(model.index(0, 0), Qt.ItemDataRole.ToolTipRole)) == NOTE
 
 
+# --- message boxes ---------------------------------------------------------------------------------
+
+
+def copy_from(box) -> None:
+    """Ctrl+C in the box, as it opens. The clipboard of the offscreen platform stays in this process."""
+    assert QGuiApplication.platformName() == "offscreen"
+    box.show()
+    QTest.keyClick(box, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    box.close()
+
+
+def test_ctrl_c_in_a_box_copies_the_text_as_it_reads(window, monkeypatch, tmp_path):
+    monkeypatch.setattr(QMessageBox, "exec", copy_from)
+    folder = tmp_path / "Müller & Söhne"
+    folder.mkdir()
+    broken = folder / "sales 2026.tafl"
+    broken.write_text('{"format": "tafl-project", "tables": "a < b"}', encoding="utf-8")
+    assert not window.open_path(broken)
+    copied = QGuiApplication.clipboard().text()
+    assert f"Could not open {broken}:\n\nThe project file sales 2026.tafl is damaged: " in copied and "a < b" in copied
+    assert "<p" not in copied and "&amp;" not in copied and "&lt;" not in copied
+
+
+def test_a_warning_has_its_title_its_text_and_ok(qapp, monkeypatch):
+    seen = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append(box))
+    assert message_box(None, "Title", "a < b & c\r\nnext line") is False
+    box = seen[0]
+    assert (box.windowTitle(), box.text()) == ("Title", "a < b & c\r\nnext line")
+    assert box.icon() == QMessageBox.Icon.Warning and box.textFormat() == Qt.TextFormat.PlainText
+    assert box.standardButtons() == QMessageBox.StandardButton.Ok
+
+
+@pytest.mark.parametrize("key, yes", [(Qt.Key.Key_Return, True), (Qt.Key.Key_Enter, True), (Qt.Key.Key_Escape, False)])
+def test_a_question_answers_as_a_key_says(qapp, monkeypatch, key, yes):
+    """As QMessageBox.question does: Enter is Yes, Escape is No."""
+
+    def press(box) -> None:
+        box.show()
+        QTest.keyClick(box, key)
+        box.close()
+
+    monkeypatch.setattr(QMessageBox, "exec", press)
+    assert message_box(None, "Title", "Sure?", question=True) is yes
+
+
+def test_a_question_nobody_answers_is_no(qapp, monkeypatch):
+    seen = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: seen.append(box))
+    assert message_box(None, "Title", "Sure?", question=True) is False
+    assert seen[0].icon() == QMessageBox.Icon.Question and seen[0].textFormat() == Qt.TextFormat.PlainText
+
+
+def test_a_box_goes_when_it_is_answered(window, monkeypatch, qapp):
+    """It has the window as parent: it would stay with it for as long as the window is open."""
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: None)
+    before = len(window.findChildren(QMessageBox))
+    message_box(window, "Title", "Text")
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert len(window.findChildren(QMessageBox)) == before
+
+
+def test_a_table_goes_only_after_yes(window, session, settle, demo, monkeypatch):
+    window.open_path(demo)
+    settle(session)
+    tables = [table.id for table in session.project.tables]
+    answer = QMessageBox.StandardButton.No
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: box.button(answer).click())
+    confirm_delete_table(window, session, tables[0])
+    window.map_view.delete_tables(tables[:2])
+    assert [table.id for table in session.project.tables] == tables
+    answer = QMessageBox.StandardButton.Yes
+    confirm_delete_table(window, session, tables[0])
+    assert [table.id for table in session.project.tables] == tables[1:]
+    window.map_view.delete_tables(tables[1:])
+    assert session.project.tables == []
+
+
 def test_a_box_takes_its_informative_text_as_it_is_too(qapp):
     """Qt gives the informative text the format of the box, in either order: the boxes count on that."""
     for first, second in (("setTextFormat", "setInformativeText"), ("setInformativeText", "setTextFormat")):
@@ -547,11 +637,11 @@ def test_a_box_takes_its_informative_text_as_it_is_too(qapp):
 # --- the rule in the source -----------------------------------------------------------------------
 
 UI = Path(labels.__file__).parent
-HELPERS = ("tooltip_text", "plain_html")
+HELPERS = ("tooltip_text", "plain_html")  # for a tooltip: a static box takes fixed text only
 BOXES = ("warning", "question", "critical", "information")  # not about: its text is the program's own
 
 
-def clean(node: ast.expr | None) -> bool:
+def clean(node: ast.expr | None, helpers: tuple[str, ...] = HELPERS) -> bool:
     """Whether a text can't hold a name: it is written in the code, or it passed a helper."""
     match node:
         case None | ast.Constant():
@@ -559,11 +649,11 @@ def clean(node: ast.expr | None) -> bool:
         case ast.JoinedStr(values=values):
             return all(isinstance(value, ast.Constant) for value in values)
         case ast.IfExp(body=first, orelse=second) | ast.BinOp(left=first, right=second):
-            return clean(first) and clean(second)
+            return clean(first, helpers) and clean(second, helpers)
         case ast.BoolOp(values=values):
-            return all(clean(value) for value in values)
+            return all(clean(value, helpers) for value in values)
         case ast.Call(func=ast.Name(id=name)):
-            return name in HELPERS
+            return name in helpers
     return False
 
 
@@ -604,7 +694,7 @@ def faults(source: str) -> list[str]:
             case ast.Call(func=ast.Attribute(attr="setToolTip"), args=[*_, text]) if not clean(text):
                 fault(node)
             case ast.Call(func=ast.Attribute(value=ast.Name(id="QMessageBox"), attr=name), args=[_, _, text, *_]) if (
-                name in BOXES and not clean(text)
+                name in BOXES and not clean(text, ())
             ):
                 fault(node)
             case ast.If(test=test, body=body) if asks_for_tooltip(test):
@@ -642,6 +732,7 @@ def test_text_on_its_way_to_html_passes_the_helper(file):
         'w.setToolTip("Table" if off else name)',
         'QMessageBox.warning(self, "Title", str(e))',
         'QMessageBox.question(self, "Title", f"Delete {name}?")',
+        'QMessageBox.warning(self, "Title", plain_html(str(e)))',
         "if role == Qt.ItemDataRole.ToolTipRole:\n    return name",
         "if role == Qt.ItemDataRole.ToolTipRole and big:\n    return name if name else None",
         'def ask():\n    box = QMessageBox(icon, "Title", name)\n    box.exec()',
@@ -663,7 +754,7 @@ def test_the_source_test_sees_a_text_that_didn_t_pass_the_helper(source):
         "w.setToolTip(tooltip_text(name))",
         "item.setToolTip(0, tooltip_text(name))",
         'QMessageBox.warning(self, "Title", "Fixed")',
-        'QMessageBox.warning(self, "Title", plain_html(str(e)))',
+        'message_box(self, "Title", str(e))',
         'QMessageBox.about(self, "Title", f"<b>{APP_NAME}</b>")',
         "if role == Qt.ItemDataRole.ToolTipRole:\n    return tooltip_text(name) or None",
         'def ask():\n    box = QMessageBox(icon, "Title", name)\n    box.setTextFormat(Qt.TextFormat.PlainText)',

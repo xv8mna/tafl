@@ -16,7 +16,7 @@ from tafl import APP_FOLDER, APP_NAME, COMMAND, crash
 from tafl.core import Registry, Status
 
 from . import theme
-from .labels import plain_html
+from .labels import message_box
 from .main_window import MainWindow
 from .session import Session
 
@@ -103,7 +103,7 @@ def _report_stopped(window: QWidget, stopped: list[crash.Stopped], dialogs: bool
         text = report.says(f"{APP_NAME} stopped")
         log.error("%s\n%s", text, report.errors)
         if dialogs:
-            QMessageBox.warning(window, f"{APP_NAME} stopped the last time", plain_html(text))
+            message_box(window, f"{APP_NAME} stopped the last time", text)
 
 
 def _check_problems(session: Session) -> list[str]:

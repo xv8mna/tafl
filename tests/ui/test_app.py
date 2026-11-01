@@ -9,7 +9,6 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from tafl import APP_FOLDER, APP_NAME, COMMAND, crash
 from tafl.core import Engine
 from tafl.ui import app as app_module
-from tafl.ui.labels import plain_html
 from tafl.ui.main_window import MainWindow
 from tafl.ui.session import Session
 
@@ -57,7 +56,7 @@ def test_the_next_start_says_why_the_program_ended(start, monkeypatch, tmp_path,
     (folder / "running-1.txt").write_text("memory allocation of 196656 bytes failed\n", encoding="utf-8")
     shown = []
     monkeypatch.setattr(
-        QMessageBox, "warning", lambda parent, title, text, *rest: shown.append((title, text, parent.session.project.path))
+        QMessageBox, "exec", lambda box: shown.append((box.windowTitle(), box.text(), box.parent().session.project.path))
     )
     code, window = start(demo)
     text = (
@@ -65,7 +64,7 @@ def test_the_next_start_says_why_the_program_ended(start, monkeypatch, tmp_path,
         "1.0 GB was free when the step started."
     )
     assert code == 0 and window.session.project.name == "Demo"
-    assert shown == [(f"{APP_NAME} stopped the last time", plain_html(text), None)]
+    assert shown == [(f"{APP_NAME} stopped the last time", text, None)]
     logged = (folder / f"{COMMAND}.log").read_text(encoding="utf-8")
     assert text in logged and "memory allocation of 196656 bytes failed" in logged
     assert list(folder.glob("running-*")) == []
@@ -96,31 +95,44 @@ def test_open_dialogs_offer_project_files():
 
 def test_a_damaged_project_shows_a_message_and_the_window_stays_usable(window, monkeypatch, tmp_path, demo):
     warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *rest: warnings.append(text))
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: warnings.append(box.text()))
     broken = tmp_path / "broken.tafl"
     broken.write_text(BROKEN, encoding="utf-8")
     assert not window.open_path(broken)
-    assert warnings == [plain_html(f"Could not open {broken}:\n\nThe project file broken.tafl is damaged: {PROBLEM}")]
+    assert warnings == [f"Could not open {broken}:\n\nThe project file broken.tafl is damaged: {PROBLEM}"]
     assert window.open_path(demo) and window.session.project.name == "Demo"
+
+
+def test_a_project_that_can_t_be_saved_shows_a_message(window, session, monkeypatch, tmp_path):
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: warnings.append(box.text()))
+
+    def no_room(*args):
+        raise OSError("no room on the disk")
+
+    monkeypatch.setattr(session, "save_project", no_room)
+    path = tmp_path / "saved.tafl"
+    assert not window._save_to(path)
+    assert warnings == [f"Could not save {path}:\n\nno room on the disk"]
 
 
 def test_a_project_nested_too_deeply_shows_a_message_and_the_window_stays_usable(window, monkeypatch, tmp_path, demo):
     """Before, a filter or a setting of some hundred levels stopped each calculation with a RecursionError."""
     warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *rest: warnings.append(text))
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: warnings.append(box.text()))
     data = json.loads(demo.read_text(encoding="utf-8"))
     data["tables"][0]["filters"] = [{"column": "City", "values": "VALUE"}]
     deep = tmp_path / "deep.tafl"
     deep.write_text(json.dumps(data).replace('"VALUE"', "[" * 500 + '"x"' + "]" * 500), encoding="utf-8")
     assert not window.open_path(deep)
-    assert warnings == [plain_html(f"Could not open {deep}:\n\nThe project file deep.tafl is damaged: its data is nested too deeply")]
+    assert warnings == [f"Could not open {deep}:\n\nThe project file deep.tafl is damaged: its data is nested too deeply"]
     assert window.open_path(demo) and window.session.project.name == "Demo"
 
 
 def test_a_damaged_project_given_at_the_start_leaves_the_app_open(start, monkeypatch, tmp_path):
     """E.g. a project file dropped onto the program."""
     warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *rest: warnings.append(text))
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: warnings.append(box.text()))
     broken = tmp_path / "broken.tafl"
     broken.write_text(BROKEN, encoding="utf-8")
     code, window = start(broken)

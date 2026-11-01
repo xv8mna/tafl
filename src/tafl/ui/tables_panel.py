@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMenu,
-    QMessageBox,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -22,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .action_menu import fill_new_table_menu
-from .labels import plain_html, tooltip_text
+from .labels import message_box, tooltip_text
 from .session import Session, first_error, missing_settings, size_text, waiting_text
 
 _KIND = Qt.ItemDataRole.UserRole  # "table" or "group"
@@ -213,7 +212,7 @@ class TablesPanel(QWidget):
             self.session.rename_table(ident, item.text(0))
         except ValueError as e:
             self._show_name(item, old)
-            QMessageBox.warning(self, "Rename table", plain_html(str(e)))
+            message_box(self, "Rename table", str(e))
             return
         if self.session.project.table(ident).name == old:
             self._show_name(item, old)
@@ -311,5 +310,5 @@ def confirm_delete_table(parent: QWidget, session: Session, table_id: str) -> No
     if users:
         text += "\n\nThese tables use it and will show an error: " + ", ".join(t.name for t in users)
     text += "\n\n(Edit → Undo brings it back.)"
-    if QMessageBox.question(parent, "Delete table", plain_html(text)) == QMessageBox.StandardButton.Yes:
+    if message_box(parent, "Delete table", text, question=True):
         session.delete_table(table_id)
