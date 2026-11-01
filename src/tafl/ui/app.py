@@ -9,13 +9,14 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from tafl import APP_FOLDER, APP_NAME, COMMAND, crash
 from tafl.core import Registry, Status
 
 from . import theme
+from .labels import plain_html
 from .main_window import MainWindow
 from .session import Session
 
@@ -102,7 +103,7 @@ def _report_stopped(window: QWidget, stopped: list[crash.Stopped], dialogs: bool
         text = report.says(f"{APP_NAME} stopped")
         log.error("%s\n%s", text, report.errors)
         if dialogs:
-            QMessageBox.warning(window, f"{APP_NAME} stopped the last time", text)
+            QMessageBox.warning(window, f"{APP_NAME} stopped the last time", plain_html(text))
 
 
 def _check_problems(session: Session) -> list[str]:
@@ -162,6 +163,7 @@ def _excepthook(window: QWidget, dialogs: bool = True):
         showing = True
         try:
             box = QMessageBox(QMessageBox.Icon.Critical, "Unexpected error", f"{kind.__name__}: {value}", parent=window)
+            box.setTextFormat(Qt.TextFormat.PlainText)
             box.setInformativeText("Details are in the log file (Help → Open log folder).")
             box.setDetailedText(text)
             box.exec()

@@ -6,6 +6,7 @@ import pytest
 
 from tafl.core import Project, Status, StepResult, TableResult
 from tafl.ui import theme
+from tafl.ui.labels import tooltip_text
 from tafl.ui.steps_panel import _ROLE as CARD
 
 WAITING = "waits for “Orders”, whose step 11 is not complete yet"
@@ -35,7 +36,7 @@ def test_a_table_that_uses_an_incomplete_one_waits_for_it(window, settle, sessio
     assert session.table_status(revenue.id) == "waiting"  # calculated again without being selected
     name, number, needed = session.waits_for(revenue.id)
     assert (name, number) == ("Orders", 11) and "Other table" in needed
-    assert table_item(window, "Revenue by customer").toolTip(0) == "W" + WAITING[1:]
+    assert table_item(window, "Revenue by customer").toolTip(0) == tooltip_text("W" + WAITING[1:])
 
     session.select_table(revenue.id)
     session.select_step(revenue.steps[0].id)
@@ -64,7 +65,7 @@ def test_undo_refreshes_the_tables_that_use_the_table(window, settle, session, d
     session.undo()
     settle(session)
     assert session.table_id == orders.id and session.table_status(revenue.id) == "ok"
-    assert table_item(window, "Revenue by customer").toolTip(0).endswith(" columns")  # its size, not the old message
+    assert " columns" in table_item(window, "Revenue by customer").toolTip(0)  # its size, not the old message
 
 
 def test_a_real_error_in_a_used_table_is_still_an_error(window, settle, session, demo):
@@ -170,7 +171,7 @@ def test_reload_data_refreshes_every_table(window, settle, session, two_inputs):
     session.reload_sources()
     settle(session)
     assert session.table_status(folder.id) == "ok" and session.table_status(orders.id) == "ok"
-    assert table_item(window, "Folder").toolTip(0).startswith("1 row")
+    assert "1 row" in table_item(window, "Folder").toolTip(0)
 
 
 def test_selecting_a_table_calculates_nothing_else_again(window, settle, session, two_inputs, monkeypatch):

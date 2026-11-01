@@ -38,6 +38,7 @@ from .checks import checks
 from .connections_dialog import ConnectionsDialog
 from .data_panel import DataPanel
 from .find_panel import FindPanel
+from .labels import plain_html, tooltip_text
 from .map import MapView
 from .parameters_dialog import ParametersDialog
 from .run_panel import RunPanel
@@ -140,7 +141,7 @@ class MainWindow(QMainWindow):
         action.triggered.connect(slot)
         if shortcut is not None:
             action.setShortcut(shortcut)
-        action.setToolTip(tip or text)
+        action.setToolTip(tooltip_text(tip or text))
         action.setStatusTip(tip)
         return action
 
@@ -306,7 +307,7 @@ class MainWindow(QMainWindow):
         try:
             upgraded = self.session.open_project(path)
         except (ProjectError, OSError) as e:
-            QMessageBox.warning(self, "Open project", f"Could not open {path}:\n\n{e}")
+            QMessageBox.warning(self, "Open project", plain_html(f"Could not open {path}:\n\n{e}"))
             return False
         self._remember(Path(path))
         message = f"Opened {Path(path).name}"
@@ -337,7 +338,7 @@ class MainWindow(QMainWindow):
         try:
             saved = self.session.save_project(path)
         except (ProjectError, OSError) as e:
-            QMessageBox.warning(self, "Save project", f"Could not save {path}:\n\n{e}")
+            QMessageBox.warning(self, "Save project", plain_html(f"Could not save {path}:\n\n{e}"))
             return False
         self._remember(saved)
         self._update_title()
@@ -357,6 +358,7 @@ class MainWindow(QMainWindow):
     def ask_save(self, reason: str) -> str:
         """Save / Don't save / Cancel: returns "save", "discard" or "cancel"."""
         box = QMessageBox(QMessageBox.Icon.Question, "Save changes?", "", parent=self)
+        box.setTextFormat(Qt.TextFormat.PlainText)
         box.setText(f"Save the changes to “{self._project_name()}” {reason}?")
         box.setInformativeText("If you don't save, your changes since the last save are lost.")
         save = box.addButton("Save", QMessageBox.ButtonRole.AcceptRole)
@@ -370,6 +372,7 @@ class MainWindow(QMainWindow):
     def confirm_overwrite(self, path: Path) -> bool:
         """The project file changed since this window opened or saved it: save over it?"""
         box = QMessageBox(QMessageBox.Icon.Warning, "Save project", "", parent=self)
+        box.setTextFormat(Qt.TextFormat.PlainText)
         box.setText(f"“{path.name}” has changed since it was opened or saved here, for example in another window.")
         box.setInformativeText(
             "Saving replaces those changes with the project as it is in this window. "
@@ -384,6 +387,7 @@ class MainWindow(QMainWindow):
 
     def confirm(self, title: str, text: str, ok: str) -> bool:
         box = QMessageBox(QMessageBox.Icon.Question, title, text, parent=self)
+        box.setTextFormat(Qt.TextFormat.PlainText)
         yes = box.addButton(ok, QMessageBox.ButtonRole.AcceptRole)
         no = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(yes)
@@ -678,6 +682,7 @@ class MainWindow(QMainWindow):
     def _show_error(self, text: str) -> None:
         log.error("Unexpected error in a background task:\n%s", text)
         box = QMessageBox(QMessageBox.Icon.Critical, "Unexpected error", text.strip().splitlines()[-1], parent=self)
+        box.setTextFormat(Qt.TextFormat.PlainText)
         box.setDetailedText(text)
         box.exec()
 
@@ -733,6 +738,7 @@ class MainWindow(QMainWindow):
         """Closing during a run: "wait" (close when it is finished), "stop" (stop it, then close)
         or "cancel" (keep the window open)."""
         box = QMessageBox(QMessageBox.Icon.Question, "Close", "The project is running.", parent=self)
+        box.setTextFormat(Qt.TextFormat.PlainText)
         box.setInformativeText(
             "Wait until the run is finished, or stop it after the step that is running? The window closes then."
         )

@@ -32,6 +32,7 @@ from tafl.core import functions
 from tafl.core.functions import CATEGORIES, CURSOR, MORE, Function
 
 from . import theme
+from .labels import tooltip_text
 
 _ALL = "All"
 
@@ -165,8 +166,8 @@ class FunctionsPanel(QWidget):
         for function in found:
             row = QTreeWidgetItem([function.name, function.summary])
             row.setData(0, Qt.ItemDataRole.UserRole, function)
-            row.setToolTip(0, function.name)
-            row.setToolTip(1, function.summary)
+            row.setToolTip(0, tooltip_text(function.name))
+            row.setToolTip(1, tooltip_text(function.summary))
             if function.category == MORE:
                 row.setForeground(0, QColor(theme.TEXT_DIM))
             rows.append(row)
@@ -281,6 +282,7 @@ class FunctionsWindow(QWidget):
         self.copy_button = QPushButton("Copy the example", self)
         self.copy_button.clicked.connect(self.copy_example)
         self.hint = QLabel(self)
+        self.hint.setTextFormat(Qt.TextFormat.PlainText)
         self.hint.setObjectName("Dim")
         buttons = QHBoxLayout()
         buttons.addWidget(self.hint, 1)

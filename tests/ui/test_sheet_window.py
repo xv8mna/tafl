@@ -14,6 +14,7 @@ from tafl.core import Parameter
 from tafl.core import sheet as sheet_module
 from tafl.core.sheet import Pasted, Sheet
 from tafl.ui import data_panel, sheet_window
+from tafl.ui.labels import tooltip_text
 from tafl.ui.sheet_window import AddSheetDialog, SheetModel, SheetWindow
 
 CTRL = Qt.KeyboardModifier.ControlModifier
@@ -984,7 +985,7 @@ def test_menus_and_toolbar_texts(sheets):
         "Delete columns",
         "Fill…",
     ]
-    assert opened.paste_action.toolTip() == "Paste the clipboard at the selected cell (Ctrl+V)"
+    assert opened.paste_action.toolTip() == tooltip_text("Paste the clipboard at the selected cell (Ctrl+V)")
     assert opened.main_button.text() == "Add as table…"
 
 

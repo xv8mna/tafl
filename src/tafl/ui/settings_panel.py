@@ -56,6 +56,7 @@ class SettingsPanel(QWidget):
         self._form_host = QVBoxLayout()
         self._form_host.setContentsMargins(0, 0, 0, 0)
         self.description = QLabel(self)
+        self.description.setTextFormat(Qt.TextFormat.PlainText)
         self.description.setObjectName("Dim")
         self.description.setWordWrap(True)
         self.note = QLineEdit(self)

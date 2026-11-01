@@ -2,6 +2,7 @@
 it is, the window can be narrow, and texts in status colors are easy to read."""
 
 import pytest
+from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from tafl.core import Connection, Project, Status, StepResult, TableResult
@@ -35,11 +36,13 @@ def test_a_one_line_label_ends_with_dots_and_never_asks_for_more_room(qtbot):
     assert label.minimumSizeHint().width() == 0 and label.sizeHint().width() == 200
     label.resize(150, 20)
     assert label.text() == text and label.shown_text().endswith("…") and len(label.shown_text()) < len(text)
-    assert label.toolTip() == tooltip_text(text) and max(map(len, label.toolTip().splitlines())) <= 100
+    document = QTextDocument()
+    document.setHtml(label.toolTip())
+    assert label.toolTip() == tooltip_text(text) and max(map(len, document.toPlainText().splitlines())) <= 100
     label.setText("short")
     assert label.shown_text() == "short" and label.toolTip() == ""
     label.set_tooltip("What is missing")
-    assert label.toolTip() == "What is missing"
+    assert label.toolTip() == tooltip_text("What is missing")
     name = ElidedLabel(host, narrowest=100)  # keeps a short name whole, and 100 pixels of a long one
     name.setText("Orders")
     assert 0 < name.minimumSizeHint().width() == name.sizeHint().width() < 100

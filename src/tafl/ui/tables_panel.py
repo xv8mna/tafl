@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .action_menu import fill_new_table_menu
+from .labels import plain_html, tooltip_text
 from .session import Session, first_error, missing_settings, size_text, waiting_text
 
 _KIND = Qt.ItemDataRole.UserRole  # "table" or "group"
@@ -119,7 +120,7 @@ class TablesPanel(QWidget):
                 Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDropEnabled | Qt.ItemFlag.ItemIsEditable
             )
             count = len(project.members(group.id))
-            item.setToolTip(0, f"Group “{group.name}”: {count} table{'s' if count != 1 else ''}. Drag tables here.")
+            item.setToolTip(0, tooltip_text(f"Group “{group.name}”: {count} table{'s' if count != 1 else ''}. Drag tables here."))
             self.tree.addTopLevelItem(item)
             groups[group.id] = item
         for table in project.tables:
@@ -167,19 +168,19 @@ class TablesPanel(QWidget):
             if status == "disabled":
                 item.setToolTip(0, "Turned off: not calculated, its exports don't run (right-click → Turn on)")
             elif result is not None and result.skipped:
-                item.setToolTip(0, f"Not calculated: it {result.skipped}")
+                item.setToolTip(0, tooltip_text(f"Not calculated: it {result.skipped}"))
             elif status == "incomplete" and (failed := first_error(result)) is not None:
                 needed = ", ".join(missing_settings(failed[1]))
-                item.setToolTip(0, f"Step {failed[0]} is not complete yet: fill in {needed}")
+                item.setToolTip(0, tooltip_text(f"Step {failed[0]} is not complete yet: fill in {needed}"))
             elif status == "waiting" and (waiting := self.session.waits_for(table_id)) is not None:
-                item.setToolTip(0, waiting_text(waiting, capital=True))
+                item.setToolTip(0, tooltip_text(waiting_text(waiting, capital=True)))
             elif result is not None and result.df is not None:
                 text = size_text(result.df)
                 if (ended := result.skipped_from) is not None:
                     text += f"\nRest skipped: {ended.skip_reason}"
-                item.setToolTip(0, text)
+                item.setToolTip(0, tooltip_text(text))
             elif result is not None:
-                item.setToolTip(0, result.first_error or "")
+                item.setToolTip(0, tooltip_text(result.first_error or ""))
             else:
                 item.setToolTip(0, "Not calculated yet")
         self.tree.blockSignals(False)
@@ -212,7 +213,7 @@ class TablesPanel(QWidget):
             self.session.rename_table(ident, item.text(0))
         except ValueError as e:
             self._show_name(item, old)
-            QMessageBox.warning(self, "Rename table", str(e))
+            QMessageBox.warning(self, "Rename table", plain_html(str(e)))
             return
         if self.session.project.table(ident).name == old:
             self._show_name(item, old)
@@ -310,5 +311,5 @@ def confirm_delete_table(parent: QWidget, session: Session, table_id: str) -> No
     if users:
         text += "\n\nThese tables use it and will show an error: " + ", ".join(t.name for t in users)
     text += "\n\n(Edit → Undo brings it back.)"
-    if QMessageBox.question(parent, "Delete table", text) == QMessageBox.StandardButton.Yes:
+    if QMessageBox.question(parent, "Delete table", plain_html(text)) == QMessageBox.StandardButton.Yes:
         session.delete_table(table_id)

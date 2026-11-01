@@ -35,6 +35,7 @@ from .completer import FormulaCompleter
 from .formula_style import FormulaHighlighter, bracket_selections
 from .frame_model import FrameModel
 from .functions_window import FunctionsPanel, insert_into
+from .labels import tooltip_text
 
 _DELAY_MS = 300  # check this long after the last key
 
@@ -83,6 +84,7 @@ class FormulaWindow(QDialog):
             lambda: self.editor.setExtraSelections(bracket_selections(self.editor))
         )
         self.status = QLabel(self)
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
         self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.model = FrameModel(self)
@@ -262,7 +264,7 @@ class FormulaWindow(QDialog):
             item = QTreeWidgetItem([column.label, kind])
             item.setData(0, Qt.ItemDataRole.UserRole, column.label)
             if column.written:
-                item.setToolTip(0, f"Now “{column.name}”, with the values of the parameters")
+                item.setToolTip(0, tooltip_text(f"Now “{column.name}”, with the values of the parameters"))
             if column.row is not None:
                 item.setForeground(1, QColor(theme.ACCENT))
             items.append(item)

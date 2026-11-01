@@ -1,8 +1,13 @@
 """Labels for texts of any length (a path, the summary of a step with thousands of values): they
-never ask for more room than they need, so a long text can't make the window wider."""
+never ask for more room than they need, so a long text can't make the window wider.
+
+Text from a project or a data file is plain text everywhere. Qt reads a label, a tooltip or a message
+box with a tag in it as HTML, and then loads the images the tag names, also from another computer.
+So a label that takes such text is PlainText, and what can't be told so gets ``plain_html``."""
 
 from __future__ import annotations
 
+import html
 import textwrap
 from typing import Any
 
@@ -19,15 +24,27 @@ def shortened(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def tooltip_text(text: str) -> str:
-    """A long text for a tooltip: lines of about 100 characters, at most a dozen of them."""
-    text = shortened(text, _TIP_WIDTH * _TIP_LINES)
+def plain_html(text: str, wrap: bool = True) -> str:
+    """``text`` for a tooltip or a message box of QMessageBox.warning and the like, which look for HTML
+    by themselves: as HTML that reads exactly as ``text``, with its spaces and line breaks. The <p> makes
+    sure that Qt takes it as HTML: an escaped text alone would show &amp;. With ``wrap`` long lines wrap
+    at the spaces, as in a plain text; without it the lines stay as they are. No text stays no text (an
+    empty paragraph would be an empty tooltip)."""
+    if not text:
+        return ""
+    return f"<p style='white-space:{'pre-wrap' if wrap else 'pre'}'>{html.escape(text, quote=False)}</p>"
+
+
+def tooltip_text(text: str, most_lines: int = _TIP_LINES) -> str:
+    """Any text for a tooltip, as ``plain_html``: lines of about 100 characters, at most ``most_lines`` of
+    them."""
+    text = shortened(text, _TIP_WIDTH * most_lines)
     lines: list[str] = []
     for paragraph in text.splitlines():
         lines += textwrap.wrap(paragraph, _TIP_WIDTH, break_on_hyphens=False) or [""]
-    if len(lines) > _TIP_LINES:
-        lines = [*lines[: _TIP_LINES - 1], lines[_TIP_LINES - 1].rstrip("…") + "…"]
-    return "\n".join(lines)
+    if len(lines) > most_lines:
+        lines = [*lines[: most_lines - 1], lines[most_lines - 1].rstrip("…") + "…"]
+    return plain_html("\n".join(lines), wrap=False)
 
 
 class ElidedLabel(QLabel):
@@ -93,7 +110,7 @@ class ElidedLabel(QLabel):
         if shown != super().text():
             super().setText(shown)
         cut = shown != self._full
-        self.setToolTip(self._tip or (tooltip_text(self._full) if cut else ""))
+        self.setToolTip(tooltip_text(self._tip or (self._full if cut else "")))
 
 
 class WrappedLabel(QLabel):
@@ -101,9 +118,11 @@ class WrappedLabel(QLabel):
     because of a long word (a path, a long name): that word is cut off at the edge instead."""
 
     def __init__(self, text: str = "", parent: QWidget | None = None, *, narrowest: int = 120) -> None:
-        super().__init__(text, parent)
+        super().__init__(parent)
         self._narrowest = narrowest
+        self.setTextFormat(Qt.TextFormat.PlainText)
         self.setWordWrap(True)
+        self.setText(text)
 
     def minimumSizeHint(self) -> Any:
         hint = super().minimumSizeHint()

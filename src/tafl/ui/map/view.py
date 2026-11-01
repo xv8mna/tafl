@@ -43,7 +43,7 @@ from tafl.core import Group, Link
 from .. import theme
 from ..action_menu import fill_action_menu, fill_new_table_menu
 from ..data_panel import DataPanel
-from ..labels import ElidedLabel
+from ..labels import ElidedLabel, plain_html, tooltip_text
 from ..session import Session, count
 from ..settings_panel import SettingsPanel
 from ..steps_panel import StepsPanel
@@ -361,7 +361,7 @@ class GroupBar(QWidget):
             prefix = f"{number}  " if number <= 9 else ""
             self._texts[group.id] = f"{prefix}{group.name} ({count}){'  ▸' if group.collapsed else ''}"
             key = f" (key {number})" if number <= 9 else ""
-            chip.setToolTip(f"Jump to “{group.name}”{key}\nRight-click: collapse, add the selected tables, turn off…")
+            chip.setToolTip(tooltip_text(f"Jump to “{group.name}”{key}\nRight-click: collapse, add the selected tables, turn off…"))
             chip.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             chip.customContextMenuRequested.connect(
                 lambda pos, g=group.id, c=chip: self.view.group_menu(g, c.mapToGlobal(pos))
@@ -791,7 +791,7 @@ class MapView(QWidget):
         for edge in self.edges:
             if edge.link.target == table.id and (link := now.get((edge.link.source, edge.link.step))) is not None:
                 edge.link = link
-                edge.setToolTip(self._edge_tooltip(link))
+                edge.setToolTip(tooltip_text(self._edge_tooltip(link)))
         if node is not None:
             node.rows = rows
         if self.lineage is not None:
@@ -1156,7 +1156,7 @@ class MapView(QWidget):
             try:
                 self.session.rename_table(table_id, name)
             except ValueError as e:
-                QMessageBox.warning(self, "Rename table", str(e))
+                QMessageBox.warning(self, "Rename table", plain_html(str(e)))
 
     def delete_tables(self, table_ids: list[str]) -> None:
         if len(table_ids) == 1:
@@ -1164,7 +1164,7 @@ class MapView(QWidget):
             return
         names = ", ".join(self.session.project.table(t).name for t in table_ids)
         text = f"Delete these {len(table_ids)} tables?\n\n{names}\n\n(Edit → Undo brings them back.)"
-        if QMessageBox.question(self, "Delete tables", text) == QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, "Delete tables", plain_html(text)) == QMessageBox.StandardButton.Yes:
             self.session.delete_tables(table_ids)
 
     # --- finding and jumping -----------------------------------------------------------------

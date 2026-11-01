@@ -22,6 +22,7 @@ from tafl.ui import session as session_module
 from tafl.ui import sheet_window
 from tafl.ui.action_menu import fill_new_table_menu
 from tafl.ui.forms import FormContext, PathEditor
+from tafl.ui.labels import tooltip_text
 from tafl.ui.session import Session
 from tafl.ui.settings_panel import SettingsPanel
 from tafl.ui.sheet_window import SheetWindow
@@ -133,11 +134,10 @@ def test_the_new_table_menu_starts_with_the_sheets(qapp, registry):
     entries = menu.actions()
     assert [e.text() for e in entries[:2]] == ["Paste from clipboard", "Empty sheet"]
     assert entries[2].isSeparator() and entries[3].text()
-    assert (
-        entries[0].toolTip()
-        == "A sheet with the data you copied, from a spreadsheet program, an ERP system, a web page or a mail"
+    assert entries[0].toolTip() == tooltip_text(
+        "A sheet with the data you copied, from a spreadsheet program, an ERP system, a web page or a mail"
     )
-    assert entries[1].toolTip() == "A sheet to type data into"
+    assert entries[1].toolTip() == tooltip_text("A sheet to type data into")
     entries[0].trigger()
     entries[1].trigger()
     assert sheets == [True, False]

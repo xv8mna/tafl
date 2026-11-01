@@ -69,6 +69,7 @@ from .filters import (
     value_key,
 )
 from .frame_model import DisplayFormat
+from .labels import tooltip_text
 from .session import Session
 
 Index = QModelIndex | QPersistentModelIndex
@@ -172,7 +173,7 @@ class _Values(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             return self.text(item) if index.column() == 0 else f"{count:,}"
         if role == Qt.ItemDataRole.ToolTipRole and index.column() == 0 and len(self.text(item)) > 30:
-            return self.text(item)
+            return tooltip_text(self.text(item))
         if role == Qt.ItemDataRole.ForegroundRole and self.is_excluded(index.row()):
             return QColor(theme.TEXT_DISABLED)
         if role == Qt.ItemDataRole.FontRole and (value is None or value == ""):
@@ -246,10 +247,11 @@ class FilterCard(QFrame):
         self._filter = f
         self.setObjectName("FilterCard")
         self.title = QLabel(f.column, self)
+        self.title.setTextFormat(Qt.TextFormat.PlainText)
         font = QFont(self.title.font())
         font.setBold(True)
         self.title.setFont(font)
-        self.title.setToolTip(f.column)
+        self.title.setToolTip(tooltip_text(f.column))
         self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # long names don't widen the card
         self.mode = QToolButton(self)
         self.mode.setText(f"{FACETS[f.facet]} ▾")
@@ -284,6 +286,7 @@ class FilterCard(QFrame):
         self.search.setPlaceholderText("Search values…")
         self.search.setClearButtonEnabled(True)
         self.links = QLabel(self)
+        self.links.setTextFormat(Qt.TextFormat.RichText)
         self.links.setText(
             " · ".join(
                 f'<a href="{k}" style="color:{theme.ACCENT_TEXT}; text-decoration:none">{k.capitalize()}</a>'
@@ -332,6 +335,7 @@ class FilterCard(QFrame):
             shortcut.activated.connect(self.apply)
 
         self.status = QLabel(self)
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setObjectName("Dim")
         self.status.setWordWrap(True)
         self.apply_button = QPushButton("Apply", self)

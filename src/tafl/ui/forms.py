@@ -57,6 +57,7 @@ from .completer import FormulaCompleter
 from .formula_style import FormulaHighlighter, bracket_selections
 from .formula_window import FormulaWindow
 from .frame_model import DisplayFormat
+from .labels import tooltip_text
 
 _CHECK_DELAY_MS = 300  # a formula is checked this long after the last key
 
@@ -84,7 +85,7 @@ class Editor(QWidget):
         super().__init__(parent)
         self.param = param
         self.ctx = ctx
-        self.setToolTip(param.help)
+        self.setToolTip(tooltip_text(param.help))
 
     def value(self) -> Any:
         raise NotImplementedError
@@ -554,7 +555,7 @@ class ExpressionEditor(Editor):
         if not result.ok and result.fix and result.mistake:
             text += f' · <a href="fix">Write {html.escape(result.fix, quote=False)}</a>'
         self._line = (text, color)
-        self.line.setToolTip(plain + ("\n\nClick to show the mistake in the formula." if result.mistake else ""))
+        self.line.setToolTip(tooltip_text(plain + ("\n\nClick to show the mistake in the formula." if result.mistake else "")))
         self._render()
 
     def _check_failed(self, details: str) -> None:
@@ -803,7 +804,7 @@ class ColumnEditor(Editor):
     def _mark(self) -> None:
         missing = bool(self.value()) and self._columns is not None and self.value() not in self._columns
         _set_missing(self._combo, missing)
-        self._combo.setToolTip("This column is not in the table" if missing else self.param.help)
+        self._combo.setToolTip("This column is not in the table" if missing else tooltip_text(self.param.help))
 
 
 class ColumnsEditor(Editor):
@@ -1218,9 +1219,11 @@ class _ShortLabel(QLabel):
     all of it."""
 
     def __init__(self, text: str, parent: QWidget) -> None:
-        super().__init__(text, parent)
+        super().__init__(parent)
         self._full = text
-        self.setToolTip(text)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setText(text)
+        self.setToolTip(tooltip_text(text))
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
     def minimumSizeHint(self) -> Any:
@@ -1243,7 +1246,7 @@ class _ShortLabel(QLabel):
 def _tool(parent: QWidget, text: str, tip: str, slot: Callable[[], None]) -> QToolButton:
     button = QToolButton(parent)
     button.setText(text)
-    button.setToolTip(tip)
+    button.setToolTip(tooltip_text(tip))
     button.setAutoRaise(True)
     button.setFixedWidth(button.fontMetrics().horizontalAdvance(text) + 10)  # narrow: rows fit a narrow panel
     button.clicked.connect(slot)
@@ -1318,8 +1321,9 @@ class ParamForm(QWidget):
             label = None
             if param.kind != "bool":
                 label = QLabel(param.label + (" *" if param.required else ""), self)
+                label.setTextFormat(Qt.TextFormat.PlainText)
                 label.setWordWrap(True)  # a long label doesn't make the form wider than the panel
-                label.setToolTip(param.help)
+                label.setToolTip(tooltip_text(param.help))
                 layout.addSpacing(4)
                 layout.addWidget(label)
             editor = create_editor(param, ctx, self)
@@ -1328,6 +1332,7 @@ class ParamForm(QWidget):
             hint = None
             if param.help:
                 hint = QLabel(param.help, self)
+                hint.setTextFormat(Qt.TextFormat.PlainText)
                 hint.setObjectName("Dim")
                 hint.setWordWrap(True)
                 layout.addWidget(hint)

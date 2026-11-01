@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from tafl import APP_FOLDER, APP_NAME, COMMAND, crash
 from tafl.core import Engine
 from tafl.ui import app as app_module
+from tafl.ui.labels import plain_html
 from tafl.ui.main_window import MainWindow
 from tafl.ui.session import Session
 
@@ -64,7 +65,7 @@ def test_the_next_start_says_why_the_program_ended(start, monkeypatch, tmp_path,
         "1.0 GB was free when the step started."
     )
     assert code == 0 and window.session.project.name == "Demo"
-    assert shown == [(f"{APP_NAME} stopped the last time", text, None)]
+    assert shown == [(f"{APP_NAME} stopped the last time", plain_html(text), None)]
     logged = (folder / f"{COMMAND}.log").read_text(encoding="utf-8")
     assert text in logged and "memory allocation of 196656 bytes failed" in logged
     assert list(folder.glob("running-*")) == []
@@ -99,7 +100,7 @@ def test_a_damaged_project_shows_a_message_and_the_window_stays_usable(window, m
     broken = tmp_path / "broken.tafl"
     broken.write_text(BROKEN, encoding="utf-8")
     assert not window.open_path(broken)
-    assert warnings == [f"Could not open {broken}:\n\nThe project file broken.tafl is damaged: {PROBLEM}"]
+    assert warnings == [plain_html(f"Could not open {broken}:\n\nThe project file broken.tafl is damaged: {PROBLEM}")]
     assert window.open_path(demo) and window.session.project.name == "Demo"
 
 
@@ -112,7 +113,7 @@ def test_a_project_nested_too_deeply_shows_a_message_and_the_window_stays_usable
     deep = tmp_path / "deep.tafl"
     deep.write_text(json.dumps(data).replace('"VALUE"', "[" * 500 + '"x"' + "]" * 500), encoding="utf-8")
     assert not window.open_path(deep)
-    assert warnings == [f"Could not open {deep}:\n\nThe project file deep.tafl is damaged: its data is nested too deeply"]
+    assert warnings == [plain_html(f"Could not open {deep}:\n\nThe project file deep.tafl is damaged: its data is nested too deeply")]
     assert window.open_path(demo) and window.session.project.name == "Demo"
 
 

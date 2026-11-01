@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QMenu
 from tafl.api import Action, Kind
 from tafl.core import Registry
 
+from .labels import tooltip_text
+
 # Categories in the order a table is usually built; others follow alphabetically.
 _ORDER = ["Import", "Rows", "Columns", "Text", "Calculate", "Combine", "Export", "Files", "Database"]
 
@@ -28,7 +30,7 @@ def fill_action_menu(menu: QMenu, registry: Registry, *, sources: bool, chosen: 
             menu.addSeparator()
         for action in actions:
             entry = target.addAction(action.name, lambda a=action: chosen(a))
-            entry.setToolTip(action.description.split("\n\n")[0].replace("\n", " "))
+            entry.setToolTip(tooltip_text(action.description.split("\n\n")[0].replace("\n", " ")))
         target.setToolTipsVisible(True)
     menu.setToolTipsVisible(True)
 
@@ -46,7 +48,7 @@ def fill_new_table_menu(
     first = menu.actions()[0] if menu.actions() else None
     for text, tip, paste in entries:
         entry = QAction(text, menu)
-        entry.setToolTip(tip)
+        entry.setToolTip(tooltip_text(tip))
         entry.triggered.connect(lambda _checked=False, p=paste: sheet(p))
         menu.insertAction(first, entry)
     menu.insertSeparator(first)

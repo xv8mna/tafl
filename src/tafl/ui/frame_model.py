@@ -17,6 +17,8 @@ from PySide6.QtCore import QAbstractTableModel, QLocale, QModelIndex, QPersisten
 
 from tafl.api.dtypes import type_label
 
+from .labels import tooltip_text
+
 BLOCK = 256
 _MAX_BLOCKS = 64
 _MAX_TEXT = 500
@@ -106,7 +108,7 @@ class FrameModel(QAbstractTableModel):
                 return "" if role == Qt.ItemDataRole.DisplayRole else "(empty)"
             text = self._formatters[index.column()](value)
             if role == Qt.ItemDataRole.ToolTipRole:
-                return str(value) if len(str(value)) > 40 else None
+                return tooltip_text(str(value)) if len(str(value)) > 40 else None
             return text
         if role == Qt.ItemDataRole.TextAlignmentRole:
             horizontal = Qt.AlignmentFlag.AlignRight if self._numeric[index.column()] else Qt.AlignmentFlag.AlignLeft
@@ -120,7 +122,7 @@ class FrameModel(QAbstractTableModel):
                 return self._headers[section] if section < len(self._headers) else None
             return str(section + 1)
         if role == Qt.ItemDataRole.ToolTipRole and horizontal and section < len(self._tooltips):
-            return self._tooltips[section]
+            return tooltip_text(self._tooltips[section])
         if role == Qt.ItemDataRole.TextAlignmentRole and not horizontal:
             return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         return None

@@ -2,6 +2,7 @@
 doesn't look broken, and the data going into the step stays in sight."""
 
 from tafl.ui import theme
+from tafl.ui.labels import tooltip_text
 from tafl.ui.steps_panel import _ROLE as CARD
 
 
@@ -25,7 +26,7 @@ def test_a_new_step_is_incomplete(window, settle, session, demo):
     item = window.steps_panel.list.item(3)
     data = item.data(CARD)
     assert data["status"] == "incomplete" and data["info"] == "incomplete"
-    assert item.toolTip() == "Not complete yet: fill in Condition"
+    assert item.toolTip() == tooltip_text("Not complete yet: fill in Condition")
 
     settings = window.settings_panel
     assert settings.error.isHidden() and settings.info.text() == "Not complete yet: fill in Condition."
@@ -34,11 +35,11 @@ def test_a_new_step_is_incomplete(window, settle, session, demo):
     assert panel.stack.currentWidget() is panel.view and panel.model.frame is going_in
     assert panel.subtitle.text().startswith("going into step 4: ")
     assert panel.info.text().endswith("   ·   step 4 is not complete yet")  # what to fill in is beside it
-    assert panel.info.toolTip() == "Step 4 is not complete yet: fill in Condition"
+    assert panel.info.toolTip() == tooltip_text("Step 4 is not complete yet: fill in Condition")
 
     tables = window.tables_panel
     entry = next(i for i in tables._table_items() if i.text(0) == "Orders")
-    assert entry.toolTip(0) == "Step 4 is not complete yet: fill in Condition"
+    assert entry.toolTip(0) == tooltip_text("Step 4 is not complete yet: fill in Condition")
 
 
 def test_the_steps_after_an_incomplete_one_wait_for_it(window, settle, session, demo):

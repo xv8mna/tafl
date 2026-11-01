@@ -24,6 +24,7 @@ from tafl.core import Status, Step
 
 from . import theme
 from .action_menu import fill_action_menu
+from .labels import tooltip_text
 from .session import Session, waiting_text
 
 _ROLE = Qt.ItemDataRole.UserRole + 1
@@ -173,7 +174,7 @@ class StepsPanel(QWidget):
             if entry is not None:
                 data = self._item_data(*entry)
                 item.setData(_ROLE, data)
-                item.setToolTip(data["tooltip"])
+                item.setToolTip(tooltip_text(data["tooltip"]))
         self.list.viewport().update()
 
     def _item_data(self, number: int, step: Step) -> dict[str, Any]:

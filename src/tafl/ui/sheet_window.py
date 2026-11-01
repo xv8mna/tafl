@@ -534,9 +534,11 @@ class AddSheetDialog(QDialog):
         hint = QLabel("The data stays in this file: the project only reads it.", self)
         hint.setObjectName("Dim")
         self.note = QLabel(self)
+        self.note.setTextFormat(Qt.TextFormat.PlainText)
         self.note.setObjectName("Dim")
         self.note.setWordWrap(True)
         self.problem = QLabel(self)
+        self.problem.setTextFormat(Qt.TextFormat.PlainText)
         self.problem.setStyleSheet(f"color: {theme.ERROR_TEXT};")
         self.problem.setWordWrap(True)
         self.problem.hide()
@@ -856,7 +858,7 @@ class SheetWindow(QMainWindow):
             action.setShortcuts(shortcut)
         elif shortcut is not None:
             action.setShortcut(shortcut)
-        action.setToolTip(tip or text)
+        action.setToolTip(tooltip_text(tip or text))
         self.addAction(action)
         return action
 
@@ -1495,6 +1497,7 @@ def ask(
     """A question: ``buttons`` are key -> (text, role). Returns the key of the button clicked;
     closing the question is "cancel"."""
     box = QMessageBox(icon, title, text, parent=parent)
+    box.setTextFormat(Qt.TextFormat.PlainText)
     box.setInformativeText(informative)
     added = {key: box.addButton(label, role) for key, (label, role) in buttons.items()}
     box.setDefaultButton(added[default])

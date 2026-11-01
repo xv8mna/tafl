@@ -39,6 +39,7 @@ class _Popup(QFrame):
         self.list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.help = QLabel(self)
+        self.help.setTextFormat(Qt.TextFormat.PlainText)
         self.help.setWordWrap(True)
         self.help.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         layout = QVBoxLayout(self)

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QHeaderView, QTreeWidget, QTreeWidgetItem, QVBoxLa
 from tafl.core import Status, TableResult
 
 from . import theme
-from .labels import WrappedLabel
+from .labels import WrappedLabel, tooltip_text
 from .session import Session, size_text
 
 _STATUS = {
@@ -88,7 +88,7 @@ class RunPanel(QWidget):
                 top = QTreeWidgetItem([table.name, f"skipped: {result.skipped}", ""])
                 top.setIcon(0, theme.status_icon("disabled"))
                 top.setForeground(1, theme.status_text_color("skipped"))
-                top.setToolTip(1, f"Not calculated: it {result.skipped}")
+                top.setToolTip(1, tooltip_text(f"Not calculated: it {result.skipped}"))
                 top.setData(0, Qt.ItemDataRole.UserRole, (table_id, None))
                 self.tree.addTopLevelItem(top)
                 continue
@@ -111,7 +111,7 @@ class RunPanel(QWidget):
             elif result.stopped:
                 text = "stopped"
             top = QTreeWidgetItem([table.name, text, f"{table_seconds:.2f} s"])
-            top.setToolTip(1, text)
+            top.setToolTip(1, tooltip_text(text))
             top.setIcon(0, theme.status_icon("warning" if result.stopped else "ok" if ok else "error"))
             if result.stopped or (ok and warnings):
                 top.setForeground(1, theme.status_text_color("warning"))
@@ -128,7 +128,7 @@ class RunPanel(QWidget):
                     status = "warning" if status == "ok" else status  # as in the list of steps
                     warned.append(child)
                 child.setIcon(0, theme.status_icon(status))
-                child.setToolTip(1, step_result.error or text)
+                child.setToolTip(1, tooltip_text(step_result.error or text))
                 child.setData(0, Qt.ItemDataRole.UserRole, (table_id, step.id))
                 for level, message in step_result.messages:
                     if step_result.status == Status.SKIPPED and message == step_result.skip_rest:  # in its result

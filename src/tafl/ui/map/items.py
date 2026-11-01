@@ -22,6 +22,7 @@ from tafl.core import Group, Link, Status, Step, Table
 from tafl.core.index import step_kind
 
 from .. import theme
+from ..labels import tooltip_text
 from ..session import Session, first_error, missing_settings, waiting_text
 from .layout import GROUP_TITLE, HEADER, NODE_WIDTH, PADDING, ROW, frame_rect
 
@@ -352,19 +353,23 @@ class TableNode(Box):
         row = self.row_at(event.pos().y())
         if on_port:
             self.setToolTip(
-                f"Drag onto another table: it merges or appends “{self.name}”.\n"
-                f"Drag onto an empty spot: a new table starting from “{self.name}”."
+                tooltip_text(
+                    f"Drag onto another table: it merges or appends “{self.name}”.\n"
+                    f"Drag onto an empty spot: a new table starting from “{self.name}”."
+                )
             )
         elif self.status in ("disabled", "skipped"):
             reason = self.view.session.results.get(self.table_id)
             why = reason.skipped if reason is not None and reason.skipped else "turned off"
             hint = "\nRight-click → Turn table on" if self.status == "disabled" else ""
-            self.setToolTip(f"{self.name}: not calculated ({why}){hint}")
+            self.setToolTip(tooltip_text(f"{self.name}: not calculated ({why}){hint}"))
         elif row is not None and row.kind != "gap":
-            self.setToolTip(f"Step {row.number}: {row.text}{self._skipped(row.key)}\nDouble-click to open this step")
+            self.setToolTip(tooltip_text(f"Step {row.number}: {row.text}{self._skipped(row.key)}\nDouble-click to open this step"))
         else:
             self.setToolTip(
-                f"{self.name}{self._skipped()}{self._incomplete()}\nDouble-click to open this table · right-click for more"
+                tooltip_text(
+                    f"{self.name}{self._skipped()}{self._incomplete()}\nDouble-click to open this table · right-click for more"
+                )
             )
 
     def _incomplete(self) -> str:
@@ -509,16 +514,18 @@ class GroupNode(Box):
         row = self.row_at(event.pos().y())
         hidden = self.hidden_roles() if row is not None and row.kind == "gap" else []
         if row is not None and row.kind == "table":
-            self.setToolTip(f"{row.text}\nClick to select · double-click to open")
+            self.setToolTip(tooltip_text(f"{row.text}\nClick to select · double-click to open"))
         elif hidden:
             project = self.view.session.project
             names = {t.id: t.name for t in project.tables}
             selected = names.get(self.view.lineage.table, "")
             lines = [f"{names.get(t, t)}: {_ROLE_WORDS[role].format(selected)}" for t, role in hidden]
-            self.setToolTip("Highlighted, not listed here:\n" + "\n".join(lines))
+            self.setToolTip(tooltip_text("Highlighted, not listed here:\n" + "\n".join(lines), len(lines) + 1))
         else:
             self.setToolTip(
-                f"Group “{self.name}” (collapsed)\nDouble-click to expand · drop tables here to add them · right-click for more"
+                tooltip_text(
+                    f"Group “{self.name}” (collapsed)\nDouble-click to expand · drop tables here to add them · right-click for more"
+                )
             )
 
     def contextMenuEvent(self, event: QGraphicsSceneContextMenuEvent) -> None:
@@ -544,7 +551,7 @@ class Edge(QGraphicsPathItem):
         target.edges.append(self)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         self.setAcceptHoverEvents(True)
-        self.setToolTip(tooltip)
+        self.setToolTip(tooltip_text(tooltip))
         self.refresh_pen()
         self.update_path()
 
@@ -784,7 +791,7 @@ class GroupFrame(QGraphicsObject):
             self.setToolTip("Collapse the group into one box")
         else:
             self.setCursor(Qt.CursorShape.SizeAllCursor)
-            self.setToolTip(f"Group “{self.name}”: drag to move it · double-click to rename · right-click for more")
+            self.setToolTip(tooltip_text(f"Group “{self.name}”: drag to move it · double-click to rename · right-click for more"))
 
     def contextMenuEvent(self, event: QGraphicsSceneContextMenuEvent) -> None:
         self.view.group_menu(self.group_id, event.screenPos())

@@ -45,7 +45,7 @@ from tafl.core import index as project_index
 from tafl.core.index import Hit, Line, Query, Section
 
 from . import theme
-from .labels import ElidedLabel
+from .labels import ElidedLabel, tooltip_text
 from .session import Session, _rebased, count, missing_settings, waiting_text
 
 _TYPING_MS = 150  # a search starts this long after the last key
@@ -182,7 +182,7 @@ class FindModel(QAbstractItemModel):
         if role == Qt.ItemDataRole.DisplayRole:
             return f"{item.title.text}\n{item.line.text}" if isinstance(item, Hit) else f"{item.title} ({item.count})"
         if role == Qt.ItemDataRole.ToolTipRole:
-            return item.tooltip or None
+            return tooltip_text(item.tooltip) or None
         return None
 
     def _children(self, parent: QModelIndex) -> list[_Node]:
@@ -621,7 +621,7 @@ class FindPanel(QWidget):
         button = QToolButton(self)
         button.setObjectName("Toggle")
         button.setText(text)
-        button.setToolTip(tip)
+        button.setToolTip(tooltip_text(tip))
         button.setCheckable(True)
         button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         return button

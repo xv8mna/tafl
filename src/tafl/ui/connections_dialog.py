@@ -66,6 +66,7 @@ class ConnectionsDialog(QDialog):
         self.name = QLineEdit(self)
         self.name.editingFinished.connect(self._rename)
         self.type_label = QLabel(self)
+        self.type_label.setTextFormat(Qt.TextFormat.PlainText)
         self.type_label.setObjectName("Dim")
         self.form_host = QVBoxLayout()
         self.test_button = QPushButton("Test connection", self)

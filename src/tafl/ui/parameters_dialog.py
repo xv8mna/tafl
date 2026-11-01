@@ -25,6 +25,7 @@ from tafl.api.parameters import Failed, as_text, fixed
 from tafl.core import Parameter, Project, parameters
 
 from . import theme
+from .labels import tooltip_text
 from .session import Session
 from .worker import Worker
 
@@ -46,6 +47,7 @@ class ParametersDialog(QDialog):
         self.session = session
 
         intro = QLabel(HELP, self)
+        intro.setTextFormat(Qt.TextFormat.RichText)
         intro.setWordWrap(True)
         intro.setObjectName("Dim")
         self.table = QTableWidget(0, 3, self)
@@ -84,6 +86,7 @@ class ParametersDialog(QDialog):
         row.addStretch(1)
 
         self.problem = QLabel(self)
+        self.problem.setTextFormat(Qt.TextFormat.PlainText)
         self.problem.setWordWrap(True)
         self.problem.setStyleSheet(f"color: {theme.STATUS_TEXT['error']};")
         self.box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
@@ -195,7 +198,7 @@ class ParametersDialog(QDialog):
         item = self.table.item(row, _NOW)
         item.setText(text)
         item.setForeground(QColor(color))
-        item.setToolTip(text)
+        item.setToolTip(tooltip_text(text))
 
     def _show_problems(self, found: list[Parameter]) -> list[str]:
         problems = parameters.problems(Project(parameters=[p for p in found if p.name]))
