@@ -2,16 +2,23 @@ import datetime as dt
 import decimal
 import os
 import random
+import shutil
 import sqlite3
+import subprocess
+import sys
 import time
 import uuid
+from contextlib import closing
+from pathlib import Path
 
 import polars as pl
 import pytest
 
-from tafl.api import ActionError, Context, unique_names
+from tafl.api import ActionError, Connector, Context, unique_names
 from tafl.api.parameters import Fixed
+from tafl.api.testing import StubContext
 from tafl.core import Engine, Parameter, Project
+from tafl.plugins import databases
 
 
 def test_unique_names_take_the_first_free_number():
@@ -72,16 +79,166 @@ def test_import_table_and_query(project, registry):
     assert query.df.to_dicts() == [{"customer": "A", "big": 10}, {"customer": "B", "big": 20}]
 
 
-def test_an_import_never_changes_the_database(project, registry, tmp_path):
+@pytest.mark.parametrize("mode", ["preview", "run"])
+def test_an_import_never_changes_the_database(project, registry, tmp_path, mode):
     """Imports run while editing (e.g. when someone else's project is opened): a query that
-    changes data must not change it."""
-    deleted = import_table(project, registry, mode="query", query="DELETE FROM orders RETURNING id")
-    assert deleted.df["id"].to_list() == [1, 2]
-    con = sqlite3.connect(tmp_path / "data.db")
-    try:
-        assert con.execute("SELECT COUNT(*) FROM orders").fetchone() == (2,)
-    finally:
-        con.close()
+    changes data stops, and the database stays as it was."""
+    before = (tmp_path / "data.db").read_bytes()
+    for query in ("DELETE FROM orders RETURNING id", "DROP TABLE orders", "UPDATE orders SET id = 0", "VACUUM"):
+        table = project.add_table(f"T{len(project.tables) + 1}")
+        project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": query})
+        assert not Engine(project, registry).evaluate(table.id, mode=mode).ok, query
+    assert (tmp_path / "data.db").read_bytes() == before
+    deleted = import_table(project, registry, mode="query", query="DELETE FROM orders")
+    assert deleted.first_error == "The database can't be changed here: an import only reads, and a read-only file stays as it is"
+
+
+@pytest.mark.parametrize("mode", ["preview", "run"])
+def test_a_journal_beside_a_database_deletes_nothing(project, registry, tmp_path, leave_journal, mode):
+    """Recovery after an interrupted change writes, and it deletes the file that the journal names,
+    wherever that is: an import never starts it."""
+    database, journal = tmp_path / "data.db", tmp_path / "data.db-journal"
+    named = tmp_path / "elsewhere" / "token.txt"
+    named.parent.mkdir()
+    named.write_text("one line", encoding="utf-8")
+    leave_journal(database, named)
+    before = database.read_bytes(), journal.read_bytes()
+    table = project.add_table("Orders")
+    project.add_step(table, "db.import", {"connection": "db", "table": "orders"})
+    result = Engine(project, registry).evaluate(table.id, mode=mode)
+    assert "open it once in its own program" in result.first_error
+    assert named.read_text(encoding="utf-8") == "one line"
+    assert (database.read_bytes(), journal.read_bytes()) == before
+
+
+_STOPS_DURING_A_CHANGE = """
+import os, sqlite3, sys
+
+con = sqlite3.connect(sys.argv[1], isolation_level=None)
+con.execute("PRAGMA cache_size = 1")  # so that pages of the change reach the file
+con.execute("CREATE TABLE big (a)")
+con.executemany("INSERT INTO big VALUES (?)", [("x" * 2000,) for _ in range(300)])
+con.execute("BEGIN")
+con.execute("UPDATE big SET a = 'y' || a")
+os._exit(9)
+"""
+
+
+def test_a_really_interrupted_database_says_what_to_do(project, registry, tmp_path):
+    database, journal = tmp_path / "data.db", tmp_path / "data.db-journal"
+    database.unlink()
+    subprocess.run([sys.executable, "-c", _STOPS_DURING_A_CHANGE, str(database)], check=False, timeout=60)
+    assert journal.stat().st_size > 0
+    before = database.read_bytes(), journal.read_bytes()
+    result = import_table(project, registry, table="big")
+    assert result.first_error == (
+        "This SQLite database was left unfinished: a program stopped during a change. Tafl only reads it and "
+        "doesn't repair it. To repair it, open it once in its own program, then calculate again."
+    )
+    assert (database.read_bytes(), journal.read_bytes()) == before
+    with closing(sqlite3.connect(database)) as repairs:  # what its own program does
+        repairs.execute("SELECT COUNT(*) FROM big").fetchone()
+    assert import_table(project, registry, table="big").df["a"].str.starts_with("x").all()
+
+
+def _wal_database(database) -> None:
+    """``database`` in WAL mode, with rows that are only in its -wal file, which stays."""
+    live = database.parent / "live" / database.name
+    live.parent.mkdir()
+    con = sqlite3.connect(live)
+    con.execute("PRAGMA journal_mode = WAL")
+    con.execute("PRAGMA wal_autocheckpoint = 0")
+    con.execute("CREATE TABLE big (a)")
+    con.executemany("INSERT INTO big VALUES (?)", [(i,) for i in range(1000)])
+    con.commit()
+    shutil.copy(live, database)
+    shutil.copy(f"{live}-wal", f"{database}-wal")
+    con.close()
+
+
+def test_a_wal_database_is_read_and_stays_as_it_was(project, registry, tmp_path):
+    """A look moved the rows of the -wal file into the database and deleted the -wal file."""
+    database, wal, memory = tmp_path / "data.db", tmp_path / "data.db-wal", tmp_path / "data.db-shm"
+    _wal_database(database)
+    before = database.read_bytes(), wal.read_bytes()
+    assert not memory.exists()
+    for _ in range(2):  # without a -shm file, then with the one that the first read made
+        assert import_table(project, registry, table="big").df.height == 1000
+        assert (database.read_bytes(), wal.read_bytes()) == before
+    assert memory.exists()
+
+
+def test_a_wal_database_without_its_other_files(project, registry, tmp_path):
+    database = tmp_path / "data.db"
+    with closing(sqlite3.connect(database)) as con:
+        con.execute("PRAGMA journal_mode = WAL")
+    before = database.read_bytes()
+    assert not (tmp_path / "data.db-wal").exists() and not (tmp_path / "data.db-shm").exists()
+    assert import_table(project, registry, table="orders").df.height == 2
+    assert database.read_bytes() == before
+
+
+def test_an_import_can_use_temporary_storage(project, registry, tmp_path):
+    before = (tmp_path / "data.db").read_bytes()
+    assert import_table(project, registry, mode="query", query="CREATE TEMP TABLE t AS SELECT * FROM orders").ok
+    many = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 200000) "
+    sorted_ = import_table(project, registry, mode="query", query=f"{many}SELECT n FROM c ORDER BY hex(randomblob(40)) LIMIT 3")
+    assert sorted_.df.height == 3
+    assert (tmp_path / "data.db").read_bytes() == before
+
+
+@pytest.mark.parametrize("name", ["with space", "100% sure", "a%20b", "a#b", "Müller & Söhne", "a;b=c&d+e"])
+def test_a_file_path_with_characters_that_mean_something_in_a_uri(project, registry, tmp_path, name):
+    folder = tmp_path / name
+    folder.mkdir()
+    shutil.move(tmp_path / "data.db", folder / f"{name}.db")
+    project.connections[0].settings["file"] = f"{name}/{name}.db"
+    assert import_table(project, registry, table="orders").df.height == 2
+
+
+@pytest.mark.skipif(os.name != "nt", reason="paths of Windows")
+def test_a_read_only_uri_keeps_a_share_a_share():
+    """SQLite takes what follows file:// as a server name, and only "localhost": a share needs the
+    empty one and its own two slashes."""
+    assert databases._read_only_uri(Path(r"C:\a b\c#1.db")) == "file:///C%3A/a%20b/c%231.db?mode=ro"
+    assert databases._read_only_uri(Path(r"\\host\share\50% off.db")) == "file:////host/share/50%25%20off.db?mode=ro"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a share of Windows")
+def test_an_import_from_a_share(project, registry, tmp_path):
+    drive, folder = os.path.splitdrive(tmp_path)
+    share = Path(rf"\\127.0.0.1\{drive[0]}${folder}")
+    if not share.is_dir():
+        pytest.skip("this login can't use the administrative share of its own computer")
+    shutil.move(tmp_path / "data.db", tmp_path / "d #1 100%.db")
+    project.connections[0].settings["file"] = str(share / "d #1 100%.db")
+    assert import_table(project, registry, table="orders").df.height == 2
+
+
+def test_only_imports_are_read_only(project, registry, tmp_path):
+    """A connection stays writable for all that writes, and a read-only one stays so whatever it runs."""
+    context = StubContext(connections={"db": (registry.connectors["sqlite"], {"file": str(tmp_path / "data.db")})})
+    with context.database("db") as db:
+        db.execute("DELETE FROM orders WHERE id = 2")
+    with context.database("db", read_only=True) as db:
+        assert db.read("SELECT COUNT(*) AS n FROM orders")["n"].to_list() == [1]
+        with pytest.raises(ActionError, match="can't be changed here"):
+            db.execute("DELETE FROM orders")
+
+
+def test_read_only_asks_nothing_of_a_connector_that_cant_do_it():
+    """A connector from a plugin has ``connect`` and nothing more: it gives a normal connection."""
+    asked = []
+
+    class Plain(Connector):
+        def connect(self, settings, ctx, *, create=False):
+            asked.append(create)
+            return "connection"
+
+    assert Plain().open({}, Context(), read_only=True).raw == "connection"
+    assert asked == [False]
+    with pytest.raises(ActionError, match="not available"):
+        Context().database("none", read_only=True)
 
 
 def test_detect_types_turns_iso_text_into_dates(project, registry):
@@ -488,16 +645,22 @@ def test_sqlserver_arithmetic_with_a_negative_value(registry):
         assert db.read(connector.fill_sql("SELECT 200 * {X} / 100 AS a", {"X": -10})).row(0) == (-20,)
 
 
-def test_sqlite_import_attaches_no_database_while_the_project_is_looked_at(project, registry, tmp_path, monkeypatch):
-    """An ATTACH creates a missing file: while a project is only looked at, imports change nothing."""
+@pytest.mark.parametrize("mode", ["preview", "run"])
+def test_sqlite_import_attaches_no_database(project, registry, tmp_path, monkeypatch, leave_journal, mode):
+    """An attached file is open for writing, also from a read-only connection: an ATTACH creates a
+    missing file, and recovers one that a journal lies beside."""
     monkeypatch.chdir(tmp_path)
-    made = tmp_path / "made.db"
-    table = project.add_table("Attach")
-    project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": f"ATTACH DATABASE '{made}' AS o"})
-    result = Engine(project, registry).evaluate(table.id)
-    assert result.first_error == "An import can ATTACH a database only when the project is run (it could create a file)"
-    assert not made.exists()
-    assert Engine(project, registry).run([table.id])[table.id].ok and made.exists()
+    made, other, named = tmp_path / "made.db", tmp_path / "other.db", tmp_path / "token.txt"
+    with closing(sqlite3.connect(other)) as con:
+        con.execute("CREATE TABLE t (a)")
+    named.write_text("one line", encoding="utf-8")
+    leave_journal(other, named)
+    for name in (made, other):
+        table = project.add_table(name.name)
+        project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": f"ATTACH DATABASE '{name}' AS o"})
+        result = Engine(project, registry).evaluate(table.id, mode=mode)
+        assert result.first_error == "An import can't ATTACH a database"
+    assert not made.exists() and named.exists() and (tmp_path / "other.db-journal").exists()
 
 
 def test_a_value_the_driver_cant_read_names_its_column():

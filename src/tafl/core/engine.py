@@ -843,14 +843,15 @@ class _StepContext(Context):
     def table_name(self, table_id: str) -> str:
         return self._evaluation.engine.table_name(table_id)
 
-    def database(self, connection: str, *, create: bool = False) -> Database:
+    def database(self, connection: str, *, create: bool = False, read_only: bool = False) -> Database:
         definition = self._evaluation.project.connection(connection)
         if definition is None:
             raise ActionError(f"Connection '{connection}' is not defined in this project")
         connector = self._evaluation.registry.connectors.get(definition.type)
         if connector is None:
             raise ActionError(f"Unknown connection type '{definition.type}'. Is its plugin installed?")
-        return connector.open(self._evaluation.connection_settings(definition.settings, connector), self, create=create)
+        settings = self._evaluation.connection_settings(definition.settings, connector)
+        return connector.open(settings, self, create=create, read_only=read_only)
 
 
 def _error(

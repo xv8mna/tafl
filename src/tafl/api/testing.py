@@ -39,11 +39,11 @@ class StubContext(Context):
             raise ActionError(f"Table '{table_id}' is not available here")
         return self.tables[table_id]
 
-    def database(self, connection: str, *, create: bool = False) -> Database:
+    def database(self, connection: str, *, create: bool = False, read_only: bool = False) -> Database:
         if connection not in self.connections:
             raise ActionError(f"Connection '{connection}' is not available here")
         connector, settings = self.connections[connection]
-        return connector.open(settings, self, create=create)
+        return connector.open(settings, self, create=create, read_only=read_only)
 
     @property
     def warnings(self) -> list[str]:

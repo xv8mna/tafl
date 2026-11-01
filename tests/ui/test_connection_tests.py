@@ -40,6 +40,24 @@ def test_a_slow_test_result_stays_with_its_connection(session, qtbot, monkeypatc
     assert dialog.test_result.isHidden()
 
 
+def test_the_test_only_reads(session, qtbot, tmp_path, leave_journal):
+    """A database that a program left unfinished stays as it is, and the result says what to do."""
+    database, named = tmp_path / "a.db", tmp_path / "token.txt"
+    with closing(sqlite3.connect(database)) as db:
+        db.execute("CREATE TABLE a (x INTEGER)")
+    named.write_text("one line", encoding="utf-8")
+    leave_journal(database, named)
+    session.project.connections = [Connection("a", "sqlite", {"file": str(database)})]
+    dialog = ConnectionsDialog(session)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.list.setCurrentRow(0)
+    dialog._test()
+    qtbot.waitUntil(lambda: dialog.test_button.isEnabled(), timeout=10_000)
+    assert "open it once in its own program" in dialog.test_result.toPlainText()
+    assert named.exists() and (tmp_path / "a.db-journal").exists()
+
+
 def test_the_test_says_how_many_tables_and_views(session, qtbot, tmp_path):
     for name, tables in (("one.db", ["a"]), ("two.db", ["a", "b"])):
         with closing(sqlite3.connect(tmp_path / name)) as db:

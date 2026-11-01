@@ -201,7 +201,7 @@ class ConnectionsDialog(QDialog):
             except ActionError as e:
                 return False, str(e)
             try:
-                with connector.open(filled, ctx) as db:
+                with connector.open(filled, ctx, read_only=True) as db:
                     count = len(db.tables())
                     return True, f"Connected — {count} {'table or view' if count == 1 else 'tables and views'}"
             except Exception as e:

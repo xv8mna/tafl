@@ -11,7 +11,9 @@ import re
 import sqlite3
 import struct
 import uuid
+from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import quote
 
 import polars as pl
 
@@ -798,10 +800,30 @@ class SQLite(Connector):
             connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
         return connection
 
+    def connect_read_only(self, settings, ctx):
+        """Nothing is written, also not by the recovery after an interrupted change, which SQLite
+        starts on the first read (a journal that came with the file can name any file to delete).
+        A WAL database is read with its -wal file, which stays as it is. No ATTACH: SQLite opens
+        an attached file for writing, also from a read-only connection."""
+        path = ctx.resolve_path(settings.file)
+        if not path.is_file():
+            raise ActionError(f"SQLite file not found: {path}")
+        connection = sqlite3.connect(_read_only_uri(path), uri=True, autocommit=False)
+        connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
+        return connection
+
     def error_message(self, error):
         text = str(error)
+        code = getattr(error, "sqlite_errorname", "")
         if text == "too many attached databases - max 0":
-            return "An import can ATTACH a database only when the project is run (it could create a file)"
+            return "An import can't ATTACH a database"
+        if code in ("SQLITE_READONLY_ROLLBACK", "SQLITE_READONLY_RECOVERY"):
+            return (
+                f"This SQLite database was left unfinished: a program stopped during a change. {APP_NAME} only reads "
+                "it and doesn't repair it. To repair it, open it once in its own program, then calculate again."
+            )
+        if code == "SQLITE_READONLY":
+            return "The database can't be changed here: an import only reads, and a read-only file stays as it is"
         return text
 
     def list_tables(self, conn):
@@ -896,6 +918,14 @@ class SQLite(Connector):
         return conn.total_changes - before
 
 
+def _read_only_uri(path: Path) -> str:
+    """The URI that opens ``path`` for reading only. %xx stands for all that a URI reads itself
+    (%, #, ?). SQLite takes the name after file:// for a server and refuses it, so a share
+    (//server/share) goes after an empty one."""
+    name = path.absolute().as_posix()
+    return f"file://{quote(name if name.startswith('/') else '/' + name)}?mode=ro"
+
+
 def _import_endpoints(p) -> list[Endpoint]:
     if p.mode == "table":
         found = Endpoint(endpoints.IN, endpoints.DATABASE, place=p.connection, name=p.table, setting="table")
@@ -921,12 +951,13 @@ def _import_endpoints(p) -> list[Endpoint]:
 )
 def import_database(df, p, ctx):
     """Reads a whole table or view, or the result of a SQL query written in the database's own
-    SQL dialect (T-SQL for SQL Server). What the query changes is rolled back, because imports
-    also run while editing, e.g. when a project is opened (a SQL Server query that commits by
-    itself keeps its changes). Numbers keep all their digits: a column with numbers of more
-    digits than a decimal number keeps (about 15), or with whole numbers too big for a
-    whole-number column, stays a column of exact decimals."""
-    with ctx.database(p.connection) as db:
+    SQL dialect (T-SQL for SQL Server). Imports also run while editing, e.g. when a project is
+    opened, so they change nothing: a SQLite file is opened for reading only, and what a query
+    changes in SQL Server is rolled back (a query that commits by itself keeps its changes).
+    Numbers keep all their digits: a column with numbers of more digits than a decimal number
+    keeps (about 15), or with whole numbers too big for a whole-number column, stays a column of
+    exact decimals."""
+    with ctx.database(p.connection, read_only=True) as db:
         try:
             out = db.read_table(p.table) if p.mode == "table" else db.read(p.query)
         finally:

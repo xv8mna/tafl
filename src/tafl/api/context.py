@@ -53,10 +53,13 @@ class Context:
     def table_name(self, table_id: str) -> str:
         return table_id
 
-    def database(self, connection: str, *, create: bool = False) -> Database:
+    def database(self, connection: str, *, create: bool = False, read_only: bool = False) -> Database:
         """Open a connection defined in the project. Use the result as a context manager.
 
-        ``create=True`` lets file databases (SQLite) be created if missing.
+        ``create=True`` lets file databases (SQLite) be created if missing. ``read_only=True``
+        is for work that only reads: a database that can (SQLite) opens the connection so that
+        nothing can be written, also no repair of a file left unfinished; others give a normal
+        connection.
         """
         raise ActionError(f"Connection '{connection}' is not available here")
 

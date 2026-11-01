@@ -47,6 +47,12 @@ class Connector:
         """Return an open DB-API 2 connection (autocommit off)."""
         raise NotImplementedError
 
+    def connect_read_only(self, settings: Params, ctx: Context) -> Any:
+        """``connect`` for work that only reads (``ctx.database(…, read_only=True)``). A database
+        that can open a connection so that nothing can be written overrides it; the default is a
+        normal connection."""
+        return self.connect(settings, ctx)
+
     def quote(self, identifier: str) -> str:
         return '"' + identifier.replace('"', '""') + '"'
 
@@ -211,10 +217,10 @@ class Connector:
         columns the driver can't read."""
         return f"SELECT * FROM {self.qualified(table)}"
 
-    def open(self, settings: Mapping[str, Any], ctx: Context, *, create: bool = False) -> Database:
+    def open(self, settings: Mapping[str, Any], ctx: Context, *, create: bool = False, read_only: bool = False) -> Database:
         params = resolve(self.params, settings)
         try:
-            raw = self.connect(params, ctx, create=create)
+            raw = self.connect_read_only(params, ctx) if read_only else self.connect(params, ctx, create=create)
         except ActionError:
             raise
         except Exception as e:
@@ -352,7 +358,10 @@ class Database:
             cursor.close()
 
     def tables(self) -> list[str]:
-        return self.connector.list_tables(self.raw)
+        try:
+            return self.connector.list_tables(self.raw)
+        except Exception as e:
+            raise ActionError(self.connector.error_message(e)) from e
 
     def quote(self, identifier: str) -> str:
         return self.connector.quote(identifier)
