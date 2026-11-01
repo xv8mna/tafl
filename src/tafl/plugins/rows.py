@@ -331,6 +331,8 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
         if parsed is None:
             raise ActionError(f"'{text}' is not true/false (column '{column}')")
         return parsed
+    if dtype == pl.Duration or dtype == pl.Binary:
+        raise ActionError(f"Column '{column}' holds time spans or binary data: it can't be compared with a typed value")
     return text
 
 

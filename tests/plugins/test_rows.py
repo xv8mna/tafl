@@ -329,3 +329,11 @@ def test_sort_many_texts_like_excel(act):
     first = ["apfel", "Äpfel", "Apfel", "élan", "Özdemir", "Straße", "Strasse", "Zebra", "日本", None]
     assert out.unique("Name", maintain_order=True)["Name"].to_list() == first
     assert out["Nr"][:6].to_list() == [1, 2, 3, 11, 12, 13]  # equal values keep their order
+
+
+@pytest.mark.parametrize("values", [[dt.timedelta(hours=1)], [b"abc"]], ids=["time span", "binary"])
+@pytest.mark.parametrize("operator", ["=", ">", "in"])
+def test_a_column_that_a_typed_value_cant_be_compared_with_says_so(act, values, operator):
+    conditions = [{"column": "V", "operator": operator, "value": "1"}]
+    with pytest.raises(ActionError, match="Column 'V' holds time spans or binary data"):
+        act("rows.filter", pl.DataFrame({"V": values}), {"conditions": conditions})
