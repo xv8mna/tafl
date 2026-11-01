@@ -1891,6 +1891,11 @@ Filter big tables in the query: only the rows you need are read. Imports run whi
 Tafl rolls back whatever a query changes (on SQL Server, a query that commits by itself keeps its
 changes). Numbers keep all their digits.
 
+A program that stops during a change leaves a SQLite file unfinished. An import only reads, so it
+doesn't repair the file: it says so, and the file stays as it is. To repair the file, open it once
+in its own program. If Tafl writes this file, for example when Tafl was ended during an export,
+run a step that writes to it once: **Export to database** or **Run SQL command**.
+
 ![Import from database: a SQL query on the SQLite connection Shop](guide/db-import.png)
 
 ### Write into a database table

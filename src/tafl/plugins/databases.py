@@ -846,10 +846,12 @@ class SQLite(Connector):
         if code in ("SQLITE_READONLY_ROLLBACK", "SQLITE_READONLY_RECOVERY"):
             return (
                 f"This SQLite database was left unfinished: a program stopped during a change. {APP_NAME} only reads "
-                "it and doesn't repair it. To repair it, open it once in its own program, then calculate again."
+                "it and doesn't repair it. To repair it, open it once in its own program, then calculate again. "
+                f"If {APP_NAME} is the program that writes this file, run a step that writes to it once: "
+                "Export to database or Run SQL command."
             )
         if code == "SQLITE_READONLY":
-            return "The database can't be changed here: an import only reads, and a read-only file stays as it is"
+            return "This SQLite database can't be changed: the file is read-only, or this step only reads"
         if code == "SQLITE_AUTH":
             return "An import can use only PRAGMAs that read, such as table_info"
         return text

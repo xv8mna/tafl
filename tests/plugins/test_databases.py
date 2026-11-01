@@ -4,6 +4,7 @@ import os
 import random
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -94,7 +95,28 @@ def test_an_import_never_changes_the_database(project, registry, tmp_path, mode)
         assert not Engine(project, registry).evaluate(table.id, mode=mode).ok, query
     assert (tmp_path / "data.db").read_bytes() == before
     deleted = import_table(project, registry, mode="query", query="DELETE FROM orders")
-    assert deleted.first_error == "The database can't be changed here: an import only reads, and a read-only file stays as it is"
+    assert deleted.first_error == "This SQLite database can't be changed: the file is read-only, or this step only reads"
+
+
+@pytest.mark.parametrize(
+    ("action", "params"),
+    [
+        ("db.export", {"table": "orders", "mode": "insert", "create": False}),
+        ("db.command", {"sql": "DELETE FROM orders"}),
+    ],
+)
+def test_a_read_only_file_stops_a_step_that_writes(project, registry, tmp_path, action, params):
+    """The message serves all steps: these two are no imports."""
+    table = project.add_table("Writes")
+    project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": "SELECT 3 AS id"})
+    project.add_step(table, action, {"connection": "db", **params})
+    file = tmp_path / "data.db"
+    os.chmod(file, stat.S_IREAD)
+    try:
+        result = Engine(project, registry).evaluate(table.id, mode="run")
+    finally:
+        os.chmod(file, stat.S_IREAD | stat.S_IWRITE)
+    assert result.first_error == "This SQLite database can't be changed: the file is read-only, or this step only reads"
 
 
 @pytest.mark.parametrize("mode", ["preview", "run"])
@@ -137,11 +159,32 @@ def test_a_really_interrupted_database_says_what_to_do(project, registry, tmp_pa
     result = import_table(project, registry, table="big")
     assert result.first_error == (
         "This SQLite database was left unfinished: a program stopped during a change. Tafl only reads it and "
-        "doesn't repair it. To repair it, open it once in its own program, then calculate again."
+        "doesn't repair it. To repair it, open it once in its own program, then calculate again. If Tafl is the "
+        "program that writes this file, run a step that writes to it once: Export to database or Run SQL command."
     )
     assert (database.read_bytes(), journal.read_bytes()) == before
     with closing(sqlite3.connect(database)) as repairs:  # what its own program does
         repairs.execute("SELECT COUNT(*) FROM big").fetchone()
+    assert import_table(project, registry, table="big").df["a"].str.starts_with("x").all()
+
+
+@pytest.mark.parametrize(
+    ("action", "params"),
+    [("db.export", {"table": "more", "mode": "insert"}), ("db.command", {"sql": "SELECT 1"})],
+)
+def test_a_step_that_writes_repairs_what_the_message_says_it_does(project, registry, tmp_path, action, params):
+    """A file that only Tafl writes has no other program to open it, when Tafl ended during an export."""
+    database = tmp_path / "data.db"
+    database.rename(tmp_path / "other.db")
+    project.add_connection("other", "sqlite", file="other.db")
+    subprocess.run([sys.executable, "-c", _STOPS_DURING_A_CHANGE, str(database)], check=False, timeout=60)
+    assert (tmp_path / "data.db-journal").stat().st_size > 0
+    assert "left unfinished" in import_table(project, registry, table="big").first_error
+    table = project.add_table("Writes")
+    project.add_step(table, "db.import", {"connection": "other", "table": "orders"})
+    project.add_step(table, action, {"connection": "db", **params})
+    assert Engine(project, registry).evaluate(table.id, mode="run").ok
+    assert not (tmp_path / "data.db-journal").exists()
     assert import_table(project, registry, table="big").df["a"].str.starts_with("x").all()
 
 
@@ -368,7 +411,7 @@ def test_only_imports_are_read_only(project, registry, tmp_path):
         db.execute("DELETE FROM orders WHERE id = 2")
     with context.database("db", read_only=True) as db:
         assert db.read("SELECT COUNT(*) AS n FROM orders")["n"].to_list() == [1]
-        with pytest.raises(ActionError, match="can't be changed here"):
+        with pytest.raises(ActionError, match="can't be changed"):
             db.execute("DELETE FROM orders")
 
 
