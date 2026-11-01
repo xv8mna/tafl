@@ -34,7 +34,7 @@ from tafl.ui.filter_pane import _Values
 from tafl.ui.filters import COUNT, VALUE, Filter
 from tafl.ui.forms import ExpressionEditor
 from tafl.ui.frame_model import FrameModel
-from tafl.ui.labels import CELL_TIP_LINES, WrappedLabel, message_box, plain_html, tooltip_text
+from tafl.ui.labels import LONG_TIP_LINES, WrappedLabel, message_box, plain_html, tooltip_text
 from tafl.ui.map.items import GroupFrame, GroupNode, TableNode
 from tafl.ui.parameters_dialog import ParametersDialog
 from tafl.ui.sheet_window import SheetWindow, ask, problem
@@ -536,7 +536,7 @@ def test_the_tooltip_of_a_cell_has_what_the_grid_leaves_out(qapp):
         return reads(model.data(model.index(row, 0), Qt.ItemDataRole.ToolTipRole))
 
     assert tip(0) == NOTE and tip(1).replace("\n", " ") == words.strip()
-    assert len(tip(2).splitlines()) == CELL_TIP_LINES and tip(2).endswith("…")
+    assert len(tip(2).splitlines()) == LONG_TIP_LINES and tip(2).endswith("…")
 
 
 def test_the_tooltip_of_a_value_in_a_filter_has_all_its_lines(qapp):

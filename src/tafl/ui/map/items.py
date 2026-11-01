@@ -520,7 +520,7 @@ class GroupNode(Box):
             names = {t.id: t.name for t in project.tables}
             selected = names.get(self.view.lineage.table, "")
             lines = [f"{names.get(t, t)}: {_ROLE_WORDS[role].format(selected)}" for t, role in hidden]
-            self.setToolTip(tooltip_text("Highlighted, not listed here:\n" + "\n".join(lines), len(lines) + 1))
+            self.setToolTip(tooltip_text("Highlighted, not listed here:\n" + "\n".join(lines), 4 * len(lines) + 1))  # a long name wraps
         else:
             self.setToolTip(
                 tooltip_text(

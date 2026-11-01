@@ -69,7 +69,7 @@ from .filters import (
     value_key,
 )
 from .frame_model import DisplayFormat
-from .labels import CELL_TIP_LINES, tooltip_text
+from .labels import LONG_TIP_LINES, tooltip_text
 from .session import Session
 
 Index = QModelIndex | QPersistentModelIndex
@@ -173,7 +173,7 @@ class _Values(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             return self.text(item) if index.column() == 0 else f"{count:,}"
         if role == Qt.ItemDataRole.ToolTipRole and index.column() == 0 and len(self.text(item)) > 30:
-            return tooltip_text(self.text(item), CELL_TIP_LINES)
+            return tooltip_text(self.text(item), LONG_TIP_LINES)
         if role == Qt.ItemDataRole.ForegroundRole and self.is_excluded(index.row()):
             return QColor(theme.TEXT_DISABLED)
         if role == Qt.ItemDataRole.FontRole and (value is None or value == ""):

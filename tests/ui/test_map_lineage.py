@@ -4,10 +4,10 @@ import importlib.util
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMenu
+from PySide6.QtWidgets import QApplication, QGraphicsSceneHoverEvent, QMenu
 
 from tafl.core import Link
 from tafl.ui import theme
@@ -478,3 +478,24 @@ def test_highlighted_tables_hidden_in_a_collapsed_group_are_marked(window, settl
     render(view)
     view.set_lineage(False)
     assert box.hidden_roles() == []
+
+
+def test_the_tooltip_of_hidden_tables_keeps_long_names(window, settle, session, demo):
+    """Each line of the list wraps: its limit counts the lines after that."""
+    view = open_map(window, session, demo, settle)
+    customers, orders, revenue = session.project.tables
+    long = "a table with a rather long name"
+    session.rename_table(customers.id, f"Customers, {long}")
+    hidden = [session.add_derived_table(customers.id) for _ in range(14)]
+    for number, table in enumerate(hidden):
+        session.rename_table(table.id, f"T{number:02} {long}")
+    group = session.add_group("Inputs", [customers.id, orders.id, *(table.id for table in hidden)])
+    view.set_collapsed(group.id, True)
+    view.rebuild()
+    box = view.group_nodes[group.id]
+    session.select_table(customers.id)
+    view.set_lineage(True)
+    box.row_at = lambda _y: next(row for row in box.rows if row.kind == "gap")
+    box.hoverMoveEvent(QGraphicsSceneHoverEvent(QEvent.Type.GraphicsSceneHoverMove))
+    view.set_lineage(False)
+    assert all(f"T{number:02}" in box.toolTip() for number in range(14))

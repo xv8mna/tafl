@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .action_menu import fill_new_table_menu
-from .labels import message_box, tooltip_text
+from .labels import LONG_TIP_LINES, message_box, tooltip_text
 from .session import Session, first_error, missing_settings, size_text, waiting_text
 
 _KIND = Qt.ItemDataRole.UserRole  # "table" or "group"
@@ -179,7 +179,7 @@ class TablesPanel(QWidget):
                     text += f"\nRest skipped: {ended.skip_reason}"
                 item.setToolTip(0, tooltip_text(text))
             elif result is not None:
-                item.setToolTip(0, tooltip_text(result.first_error or ""))
+                item.setToolTip(0, tooltip_text(result.first_error or "", LONG_TIP_LINES))
             else:
                 item.setToolTip(0, "Not calculated yet")
         self.tree.blockSignals(False)

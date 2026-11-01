@@ -78,7 +78,7 @@ from tafl.core.sheet import (
 
 from . import data_panel, theme
 from .frame_model import excel_text
-from .labels import ElidedLabel, tooltip_text
+from .labels import LONG_TIP_LINES, ElidedLabel, tooltip_text
 from .session import Session, count
 from .worker import Worker
 
@@ -166,7 +166,7 @@ class SheetModel(QAbstractTableModel):
             return self.sheet.text(index.row(), index.column())
         if role == Qt.ItemDataRole.ToolTipRole:
             text = self.sheet.text(index.row(), index.column())
-            return tooltip_text(text) if len(text) > _TIP_FROM else None
+            return tooltip_text(text, LONG_TIP_LINES) if len(text) > _TIP_FROM else None
         return None
 
     def setData(self, index: Index, value: Any, role: int = Qt.ItemDataRole.EditRole) -> bool:
