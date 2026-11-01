@@ -52,6 +52,7 @@ MAX_TEXT = 32_767  # characters in a cell
 RICH_TEXT = 1 << 20  # what xlsxwriter may get for a cell: the XML of the longest cell fits
 BOOK_OPTIONS = {"strings_to_formulas": False, "strings_to_urls": False, "nan_inf_to_errors": True}
 
+_NAME_SHOWN = 60  # characters of a column's name in a message
 _ESCAPE = re.compile(r"_(?=x[0-9a-fA-F]{4}[_\x00-\x08\x0b-\x1f])")  # a control character gets a _ of its own
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f]")
 _MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -97,20 +98,46 @@ def write_frame(
     """Adds the sheet to the workbook, with the frame as an Excel table: ``DataFrame.write_excel``
     with its ``options``. By itself, that makes a formula from a text like {=1+1} and a link from
     a text like http://... (or an empty cell, when the sheet has too many links or the address is
-    too long), and it takes a text from <r> to </r> for XML. Here each text and each column name
-    is a string, exactly as it is, cut to ``MAX_TEXT`` characters. So no address is clickable."""
+    too long), it takes a text from <r> to </r> for XML, and when xlsxwriter can't make the table
+    it writes no cells, with only a Python warning. Here each text and each column name is a
+    string, exactly as it is, cut to ``MAX_TEXT`` characters, so no address is clickable, and a
+    table that can't be made is an ActionError (see ``table_names``)."""
+    names = table_names(frame.columns)
     target = book.add_worksheet(sheet)
     target.xls_strmax = RICH_TEXT  # the cut comes before ``cell_text``, whose XML is longer than the text
     target.add_write_handler(str, _write_text)
     if not frame.width:
         return
-    names = [name[:MAX_TEXT] for name in frame.columns]
     headers = dict(zip(frame.columns, map(cell_text, names)))  # add_table writes these without the handler
     formats = {headers.get(column, column): code for column, code in (column_formats or {}).items()}
     frame.rename(headers).write_excel(workbook=book, worksheet=target, column_formats=formats, **options)
+    if not target.tables:  # e.g. two names that are only the same as ``cell_text`` gives them
+        raise ActionError("An Excel table can't have these column names: rename the ones that look alike")
     for table in target.tables:  # its list of columns needs the names themselves, in the form of a cell's text
         for column, name in zip(table["columns"], names):
             column["name"] = escaped(name)
+
+
+def table_names(columns: list[str]) -> list[str]:
+    """The names of an Excel table with these columns, as its header cells show them: cut to
+    ``MAX_TEXT`` characters, and Column2 for a second column that has no name. Excel needs them
+    different, and upper and lower case don't count there: an ActionError names two that aren't."""
+    names = [column[:MAX_TEXT] or f"Column{place}" for place, column in enumerate(columns, 1)]
+    seen: dict[str, str] = {}
+    for column, name in zip(columns, names):
+        if (other := seen.setdefault(name.lower(), column)) != column:
+            raise ActionError(
+                f"The columns {_quoted(other)} and {_quoted(column)} would have the same name in an Excel table, where "
+                f"upper and lower case don't count and a name ends after {MAX_TEXT:,} characters: rename one of them "
+                "before this step"
+            )
+    return names
+
+
+def _quoted(name: str) -> str:
+    """A column's name in a message: short and on one line."""
+    text = "".join(character if character.isprintable() else " " for character in name[:_NAME_SHOWN])
+    return f"“{text}…”" if len(name) > _NAME_SHOWN else f"“{text}”"
 
 
 def _write_text(sheet: Worksheet, row: int, column: int, value: str, cell_format: Any = None) -> int | None:

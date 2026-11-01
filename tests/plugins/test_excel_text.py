@@ -14,6 +14,7 @@ import pytest
 import xlsxwriter
 from lxml import etree
 
+from tafl.api import ActionError, xlsx
 from tafl.api.testing import StubContext
 
 MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -146,6 +147,27 @@ def _texts(*columns) -> pl.DataFrame:
     return pl.DataFrame({f"c{i}": column for i, column in enumerate(columns)}, schema={f"c{i}": pl.String for i in range(len(columns))})
 
 
+def _table_names(path) -> list[str]:
+    with zipfile.ZipFile(path) as package:
+        (part,) = [p for p in package.namelist() if re.fullmatch(r"xl/tables/table\d+\.xml", p)]
+        return [column.get("name") for column in etree.fromstring(package.read(part)).iter(f"{MAIN}tableColumn")]
+
+
+def _refused(act, how, folder, frame) -> str:
+    """The export stops, and nothing has changed: the old file is as it was, and no file is left.
+    Gives the message."""
+    before = {}
+
+    def export(action, data, params, ctx=None):
+        before.update({file: file.read_bytes() for file in folder.iterdir()})
+        act(action, data, params, ctx)
+
+    with pytest.raises(ActionError) as refused:
+        _export(export, how, folder, frame)
+    assert {file: file.read_bytes() for file in folder.iterdir()} == before
+    return str(refused.value)
+
+
 @pytest.mark.parametrize("how", PATHS)
 def test_each_text_stays_a_string_exactly(act, tmp_path, how):
     path, sheet = _export(act, how, tmp_path, _texts(TEXTS, TEXTS[::-1]))
@@ -182,11 +204,7 @@ def test_the_excel_table_has_the_names_of_the_header_cells(act, tmp_path, how):
     """Excel repairs a workbook in which an Excel table and its header cells differ."""
     frame = pl.DataFrame({name: [1] for name in NAMES})
     path, _ = _export(act, how, tmp_path, frame)
-    with zipfile.ZipFile(path) as package:
-        (part,) = [p for p in package.namelist() if re.fullmatch(r"xl/tables/table\d+\.xml", p)]
-        table = etree.fromstring(package.read(part))
-    names = [column.get("name") for column in table.iter(f"{MAIN}tableColumn")]
-    assert [re.sub("_x([0-9A-F]{4})_", lambda found: chr(int(found[1], 16)), name) for name in names] == NAMES
+    assert [re.sub("_x([0-9A-F]{4})_", lambda found: chr(int(found[1], 16)), name) for name in _table_names(path)] == NAMES
 
 
 def test_escapes_in_a_column_name_are_read_as_excel_reads_the_cell(act, tmp_path):
@@ -238,9 +256,115 @@ def test_a_very_long_column_name_is_cut_in_the_cell_and_in_the_table(act, tmp_pa
     name = "<r>" + "&" * 40_000 + "</r>"
     path, sheet = _export(act, "new file", tmp_path, pl.DataFrame({name: [1], LONGEST: [2]}))
     assert _read(path, sheet).columns == [name[:32_767], LONGEST]
-    with zipfile.ZipFile(path) as package:
-        names = [c.get("name") for c in etree.fromstring(package.read("xl/tables/table1.xml")).iter(f"{MAIN}tableColumn")]
-    assert names == [name[:32_767], LONGEST]
+    assert _table_names(path) == [name[:32_767], LONGEST]
+
+
+SAME_FOR_EXCEL = [
+    ("Name", "NAME"),
+    ("Größe", "GRÖßE"),
+    ("<r>x</r>", "<R>X</R>"),
+    ("<r>x</r>", "<r>X</r>"),
+    ("{=A1}", "{=a1}"),
+]
+
+
+@pytest.mark.parametrize("how", PATHS)
+def test_names_that_differ_only_in_case_stop_the_export(act, tmp_path, how):
+    """An Excel table holds no such names. xlsxwriter would leave the sheet without data, with no
+    more than a Python warning."""
+    message = _refused(act, how, tmp_path, pl.DataFrame({"Name": ["Anna", "Ben"], "NAME": ["x", "y"], "n": [1, 2]}))
+    assert "“Name” and “NAME”" in message and "rename one of them" in message
+
+
+@pytest.mark.parametrize(("one", "other"), SAME_FOR_EXCEL)
+def test_all_such_pairs_of_names_are_found(act, tmp_path, one, other):
+    frame = pl.DataFrame({"first": [0], one: [1], "middle": [2], other: [3]})
+    assert f"“{one}” and “{other}”" in _refused(act, "sheet replaced", tmp_path, frame)
+
+
+@pytest.mark.parametrize("how", ["new file", "sheet replaced"])
+def test_a_table_without_rows_with_such_names_stops_too(act, tmp_path, how):
+    assert "“Name” and “NAME”" in _refused(act, how, tmp_path, pl.DataFrame(schema={"Name": pl.String, "NAME": pl.Int64}))
+
+
+def test_a_table_that_is_left_out_as_empty_is_not_refused(act, tmp_path):
+    path = tmp_path / "book.xlsx"
+    ctx = StubContext()
+    act("excel.export", pl.DataFrame(schema={"Name": pl.String, "NAME": pl.String}), {"file": str(path), "skip_empty": True}, ctx)
+    assert not path.exists() and "Not exported: the table is empty" in [text for _, text in ctx.messages]
+
+
+def test_a_refused_export_makes_no_folder(act, tmp_path):
+    folder = tmp_path / "new folder"
+    with pytest.raises(ActionError, match="rename one of them"):
+        act("excel.export", pl.DataFrame({"a": [1], "A": [2]}), {"file": str(folder / "book.xlsx")})
+    assert not folder.exists()
+
+
+def test_write_frame_refuses_such_names_itself(tmp_path):
+    book = xlsxwriter.Workbook(tmp_path / "book.xlsx")
+    with pytest.raises(ActionError, match="“a” and “A”"):
+        xlsx.write_frame(pl.DataFrame({"a": [1], "A": [2]}), book, "Data")
+    assert book.worksheets() == []
+    book.close()
+
+
+def test_names_that_are_the_same_after_the_cut_stop_the_export(act, tmp_path):
+    start = "n" * 32_767
+    message = _refused(act, "sheet replaced", tmp_path, pl.DataFrame({start + "a": [1], start.upper() + "b": [2]}))
+    assert "32,767 characters" in message and "rename one of them" in message and len(message) < 400
+
+
+def test_names_that_differ_at_the_last_character_kept_are_written(act, tmp_path):
+    start = "n" * 32_766
+    frame = pl.DataFrame({start + "a" + "the rest": [1], start + "b": [2]})
+    path, sheet = _export(act, "new file", tmp_path, frame)
+    assert _table_names(path) == [start + "a", start + "b"] and _read(path, sheet).row(0) == (1, 2)
+
+
+def test_the_message_has_the_names_short_and_on_one_line(act, tmp_path):
+    name = "line\nbreak\x01" + "x" * 1_000
+    message = _refused(act, "new file", tmp_path, pl.DataFrame({name: [1], name.upper(): [2]}))
+    assert "“line break xxx" in message and "“LINE BREAK XXX" in message
+    assert message.isprintable() and "…”" in message and len(message) < 400
+
+
+@pytest.mark.parametrize("how", PATHS)
+def test_names_that_differ_in_more_than_case_are_written(act, tmp_path, how):
+    frame = pl.DataFrame({"Name": ["Anna"], "Name ": ["x"], "Name2": [1], "Maß": [2], "MASS": [3], "Müller": [4], "Mueller": [5], "Name (2)": [6]})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        path, sheet = _export(act, how, tmp_path, frame)
+    back = _read(path, sheet)
+    assert back.columns == frame.columns and back.row(0) == frame.row(0)
+    assert _table_names(path) == frame.columns
+
+
+@pytest.mark.parametrize("how", PATHS)
+def test_a_column_without_a_name_has_the_same_name_in_cell_and_table(act, tmp_path, how):
+    """A Parquet file or a database can give such a column. Excel repairs a workbook with an
+    Excel table that has an empty name, or another name than its header cell."""
+    frame = pl.DataFrame({"a": [1], "": [2], "c": [3]})
+    path, sheet = _export(act, how, tmp_path, frame)
+    assert _table_names(path) == ["a", "Column2", "c"]
+    back = _read(path, sheet)
+    assert back.columns == ["a", "Column2", "c"] and back.row(0) == (1, 2, 3)
+
+
+@pytest.mark.parametrize("names", [("", "Column1"), ("a", "", "COLUMN2")])
+@pytest.mark.parametrize("how", ["new file", "sheet replaced"])
+def test_a_column_without_a_name_can_meet_the_name_it_gets(act, tmp_path, how, names):
+    message = _refused(act, how, tmp_path, pl.DataFrame({name: [1] for name in names}))
+    assert f"“” and “{names[-1]}”" in message and "rename one of them" in message
+
+
+@pytest.mark.parametrize("how", ["new file", "sheet replaced"])
+def test_no_success_without_a_table(act, tmp_path, how):
+    """Names that only xlsxwriter takes for the same: it compares the XML it gets for a cell."""
+    frame = pl.DataFrame({"<r>x</r>": ["Anna"], "<R><t>&lt;r&gt;x&lt;/r&gt;</t></R>": ["Ben"]})
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert "rename" in _refused(act, how, tmp_path, frame)
 
 
 @pytest.mark.parametrize("how", PATHS)

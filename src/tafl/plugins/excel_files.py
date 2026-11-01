@@ -298,7 +298,8 @@ def export_excel(df, p, ctx):
     Formats use Excel's codes: #,##0.00 for numbers with thousands separators, 0% for
     percentages, dd.mm.yyyy for dates. Excel shows them in your regional style. Binary values
     are written as hex text (0x0102FF). A sheet holds up to 1,048,575 rows below its header
-    and 32,767 characters in a cell.
+    and 32,767 characters in a cell. Column names must differ in more than upper and lower
+    case: an Excel table can't tell Name and NAME apart, so the export stops.
 
     Text stays text, exactly as it is: =1+1 is no formula, and a web address is no clickable
     link in the file.
@@ -320,6 +321,7 @@ def export_excel(df, p, ctx):
         )
     if df.width > _MAX_COLUMNS:
         raise ActionError(f"The table has {df.width:,} columns, but an Excel sheet holds at most {_MAX_COLUMNS:,}")
+    xlsx.table_names(df.columns)  # names that can't be in a table stop the export before it touches a file
     into_sheet = p.existing == "sheet" and path.is_file()
     if suffix == ".xlsm" and not into_sheet:
         raise ActionError(
