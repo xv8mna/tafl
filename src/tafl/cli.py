@@ -344,7 +344,7 @@ def _show(engine: Engine, args: argparse.Namespace, console: Console, stop: thre
     shown = result.steps[-1] if result.steps else None
     if shown is None or shown.df is None:
         return 1
-    console.print(f"\n{_size(shown.df)}")
+    console.print(f"\n{_size(*shown.df.shape)}")
     console.table(shown.df, args.rows)
     return 0 if result.ok else 1
 
@@ -363,9 +363,9 @@ def _plugins(registry: Registry, console: Console) -> int:
     return 1 if registry.errors else 0
 
 
-def _size(df: pl.DataFrame) -> str:
+def _size(rows: int, columns: int) -> str:
     """"1 row × 3 columns"."""
-    return f"{_count(df.height, 'row')} × {_count(df.width, 'column')}"
+    return f"{_count(rows, 'row')} × {_count(columns, 'column')}"
 
 
 def _count(number: int, word: str) -> str:
@@ -450,8 +450,8 @@ class Console:
             self.print(f" {marker}      {number}. {description}")
             return
         details = ""
-        if result.status == Status.OK and result.df is not None:
-            details = f"   {_size(result.df)}"
+        if result.status == Status.OK and result.shape is not None:
+            details = f"   {_size(*result.shape)}"
             details += "   (cached)" if result.cached else f"   {result.seconds:.2f}s"
         elif result.status == Status.ERROR and result.seconds:  # it ran, then failed
             details = f"   {result.seconds:.2f}s"

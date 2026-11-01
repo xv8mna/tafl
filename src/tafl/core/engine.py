@@ -91,6 +91,12 @@ class StepResult:
     # The message of a SkipRest: on the step that raised it (OK) and on the steps after it (SKIPPED)
     skip_rest: str | None = None
     imported: Imported | None = None  # of an import of all files in a folder: the files it read
+    # Rows and columns of the data: they stay when a run lets go of the data (``keep_results``)
+    shape: tuple[int, int] | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        if self.df is not None:
+            self.shape = self.df.shape
 
     @property
     def ok(self) -> bool:
@@ -383,10 +389,11 @@ class Engine:
         set, the steps that ran before the stop, and the messages of the step that was running
         (``stopped_messages``).
 
-        Without ``keep_results`` the data of a table goes once ``done`` has had it and no table
-        after it uses it, so that a run of many tables doesn't need the memory of all of them. The
-        results have no ``df`` then, and of the cache only what tables read from outside stays,
-        for the tables that read the same.
+        Without ``keep_results`` the data of a step goes once the step after it has run, and that
+        of a table once ``done`` has had it and no table after it uses it, so that a run needs the
+        memory of neither all steps nor all tables. The results have no ``df`` then, only their
+        ``shape``, and the cache holds nothing but what several tables read from outside, until
+        the last of them has it.
         """
         if Mode(mode) == Mode.RUN:
             self.reload()
@@ -395,13 +402,15 @@ class Engine:
         results = {}
         order = self.execution_order(wanted)
         users = Counter() if keep_results else Counter(used for table_id in order for used in self.dependencies(table_id))
+        if not keep_results:
+            evaluation.keep_results, evaluation.same_reads = False, self._same_reads(order)
         try:
             for table_id in order:
                 results[table_id] = evaluation.table(table_id)
                 if done is not None:
                     done(table_id, results[table_id])
                 if not keep_results:
-                    self._let_go(table_id, results, users)
+                    self._let_go(table_id, results, users, evaluation.same_reads)
         except (Cancelled, KeyboardInterrupt):
             stopped, evaluation.stopped = evaluation.stopped, None
             if done is not None and stopped is not None:
@@ -410,18 +419,34 @@ class Engine:
             raise
         return results
 
-    def _let_go(self, table_id: str, results: dict[str, TableResult], users: Counter[str]) -> None:
+    def _let_go(
+        self, table_id: str, results: dict[str, TableResult], users: Counter[str], same_reads: Mapping[str, list[str]]
+    ) -> None:
         """``table_id`` is done: drops its data, and that of the tables it used, if no later table
-        needs them. ``users``: how many tables to come use each table."""
+        needs them, and what it read if it was the last to read that. ``users``: how many tables
+        to come use each table; ``same_reads``: see ``_same_reads``."""
         used = self.dependencies(table_id)
         users.subtract(used)
         for finished in (table_id, *used):
             if finished in results and users[finished] <= 0:
-                steps = results[finished].steps
-                copies = any(link.index == 0 for link in self.links(finished))  # its first step is another table's data
-                self.cache.forget(step.step_id for step in steps[0 if copies else 1 :])
-                for step in steps:
+                for step in results[finished].steps:
                     step.df = None
+        readers = same_reads.get(table_id, ())
+        if readers and readers[-1] == table_id:
+            self.cache.forget(self.project.table(reader).steps[0].id for reader in readers)
+
+    def _same_reads(self, order: list[str]) -> dict[str, list[str]]:
+        """The tables of ``order`` that start with the same read from outside as another of them:
+        each gets the list of those tables. A read of one table alone stays out of the cache: it
+        would hold on to the data for the whole table. A table that starts from another table
+        reads nothing from outside."""
+        reads: dict[str, list[str]] = {}
+        for table_id in order:
+            table = self.project.table(table_id)
+            if table.enabled and table.steps and not any(link.index == 0 for link in self.links(table_id)):
+                first = table.steps[0]
+                reads.setdefault(json.dumps([first.action, first.params], sort_keys=True, default=str), []).append(table_id)
+        return {table_id: readers for readers in reads.values() if len(readers) > 1 for table_id in readers}
 
     def links(self, table: str | None = None) -> list[Link]:
         """Which step uses which other table (of one table, or of all tables)."""
@@ -537,6 +562,8 @@ class _Evaluation:
         self.stopped_messages: list[tuple[str, str]] = []  # those of the step that was running then
         # The same for every step, so that =TODAY() means the same day everywhere
         self.parameters = engine.parameter_values()
+        self.keep_results = True  # False: see Engine.run
+        self.same_reads: dict[str, list[str]] = {}  # without keep_results: see Engine._same_reads
 
     def table(self, table_id: str, until: int | None = None) -> TableResult:
         if self.engine.protected:  # every calculation comes here: nothing goes on to the steps
@@ -565,7 +592,7 @@ class _Evaluation:
             imported: Imported | None = None  # the files the first step read from a folder
             for index, step in enumerate(table.steps if full else table.steps[: until + 1]):
                 if failed:
-                    result.steps.append(StepResult(step.id, Status.BLOCKED, error="An earlier step has an error"))
+                    self._add(result, StepResult(step.id, Status.BLOCKED, error="An earlier step has an error"))
                     continue
                 if skip_rest is not None:  # an earlier step raised SkipRest
                     if step.enabled:
@@ -573,10 +600,10 @@ class _Evaluation:
                         skipped.messages.append(("info", skip_rest))
                     else:
                         skipped = StepResult(step.id, Status.DISABLED, df=df, key=key)
-                    result.steps.append(skipped)
+                    self._add(result, skipped)
                     continue
                 step_result = self._step(table, index, step, df, key, imported)
-                result.steps.append(step_result)
+                self._add(result, step_result)
                 if step_result.status == Status.ERROR:
                     failed = True
                 else:
@@ -593,6 +620,13 @@ class _Evaluation:
         if full:
             self.results[table_id] = result
         return result
+
+    def _add(self, result: TableResult, step: StepResult) -> None:
+        """Adds a step's result. Without ``keep_results`` the step before it lets go of its data:
+        once the next step has run, nothing reads it (the last step's data is the table's)."""
+        if not self.keep_results and result.steps:
+            result.steps[-1].df = None
+        result.steps.append(step)
 
     def _skip_reason(self, table: Table) -> str | None:
         """A table that is off is not calculated, nor is any table that uses a skipped one."""
@@ -694,6 +728,7 @@ class _Evaluation:
                 skip_rest=found.skip_rest,
                 imported=read if index == 0 else None,
             )
+        keep = use_cache and (self.keep_results or (index == 0 and table.id in self.same_reads))
 
         try:
             problems = action.check(params, self._validation_context(df, deps, from_folder))
@@ -721,7 +756,7 @@ class _Evaluation:
                 return _error(step, f"'{action.name}' did not return a table", messages=ctx.messages, seconds=seconds)
             message = str(e.message).strip() or f"Step {index + 1} skips the rest of the table"
             read = _imported(ctx) if index == 0 else None
-            if use_cache:
+            if keep:
                 self.engine.cache.put(key, data, message, step=step.id, messages=ctx.messages[len(warnings) :], imported=read)
             ctx.messages.append(("info", message))
             return StepResult(
@@ -753,7 +788,7 @@ class _Evaluation:
         if out is df:  # passed the table through unchanged: later steps keep their cache keys
             key, own = prev_key, None  # the result stays the previous step's, with its messages
         read = _imported(ctx) if index == 0 else None
-        if use_cache:
+        if keep:
             self.engine.cache.put(key, out, step=step.id, messages=own, imported=read)
         return StepResult(step.id, Status.OK, df=out, key=key, messages=ctx.messages, seconds=seconds, imported=read)
 

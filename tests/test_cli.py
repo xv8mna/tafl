@@ -222,7 +222,8 @@ def test_after_ctrl_c_what_ran_is_printed(plugins, tmp_path, capsys):
     lines = output.out.splitlines()
     assert lines[0] == "First" and lines[3].startswith("  ✓ 2. Export to first.csv   1 row × 1 column")
     assert lines[4] == f"          i Wrote 1 row to {tmp_path / 'out' / 'first.csv'}"
-    assert lines[5] == "Orders" and lines[8].startswith("  ✓ 2. Export to orders.csv   1 row × 1 column")
+    assert lines[5] == "Orders" and lines[6].startswith("  ✓ 1. Import orders.csv   1 row × 1 column")
+    assert lines[8].startswith("  ✓ 2. Export to orders.csv   1 row × 1 column")
     assert lines[10:12] == ["  · 3. Ctrl+C   (stopped)", "        4. Interrupt"]
     assert re.fullmatch(r"Stopped after \d+\.\d\ds", lines[12]) and len(lines) == 13
     assert output.err.endswith("\nError: Stopped\n")
