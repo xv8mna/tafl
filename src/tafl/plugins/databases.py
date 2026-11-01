@@ -946,7 +946,9 @@ class SQLite(Connector):
         return conn.total_changes - before
 
 
-_STEPS_BETWEEN_CHECKS = 100_000  # steps of SQLite's own program, a few milliseconds
+# Steps of SQLite's own program. Mostly that is some microseconds, but a row takes only a few
+# steps, and one step can make a value of megabytes.
+_STEPS_BETWEEN_CHECKS = 1_000
 
 
 def _stoppable(connection: sqlite3.Connection, ctx) -> None:

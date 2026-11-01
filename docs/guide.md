@@ -676,9 +676,11 @@ search field.
 - **Run project** (F5) calculates all tables and executes their exports and commands.
 - **Run this table** (Shift+F5, in the **Project** menu or a table's right-click menu) does the
   same for the selected table and the tables it uses. Their exports run too.
-- **Stop** stops a running formula at once. Another step that is running finishes first: an
-  export can take a while. The Run results then list what ran before the stop (exports included)
-  and the steps that did not run.
+- **Stop** stops a running formula at once, and an import from a database within a moment. SQL
+  Server can stop a query only when rows arrive: a query that gives no row for a long time runs on
+  until the first one comes. Another step that is running finishes first: an export can take a
+  while. The Run results then list what ran before the stop (exports included) and the steps that
+  did not run.
 - **Reload data** (Ctrl+R) reads all files and databases again and updates the status of every
   table.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import decimal
 import re
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,7 @@ _OTHER_ERROR = re.compile(r"permission|denied|not authori[sz]ed|privilege|access
 # The digits of the decimal context rows are written in: more than a decimal (38 digits) and its
 # scale together
 _EXACT_DIGITS = 100
+_BATCH_SECONDS = 0.05  # what a batch of a read may take, so that Stop and the memory check come in time
 
 
 class Connector:
@@ -400,20 +402,28 @@ def _reason(error: Exception, message: Callable[[Exception], str] = str) -> str:
 def frame_from_cursor(
     cursor: Any,
     dtype_for: DtypeFor | None = None,
-    batch_size: int = 50_000,
+    batch_size: int = 1_000,
     between: Callable[[], None] | None = None,
 ) -> pl.DataFrame:
     """Read all rows of an executed DB-API cursor into a DataFrame. ``between`` is called after
     each batch: there may be no end of rows, so it can stop the read (e.g. ``ctx.check_cancelled``
-    and ``ctx.check_memory``)."""
+    and ``ctx.check_memory``). One row can hold megabytes, so counting rows says nothing about
+    time or memory: a batch starts with one row and grows, up to ``batch_size`` rows, for as long
+    as it takes less than ``_BATCH_SECONDS``."""
     description = cursor.description
     if not description:
         return pl.DataFrame()
     names = unique_names([str(d[0]) if d[0] else f"Column {i}" for i, d in enumerate(description, 1)])
     columns: list[list[Any]] = [[] for _ in names]
-    while rows := cursor.fetchmany(batch_size):
+    size = 1
+    while True:
+        started = time.perf_counter()
+        if not (rows := cursor.fetchmany(size)):
+            break
         for index, values in enumerate(zip(*rows)):
             columns[index].extend(values)
+        seconds = time.perf_counter() - started
+        size = max(1, int(size * _BATCH_SECONDS / seconds)) if seconds > _BATCH_SECONDS else min(size * 2, batch_size)
         if between is not None:
             between()
     return pl.DataFrame(

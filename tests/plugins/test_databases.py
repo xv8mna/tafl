@@ -11,12 +11,14 @@ import time
 import uuid
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
 
 from tafl import crash
 from tafl.api import ActionError, Cancelled, Connector, Context, frame_from_cursor, unique_names
+from tafl.api import database as api_database
 from tafl.api.parameters import Fixed
 from tafl.api.testing import StubContext
 from tafl.core import Engine, Parameter, Project
@@ -513,6 +515,70 @@ def test_each_batch_of_a_read_gives_way():
     assert frame_from_cursor(Rows(None)).height == 1
 
 
+def _batch_sizes(monkeypatch, seconds_of_row, rows: int) -> list[int]:
+    """The rows each batch of a read asks for, on a clock that runs only while rows are read.
+    ``seconds_of_row``: the time that the row with this number takes."""
+    now = [0.0]
+    sizes = []
+
+    class Timed(_Cursor):
+        def fetchmany(self, size):
+            first = sum(sizes)
+            sizes.append(size)
+            now[0] += sum(seconds_of_row(row) for row in range(first, min(first + size, rows)))
+            return [(1,)] * (min(first + size, rows) - min(first, rows))
+
+    monkeypatch.setattr(api_database, "time", SimpleNamespace(perf_counter=lambda: now[0]))
+    assert frame_from_cursor(Timed(None)).height == rows
+    return sizes
+
+
+def test_small_rows_come_in_batches_of_a_thousand(monkeypatch):
+    sizes = _batch_sizes(monkeypatch, lambda row: 0.000001, 6000)
+    assert sizes[:13] == [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 1000, 1000]
+
+
+def test_big_rows_come_in_small_batches(monkeypatch):
+    """Rows of megabytes: 1,000 of them are gigabytes, and memory and Stop would wait for them all."""
+    sizes = _batch_sizes(monkeypatch, lambda row: 0.005, 500)
+    assert max(sizes) <= 20 and sum(sizes[:-1]) >= 500
+
+
+def test_a_batch_gets_small_at_once_when_the_rows_get_big(monkeypatch):
+    sizes = _batch_sizes(monkeypatch, lambda row: 0.000001 if row < 5000 else 0.1, 5100)
+    assert sizes[-30:] == [1] * 30
+
+
+def test_a_long_read_keeps_every_row_in_its_place(project, registry):
+    many = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 25000) SELECT n, 'text ' || n AS t FROM c"
+    frame = import_table(project, registry, mode="query", query=many).df
+    assert frame["n"].to_list() == list(range(1, 25001))
+    assert frame["t"].to_list() == [f"text {n}" for n in range(1, 25001)]
+
+
+def test_the_checks_during_a_read_take_next_to_no_time(tmp_path):
+    """Stop and the memory check come often, for rows that are big. Small rows must not pay for it:
+    a look at the free memory and at Stop after each batch, and the handler in SQLite."""
+    database = tmp_path / "many.db"
+    with closing(sqlite3.connect(database)) as con:
+        con.execute("CREATE TABLE t (n, s, x)")
+        con.executemany("INSERT INTO t VALUES (?, ?, ?)", ((n, f"text {n}", n / 3) for n in range(400_000)))
+        con.commit()
+
+    def read(checks: bool) -> float:
+        with closing(sqlite3.connect(database)) as con:
+            if checks:
+                databases._stoppable(con, Context())
+            start = time.perf_counter()
+            cursor = con.execute("SELECT * FROM t")
+            options = {"between": crash.free_memory} if checks else {"batch_size": 50_000}
+            assert frame_from_cursor(cursor, **options).height == 400_000
+            return time.perf_counter() - start
+
+    plain, checked = min(read(False) for _ in range(5)), min(read(True) for _ in range(5))
+    assert checked < 1.3 * plain
+
+
 def test_stop_ends_a_read_between_two_batches_on_any_database(registry, monkeypatch):
     cancel = threading.Event()
     batches = []
@@ -566,6 +632,8 @@ def test_a_memory_error_has_a_plain_message(registry, monkeypatch, where):
 
 
 _LONG = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 400000000) SELECT COUNT(*) AS n FROM c"
+# A few rows, but each of them a megabyte: a table of documents
+_BIG_ROWS = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3000) SELECT randomblob(1000000) AS b FROM c"
 
 
 def test_stop_ends_a_running_sqlite_query(project, registry):
@@ -578,6 +646,40 @@ def test_stop_ends_a_running_sqlite_query(project, registry):
     with pytest.raises(Cancelled):
         Engine(project, registry).evaluate(table.id, cancel=cancel)
     assert time.perf_counter() - start < 5
+
+
+def test_stop_ends_a_read_of_big_rows(project, registry):
+    table = project.add_table("Documents")
+    project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": _BIG_ROWS})
+    cancel = threading.Event()
+    threading.Timer(0.1, cancel.set).start()
+    start = time.perf_counter()
+    with pytest.raises(Cancelled):
+        Engine(project, registry).evaluate(table.id, cancel=cancel)
+    assert time.perf_counter() - start < 1.5
+
+
+def test_a_read_of_big_rows_stops_when_memory_runs_short(project, registry, monkeypatch):
+    table = project.add_table("Documents")
+    project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": _BIG_ROWS})
+    start = time.perf_counter()
+    monkeypatch.setattr(crash, "free_memory", lambda: (2048 if time.perf_counter() - start < 0.1 else 300) * 1024**2)
+    monkeypatch.setattr(crash, "_watching", True)
+    assert "Only 300 MB of memory is free" in Engine(project, registry).evaluate(table.id).first_error
+    assert time.perf_counter() - start < 1.5
+
+
+def test_stop_ends_a_sqlite_query_whose_steps_take_long(project, registry):
+    """It gives no row, and each row of its work takes a few steps of a millisecond."""
+    query = _BIG_ROWS.replace("3000", "100000").replace("randomblob(1000000) AS b", "COUNT(randomblob(1000000)) AS n")
+    table = project.add_table("Long")
+    project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": query})
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+    start = time.perf_counter()
+    with pytest.raises(Cancelled):
+        Engine(project, registry).evaluate(table.id, cancel=cancel)
+    assert time.perf_counter() - start < 3
 
 
 def test_stop_ends_a_running_sqlite_command_and_changes_nothing(project, registry, tmp_path):
