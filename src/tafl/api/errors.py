@@ -7,6 +7,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import polars as pl
 
+# For a MemoryError, which has no text of its own
+NO_MEMORY = "There is not enough memory for this. Close other programs, then calculate again."
+
 
 class TaflError(Exception):
     """Base class for errors whose message is meant for the user."""

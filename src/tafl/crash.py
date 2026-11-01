@@ -5,7 +5,8 @@ program at once: no ``except``, ``finally`` or ``atexit`` runs, so the program c
 itself. Three things make up for it:
 
 - ``short_of_memory``: a step doesn't start when too little memory is left, and fails with a
-  normal error. It can't see a step that suddenly needs much more than is free.
+  normal error; a database import that keeps reading stops the same way. It can't see a step that
+  suddenly needs much more than is free.
 - ``running``: a small file says which step runs, and a clean end removes it. The file of a program
   that ended without an error message tells the next start what happened (``last_words``).
 - ``main``: on Windows, ``tafl run`` works in a child process. A small parent waits for it and
@@ -155,13 +156,14 @@ def stop() -> None:
         _marker = _errors = None
 
 
-def short_of_memory() -> str | None:
-    """Why a step must not start, or None."""
+def short_of_memory(started: bool = False) -> str | None:
+    """Why a step must not start, or must not go on when it has ``started``; or None."""
     free = free_memory() if _watching else None
     if free is None or free >= MIN_FREE:
         return None
+    outcome = "stopped" if started else "did not start"
     return (
-        f"Only {free // 1024**2} MB of memory is free on this computer, so this step did not start (it needs at "
+        f"Only {free // 1024**2} MB of memory is free on this computer, so this step {outcome} (it needs at "
         f"least {MIN_FREE // 1024**2} MB). Close other programs, then calculate again."
     )
 

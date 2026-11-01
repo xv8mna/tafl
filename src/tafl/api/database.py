@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from .errors import ActionError
+from .errors import NO_MEMORY, ActionError, Cancelled
 from .parameters import fill_sql, sql_literal, sql_spans
 from .params import Param, Params, resolve
 
@@ -224,7 +224,7 @@ class Connector:
         except ActionError:
             raise
         except Exception as e:
-            raise ActionError(f"Could not connect to {self.name}: {e}") from e
+            raise ActionError(f"Could not connect to {self.name}: {_reason(e)}") from e
         return Database(self, raw)
 
 
@@ -250,25 +250,26 @@ class Database:
         self.connector = connector
         self.raw = raw
 
-    def read(self, sql: str, params: Sequence[Any] = ()) -> pl.DataFrame:
+    def read(self, sql: str, params: Sequence[Any] = (), between: Callable[[], None] | None = None) -> pl.DataFrame:
         """The rows of the first result that has columns: a SQL Server batch reports the row
-        counts of its INSERTs into temporary tables first (unless it says SET NOCOUNT ON)."""
+        counts of its INSERTs into temporary tables first (unless it says SET NOCOUNT ON).
+        ``between``: see ``frame_from_cursor``."""
         cursor = self.raw.cursor()
         try:
             self._execute(cursor, sql, params)
             while cursor.description is None and self._next_result(cursor):
                 pass
             try:
-                return frame_from_cursor(cursor, self.connector.dtype_for)
-            except ActionError:
+                return frame_from_cursor(cursor, self.connector.dtype_for, between=between)
+            except (ActionError, Cancelled):
                 raise
             except Exception as e:  # e.g. a value of a later row that the server can't convert
-                raise ActionError(self.connector.error_message(e)) from e
+                raise ActionError(_reason(e, self.connector.error_message)) from e
         finally:
             cursor.close()
 
-    def read_table(self, name: str) -> pl.DataFrame:
-        return self.read(self.connector.read_table_sql(self.raw, name))
+    def read_table(self, name: str, between: Callable[[], None] | None = None) -> pl.DataFrame:
+        return self.read(self.connector.read_table_sql(self.raw, name), between=between)
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         """Run a statement; returns the number of affected rows (-1 if unknown)."""
@@ -290,7 +291,7 @@ class Database:
         except Exception as e:
             if type(e).__name__ == "NotSupportedError":
                 return False
-            raise ActionError(self.connector.error_message(e)) from e
+            raise ActionError(_reason(e, self.connector.error_message)) from e
 
     def _execute(self, cursor: Any, sql: str, params: Sequence[Any]) -> None:
         try:
@@ -299,7 +300,7 @@ class Database:
             else:
                 cursor.execute(sql)
         except Exception as e:
-            raise ActionError(self.connector.error_message(e)) from e
+            raise ActionError(_reason(e, self.connector.error_message)) from e
 
     def execute_many(
         self,
@@ -340,7 +341,7 @@ class Database:
             with decimal.localcontext(prec=_EXACT_DIGITS):
                 cursor.executemany(sql, rows)
         except Exception as e:
-            raise ActionError(self.connector.error_message(e)) from e
+            raise ActionError(_reason(e, self.connector.error_message)) from e
         return len(rows)
 
     def columns(self, table: str) -> list[str] | None:
@@ -353,7 +354,7 @@ class Database:
         except Exception as e:
             if self.connector.missing_table(e, table):
                 return None
-            raise ActionError(self.connector.error_message(e)) from e
+            raise ActionError(_reason(e, self.connector.error_message)) from e
         finally:
             cursor.close()
 
@@ -361,7 +362,7 @@ class Database:
         try:
             return self.connector.list_tables(self.raw)
         except Exception as e:
-            raise ActionError(self.connector.error_message(e)) from e
+            raise ActionError(_reason(e, self.connector.error_message)) from e
 
     def quote(self, identifier: str) -> str:
         return self.connector.quote(identifier)
@@ -391,8 +392,20 @@ class Database:
             self.raw.close()
 
 
-def frame_from_cursor(cursor: Any, dtype_for: DtypeFor | None = None, batch_size: int = 50_000) -> pl.DataFrame:
-    """Read all rows of an executed DB-API cursor into a DataFrame."""
+def _reason(error: Exception, message: Callable[[Exception], str] = str) -> str:
+    """The text of a driver's error, by ``message``; a MemoryError has none."""
+    return NO_MEMORY if isinstance(error, MemoryError) else message(error)
+
+
+def frame_from_cursor(
+    cursor: Any,
+    dtype_for: DtypeFor | None = None,
+    batch_size: int = 50_000,
+    between: Callable[[], None] | None = None,
+) -> pl.DataFrame:
+    """Read all rows of an executed DB-API cursor into a DataFrame. ``between`` is called after
+    each batch: there may be no end of rows, so it can stop the read (e.g. ``ctx.check_cancelled``
+    and ``ctx.check_memory``)."""
     description = cursor.description
     if not description:
         return pl.DataFrame()
@@ -401,6 +414,8 @@ def frame_from_cursor(cursor: Any, dtype_for: DtypeFor | None = None, batch_size
     while rows := cursor.fetchmany(batch_size):
         for index, values in enumerate(zip(*rows)):
             columns[index].extend(values)
+        if between is not None:
+            between()
     return pl.DataFrame(
         [
             make_series(name, values, dtype_for(d) if dtype_for else None)

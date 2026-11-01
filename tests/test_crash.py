@@ -12,6 +12,7 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
+import polars
 import pytest
 
 from tafl import crash
@@ -155,6 +156,20 @@ def test_a_step_short_of_memory_first_lets_go_of_the_cache(registry, folder, tmp
     crash.start()
     monkeypatch.setattr(crash, "free_memory", lambda: GB if len(engine.cache) == 0 else 300 * 1024**2)
     assert engine.run(mode="preview")[table.id].ok
+
+
+def test_a_step_without_memory_says_so_in_plain_words(registry, tmp_path, monkeypatch):
+    """Python's MemoryError has no text of its own."""
+
+    def no_memory(*args, **options):
+        raise MemoryError
+
+    project = Project.load(_project(tmp_path, "rows.sort"))
+    table = project.tables[0]
+    table.steps[1].params = {"by": [{"column": "Id"}]}
+    monkeypatch.setattr(polars.DataFrame, "sort", no_memory)
+    result = Engine(project, registry).evaluate(table.id)
+    assert result.first_error == "There is not enough memory for this. Close other programs, then calculate again."
 
 
 def test_linux_counts_the_memory_it_can_hand_out(tmp_path, monkeypatch):

@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from contextlib import closing
@@ -14,7 +15,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from tafl.api import ActionError, Connector, Context, unique_names
+from tafl import crash
+from tafl.api import ActionError, Cancelled, Connector, Context, frame_from_cursor, unique_names
 from tafl.api.parameters import Fixed
 from tafl.api.testing import StubContext
 from tafl.core import Engine, Parameter, Project
@@ -375,6 +377,161 @@ def test_sqlserver(registry, tmp_path):
     assert Engine(project, registry).evaluate(table.id).df["ten"].to_list() == [10, 20]
     project.tables[0].steps[0].params["query"] = "SELECT 1 AS a INTO #u; SELECT CAST('x' AS int) AS b"
     assert "Conversion failed" in Engine(project, registry).evaluate(table.id).first_error  # not an empty table
+
+
+class _Cursor:
+    """A cursor of a database with no end of rows: ``each_batch`` is called for each one."""
+
+    description = (("a", int, None, None, None, None, None),)
+    rowcount = -1
+
+    def __init__(self, each_batch):
+        self.each_batch = each_batch
+
+    def execute(self, sql):
+        pass
+
+    def fetchmany(self, size):
+        self.each_batch()
+        return [(1,)] * 10
+
+    def close(self):
+        pass
+
+
+class _Endless(Connector):
+    """Any database: nothing in the driver looks at Stop or at the free memory."""
+
+    id = name = "endless"
+
+    def __init__(self, each_batch):
+        self.each_batch = each_batch
+
+    def connect(self, settings, ctx, *, create=False):
+        return self
+
+    def cursor(self):
+        return _Cursor(self.each_batch)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _endless_import(registry, monkeypatch, each_batch) -> tuple[Engine, str]:
+    monkeypatch.setitem(registry.connectors, "endless", _Endless(each_batch))
+    project = Project(name="Db")
+    project.add_connection("endless", "endless")
+    table = project.add_table("T")
+    project.add_step(table, "db.import", {"connection": "endless", "mode": "query", "query": "SELECT 1"})
+    return Engine(project, registry), table.id
+
+
+def test_each_batch_of_a_read_gives_way():
+    batches = iter([[(1, "a"), (2, "b")], [(3, "c")], []])
+
+    class Rows(_Cursor):
+        description = (("n", int, None, None, None, None, None), ("t", str, None, None, None, None, None))
+
+        def fetchmany(self, size):
+            return next(batches)
+
+    calls = []
+    frame = frame_from_cursor(Rows(None), between=lambda: calls.append("batch"))
+    assert frame.to_dict(as_series=False) == {"n": [1, 2, 3], "t": ["a", "b", "c"]} and calls == ["batch", "batch"]
+    batches = iter([[(1, "a")], []])
+    assert frame_from_cursor(Rows(None)).height == 1
+
+
+def test_stop_ends_a_read_between_two_batches_on_any_database(registry, monkeypatch):
+    cancel = threading.Event()
+    batches = []
+
+    def each_batch():
+        batches.append(1)
+        assert len(batches) < 20, "the read goes on"
+        if len(batches) == 3:
+            cancel.set()
+
+    engine, table = _endless_import(registry, monkeypatch, each_batch)
+    with pytest.raises(Cancelled):
+        engine.evaluate(table, cancel=cancel)
+    assert len(batches) == 3
+
+
+def test_a_read_stops_when_memory_runs_short_on_any_database(registry, monkeypatch):
+    free = [2 * 1024**3]
+    batches = []
+
+    def each_batch():
+        batches.append(1)
+        assert len(batches) < 20, "the read goes on"
+        if len(batches) == 3:
+            free[0] = 300 * 1024**2
+
+    engine, table = _endless_import(registry, monkeypatch, each_batch)
+    engine.cache.put("kept", pl.DataFrame({"a": [1]}))
+    monkeypatch.setattr(crash, "free_memory", lambda: free[0])
+    monkeypatch.setattr(crash, "_watching", True)
+    result = engine.evaluate(table)
+    assert result.first_error == (
+        "Only 300 MB of memory is free on this computer, so this step stopped (it needs at least 512 MB). Close other "
+        "programs, then calculate again."
+    )
+    assert len(batches) == 3 and len(engine.cache) == 0  # first it lets go of what can be calculated again
+
+
+@pytest.mark.parametrize("where", ["execute", "fetchmany", "connect"])
+def test_a_memory_error_has_a_plain_message(registry, monkeypatch, where):
+    """Python's MemoryError has no text: the step ended with an error that said nothing."""
+
+    def no_memory(*args, **options):
+        raise MemoryError
+
+    engine, table = _endless_import(registry, monkeypatch, lambda: None)
+    monkeypatch.setattr({"connect": _Endless}.get(where, _Cursor), where, no_memory)
+    expected = "There is not enough memory for this. Close other programs, then calculate again."
+    prefix = "Could not connect to endless: " if where == "connect" else ""
+    assert engine.evaluate(table).first_error == prefix + expected
+
+
+_LONG = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 400000000) SELECT COUNT(*) AS n FROM c"
+
+
+def test_stop_ends_a_running_sqlite_query(project, registry):
+    """It gives no row for a long time, so there is no batch to stop after."""
+    table = project.add_table("Long")
+    project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": _LONG})
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+    start = time.perf_counter()
+    with pytest.raises(Cancelled):
+        Engine(project, registry).evaluate(table.id, cancel=cancel)
+    assert time.perf_counter() - start < 5
+
+
+def test_stop_ends_a_running_sqlite_command_and_changes_nothing(project, registry, tmp_path):
+    table = project.add_table("Long")
+    project.add_step(table, "db.import", {"connection": "db", "table": "orders"})
+    project.add_step(table, "db.command", {"connection": "db", "sql": f"CREATE TABLE made AS {_LONG}"})
+    before = (tmp_path / "data.db").read_bytes()
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+    start = time.perf_counter()
+    with pytest.raises(Cancelled):
+        Engine(project, registry).run([table.id], cancel=cancel)
+    assert time.perf_counter() - start < 5
+    assert (tmp_path / "data.db").read_bytes() == before
+
+
+def test_a_sqlite_query_runs_on_when_nobody_stops_it(project, registry):
+    query = _LONG.replace("400000000", "300000")
+    assert import_table(project, registry, mode="query", query=query).df["n"].to_list() == [300000]
 
 
 def test_sqlserver_writes_parameters_as_its_own_literals(registry):

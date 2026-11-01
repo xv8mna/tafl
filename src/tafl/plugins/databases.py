@@ -20,6 +20,7 @@ import polars as pl
 from tafl.api import (
     APP_NAME,
     ActionError,
+    Cancelled,
     Connector,
     Endpoint,
     Mode,
@@ -811,6 +812,7 @@ class SQLite(Connector):
         connection = sqlite3.connect(path, autocommit=False)  # one transaction, also for CREATE TABLE and scripts
         if ctx.mode == Mode.PREVIEW:  # only imports run: an ATTACH would create a missing file
             connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
+        _stoppable(connection, ctx)
         return connection
 
     def connect_read_only(self, settings, ctx):
@@ -824,6 +826,7 @@ class SQLite(Connector):
         connection = sqlite3.connect(_read_only_uri(path), uri=True, autocommit=False)
         connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
         connection.set_authorizer(_authorize_reading)
+        _stoppable(connection, ctx)
         return connection
 
     def error_message(self, error):
@@ -934,6 +937,23 @@ class SQLite(Connector):
         return conn.total_changes - before
 
 
+_STEPS_BETWEEN_CHECKS = 100_000  # steps of SQLite's own program, a few milliseconds
+
+
+def _stoppable(connection: sqlite3.Connection, ctx) -> None:
+    """Stop ends a query or a command that runs, also one that gives no row for a long time: then
+    the step ends as stopped, and its transaction is rolled back."""
+
+    def stopped() -> bool:
+        try:
+            ctx.check_cancelled()
+        except Cancelled:
+            return True
+        return False
+
+    connection.set_progress_handler(stopped, _STEPS_BETWEEN_CHECKS)
+
+
 # The PRAGMAs of a read-only connection. All others stay out, also those of later versions of SQLite:
 # they can act on the whole program, which a rollback doesn't undo (hard_heap_limit, soft_heap_limit,
 # threads), on files (temp_store_directory, data_store_directory, wal_checkpoint) or on the connection.
@@ -998,9 +1018,14 @@ def import_database(df, p, ctx):
     Numbers keep all their digits: a column with numbers of more digits than a decimal number
     keeps (about 15), or with whole numbers too big for a whole-number column, stays a column of
     exact decimals."""
+
+    def between():  # there may be no end of rows: a view can make them up
+        ctx.check_cancelled()
+        ctx.check_memory()
+
     with ctx.database(p.connection, read_only=True) as db:
         try:
-            out = db.read_table(p.table) if p.mode == "table" else db.read(p.query)
+            out = db.read_table(p.table, between) if p.mode == "table" else db.read(p.query, between=between)
         finally:
             with contextlib.suppress(Exception):  # e.g. a driver in autocommit mode: nothing to roll back
                 db.rollback()

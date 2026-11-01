@@ -50,6 +50,7 @@ from tafl.api import (
     SkipRest,
     ValidationContext,
 )
+from tafl.api.errors import NO_MEMORY
 from tafl.api.expressions import is_panic
 from tafl.api.parameters import fill_sql
 from tafl.crash import installed_memory
@@ -693,9 +694,7 @@ class _Evaluation:
         if problems:
             return _error(step, "\n".join(problems), messages=warnings)
         ctx.messages.extend(warnings)
-        if crash.short_of_memory() is not None:
-            self.engine.cache.clear()  # results that can be calculated again must not stop a step
-        if (short := crash.short_of_memory()) is not None:
+        if (short := self.short_of_memory()) is not None:
             return _error(step, short, messages=warnings)
 
         started = time.perf_counter()
@@ -748,6 +747,14 @@ class _Evaluation:
         if use_cache:
             self.engine.cache.put(key, out, step=step.id, messages=own, imported=read)
         return StepResult(step.id, Status.OK, df=out, key=key, messages=ctx.messages, seconds=seconds, imported=read)
+
+    def short_of_memory(self, started: bool = False) -> str | None:
+        """``crash.short_of_memory``. First the cache goes: results that can be calculated again
+        must not stop a step."""
+        if crash.short_of_memory(started) is None:
+            return None
+        self.engine.cache.clear()
+        return crash.short_of_memory(started)
 
     def _stop_if_stopping(self, ctx: Context) -> None:
         """``_stop_if``; the messages of the step that was running go to its table then
@@ -853,6 +860,10 @@ class _StepContext(Context):
         settings = self._evaluation.connection_settings(definition.settings, connector)
         return connector.open(settings, self, create=create, read_only=read_only)
 
+    def check_memory(self) -> None:
+        if (short := self._evaluation.short_of_memory(started=True)) is not None:
+            raise ActionError(short)
+
 
 def _error(
     step: Step,
@@ -931,6 +942,8 @@ def _dependency_error(name: str, dependency: TableResult) -> str:
 
 def _friendly(error: BaseException) -> str:
     """First paragraph of an unexpected error; Polars/DuckDB append long query plans."""
+    if isinstance(error, MemoryError):
+        return NO_MEMORY
     text = str(error).strip()
     for marker in ("\n\nResolved plan", "\n\nThis error occurred", "\n\nLINE "):
         text = text.split(marker)[0]

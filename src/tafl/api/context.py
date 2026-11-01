@@ -96,3 +96,7 @@ class Context:
         """Call this inside long loops so the user can cancel."""
         if self._cancel is not None and self._cancel.is_set():
             raise Cancelled()
+
+    def check_memory(self) -> None:
+        """Call this between the batches of work that keeps taking memory: an ActionError when
+        too little is left on this computer."""
