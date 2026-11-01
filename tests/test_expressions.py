@@ -1,3 +1,4 @@
+import dataclasses
 import datetime as dt
 import random
 import re
@@ -259,6 +260,35 @@ def test_duckdb_itself_checks_every_formula(people, monkeypatch):
     assert expressions.evaluate(people, "[Age] + 1").to_list() == [35, 28, 42, 20, 59]
 
 
+def test_duckdb_s_tokens_must_be_the_same_kind_and_all_be_there(monkeypatch):
+    sql = "SELECT 'a' || x"
+    assert expressions._same_reading(sql)
+    tokens = expressions.tokenize(sql)
+    as_text = [dataclasses.replace(token, kind="word") if token.kind == "string" else token for token in tokens]
+    monkeypatch.setattr(expressions, "tokenize", lambda _sql: as_text)
+    assert not expressions._same_reading(sql)  # a text for DuckDB, and a word here
+    monkeypatch.setattr(expressions, "tokenize", lambda _sql: tokens[:3])
+    assert not expressions._same_reading(sql)  # code after what was read here
+
+
+def test_both_forms_of_a_time_zone_result_are_checked(people, monkeypatch):
+    seen = []
+    check = expressions._query
+    monkeypatch.setattr(expressions, "_query", lambda con, sql, formula: seen.append(sql) or check(con, sql, formula))
+    expressions.evaluate(people, "TIMESTAMPTZ '2026-01-01 10:00:00+00'")
+    assert len(seen) == 2 and "CAST" in seen[1]
+
+
+def test_a_pivot_without_its_values_says_what_it_needs(people):
+    with pytest.raises(ActionError, match=r"a PIVOT in a formula needs its values: ON \[Column\] IN"):
+        expressions.evaluate(people, "(SELECT x FROM (PIVOT __input ON Name USING sum(Age)) t(x) LIMIT 1)")
+
+
+def test_a_very_long_word_needs_little_memory():
+    assert [token.kind for token in expressions.tokenize("a" * 200_000)] == ["word"]
+    assert [token.kind for token in expressions.tokenize("1" * 200_000)] == ["number"]
+
+
 def test_a_shadowed_round_cant_reach_a_later_project(tmp_path, registry):
     """A formula can't leave anything on the connection that the next project uses."""
     (tmp_path / "a.csv").write_text("net\n10.26\n", encoding="utf-8")
@@ -477,6 +507,7 @@ def test_forms_that_use_columns_without_naming_them_get_the_whole_table(monkeypa
         'LENGTH(TO_JSON("__input"))': [38, 38],
         "LENGTH(TO_JSON([__input]))": [38, 38],
         '(SELECT MAX(z) FROM "__input" AS t(i, x, y, z))': ["y", "y"],
+        "(SELECT MAX(z) FROM '__input' AS t(i, x, y, z))": ["y", "y"],  # named by a text
     }.items():
         seen.clear()
         assert expressions.evaluate(df, formula).to_list() == values, formula
@@ -563,7 +594,7 @@ def test_a_formula_cant_read_the_settings_as_a_table(people):
     ):
         with pytest.raises(ActionError, match="a formula can only use the data of the step"):
             expressions.evaluate(people, formula)
-    with pytest.raises(ActionError, match="doesn't read this as one expression"):  # it needs a statement before it
+    with pytest.raises(ActionError, match="a PIVOT in a formula needs its values"):  # it needs a statement before it
         expressions.evaluate(people, "(SELECT COUNT(*) FROM (PIVOT __input ON [Age] IN (SELECT setting FROM pg_settings)))")
 
 

@@ -80,14 +80,14 @@ _TEXT_PREFIXES = {"e": "e", "E": "e", "b": "b", "B": "b", "x": "b", "X": "b"}  #
 # scanner sees them. All other characters from U+0080 on are letters for DuckDB.
 _WIDE_SPACES = "  -​  ⁠　﻿"
 _LETTER = rf"(?:[A-Za-z_]|(?![{_WIDE_SPACES}])[^\x00-\x7f])"
-_DIGITS = "[0-9]+(?:_[0-9]+)*"
+_DIGITS = "[0-9]+(?:_[0-9]+)*+"
 _OPERATORS = set("+-*/%<>=!|&^~@#`")
 _SPACE = re.compile(rf"[ \t\n\r\f{_WIDE_SPACES}]+")
 _WIDE_SPACE = re.compile(f"[{_WIDE_SPACES}]")
-_WORD = re.compile(rf"{_LETTER}(?:{_LETTER}|[0-9$])*")
+_WORD = re.compile(rf"{_LETTER}(?:{_LETTER}|[0-9$])*+")
 _NUMBER = re.compile(rf"(?:{_DIGITS}\.(?!\.)(?:{_DIGITS})?|\.{_DIGITS}|{_DIGITS})(?:[eE][+-]?{_DIGITS})?")
 _PLACEHOLDER = re.compile(rf"[$?]{_DIGITS}")  # $1 and ?1: one token, what follows stands on its own
-_DOLLAR = re.compile(rf"\$(?:{_LETTER}(?:{_LETTER}|[0-9])*)?\$")
+_DOLLAR = re.compile(rf"\$(?:{_LETTER}(?:{_LETTER}|[0-9])*+)?\$")
 _LINE_END = re.compile(r"[\r\n]")
 _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
@@ -287,8 +287,10 @@ def _needs_table(formula: str) -> bool:
 
 def _needs_all_columns(formula: str) -> bool:
     """COLUMNS(*), a * among the arguments of a function, a #1 for the first column or a subquery
-    on __input use columns that aren't named in the formula: they would give other values on
-    fewer columns."""
+    on __input (also one named by a text) use columns that aren't named in the formula: they would
+    give other values on fewer columns."""
+    if _VIEW in _fold(formula):
+        return True
     tokens = tokenize(formula)
     for index, token in enumerate(tokens):
         text = formula[token.start : token.end]
@@ -452,6 +454,8 @@ def _query(con: duckdb.DuckDBPyConnection, sql: str, formula: str) -> duckdb.Duc
         statements = con.extract_statements(sql)
     except UnicodeError:  # half of a character, in a project file or in DuckDB's message on U&'…'
         raise ActionError("Formula error: the formula holds a broken character") from None
+    if len(statements) > 1 and "pivot" in _fold(formula):  # without its values, DuckDB makes two statements of it
+        raise ActionError(f"Formula error: a PIVOT in a formula needs its values: ON [Column] IN (...)\nFormula: {formula}")
     if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT or not _same_reading(sql):
         raise ActionError(f"Formula error: DuckDB doesn't read this as one expression, so it isn't calculated\nFormula: {formula}")
     if _reads_blocked_table(con, sql):
