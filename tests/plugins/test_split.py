@@ -460,7 +460,7 @@ def test_a_million_rows_into_columns(act, separator):
     step = _best(lambda: act("text.split", df, params))
     out = act("text.split", df, params)
     assert out.columns == ["Id", "Last", "First"] and out.row(1) == ((1, "1", "7") if separator == "," else (1, "1,", "7"))
-    assert step < 3 * plain + 0.2, (step, plain)
+    assert step < 3 * plain + 0.5, (step, plain)  # a busy machine can take 0.4 s for what takes 0.25 s here
 
 
 def test_many_new_columns_without_removing_spaces(act):
