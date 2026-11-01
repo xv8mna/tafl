@@ -146,7 +146,7 @@ class DataPanel(QWidget):
         session = self.session
         table, step = session.table, session.step
         self.title.setText(table.name if table else "No table")
-        active = sum(1 for f in session.filters(table.id) if f.get("values")) if table else 0
+        active = sum(1 for f in session.filters(table.id) if Filter.from_dict(f).values) if table else 0
         self.filter_button.setText(f"Filters ({active})" if active else "Filters")
         if table is None:
             self._show_message("Open a project (Ctrl+O), or create a table with “+ New table”.")

@@ -46,6 +46,7 @@ FACETS = {
 PERIODS = {"year": "Year", "quarter": "Year-Quarter", "month": "Year-Month", "week": "Year-Week (ISO)", "date": "Date"}
 # strftime formats: for the filter (Polars) and for a step made from it (DuckDB)
 _PERIOD_FORMATS = {"year": "%Y", "month": "%Y-%m", "week": "%G-W%V", "date": "%Y-%m-%d"}
+_OPTIONS = {"by": str, "thresholds": list, "lower_inclusive": bool, "pattern": str}  # the type of each option
 _NEEDS = {
     "period": "time periods need a date column",
     "ranges": "number ranges need a number column",
@@ -75,12 +76,15 @@ class Filter:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Filter:
+        """A filter as it is stored. A project file can hold anything here: what doesn't have the
+        right type counts as not set, so that the window can show such a filter."""
         facet = str(data.get("facet") or "values")
+        values, options = data.get("values"), data.get("options")
         return cls(
             str(data.get("column") or ""),
-            list(data.get("values") or []),
+            [v for v in values if not isinstance(v, (list, dict))] if isinstance(values, list) else [],
             facet if facet in FACETS else "values",
-            dict(data.get("options") or {}),
+            {k: v for k, v in options.items() if isinstance(v, _OPTIONS.get(k, object))} if isinstance(options, dict) else {},
             data.get("except") is True,
         )
 
@@ -131,6 +135,8 @@ def unusable(f: Filter, schema: pl.Schema) -> str | None:
     """Why the filter can't be used with this data, or None if it can."""
     if f.column not in schema:
         return "there is no such column yet (or any more)"
+    if schema[f.column].is_nested():
+        return "a column of lists or records can't be filtered"
     if f.facet not in facets_for(schema[f.column]):
         return _NEEDS[f.facet]
     if f.facet == "regex" and (error := pattern_error(str(f.options.get("pattern") or ""))):
@@ -176,7 +182,7 @@ def thresholds(f: Filter) -> list[float]:
     for value in f.options.get("thresholds") or []:
         try:
             number = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, ArithmeticError):
             continue
         if math.isfinite(number):
             values.append(number)
@@ -277,7 +283,10 @@ def _convert(value: Any, dtype: pl.DataType) -> Any:
     if dtype.is_float():
         return float(value)
     if isinstance(dtype, pl.Decimal):
-        return Decimal(str(value))
+        number = Decimal(str(value))
+        if not number.is_finite() or number.copy_abs() >= Decimal(1).scaleb((dtype.precision or 38) - dtype.scale):
+            raise ValueError(value)  # Polars would stop, for an infinite value with a panic that no except sees
+        return number
     if dtype == pl.Date:
         return value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value)[:10])
     if dtype == pl.Datetime:
@@ -304,7 +313,8 @@ def condition(f: Filter, schema: pl.Schema) -> pl.Expr | None:
     values = from_json(f.values, dtype)
     try:
         found = picked.is_in(pl.Series(values, dtype=dtype).implode()) if values else pl.lit(False)
-    except (TypeError, ValueError, pl.exceptions.PolarsError):
+        pl.DataFrame(schema={f.column: schema[f.column]}).select(found)  # Polars compares the types only now
+    except (TypeError, ValueError, ArithmeticError, RuntimeError, pl.exceptions.PolarsError):
         found = pl.lit(False)
     if None in f.values:
         found = found | picked.is_null()

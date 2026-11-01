@@ -1,7 +1,9 @@
 """Instant filters (the filter pane next to the grid)."""
 
 import datetime as dt
+import json
 import time
+from decimal import Decimal as D
 
 import polars as pl
 import pytest
@@ -434,3 +436,93 @@ def test_all_values_then_apply_is_fast_and_short(session, qtbot):
     card.apply()
     assert session.filters(table.id) == [{"column": "Customer", "except": True, "values": [card.model.rows[5][2]]}]
     assert apply(df, [Filter.from_dict(f) for f in session.filters(table.id)]).height == 99_999
+
+
+MALFORMED = [
+    {"values": 7},
+    {"values": 1.5},
+    {"values": True},
+    {"values": "abc"},
+    {"values": {"a": 1}},
+    {"values": [[1]]},
+    {"values": [{"a": 1}]},
+    {"values": ["Berlin", ["x"], {"a": 1}]},
+    {"options": 7},
+    {"options": 1.5},
+    {"options": True},
+    {"options": "x"},
+    {"options": ["x"]},
+    {"options": [[1]]},
+    {"facet": 7},
+    {"facet": ["period"]},
+    {"except": "yes"},
+    {"facet": "period", "options": {"by": []}},
+    {"facet": "period", "options": {"by": {}}},
+    {"facet": "period", "options": {"by": 10**400}},
+    {"facet": "ranges", "options": {"thresholds": 7}},
+    {"facet": "ranges", "options": {"thresholds": "abc"}},
+    {"facet": "ranges", "options": {"thresholds": [10**400, "x", None, [1], {}]}},
+    {"facet": "ranges", "options": {"lower_inclusive": []}},
+    {"facet": "regex", "options": {"pattern": 7}},
+    {"facet": "regex", "options": {"pattern": ["x"]}},
+]
+
+
+@pytest.mark.parametrize("column", DATA.columns)
+@pytest.mark.parametrize("malformed", MALFORMED, ids=repr)
+def test_a_malformed_filter_is_no_error(session, qtbot, column, malformed):
+    """A project file can hold anything. Before, each refresh ended in an "Unexpected error"."""
+    data = {"column": column, "values": [], **malformed}
+    table = session.project.add_table("T")
+    table.filters = [data]
+    f = Filter.from_dict(data)
+    assert apply(DATA, [f]).height <= DATA.height
+    facet(DATA, [f], 0)
+    stored = f.to_dict()
+    assert isinstance(stored["values"], list) and isinstance(stored.get("options", {}), dict)
+    pane = FilterPane(session)
+    qtbot.addWidget(pane)
+    pane.show_data(table.id, DATA)
+    assert [card.column for card in pane.cards] == [column]
+
+
+def test_what_is_right_in_a_malformed_filter_stays():
+    f = Filter.from_dict({"column": "City", "values": ["Berlin", ["x"], None, {"a": 1}, 7], "options": {"by": [], "other": 1}})
+    assert f.values == ["Berlin", None, 7] and f.options == {"other": 1}
+    assert apply(DATA, [f])["City"].to_list() == ["Berlin", None, "Berlin"]
+
+
+def test_a_project_file_with_malformed_filters_opens_and_refreshes(window, settle, session, demo):
+    data = json.loads(demo.read_text(encoding="utf-8"))
+    orders = next(table for table in data["tables"] if table["name"] == "Orders")
+    orders["filters"] = [{"column": "City", "values": 7}, {"column": "City", "options": "x"}, {"column": "City", "values": [["x"]]}]
+    demo.write_text(json.dumps(data), encoding="utf-8")
+    panel, table = open_orders(window, settle, session, demo, 8)
+    panel.filter_button.setChecked(True)
+    panel.refresh()
+    assert len(panel.filter_pane.cards) == 3 and "filtered" not in panel.info.text()
+    assert panel.filter_button.text() == "Filters"  # none of them leaves rows out
+    panel.filter_button.setChecked(False)
+
+
+def test_a_value_that_a_column_can_not_hold_is_left_out():
+    numbers = pl.DataFrame({"Amount": pl.Series([D("1.50"), D("2.50")], dtype=pl.Decimal(10, 2)), "Stamp": [dt.datetime(2025, 1, 1)] * 2})
+    wrong = ["Infinity", "-Infinity", "NaN", "sNaN", 10**400, "1e20", "1.5"]
+    assert from_json(wrong, pl.Decimal(10, 2)) == [D("1.5")]
+    assert apply(numbers, [Filter("Amount", wrong)])["Amount"].to_list() == [D("1.50")]
+    assert apply(numbers, [Filter("Stamp", ["2025-01-01T00:00:00+01:00"])]).height == 0  # with a time zone
+    assert apply(numbers, [Filter("Stamp", ["2025-01-01T00:00:00+01:00"], excluded=True)]).height == 2
+
+
+def test_a_column_of_lists_or_records_is_not_filtered(session, qtbot):
+    """Before, each refresh stopped: a cell of such a column can't be looked up."""
+    df = pl.DataFrame({"List": [[1], [2], None], "Record": [{"a": 1}, {"a": 2}, None], "Nr": [1, 2, 3]})
+    table = session.project.add_table("T")
+    for column in ("List", "Record"):
+        session.set_filters(table.id, [{"column": column, "values": [[1]]}])
+        pane = FilterPane(session)
+        qtbot.addWidget(pane)
+        pane.show_data(table.id, df)
+        (card,) = pane.cards
+        assert card.status.text() == "Not used at this step: a column of lists or records can't be filtered."
+        assert unusable(Filter(column), df.schema) and apply(df, [Filter(column, [[1]])]) is df
