@@ -69,6 +69,8 @@ def test_star_and_columns_use_all_columns():
     assert preview(df, "GREATEST(*COLUMNS(*))").rows["Result"].to_list() == [100, 200]
     assert preview(df, "LIST_SUM(LIST_VALUE(*COLUMNS('a.*')))").rows["Result"].to_list() == [11, 22]
     assert preview(df, "COUNT(*) OVER ()").rows["Result"].to_list() == [2, 2]
+    assert preview(df, "[b] + #2").rows["Result"].to_list() == [101, 202]  # the row number comes first
+    assert preview(df, 'LENGTH(TO_JSON("__input"))').rows["Result"].to_list() == [40, 40]
 
 
 def test_only_the_used_columns_are_evaluated():

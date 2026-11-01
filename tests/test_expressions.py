@@ -297,6 +297,8 @@ def test_functions_that_run_a_text_or_stay_in_force_are_refused(people):
 def test_half_a_character_in_a_formula(people):
     with pytest.raises(ActionError, match="broken character"):
         expressions.evaluate(people, "'\ud83d'")
+    with pytest.raises(ActionError, match="broken character"):  # DuckDB's message cuts a ß in two
+        expressions.evaluate(people, """U&'''{::,ß\\'WITH0"y\"""")
     with pytest.raises(ActionError, match="Formula error"):  # DuckDB stops reading at a NUL
         expressions.evaluate(people, "1\x00")
 
@@ -412,6 +414,77 @@ def test_patterns_lambdas_and_queries_dont_see_the_row_number():
     with pytest.raises(ActionError, match="don't work with a column named rowid"):  # DuckDB's own row numbers
         expressions.evaluate(df.rename({"b": "RowId"}), "LIST_SUM(LIST_VALUE(*COLUMNS('.*')))")
     assert expressions.evaluate(df.rename({"b": "RowId"}), "[RowId] + 1").to_list() == [101, 301, 201]
+
+
+def _registered(monkeypatch):
+    """The columns of the frames that DuckDB gets, from now on."""
+    seen = []
+    register = expressions._register
+    monkeypatch.setattr(expressions, "_register", lambda con, frame, name: (seen.append(frame.columns), register(con, frame, name)))
+    return seen
+
+
+def test_duckdb_gets_only_the_columns_a_formula_names(monkeypatch):
+    """The row number makes Polars line up the parts of all columns that DuckDB gets, which
+    copies them. The values are those of the whole table, in all forms of writing a name."""
+    df = pl.DataFrame({
+        "Unit Price": [2, 3], "Qty": [1, 2], "a]b": [4, 5], 'q"r': [6, 7], "^x$": [8, 9], "*": [1, 1], "a$b": [1, 2], "Äpfel": [5, 6], "E": [7, 8],
+        "unused": [0, 0], "also unused": [0, 0],
+    })  # fmt: skip
+    seen = _registered(monkeypatch)
+    for formula, columns in {
+        '[Unit Price] * "Qty"': ["Unit Price", "Qty"],
+        "Qty + 1": ["Qty"],
+        "qty + 1": ["Qty"],
+        "[QTY] + 1": ["Qty"],
+        '"qTy" + 1': ["Qty"],
+        "[a]]b] + 1": ["a]b"],
+        '"q""r" + 1': ['q"r'],
+        "[^x$] + 1": ["^x$"],
+        '"*" + 1': ["*"],
+        "a$b + 1": ["a$b"],
+        "Äpfel + [e]": ["Äpfel", "E"],
+        "Qty.abs()": ["Qty"],
+        "SUM(Qty) OVER (PARTITION BY [a]]b]) -- [E]": ["Qty", "a]b"],
+        "(SELECT Qty + 1)": ["Qty"],
+        "list_transform(list_value(1), x -> x + Qty).list_sum()": ["Qty"],
+        "'[Qty]' || $$E$$ /* [E] */": [],
+        "COUNT(*) OVER ()": [],
+        "ROW_NUMBER() OVER (ORDER BY Qty DESC)": ["Qty"],
+        "[__etl_row__] + 1": [],
+        "1 + 1": [],
+    }.items():
+        seen.clear()
+        values = expressions.evaluate(df, formula)
+        assert seen == [["__etl_row__", *[c for c in df.columns if c in columns]]], formula
+        with monkeypatch.context() as whole:
+            whole.setattr(expressions, "_needs_all_columns", lambda formula: True)
+            assert values.equals(expressions.evaluate(df, formula)), formula
+    assert expressions.evaluate(df, "1 + 1").to_list() == [2, 2]  # one value per row, also without a column
+
+
+def test_forms_that_use_columns_without_naming_them_get_the_whole_table(monkeypatch):
+    df = pl.DataFrame({"a": [1, 2], "b": [30, 10], "c": ["x", "y"]})
+    seen = _registered(monkeypatch)
+    for formula, values in {
+        "#2": [1, 2],  # the row number comes first
+        "#3 + 1": [31, 11],
+        "ROW_NUMBER() OVER (ORDER BY #3)": [2, 1],
+        "LIST_SUM(LIST_VALUE(*COLUMNS(* EXCLUDE (c))))": [31, 12],
+        "(* EXCLUDE (__etl_row__))": [1, 2],
+        "CONCAT_WS('-', *COLUMNS(*))": ["1-30-x", "2-10-y"],
+        'LENGTH(TO_JSON("__input"))': [38, 38],
+        "LENGTH(TO_JSON([__input]))": [38, 38],
+        '(SELECT MAX(z) FROM "__input" AS t(i, x, y, z))': ["y", "y"],
+    }.items():
+        seen.clear()
+        assert expressions.evaluate(df, formula).to_list() == values, formula
+        assert seen == [["__etl_row__", "a", "b", "c"]], formula
+
+
+def test_a_column_duckdb_cant_read_only_matters_to_formulas_that_use_it():
+    df = pl.DataFrame({"a": [1, 2], "big": pl.Series([2**70, 1], dtype=pl.Int128)})
+    assert expressions.evaluate(df, "[a] + 1").to_list() == [2, 3]
 
 
 def test_a_table_left_behind_by_an_interrupt_is_dropped():

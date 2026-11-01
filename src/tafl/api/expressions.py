@@ -277,6 +277,41 @@ def _needs_table(formula: str) -> bool:
     return False
 
 
+def _needs_all_columns(formula: str) -> bool:
+    """COLUMNS(*), a * among the arguments of a function, a #1 for the first column or a subquery
+    on __input use columns that aren't named in the formula: they would give other values on
+    fewer columns."""
+    tokens = tokenize(formula)
+    for index, token in enumerate(tokens):
+        text = formula[token.start : token.end]
+        if token.kind == "word" and _fold(text) in ("columns", _VIEW):
+            return True
+        if token.kind in ("column", "quoted") and token.closed and _fold(_name(formula, token)) == _VIEW:
+            return True
+        if token.kind == "operator" and "#" in text:
+            return True
+        if token.kind == "operator" and text.startswith("*"):
+            before = _previous(tokens, index)
+            if before is None or tokens[before].kind == "comma":
+                return True
+            if tokens[before].kind == "open":
+                function = _previous(tokens, before)
+                if function is None or _fold(formula[tokens[function].start : tokens[function].end]) != "count":
+                    return True
+    return False
+
+
+def _with_row_number(df: pl.DataFrame, formula: str) -> pl.DataFrame:
+    """The row number that keeps the rows in order, with the columns that ``formula`` uses: the
+    row number makes Polars line up the parts of all columns that DuckDB gets, which copies them."""
+    numbered = df.with_row_index(_ROW)
+    if _needs_all_columns(formula):
+        return numbered
+    named = {_fold(name) for name in column_names(formula)}
+    named.update(_fold(formula[t.start : t.end]) for t in tokenize(formula) if t.kind == "word")
+    return pl.DataFrame([numbered.get_column(name) for name in numbered.columns if name == _ROW or _fold(name) in named])
+
+
 def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.Series:
     """Evaluate a formula for every row; returns one value per row, in row order. With
     ``condition``, the result must be true or false."""
@@ -305,7 +340,7 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
                 _clear(con, _VIEW)
                 con.execute(f'CREATE TEMP TABLE "{_VIEW}" AS SELECT * FROM "{_FRAME}"')
             else:
-                _register(con, df.with_row_index(_ROW), _VIEW)
+                _register(con, _with_row_number(df, formula), _VIEW)
         except duckdb.Error as e:  # e.g. interrupted
             raise ActionError(_clean_error(e, formula, df.columns)) from None
         try:
@@ -405,9 +440,9 @@ def _query(con: duckdb.DuckDBPyConnection, sql: str, formula: str) -> duckdb.Duc
     rest on that reading. Only the statement that was checked runs."""
     try:
         sql.encode()
-    except UnicodeEncodeError:  # half of a character, e.g. from a project file
+        statements = con.extract_statements(sql)
+    except UnicodeError:  # half of a character, in a project file or in DuckDB's message on U&'…'
         raise ActionError("Formula error: the formula holds a broken character") from None
-    statements = con.extract_statements(sql)
     if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT or not _same_reading(sql):
         raise ActionError(f"Formula error: DuckDB doesn't read this as one expression, so it isn't calculated\nFormula: {formula}")
     return con.sql(statements[0])

@@ -330,7 +330,7 @@ def _two_names(name: str, first: int, second: int) -> str:
 def _evaluate(sample: pl.DataFrame, used: list[str], formula: str, condition: bool, cancel: threading.Event | None) -> pl.Series:
     """Only the used columns go to DuckDB: registering hundreds of columns costs more than the
     formula. If that isn't enough (e.g. a misspelled name), the whole sample is used."""
-    if _needs_all_columns(formula):
+    if expressions._needs_all_columns(formula):
         return expressions.evaluate(sample, formula, condition=condition)
     folded = {_fold(u) for u in used}  # with names that differ only in case: they must give the step's error
     subset = sample.select([c for c in sample.columns if _fold(c) in folded] or sample.columns[:1])
@@ -341,25 +341,6 @@ def _evaluate(sample: pl.DataFrame, used: list[str], formula: str, condition: bo
         if subset.width == sample.width:
             raise
         return expressions.evaluate(sample, formula, condition=condition)
-
-
-def _needs_all_columns(formula: str) -> bool:
-    """COLUMNS(*), a * among the arguments of a function or a subquery on __input use columns
-    that aren't named in the formula: they would give other values on fewer columns."""
-    tokens = expressions.tokenize(formula)
-    for index, token in enumerate(tokens):
-        text = formula[token.start : token.end]
-        if token.kind == "word" and _fold(text) in ("columns", "__input"):
-            return True
-        if token.kind == "operator" and text.startswith("*"):
-            before = expressions._previous(tokens, index)
-            if before is None or tokens[before].kind == "comma":
-                return True
-            if tokens[before].kind == "open":
-                function = expressions._previous(tokens, before)
-                if function is None or _fold(formula[tokens[function].start : tokens[function].end]) != "count":
-                    return True
-    return False
 
 
 def _may_be_column(formula: str, tokens: list[expressions.Token], index: int) -> bool:
