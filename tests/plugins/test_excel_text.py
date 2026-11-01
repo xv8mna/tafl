@@ -207,6 +207,25 @@ def test_the_excel_table_has_the_names_of_the_header_cells(act, tmp_path, how):
     assert [re.sub("_x([0-9A-F]{4})_", lambda found: chr(int(found[1], 16)), name) for name in _table_names(path)] == NAMES
 
 
+def test_a_form_like_an_escape_before_a_noncharacter_stays_what_it_is():
+    assert xlsx.escaped("_x0041\ufffe") == "_x005F_x0041_xFFFE_"
+    assert xlsx.escaped("_x0041\uffff") == "_x005F_x0041_xFFFF_"
+
+
+def test_a_tab_in_a_column_name_stays_a_tab_in_the_table(act, tmp_path):
+    """An XML reader makes a space of a tab in an attribute, and then the table and its header differ."""
+    path, _ = _export(act, "new file", tmp_path, pl.DataFrame({"a\tb": [1]}))
+    assert _table_names(path) == ["a_x0009_b"]
+
+
+@pytest.mark.parametrize("dtype", [pl.Categorical, pl.Enum(["x" * 40_000])], ids=["category", "enum"])
+def test_the_cut_of_a_long_category_is_told_too(act, tmp_path, dtype):
+    ctx = StubContext()
+    frame = pl.DataFrame({"c": ["x" * 40_000]}).cast(dtype)
+    _export(act, "new file", tmp_path, frame, ctx)
+    assert ctx.warnings == ["1 text was cut to 32,767 characters, the most an Excel cell holds"]
+
+
 def test_escapes_in_a_column_name_are_read_as_excel_reads_the_cell(act, tmp_path):
     path, _ = _export(act, "new file", tmp_path, pl.DataFrame({"_x0041_x0042_": [1], "a\x01b": [2]}))
     with zipfile.ZipFile(path) as package:

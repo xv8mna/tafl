@@ -53,7 +53,7 @@ RICH_TEXT = 1 << 20  # what xlsxwriter may get for a cell: the XML of the longes
 BOOK_OPTIONS = {"strings_to_formulas": False, "strings_to_urls": False, "nan_inf_to_errors": True}
 
 _NAME_SHOWN = 60  # characters of a column's name in a message
-_ESCAPE = re.compile(r"_(?=x[0-9a-fA-F]{4}[_\x00-\x08\x0b-\x1f])")  # a control character gets a _ of its own
+_ESCAPE = re.compile("_(?=x[0-9a-fA-F]{4}[_\x00-\x08\x0b-\x1f\ufffe\uffff])")  # a control character gets a _ of its own
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f]")
 _MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _PACKAGE = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -115,7 +115,7 @@ def write_frame(
         raise ActionError("An Excel table can't have these column names: rename the ones that look alike")
     for table in target.tables:  # its list of columns needs the names themselves, in the form of a cell's text
         for column, name in zip(table["columns"], names):
-            column["name"] = escaped(name)
+            column["name"] = escaped(name).replace("\t", "_x0009_")  # an XML reader makes a space of a tab here
 
 
 def table_names(columns: list[str]) -> list[str]:

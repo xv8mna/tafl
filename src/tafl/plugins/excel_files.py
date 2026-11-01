@@ -329,7 +329,8 @@ def export_excel(df, p, ctx):
             "the file must exist, and 'If the file exists' must be 'Replace only this sheet'"
         )
     data = _excel_values(df)
-    long = sum(int((data[c].str.len_chars() > xlsx.MAX_TEXT).sum()) for c, t in data.schema.items() if t == pl.String)
+    texts = [c for c, t in data.schema.items() if t == pl.String or isinstance(t, (pl.Categorical, pl.Enum))]
+    long = sum(int((data[c].cast(pl.String).str.len_chars() > xlsx.MAX_TEXT).sum()) for c in texts)
     rows = f"{df.height:,} row{'s' if df.height != 1 else ''}"
     if into_sheet:
         replaced = xlsx.replace_sheet(path, sheet, lambda book: _write(data, book, sheet, p), ctx.warn)
