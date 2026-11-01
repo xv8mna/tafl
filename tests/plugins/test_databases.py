@@ -674,6 +674,18 @@ def test_a_memory_error_has_a_plain_message(registry, monkeypatch, where):
     assert engine.evaluate(table).first_error == prefix + expected
 
 
+def test_a_memory_error_in_a_command_has_a_plain_message(project, registry, monkeypatch):
+    def no_memory(conn, sql):
+        raise MemoryError
+
+    monkeypatch.setattr(registry.connectors["sqlite"], "run_script", no_memory)
+    table = project.add_table("Command")
+    project.add_step(table, "db.import", {"connection": "db", "table": "orders"})
+    project.add_step(table, "db.command", {"connection": "db", "sql": "DELETE FROM orders"})
+    result = Engine(project, registry).evaluate(table.id, mode="run")
+    assert result.first_error == "There is not enough memory for this. Close other programs, then calculate again."
+
+
 _LONG = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 400000000) SELECT COUNT(*) AS n FROM c"
 # A few rows, but each of them a megabyte: a table of documents
 _BIG_ROWS = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3000) SELECT randomblob(1000000) AS b FROM c"

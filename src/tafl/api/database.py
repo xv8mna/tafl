@@ -282,6 +282,15 @@ class Database:
         finally:
             cursor.close()
 
+    def run_script(self, sql: str) -> int:
+        """Run SQL written by the user (``connector.run_script``); returns the affected rows or -1."""
+        try:
+            return self.connector.run_script(self.raw, sql)
+        except (ActionError, Cancelled):
+            raise
+        except Exception as e:
+            raise ActionError(_reason(e, self.connector.error_message)) from e
+
     def _next_result(self, cursor: Any) -> bool:
         """Move to the next result of a batch (DB-API ``nextset``, which not every driver has).
         An error in a later statement of the batch shows up here."""

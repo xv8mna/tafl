@@ -1421,12 +1421,7 @@ def run_sql(df, p, ctx):
     times). Runs only when the project is run, in one transaction: if it fails, its changes are
     rolled back (so leave out BEGIN and COMMIT). The table passes through unchanged."""
     with ctx.database(p.connection) as db:
-        try:
-            count = db.connector.run_script(db.raw, p.sql)
-        except ActionError:
-            raise
-        except Exception as e:
-            raise ActionError(db.connector.error_message(e)) from e
+        count = db.run_script(p.sql)
     ctx.log("Done" + (f": {count:,} row{'s' if count != 1 else ''} changed" if count >= 0 else ""))
     return df
 
