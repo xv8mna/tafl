@@ -3,8 +3,8 @@
 ## Unreleased
 
 A project from somewhere else is now read first and trusted after that. The rest is fixes: text
-stays exactly as it is in Excel files and in the window, imports only read, and runs need less
-memory.
+stays exactly as it is in Excel files and in the window, SQLite imports only read, and runs need
+less memory.
 
 - **Protected view**: a project file that Tafl doesn't know opens so that you can read all its
   tables, steps and settings, the map and the Find panel, but nothing is calculated, no path is

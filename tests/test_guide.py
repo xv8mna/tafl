@@ -70,6 +70,13 @@ def test_a_walk_through_that_opens_an_example_says_to_trust_it(heading):
     assert "**Trust this project**" in text[start : text.index("\n### ", start + 1)]
 
 
+@pytest.mark.parametrize("name", ["CHANGELOG.md", "README.md", "docs/guide.md", "packaging/README.txt"])
+def test_only_sqlite_imports_are_said_to_only_read(name):
+    # a SQL Server query that commits by itself keeps its changes, also in a preview
+    text = " ".join((ROOT / name).read_text(encoding="utf-8").split())
+    assert not re.search(r"(?<!SQLite )\bimports only read\b", text, re.I)
+
+
 def test_anchors_are_those_of_github():
     assert build.anchor("2. Your first project step by step") == "2-your-first-project-step-by-step"
     assert build.anchor("Imports: the first step of a table") == "imports-the-first-step-of-a-table"
