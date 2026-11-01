@@ -65,7 +65,7 @@ _EXTRA_FORMAT = re.compile(rb'(\bdxfId=")(\d+)"')
 # A range like A1:B20, and one on a sheet: Data!$B$2:$B$20 or 'My data'!B2:B20
 _RANGE = r"(\$?[A-Za-z]{1,3}\$?)(\d+)(:\$?[A-Za-z]{1,3}\$?)(\d+)(?![\w(])"
 _SHEET_RANGE = re.compile(r"(?<![\w.'\]])('(?:[^']|'')+'|[^\W\d][\w.]*)!" + _RANGE)
-_CHART_FORMULA = re.compile(r"(<((?:\w+:)?f)\b[^>]*>)([^<]*)(</\2>)")
+_CHART_FORMULA = re.compile(r"(<((?:\w+:)?f)\b[^<>]*>)([^<]*)(</\2>)")
 _KEPT_VIEW = ("tabSelected", "showGridLines", "showZeros", "rightToLeft", "zoomScale", "zoomScaleNormal")
 _FONT_ORDER = (
     "b", "i", "strike", "condense", "extend", "outline", "shadow", "u", "vertAlign",
@@ -197,7 +197,7 @@ class _Replacement:
             drawn |= {_kind(relation) for relation in self.book.relations(drawing)}
             # Without the stand-ins Excel keeps for older versions (a text box instead of a new kind
             # of chart, a shape for a form button), what is left are the real shapes
-            xml = _STAND_IN.sub(b"", self.book.read(drawing))
+            xml = _without_stand_ins(self.book.read(drawing))
             if re.search(rb"<(\w+:)?(sp|cxnSp)[\s>]", xml):
                 drawn.add("shape")
         vml = [part for _, part in self.book.related(self.part, "vmlDrawing") if self.book.name(part) is not None]
@@ -568,6 +568,7 @@ class _Package:
                 if info.filename in self.changed:
                     out.writestr(entry, self.changed[info.filename])
                 else:
+                    entry.file_size = info.file_size  # by the size, zipfile uses zip64 for a part of 2 GiB or more
                     with self.archive.open(info) as source, out.open(entry, "w") as target:
                         shutil.copyfileobj(source, target, 1 << 20)
                 done.add(info.filename)
@@ -693,7 +694,24 @@ _SHEET_OWN = tuple(
     (word.encode(), re.compile(rb"<(\w+:)?" + word.encode() + rb"[\s>/]"))
     for word in ("conditionalFormatting", "dataValidation", "legacyDrawingHF")
 )
-_STAND_IN = re.compile(rb"<(\w+):Fallback\b.*?</\1:Fallback>|<(\w+):Choice\b[^>]*Requires=\"a14\"[^>]*>.*?</\2:Choice>", re.S)
+_STAND_IN = re.compile(rb"<(\w+:(?:Fallback|Choice))\b[^<>]*")
+_STAND_IN_END = re.compile(rb"</(\w+:(?:Fallback|Choice))>")
+
+
+def _without_stand_ins(xml: bytes) -> bytes:
+    """A drawing without the parts <x:Fallback> and <x:Choice Requires="a14">, each up to its first
+    end tag. The search for an end tag only runs when there is one, and the scan goes on behind it,
+    so that no byte is read twice: for a start tag without an end tag, a regular expression reads
+    the rest of the drawing, and the time grows with the square of its size."""
+    last = {tag[1]: tag.start() for tag in _STAND_IN_END.finditer(xml)}  # the last end tag of each name
+    kept, start, position = [], 0, 0
+    while tag := _STAND_IN.search(xml, position):
+        name, position = tag[1], tag.end()
+        if (name.endswith(b"Fallback") or b'Requires="a14"' in tag[0]) and last.get(name, -1) >= position:
+            kept.append(xml[start : tag.start()])
+            start = position = xml.index(b"</" + name + b">", position) + len(name) + 3
+    kept.append(xml[start:])
+    return b"".join(kept)
 
 
 def _listed(words: list[str]) -> str:

@@ -4,8 +4,10 @@ import base64
 import datetime as dt
 import io
 import posixpath
+import random
 import re
 import sys
+import time
 import zipfile
 
 import openpyxl
@@ -16,7 +18,7 @@ from lxml import etree
 
 from tafl.api import ActionError
 from tafl.api.testing import StubContext
-from tafl.api.xlsx import _follow
+from tafl.api.xlsx import _CHART_FORMULA, _follow, _without_stand_ins
 
 DATA = pl.DataFrame(
     {
@@ -338,6 +340,106 @@ def test_lost_objects_that_are_easy_to_mistake(act, tmp_path):
     act("excel.export", DATA, {"file": str(path), "sheet": "Data", "existing": "sheet"}, ctx=ctx)
     warning = next(text for level, text in ctx.messages if level == "warning")
     assert warning.startswith("The old sheet 'Data' had its own charts, form controls and header and footer pictures,")
+
+
+def _with_part(path, name: str, content: bytes, relation: tuple[str, str] | None = None) -> None:
+    """The workbook with ``content`` in the part ``name``; ``relation``: a relationship (of this
+    relationships part, its text) to add to it as well."""
+    contents = _parts(path)
+    contents[name] = content
+    if relation is not None:
+        contents[relation[0]] = (
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f"{relation[1]}</Relationships>"
+        ).encode()
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for part, data in contents.items():
+            archive.writestr(part, data)
+
+
+def _data_workbook(path) -> None:
+    book = xlsxwriter.Workbook(path)
+    book.add_worksheet("Data").write_column("A1", ["Net", 1])
+    book.close()
+
+
+# The meaning of _without_stand_ins, as a regular expression that takes too long
+_STAND_IN = re.compile(rb"<(\w+):Fallback\b.*?</\1:Fallback>|<(\w+):Choice\b[^>]*Requires=\"a14\"[^>]*>.*?</\2:Choice>", re.S)
+_TOKENS = [
+    b"<mc:AlternateContent>", b"</mc:AlternateContent>", b'<mc:Choice Requires="a14">', b'<mc:Choice xmlns:a14="x" Requires="a14" y="1">',
+    b'<mc:Choice Requires="cx1">', b"</mc:Choice>", b"<mc:Fallback>", b'<mc:Fallback a="1">', b"</mc:Fallback>", b"<x:Fallback>",
+    b"</x:Fallback>", b"<xdr:sp>", b"</xdr:sp>", b"<mc:Fallbacks>", b"<Fallback>", b"</Fallback>", b"text", b"<a:Choice/>", b"<mc:Fallback/>",
+]  # fmt: skip
+
+
+def test_the_scan_for_stand_ins_finds_what_the_regular_expression_finds():
+    generator = random.Random(2)
+    for _ in range(5_000):
+        xml = b"".join(generator.choices(_TOKENS, k=generator.randrange(0, 14)))
+        assert _without_stand_ins(xml) == _STAND_IN.sub(b"", xml), xml
+
+
+@pytest.mark.parametrize(
+    "drawing",
+    [
+        b"<a:Fallback " * 200_000,  # no end tag: each start tag read the rest of the part
+        b"".join(b"<a%d:Fallback " % n for n in range(200_000)),  # no end tag of any of these names
+        b'<a:Choice Requires="a14" ' * 200_000,
+        b'<a:Choice Requires="a14" Requires="a14"' * 200_000 + b"<",  # one long tag that ends nowhere
+        b"<a:Fallback>" * 200_000 + b"</a:Fallback>",
+        b"<a:Fallback></a:Fallback>" * 200_000,
+        b"</a:Fallback>" * 200_000,
+    ],
+    ids=["open", "other names", "choice", "one long tag", "one end tag", "pairs", "only end tags"],
+)
+def test_the_scan_for_stand_ins_takes_no_long_time(drawing):
+    start = time.perf_counter()
+    kept = _without_stand_ins(drawing)
+    assert time.perf_counter() - start < 2
+    assert len(kept) in (0, len(drawing))
+
+
+def test_a_drawing_full_of_open_tags_is_no_reason_to_wait(act, tmp_path):
+    """Start tags without an end tag took 20 s for 8,700 bytes, with the Python lock held."""
+    path = tmp_path / "data.xlsx"
+    _data_workbook(path)
+    drawing = b"<xdr:wsDr xmlns:a='x' xmlns:xdr='y'>" + b"<a:Fallback " * 10_000 + b"</xdr:wsDr>"
+    relation = f'<Relationship Id="rId1" Type="{RELATIONSHIP}drawing" Target="../drawings/slow.xml"/>'
+    _with_part(path, "xl/drawings/slow.xml", drawing, ("xl/worksheets/_rels/sheet1.xml.rels", relation))
+    start = time.perf_counter()
+    act("excel.export", DATA, {"file": str(path), "sheet": "Data", "existing": "sheet"})
+    assert time.perf_counter() - start < 2
+
+
+def test_a_chart_full_of_open_tags_is_no_reason_to_wait(act, report):
+    """Each <f without a > read the rest of the part: 120,000 of them took 25 s."""
+    chart = next(name for name in _parts(report) if name.startswith("xl/charts/chart"))
+    _with_part(report, chart, b"<c:chartSpace>" + b"<f " * 80_000 + b"</c:chartSpace>")
+    start = time.perf_counter()
+    act("excel.export", DATA, {"file": str(report), "sheet": "Data", "existing": "sheet"})
+    assert time.perf_counter() - start < 2
+    assert _parts(report)[chart] == b"<c:chartSpace>" + b"<f " * 80_000 + b"</c:chartSpace>"
+
+
+def test_chart_formulas_are_found_with_and_without_attributes():
+    formulas = '<c:f>Data!$A$2:$A$9</c:f><f>x</f><c:f a="1">y</c:f><c:fx>z</c:fx><c:f/><f b="2" c="3">w&amp;v</f>'
+    assert [m[3] for m in _CHART_FORMULA.finditer(formulas)] == ["Data!$A$2:$A$9", "x", "y", "w&amp;v"]
+
+
+def test_a_part_of_2_gib_or_more_gets_zip64_and_the_others_stay_as_they_are(act, report, monkeypatch):
+    """Copying such a part stopped with "File size too large, try using force_zip64". The test has a
+    lower limit, for a part of 3 MiB. Excel may offer to repair a file, so the small parts have none."""
+    big = bytes(3 << 20)
+    with zipfile.ZipFile(report, "a", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("xl/media/big.bin", big)
+    monkeypatch.setattr(zipfile, "ZIP64_LIMIT", 2 << 20)
+    act("excel.export", DATA, {"file": str(report), "sheet": "Data", "existing": "sheet"})
+    with zipfile.ZipFile(report) as archive:
+        assert archive.testzip() is None
+        assert archive.read("xl/media/big.bin") == big
+        newer = {info.filename for info in archive.infolist() if info.extract_version >= zipfile.ZIP64_VERSION}
+    assert newer == {"xl/media/big.bin"}
+    assert openpyxl.load_workbook(report, read_only=True)["Data"]["A2"].value == "Huber"
 
 
 def test_a_tag_cut_in_two_by_a_piece_is_found():
