@@ -1555,3 +1555,25 @@ def test_sqlserver_reads_sql_variant_and_clr_columns(registry):
     finally:
         with connector.open(settings, Context()) as db:
             db.execute(f"DROP TABLE {name}")
+
+
+def test_stop_between_batches_is_no_error_of_the_database(tmp_path, registry):
+    path = tmp_path / "numbers.db"
+    with closing(sqlite3.connect(path)) as raw, raw:
+        raw.execute("CREATE TABLE t (n INTEGER)")
+        raw.executemany("INSERT INTO t VALUES (?)", [(n,) for n in range(10)])
+    connector = registry.connectors["sqlite"]
+
+    def stop():
+        raise Cancelled()
+
+    with closing(sqlite3.connect(path)) as raw:
+        with pytest.raises(Cancelled):
+            api_database.Database(connector, raw).read("SELECT n FROM t", between=stop)
+
+
+@pytest.mark.parametrize("code", ["SQLITE_READONLY_ROLLBACK", "SQLITE_READONLY_RECOVERY"])
+def test_a_database_left_unfinished_gets_the_same_message_in_both_forms(code, registry):
+    error = sqlite3.OperationalError("attempt to write a readonly database")
+    error.sqlite_errorname = code
+    assert registry.connectors["sqlite"].error_message(error).startswith("This SQLite database was left unfinished")
