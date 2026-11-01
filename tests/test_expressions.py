@@ -1,4 +1,5 @@
 import datetime as dt
+import random
 import re
 import threading
 import time
@@ -8,6 +9,7 @@ import polars as pl
 import pytest
 
 from tafl.api import ActionError, expressions
+from tafl.core import Engine, Project
 
 
 def test_translate_brackets_strings_and_isnull():
@@ -116,9 +118,187 @@ def test_comments(people):
 def test_unusual_characters(people):
     assert expressions.evaluate(people, "$$a--b$$ || [Name]")[0] == "a--bAnna"  # DuckDB's $$ texts
     assert expressions.evaluate(people, "$x$:)$x$ || [Name]")[0] == ":)Anna"
-    assert "".join(t.kind[0] for t in expressions.tokenize("x ² ①")) == "wsoso"
+    assert "".join(t.kind[0] for t in expressions.tokenize("x ² ①")) == "wswsw"  # letters for DuckDB
     with pytest.raises(ActionError, match="Formula error"):  # ² is not a digit for DuckDB
         expressions.evaluate(people, "[Age] * 10²")
+
+
+def _kinds(formula):
+    return [(t.kind, formula[t.start : t.end]) for t in expressions.tokenize(formula) if t.kind != "space"]
+
+
+def test_texts_are_read_as_duckdb_reads_them():
+    assert _kinds(r"E'\'' || e'a\\' || '\'") == [("string", r"E'\''"), ("operator", "||"), ("string", r"e'a\\'"), ("operator", "||"), ("string", "'\\'")]
+    assert _kinds(r"_E'\'") == [("word", "_E"), ("string", r"'\'")]  # the E of a longer word starts no such text
+    assert _kinds(r"éE'\'") == [("word", "éE"), ("string", r"'\'")]
+    assert _kinds(r"1E'\''") == [("number", "1"), ("string", r"E'\''")]  # after a number it does
+    assert _kinds(r"1_0E'\''") == [("number", "1_0"), ("string", r"E'\''")]
+    assert _kinds(r"1.5_5E'\''") == [("number", "1.5_5"), ("string", r"E'\''")]
+    assert _kinds(r"$1_0E'\''") == [("operator", "$1_0"), ("string", r"E'\''")]
+    assert _kinds(r"?1aE'\'") == [("operator", "?1"), ("word", "aE"), ("string", r"'\'")]
+    assert _kinds("b'1''0' X'1F'") == [("string", "b'1'"), ("string", "'0'"), ("string", "X'1F'")]
+    assert _kinds("n'x'") == [("word", "n"), ("string", "'x'")]
+    closed = expressions.tokenize(r"E'it\'s")[-1]
+    assert closed.kind == "string" and not closed.closed
+
+
+def test_texts_that_duckdb_joins():
+    """A text on a later line is part of the text before it: after E'…' also with its backslashes."""
+    for formula in ("E'a'\n'b\\'c'", "E'a' -- note\n 'b\\'c'", "e'a'\r'b\\'c'", "E'a'\f\n\t'b\\'c'", "E'a'\n'b'\n'c\\'d'", "E'a'/* a line\nends */'b\\'c'"):
+        tokens = [t for t in expressions.tokenize(formula) if t.kind == "string"]
+        assert all(t.prefix == "e" and t.closed for t in tokens) and [t.joined for t in tokens[:2]] == [False, True], formula
+    for formula in ("E'a' 'b\\'", "E'a'/* same line */'b\\'", "E'a'\n||'b\\'", "$$a$$\n'b\\'", "E'a'\n\v'b\\'"):
+        assert not any(t.prefix == "e" or t.joined for t in expressions.tokenize(formula)[1:]), formula
+    assert _kinds("'a'\nE'b\\''")[1] == ("string", "E'b\\''")  # a text with its own prefix stands on its own
+
+
+def test_dollars_and_letters_are_read_as_duckdb_reads_them():
+    assert _kinds("a$b$c$b$") == [("word", "a$b$c$b$")]  # a $ goes on a word
+    assert _kinds("$é$a'b$é$") == [("string", "$é$a'b$é$")]
+    assert _kinds("$a1$x$a1$ $1$a$b$a$") == [("string", "$a1$x$a1$"), ("operator", "$1"), ("string", "$a$b$a$")]
+    assert _kinds("١ a١ € x") == [("word", "١"), ("word", "a١"), ("word", "€ x")]  # from U+0080 on: letters
+    assert _kinds("1..2 1.2.3 1__0") == [
+        ("number", "1"), ("operator", ".."), ("number", "2"), ("number", "1.2"), ("number", ".3"), ("number", "1"), ("word", "__0"),
+    ]  # fmt: skip
+    assert _kinds("a::b:=c;d") == [("word", "a"), ("operator", "::"), ("word", "b"), ("operator", ":="), ("word", "c"), ("operator", ";"), ("word", "d")]
+
+
+def test_wide_spaces_are_plain_spaces_before_duckdb_reads_them():
+    """DuckDB's parser reads these as spaces outside texts, but only where its own quick look at
+    the text finds them: what reaches it has none outside texts and names."""
+    assert expressions.translate("[a] +　﻿1​⁠") == '"a" +  1  '
+    assert expressions.translate("' ' || [ ]") == "' ' || \" \""
+    assert _kinds(" E'\\''") == [("string", "E'\\''")]
+    assert _kinds("$a $") == [("operator", "$"), ("word", "a"), ("operator", "$")]
+
+
+_PIECES = (
+    "E'", "e'", "'", "''", "\\", "\\'", "\\\\", "$$", "$a$", "$é$", "$_1$", '"', '""', "[", "]", "--", "/*", "*/", "\n", "\r", " ", "\t", "\f", "\v", "1", "1_0", ".", "..",
+    "e", "E", "e5", "b'", "x'", "B'", "X'", "n'", "U&'", 'U&"', "a", "_", "é", " ", "​", "　", "﻿", " ", "\x85", "²", "١", "(", ")", ",", ";", ":",
+    "::", ":=", "+", "-", "*", "/", "<", ">", "=", "!", "|", "&", "^", "~", "@", "#", "`", "?", "%", "{", "}", "\x01", "\x1c", "NOT", "NULLS", "WITH", "TIME", "$", "$1", "?1",
+    "->", "=>", "'a'", "E'a'", "E'\\''", "x$a$", "' -- c\n'", "'/*\n*/'", "\\u", "\\x", "\\1", "'x'", "[z]", "1.5", "1e5", "||", "/* c */", "-- c\n",
+)  # fmt: skip
+
+
+def test_tokens_agree_with_duckdb_on_random_formulas(monkeypatch):
+    """Random pieces, as far as DuckDB's scanner gets to the end: its tokens are ours. Formulas
+    that aren't closed are compared too."""
+    monkeypatch.setattr(expressions, "_unclosed", lambda formula, tokens: None)
+    rng = random.Random(61)
+    compared = 0
+    for _ in range(30_000):
+        formula = "".join(rng.choices(_PIECES, k=rng.randint(1, 12)))
+        sql = f"SELECT (\n{expressions.translate(formula)}\n) AS value FROM __input ORDER BY __etl_row__"
+        last = duckdb.tokenize(sql + " end_of_it")[-1:]
+        if last and last[0][0] == len(sql.encode()) + 1:  # else DuckDB refuses it, e.g. a text that isn't closed
+            compared += 1
+            assert expressions._same_reading(sql), repr(formula)
+    assert compared > 10_000
+
+
+_MACRO = "CREATE OR REPLACE TEMP MACRO leftover() AS 42"
+_BREAKOUTS = (
+    rf"E'\'') AS value FROM __input; {_MACRO}; SELECT (E'\''",
+    rf"e'\'') AS value FROM __input; {_MACRO}; SELECT (e'\''",
+    rf"1_0E'\'') AS value FROM __input; {_MACRO}; SELECT (1_0E'\''",
+    rf"$1_0E'\'') AS value FROM __input; {_MACRO}; SELECT ($1_0E'\''",
+    f"x$a$) AS value FROM __input; {_MACRO}; SELECT (x$a$",
+    f"$é$'$é$) AS value FROM __input; {_MACRO}; SELECT ('",
+    f"E'a'\n'\\'') AS value FROM __input; {_MACRO}; SELECT (E'\\''",
+    f"E'a'/*\n*/'\\'') AS value FROM __input; {_MACRO}; SELECT (E'\\''",
+    f" E'\\'') AS value FROM __input; {_MACRO}; SELECT ( E'\\''",
+)
+
+
+def _left_on_the_connection():
+    con = expressions._connection()
+    return (
+        con.execute("SELECT function_name FROM duckdb_functions() WHERE database_name = 'temp'").fetchall(),
+        con.execute("SELECT table_name FROM duckdb_tables()").fetchall(),
+        con.execute("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall(),
+    )
+
+
+def test_a_formula_cant_end_its_expression(people):
+    for formula in _BREAKOUTS:
+        with pytest.raises(ActionError, match="Formula error"):
+            expressions.evaluate(people, formula)
+    assert _left_on_the_connection() == ([], [], [])
+    assert expressions.evaluate(people.head(1), r"E'\''")[0] == "'"  # the texts themselves are fine
+    assert expressions.evaluate(people.head(1), "E'a\\tb'\n'c\\'d'")[0] == "a\tbc'd"
+    assert expressions.evaluate(people.head(1), "'a' || [Name]　")[0] == "aAnna"
+
+
+def test_blocked_functions_cant_hide_in_what_looks_like_a_text(people):
+    hidden = (
+        r"E'\'' || current_setting(E'threads') || E'\''",
+        r"E'\'' || (SELECT value FROM duckdb_settings() WHERE name = E'\'threads\'') || E'\''",
+        "x$a$||current_setting('threads')||x$a$",
+        "current_setting​('threads')",
+        "current_setting ('threads')",
+        "current_setting⁠/* */('threads')",
+        "duckdb_settings﻿()",
+    )
+    for formula in hidden:
+        with pytest.raises(ActionError, match="a formula can only use the data of the step"):
+            expressions.evaluate(people, formula)
+
+
+def test_duckdb_itself_checks_every_formula(people, monkeypatch):
+    """Should tokenize ever read a form wrongly, DuckDB's own reading stops the formula: here
+    with the reading of E'…' texts taken away."""
+    monkeypatch.setattr(expressions, "_TEXT_PREFIXES", {})
+    with pytest.raises(ActionError, match="DuckDB doesn't read this as one expression"):
+        expressions.evaluate(people, r"E'\'' || current_setting(E'threads') || E'\''")
+    monkeypatch.undo()
+    monkeypatch.setattr(expressions, "_unclosed", lambda formula, tokens: None)
+    with pytest.raises(ActionError, match="DuckDB doesn't read this as one expression"):  # the check for ) is gone
+        expressions.evaluate(people, f"1) AS value FROM __input; {_MACRO}; SELECT (1")
+    monkeypatch.undo()
+    assert _left_on_the_connection() == ([], [], [])
+    assert expressions.evaluate(people, "[Age] + 1").to_list() == [35, 28, 42, 20, 59]
+
+
+def test_a_shadowed_round_cant_reach_a_later_project(tmp_path, registry):
+    """A formula can't leave anything on the connection that the next project uses."""
+    (tmp_path / "a.csv").write_text("net\n10.26\n", encoding="utf-8")
+
+    def project(formula):
+        project = Project(name="Test")
+        project.path = tmp_path / "test.tafl"
+        table = project.add_table("T")
+        project.add_step(table, "csv.import", {"file": "a.csv"})
+        project.add_step(table, "calc.columns", {"columns": [{"name": "x", "formula": formula}]})
+        return project
+
+    poison = r"E'\'') AS value FROM __input; CREATE OR REPLACE TEMP MACRO round(a, b) AS system.main.round(a * 1.1, b); SELECT (E'\''"
+    assert not Engine(project(poison), registry).evaluate("T").ok
+    assert Engine(project("ROUND([net] * 1.19, 2)"), registry).evaluate("T").df["x"].to_list() == [12.21]
+    assert _left_on_the_connection() == ([], [], [])
+
+
+def test_functions_that_run_a_text_or_stay_in_force_are_refused(people):
+    for formula in (
+        "(SELECT a FROM json_execute_serialized_sql(json_serialize_sql('SELECT current_setting(''threads'') AS a')))",
+        "(SELECT COUNT(*) FROM enable_logging(storage = 'file', storage_path = 'x'))",
+        "(SELECT COUNT(*) FROM enable_logging())",
+        "(SELECT COUNT(*) FROM disable_logging())",
+        "(SELECT COUNT(*) FROM truncate_duckdb_logs())",
+        "(SELECT COUNT(*) FROM enable_profiling())",
+        "(SELECT COUNT(*) FROM disable_profiling())",
+        "(SELECT COUNT(*) FROM checkpoint())",
+        "(SELECT COUNT(*) FROM force_checkpoint())",
+    ):
+        with pytest.raises(ActionError, match="a formula can only use the data of the step"):
+            expressions.evaluate(people, formula)
+    assert expressions.evaluate(people, "[Age] + 1").to_list() == [35, 28, 42, 20, 59]
+
+
+def test_half_a_character_in_a_formula(people):
+    with pytest.raises(ActionError, match="broken character"):
+        expressions.evaluate(people, "'\ud83d'")
+    with pytest.raises(ActionError, match="Formula error"):  # DuckDB stops reading at a NUL
+        expressions.evaluate(people, "1\x00")
 
 
 def test_parentheses_and_quotes_that_are_not_closed(people):
@@ -128,6 +308,10 @@ def test_parentheses_and_quotes_that_are_not_closed(people):
         expressions.evaluate(people, "[Age] * 2)")
     with pytest.raises(ActionError, match="a closing ' is missing"):
         expressions.evaluate(people, "[Name] || 'x")
+    with pytest.raises(ActionError, match="a closing ' is missing"):
+        expressions.evaluate(people, r"[Name] || E'x\'")
+    with pytest.raises(ActionError, match='a closing " is missing'):
+        expressions.evaluate(people, '"Name')
 
 
 def test_time_spans_give_a_clear_error(people):

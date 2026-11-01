@@ -421,23 +421,13 @@ def _formula_spans(formula: str) -> _Spans:
     from .expressions import tokenize  # the formula's own tokens
 
     spans = []
-    previous = ""  # the kind of the last '…' text, while only spaces and comments follow it
     for token in tokenize(formula):
-        if token.kind == "string" and formula.startswith("'", token.start):
-            start = token.start
-            before = formula[max(start - 2, 0) : start]  # E'…' unless the E ends a longer word
-            escapes = before[-1:] in ("e", "E") and not (len(before) == 2 and (before[0].isalnum() or before[0] == "_"))
-            # DuckDB joins a text on a later line to the one before it: after an E'…' text the
-            # joined part has the backslash escapes too
-            previous = "e'" if escapes or previous == "e'" else "'"
-            spans.append((start, token.end, previous))
-            continue
-        if token.kind == "quoted":
+        if token.kind == "string" and not formula.startswith("$", token.start):
+            spans.append((token.start, token.end, "e'" if token.prefix == "e" else "'"))
+        elif token.kind == "quoted":
             spans.append((token.start, token.end, '"'))
         elif token.kind == "column":
             spans.append((token.start, token.end, "]"))
         elif token.kind in ("string", "comment"):
             spans.append((token.start, token.end, ""))
-        if token.kind not in ("space", "comment"):
-            previous = ""
     return spans

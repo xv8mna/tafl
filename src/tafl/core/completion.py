@@ -190,7 +190,7 @@ def _parameter_at(formula: str, tokens: list[expressions.Token], cursor: int) ->
         return None
     start = found.start()
     token = next((t for t in tokens if t.start <= start < t.end), None)
-    if token is not None and (token.kind == "comment" or token.kind == "string" and not formula.startswith("'", token.start)):
+    if token is not None and (token.kind == "comment" or token.kind == "string" and formula.startswith("$", token.start)):
         return None
     rest = _PARAMETER_REST.match(formula, cursor)
     return Context("parameter", start, rest.end() if rest else cursor, found[1])

@@ -109,6 +109,7 @@ def test_parameters_after_a_brace():
     assert context_at("[A] + {", 7) == Context("parameter", 6, 7, "")
     assert context_at("[A] + {Da}", 9) == Context("parameter", 6, 10, "Da")  # all of {Da} is replaced
     assert context_at("'Report {Ru", 11) == Context("parameter", 8, 11, "Ru")  # in a text it is filled in, too
+    assert context_at("E'Report {Ru", 12) == Context("parameter", 9, 12, "Ru")
     for formula in ("-- {Da", "/* {Da", "$${Da"):  # in comments and $$texts$$ nothing is filled in
         assert context_at(formula, len(formula)) is None
     assert context_at("{Day} + 1", 5) is None  # after the }

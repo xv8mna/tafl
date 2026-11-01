@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import atexit
 import difflib
+import itertools
 import re
 import shutil
 import string
@@ -73,9 +74,19 @@ _DATE_PARTS = {
     "ms": "millisecond",
 }  # fmt: skip
 _CLOSING = {"string": "'", "quoted": '"', "column": "]"}
-_OPERATORS = set("+-*/%<>=!|&^~:@?;#")
-_NUMBER = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
-_DOLLAR = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+_TEXT_PREFIXES = {"e": "e", "E": "e", "b": "b", "B": "b", "x": "b", "X": "b"}  # see Token.prefix
+# The characters that DuckDB's own parser reads as spaces outside texts and names, before its
+# scanner sees them. All other characters from U+0080 on are letters for DuckDB.
+_WIDE_SPACES = "  -​  ⁠　﻿"
+_LETTER = rf"(?:[A-Za-z_]|(?![{_WIDE_SPACES}])[^\x00-\x7f])"
+_DIGITS = "[0-9]+(?:_[0-9]+)*"
+_OPERATORS = set("+-*/%<>=!|&^~@#`")
+_SPACE = re.compile(rf"[ \t\n\r\f{_WIDE_SPACES}]+")
+_WIDE_SPACE = re.compile(f"[{_WIDE_SPACES}]")
+_WORD = re.compile(rf"{_LETTER}(?:{_LETTER}|[0-9$])*")
+_NUMBER = re.compile(rf"(?:{_DIGITS}\.(?!\.)(?:{_DIGITS})?|\.{_DIGITS}|{_DIGITS})(?:[eE][+-]?{_DIGITS})?")
+_PLACEHOLDER = re.compile(rf"[$?]{_DIGITS}")  # $1 and ?1: one token, what follows stands on its own
+_DOLLAR = re.compile(rf"\$(?:{_LETTER}(?:{_LETTER}|[0-9])*)?\$")
 _LINE_END = re.compile(r"[\r\n]")
 _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
@@ -83,8 +94,14 @@ _VIEW = "__input"
 _ROW = "__etl_row__"
 _FRAME = "__frame"  # the data of a formula that is calculated on a table (see _needs_table)
 _SAFE = {"enable_external_access": False, "autoinstall_known_extensions": False, "autoload_known_extensions": False}
-# DuckDB's settings and catalog: no use in a formula, and they show paths of this computer.
-_BLOCKED = {"current_setting", "getvariable", "which_secret", "query", "query_table"}
+# DuckDB's settings and catalog: no use in a formula, and they show paths of this computer. The
+# same for functions that run a text as a query (what it calls can't be seen) and for those
+# that would stay in force for the formulas of the next project.
+_BLOCKED = {
+    "current_setting", "getvariable", "which_secret",
+    "query", "query_table", "json_execute_serialized_sql",
+    "enable_logging", "disable_logging", "truncate_duckdb_logs", "enable_profiling", "disable_profiling", "checkpoint", "force_checkpoint",
+}  # fmt: skip
 _BLOCKED_PREFIXES = ("duckdb_", "pragma_")
 _SANDBOX = (
     "a formula can only use the data of the step: no files, network, extensions or settings "
@@ -100,27 +117,39 @@ _connections_lock = threading.Lock()
 class Token:
     """A piece of a formula, ``formula[start:end]``.
 
-    ``kind`` is one of: column (``[Name]``), quoted (``"Name"``), string (``'text'`` or
-    ``$$text$$``), comment, number, word (functions, keywords, names), operator, open, close,
-    comma, space. ``closed`` is False for a text, column or comment that isn't closed.
+    ``kind`` is one of: column (``[Name]``), quoted (``"Name"``), string (``'text'``,
+    ``E'text'``, ``B'101'``, ``X'1F'`` or ``$$text$$``), comment, number, word (functions,
+    keywords, names), operator, open, close, comma, space. ``closed`` is False for a text,
+    column or comment that isn't closed. A text has the ``prefix`` "e" (with backslash escapes)
+    or "b" (bits or hex: a doubled quote is the end of it and the start of another text);
+    ``joined`` is True for a text that DuckDB joins to the one before it, whose prefix it has.
     """
 
     kind: str
     start: int
     end: int
     closed: bool = True
+    prefix: str = ""
+    joined: bool = False
 
 
 def tokenize(formula: str) -> list[Token]:
-    """Split a formula into tokens. It never fails: what isn't closed runs to the end."""
+    """Split a formula into tokens, as DuckDB reads what ``translate`` makes of it (in which a
+    comment is spaces). It never fails: what isn't closed runs to the end."""
     tokens: list[Token] = []
     i, n = 0, len(formula)
     while i < n:
         ch = formula[i]
-        closed = True
+        closed, prefix, joined = True, "", False
         dollar = _DOLLAR.match(formula, i) if ch == "$" else None
-        if ch in "'\"[":
-            kind = {"'": "string", '"': "quoted", "[": "column"}[ch]
+        if ch == "'" or (ch in _TEXT_PREFIXES and formula.startswith("'", i + 1)):
+            before = _text_to_join(formula, tokens) if ch == "'" else None
+            joined = before is not None
+            prefix = before.prefix if before is not None else _TEXT_PREFIXES.get(ch, "")
+            kind = "string"
+            end, closed = _closing(formula, i + (ch != "'") + 1, _CLOSING[kind], escapes=prefix == "e", doubled=prefix != "b")
+        elif ch in '"[':
+            kind = {'"': "quoted", "[": "column"}[ch]
             end, closed = _closing(formula, i + 1, _CLOSING[kind])
         elif dollar:  # $$text$$ or $tag$text$tag$
             found = formula.find(dollar.group(), dollar.end())
@@ -132,25 +161,36 @@ def tokenize(formula: str) -> list[Token]:
         elif formula.startswith("/*", i):
             end, closed = _comment_end(formula, i)
             kind = "comment"
-        elif ch.isspace():
-            kind, end = "space", i + 1
-            while end < n and formula[end].isspace():
-                end += 1
-        elif ch.isdecimal() or (ch == "." and i + 1 < n and formula[i + 1].isdecimal()):
-            kind, end = "number", _NUMBER.match(formula, i).end()
-        elif ch.isalpha() or ch == "_":
-            kind, end = "word", i + 1
-            while end < n and (formula[end].isalnum() or formula[end] == "_"):
-                end += 1
+        elif space := _SPACE.match(formula, i):
+            kind, end = "space", space.end()
+        elif number := _NUMBER.match(formula, i):
+            kind, end = "number", number.end()
+        elif word := _WORD.match(formula, i):
+            kind, end = "word", word.end()
         elif ch in "(),":
             kind, end = {"(": "open", ")": "close", ",": "comma"}[ch], i + 1
-        else:
+        elif ch in _OPERATORS:
             kind, end = "operator", i + 1
             while end < n and formula[end] in _OPERATORS and not formula.startswith(("--", "/*"), end):
                 end += 1
-        tokens.append(Token(kind, i, end, closed))
+        elif placeholder := _PLACEHOLDER.match(formula, i):
+            kind, end = "operator", placeholder.end()
+        else:
+            kind, end = "operator", i + (2 if formula.startswith(("::", ":=", ".."), i) else 1)
+        tokens.append(Token(kind, i, end, closed, prefix, joined))
         i = end
     return tokens
+
+
+def _text_to_join(formula: str, tokens: list[Token]) -> Token | None:
+    """The text that DuckDB joins a text after ``tokens`` to: the last token that isn't a space
+    or a comment, when a line ends between them. Not after a $$text$$."""
+    line_end = False
+    for token in reversed(tokens):
+        if token.kind not in ("space", "comment"):
+            return token if line_end and token.kind == "string" and formula[token.start] != "$" else None
+        line_end = line_end or _LINE_END.search(formula, token.start, token.end) is not None
+    return None
 
 
 def column_names(formula: str) -> list[str]:
@@ -185,6 +225,8 @@ def translate(formula: str, *, row_number: bool = True) -> str:
             out.append('"' + _name(formula, token).replace('"', '""') + '"')
         elif token.kind == "comment":
             out.append(re.sub(r"[^\r\n]", " ", text))
+        elif token.kind == "space":  # DuckDB's own reading of these depends on the text before them
+            out.append(_WIDE_SPACE.sub(" ", text))
         elif token.kind == "word" and _is_call(tokens, index):
             out.append(_REWRITES.get(text.lower(), text))
         else:
@@ -268,10 +310,10 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
             raise ActionError(_clean_error(e, formula, df.columns)) from None
         try:
             # On lines of its own: an error on the line after the formula means it ends too early
-            relation = con.sql(f"SELECT (\n{body}\n) AS value FROM {_VIEW} ORDER BY {order}")
+            relation = _query(con, f"SELECT (\n{body}\n) AS value FROM {_VIEW} ORDER BY {order}", formula)
             result_type = str(relation.types[0])
             if result_type.startswith("TIMESTAMP WITH TIME ZONE"):  # local time: the grid shows no zones
-                relation = con.sql(f"SELECT CAST((\n{body}\n) AS TIMESTAMP) AS value FROM {_VIEW} ORDER BY {order}")
+                relation = _query(con, f"SELECT CAST((\n{body}\n) AS TIMESTAMP) AS value FROM {_VIEW} ORDER BY {order}", formula)
                 result_type = "TIMESTAMP"
         except duckdb.Error as e:
             raise ActionError(_clean_error(e, formula, df.columns)) from None
@@ -357,6 +399,40 @@ def _connection() -> duckdb.DuckDBPyConnection:
     return con
 
 
+def _query(con: duckdb.DuckDBPyConnection, sql: str, formula: str) -> duckdb.DuckDBPyRelation:
+    """``sql``, which holds ``formula``, once DuckDB itself has confirmed how it is read: one
+    SELECT, with its texts and names where ``tokenize`` found them. The checks on the formula
+    rest on that reading. Only the statement that was checked runs."""
+    try:
+        sql.encode()
+    except UnicodeEncodeError:  # half of a character, e.g. from a project file
+        raise ActionError("Formula error: the formula holds a broken character") from None
+    statements = con.extract_statements(sql)
+    if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT or not _same_reading(sql):
+        raise ActionError(f"Formula error: DuckDB doesn't read this as one expression, so it isn't calculated\nFormula: {formula}")
+    return con.sql(statements[0])
+
+
+def _same_reading(sql: str) -> bool:
+    """Whether DuckDB's own tokens are those of ``tokenize``. It may only split an operator (+-
+    is two operators for it), and a joined text is part of the text before it. It counts in
+    bytes."""
+    places = list(itertools.accumulate((len(ch.encode()) for ch in sql), initial=0))
+    theirs = duckdb.tokenize(sql)
+    index = 0
+    for token in tokenize(sql):
+        if token.kind in ("space", "comment") or token.joined:
+            continue
+        if index == len(theirs) or theirs[index][0] != places[token.start]:
+            return False
+        if (theirs[index][1] == duckdb.token_type.string_const) != (token.kind == "string"):
+            return False
+        index += 1
+        while token.kind == "operator" and index < len(theirs) and theirs[index][0] < places[token.end]:
+            index += 1
+    return index == len(theirs)
+
+
 def _register(con: duckdb.DuckDBPyConnection, frame: pl.DataFrame, name: str) -> None:
     """Make ``frame`` the view ``name``. An interrupted formula can leave a view or table of that
     name behind (and unregister then doesn't remove it): it is dropped, so that formulas on this
@@ -402,13 +478,17 @@ def _check_calls(formula: str) -> None:
             raise ActionError(f"Formula error: {_SANDBOX}\nFormula: {formula}")
 
 
-def _closing(text: str, start: int, close: str) -> tuple[int, bool]:
-    """Where a text, name or column that starts before ``start`` ends; a doubled closing
-    character stands for the character itself."""
+def _closing(text: str, start: int, close: str, *, escapes: bool = False, doubled: bool = True) -> tuple[int, bool]:
+    """Where a text, name or column that starts before ``start`` ends. A doubled closing
+    character (with ``doubled``) stands for the character itself; with ``escapes``, so does a
+    character after a backslash."""
     i = start
     while i < len(text):
+        if escapes and text[i] == "\\":
+            i += 2
+            continue
         if text[i] == close:
-            if i + 1 < len(text) and text[i + 1] == close:
+            if doubled and i + 1 < len(text) and text[i + 1] == close:
                 i += 2
                 continue
             return i + 1, True
@@ -475,7 +555,7 @@ def _unclosed(formula: str, tokens: list[Token]) -> str | None:
             return "a */ is missing (comments are written as /* ... */)"
         if token.kind in ("string", "quoted"):
             dollar = _DOLLAR.match(formula, token.start)
-            return f"a closing {dollar.group() if dollar else formula[token.start]} is missing"
+            return f"a closing {dollar.group() if dollar else _CLOSING[token.kind]} is missing"
     depth = 0
     for token in tokens:
         depth += {"open": 1, "close": -1}.get(token.kind, 0)
