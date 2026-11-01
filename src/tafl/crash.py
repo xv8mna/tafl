@@ -101,6 +101,12 @@ def _gb(size: int) -> str:
     return f"{size / 1024**3:.1f} GB"
 
 
+def _one_line(name: Any) -> str:
+    """A name from a project, for a report: on one line and with no control characters, so that it
+    can't look like a line of the log."""
+    return "".join(character for character in " ".join(str(name).split()) if character.isprintable())
+
+
 def _folder() -> Path:
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP_FOLDER
 
@@ -204,7 +210,8 @@ class Stopped:
     def says(self, what: str) -> str:
         """``what`` ("The run stopped"), where it happened, and why."""
         places = " and ".join(
-            f"table “{step['table']}”, step {step['number']} ({step['action']}) of project {step['project']}"
+            f"table “{_one_line(step['table'])}”, step {step['number']} ({_one_line(step['action'])}) "
+            f"of project {_one_line(step['project'])}"
             for step in self.steps
         )
         text = f"{what} in {places}" if places else what

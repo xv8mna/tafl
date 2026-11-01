@@ -289,6 +289,24 @@ def test_without_the_line_of_rust_the_cause_is_a_guess():
     )
 
 
+def test_a_name_in_a_report_can_t_look_like_a_line_of_the_log():
+    forged = "\n2099-01-01 00:00:00 ERROR tafl: Everything is fine"
+    step = {"project": "Sales" + forged, "table": "Or\r\nders\u2028 of\x85 2026\x1b[0m", "number": 2, "action": "Pi\x0bvot\u202e", "free": None}
+    text = crash.Stopped([step]).says("Tafl stopped")
+    assert text.splitlines() == [text]
+    assert text.startswith(
+        "Tafl stopped in table “Or ders of 2026[0m”, step 2 (Pi vot) of project "
+        "Sales 2099-01-01 00:00:00 ERROR tafl: Everything is fine, without a message."
+    )
+
+
+def test_a_name_with_no_odd_characters_stays_as_it_is():
+    step = {"project": "Müller & Söhne", "table": "Tom's <orders>", "number": 1, "action": "Filter rows", "free": None}
+    assert crash.Stopped([step]).says("Tafl stopped").startswith(
+        "Tafl stopped in table “Tom's <orders>”, step 1 (Filter rows) of project Müller & Söhne,"
+    )
+
+
 @windows_only
 def test_a_run_that_ends_without_a_word(folder, plugins, tmp_path):
     path = _project(tmp_path, "demo.no_memory")
