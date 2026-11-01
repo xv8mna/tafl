@@ -238,6 +238,12 @@ def parse_datetimes(s: pl.Series, fmt: str = "") -> pl.Series:
     return _apply(_clean_text(s), parsed)
 
 
+def parse_times(s: pl.Series) -> pl.Series:
+    """Text -> Time: 08:30, 08:30:15 or 08:30:15.250. Others become empty."""
+    parsed = pl.coalesce(_VALUE.str.to_time("%H:%M:%S%.f", strict=False), _VALUE.str.to_time("%H:%M", strict=False))
+    return _apply(_clean_text(s), parsed)
+
+
 def parse_booleans(s: pl.Series) -> pl.Series:
     """Text -> Boolean: true/yes/ja/x/1 and false/no/nein/0 (any case). Others become empty."""
     mapping = {w: True for w in TRUE_WORDS} | {w: False for w in FALSE_WORDS}

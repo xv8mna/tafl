@@ -72,8 +72,8 @@ def filter_rows(df, p, ctx):
     """Keeps (or removes) the rows that match the conditions.
 
     Values are compared with the column's type: numbers as numbers (1,5 or 1.5), dates as dates
-    (31.12.2025, 2025-12-31 or "today"). Empty cells never equal a value, but they count as
-    "does not equal" and "does not contain".
+    (31.12.2025, 2025-12-31 or "today"), times as times (08:30 or 08:30:15). Empty cells never
+    equal a value, but they count as "does not equal" and "does not contain".
     """
     mask_parts = [_condition(df, c, p.case_sensitive) for c in p.conditions]
     mask = pl.all_horizontal(mask_parts) if p.match == "all" else pl.any_horizontal(mask_parts)
@@ -221,7 +221,11 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
         values = [i.lower() if text_column and not case_sensitive else _literal(i, dtype, c.column) for i in items]
         if isinstance(dtype, pl.Decimal):  # values the column can't hold aren't in it
             values = [v for v in (_on_scale(v, dtype.scale) for v in values) if v is not None]
-        found = column.is_in(values) if values else pl.lit(False)
+        elif dtype.is_integer():  # the same for whole numbers: not 1,5, and 300 not for an Int8
+            low, high = pl.select(low=dtype.min(), high=dtype.max()).row(0)
+            values = [int(v) for v in values if v.is_integer() and low <= v <= high]
+        listed = pl.Series(values, dtype=dtype).implode() if dtype.is_integer() else values
+        found = column.is_in(listed) if values else pl.lit(False)
         return found if op == "in" else (~found).fill_null(True)
 
     if text_column:
@@ -310,6 +314,11 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
             raise ActionError(
                 f"'{text}' is not a date-time (column '{column}'); use e.g. 31.12.2025 08:30 or 2025-12-31 08:30"
             )
+        return parsed
+    if dtype == pl.Time:
+        parsed = dtypes.parse_times(pl.Series([value]))[0]
+        if parsed is None:
+            raise ActionError(f"'{text}' is not a time (column '{column}'); use e.g. 08:30 or 08:30:15")
         return parsed
     if dtype == pl.Boolean:
         parsed = dtypes.parse_booleans(pl.Series([value]))[0]

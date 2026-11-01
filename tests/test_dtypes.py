@@ -274,6 +274,12 @@ def test_date_times_with_two_digit_years():
     }
 
 
+def test_parse_times():
+    s = pl.Series(["08:30", "8:30", "08:30:15", " 08:30:15.250 ", "23:59:59.999999", "24:00", "8", "abc", "", None])
+    expected = [dt.time(8, 30), dt.time(8, 30), dt.time(8, 30, 15), dt.time(8, 30, 15, 250_000), dt.time(23, 59, 59, 999_999)]
+    assert dtypes.parse_times(s).to_list() == [*expected, None, None, None, None, None]
+
+
 def test_parse_dates_reads_each_value_in_its_own_format():
     s = pl.Series(["31.12.2025", "2025-12-30", "29.12.25", "2025/12/28", "2025-12-27 10:30", "31.02.2025", "soon", None])
     assert dtypes.parse_dates(s).to_list() == [

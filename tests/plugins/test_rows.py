@@ -203,6 +203,63 @@ def test_typed_date_times(act):
         flt(act, df, ("At", "=", "soon"))
 
 
+def test_typed_times(act):
+    """Before, a time stayed text: Polars stopped with "cannot compare 'date/datetime/time' to a
+    string value"."""
+    df = pl.DataFrame({"Name": ["a", "b", "c", "d"], "Start": [dt.time(8), dt.time(8, 0, 0, 500_000), dt.time(17, 30), None]})
+    assert names(flt(act, df, ("Start", "=", "08:00:00"))) == ["a"]
+    assert names(flt(act, df, ("Start", "=", "8:00"))) == ["a"]
+    assert names(flt(act, df, ("Start", "=", " 08:00:00.5 "))) == ["b"]
+    assert names(flt(act, df, ("Start", "!=", "08:00"))) == ["b", "c", "d"]
+    assert names(flt(act, df, ("Start", ">", "08:00"))) == ["b", "c"]
+    assert names(flt(act, df, ("Start", "<=", "08:00:00.500"))) == ["a", "b"]
+    assert names(flt(act, df, ("Start", "in", "17:30; 08:00:00"))) == ["a", "c"]
+    assert names(flt(act, df, ("Start", "not_in", "17:30; 08:00:00"))) == ["b", "d"]
+    assert act("rows.fill", df, {"columns": ["Start"], "method": "value", "value": "6:45"})["Start"][3] == dt.time(6, 45)
+
+
+@pytest.mark.parametrize("operator", ["=", "in", "not_in"])
+@pytest.mark.parametrize("value", ["soon", "25:00", "24:00:00", "0800"])
+def test_a_typed_value_that_is_no_time(act, operator, value):
+    df = pl.DataFrame({"Start": [dt.time(8)]})
+    with pytest.raises(ActionError, match=rf"^'{value}' is not a time \(column 'Start'\); use e\.g\. 08:30 or 08:30:15$"):
+        flt(act, df, ("Start", operator, value))
+
+
+@pytest.mark.parametrize("dtype", [pl.Int8, pl.Int64, pl.UInt32, pl.UInt64, pl.Int128])
+def test_lists_with_values_that_are_no_whole_numbers(act, dtype):
+    """A decimal number can't be in a whole-number column. Before, Polars stopped with "'is_in'
+    cannot check for Int64 values in List(Float64) data"."""
+    df = pl.DataFrame({"Name": ["a", "b", "c", "d"], "Qty": pl.Series([1, 2, 100, None], dtype=dtype)})
+    assert names(flt(act, df, ("Qty", "in", "1,5; 2"))) == ["b"]
+    assert names(flt(act, df, ("Qty", "in", "1,5"))) == []
+    assert names(flt(act, df, ("Qty", "not_in", "1,5; 2"))) == ["a", "c", "d"]
+    assert names(flt(act, df, ("Qty", "not_in", "1,5"))) == ["a", "b", "c", "d"]
+    assert names(flt(act, df, ("Qty", "in", "2,0; 1e2"))) == ["b", "c"]  # whole numbers in another form
+    assert names(flt(act, df, ("Qty", "in", "2; inf; nan; 1e30; 1e300"))) == ["b"]
+    assert names(flt(act, df, ("Qty", "in", "1e300; 1e30; nan; inf; 2"))) == ["b"]
+
+
+def test_lists_of_long_whole_numbers(act):
+    df = pl.DataFrame({"Name": ["a", "b"], "Code": [1234567890123456789, 100_000_000_000_000_000]})
+    assert names(flt(act, df, ("Code", "in", "1234567890123456789; 1,5"))) == ["a"]
+    assert names(flt(act, df, ("Code", "in", "1e17"))) == ["b"]
+    wide = pl.DataFrame({"Name": ["a", "b"], "Code": pl.Series([2, 2**70], dtype=pl.Int128)})
+    assert names(flt(act, wide, ("Code", "in", f"2; {2**70}"))) == ["a", "b"]  # a list Polars can't build by itself
+
+
+def test_a_list_with_a_value_the_column_can_not_hold(act):
+    df = pl.DataFrame({"Name": ["a", "b"], "Qty": pl.Series([1, 2], dtype=pl.Int8)})
+    assert names(flt(act, df, ("Qty", "in", "1; 300; -1"))) == ["a"]
+    assert names(flt(act, df.with_columns(pl.col("Qty").cast(pl.UInt8)), ("Qty", "in", "2; 300; -1"))) == ["b"]
+
+
+def test_lists_of_decimal_numbers_keep_their_decimals(act):
+    df = pl.DataFrame({"Name": ["a", "b"], "Net": [1.5, 2.0]})
+    assert names(flt(act, df, ("Net", "in", "1,5"))) == ["a"]
+    assert names(flt(act, df, ("Net", "not_in", "1,5; 7"))) == ["b"]
+
+
 def test_sort_many_texts_like_excel(act):
     words = ["Zebra", "apfel", "Äpfel", "Apfel", "Özdemir", "Straße", "Strasse", "élan", "日本", None]
     df = pl.DataFrame({"Name": words * 5_000, "Nr": range(50_000)})  # many repeated values
