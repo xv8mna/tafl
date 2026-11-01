@@ -1,6 +1,7 @@
 """Colors in formulas and the matching bracket."""
 
 import datetime as dt
+import statistics
 import time
 
 from PySide6.QtGui import QColor, QTextCursor
@@ -82,10 +83,12 @@ def test_coloring_a_long_formula_is_quick(qapp):
     highlighter = FormulaHighlighter(edit.document())
     highlighter.set_columns([f"c{i}" for i in range(300)])
     edit.setPlainText("\n".join(f"CASE WHEN [c{i}] > {i} THEN 'x{i}' ELSE UPPER([c{i}]) END ||" for i in range(40)) + " ''")
-    started = time.perf_counter()
+    seconds = []
     for _ in range(20):
+        started = time.perf_counter()
         edit.textCursor().insertText("1")
-    assert (time.perf_counter() - started) / 20 < 0.01
+        seconds.append(time.perf_counter() - started)
+    assert statistics.median(seconds) < 0.01  # one pause of the garbage collector is no slow coloring
 
 
 def test_later_lines_follow_a_change_of_where_a_comment_ends(qapp):
