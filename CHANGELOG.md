@@ -11,8 +11,9 @@ less memory.
   looked at and no database is opened. A bar at the top of the window says so. **Trust this
   project** in the bar makes the project work as always, and a run asks first. The demo opens this
   way too: click the button once.
-  - Tafl knows a file by its content, in a list in the settings of this computer. A file that was
-    changed elsewhere asks again, and a project that is saved in protected view stays protected.
+  - Tafl knows a file by its content and its folder, in a list in the settings of this computer. A
+    file that was changed elsewhere or moved to another folder asks again, and a project that is
+    saved in protected view stays protected.
   - New projects are trusted, and a file you save from a trusted project is known.
   - The projects in **File → Open recent** count as known once, when this version starts for the
     first time.
@@ -20,6 +21,9 @@ less memory.
   - "Projects from other people" in chapter 3 of the user guide says what trust means, and what it
     doesn't: a SQL Server query that commits by itself keeps its changes, and a rollback can't undo
     that.
+- **The window can no longer hang during a calculation**: Python's clean-up of old objects could
+  run on a calculation thread and wait for the window, while the window waited for it. It now runs
+  on the window's thread only.
 - **Excel export: text stays text**, exactly as it is, in the cells and in the column names, in a
   new file, a replaced file, a replaced or added sheet and a workbook with macros. No text becomes
   a formula or a link any more, and a text with special characters can't move other values or
@@ -36,16 +40,18 @@ less memory.
 - **The window shows names and values as plain text**: in labels, tooltips and message boxes, a
   text from a project or a data file is never read as HTML. Normal text looks as it did, with its
   `&`, `<`, quotes and line breaks. Ctrl+C in a message box copies the text as it reads. A tooltip
-  stops after 12 lines with "…", and the tooltip of a cell after 40.
+  stops after 12 lines with "…", and the tooltip of a cell or an error after 40.
 - **SQLite imports only read**, in the window and in a run, and so does **Test connection**.
   - A file that a program left unfinished stays as it is, and the message says how to repair it.
-  - A WAL database is read with its `-wal` file, which stays as it is.
+  - A WAL database is read with its `-wal` file, which stays as it is. SQLite can put its small
+    `-shm` and `-wal` files beside a WAL database to read it.
   - A query that changes data stops with a message, and so do `ATTACH` and a PRAGMA that does more
     than read. Plain reads, such as `PRAGMA table_info`, work. An `ATTACH` in an import used to
     work in a run: put such work into a **Run SQL command**.
 - **SQL Server connections**: a value in **Server** or **Database** can't add anything to the
   connection. A **Server** with `;`, `=`, `{`, `}` or a control character stops with a plain
-  message. `.\SQLEXPRESS`, `host,1433` and `host\instance` work as before.
+  message. `.\SQLEXPRESS`, `host,1433` and `host\instance` work as before. Write a **Database** name
+  as it is, without braces.
 - **Stop and low memory now end a database import** between its rows: a read no longer goes on
   until the last row. On SQLite, Stop also ends a query or a **Run SQL command** that gives no
   row for a long time (the command is rolled back). SQL Server can stop a query only when rows
@@ -61,8 +67,10 @@ less memory.
   has run, and only the last step of a table keeps it. The window keeps its results as before.
 - **Filter rows**: time columns work, with values like `08:30`, in all operators; text that is no
   time gives a clear message. **Is one of** on a whole-number column leaves out values that the
-  column can't hold, such as `1,5`, instead of stopping. **Fill empty values** takes times too.
-  Very big whole numbers keep all their digits in both steps.
+  column can't hold, such as `1,5`, instead of stopping. **Fill empty values** takes times too: a
+  fixed value for a time column must now be a time. Very big whole numbers keep all their digits in
+  both steps. A column of time spans or binary data says that it can't be compared with a typed
+  value.
 - **Merge**: a full join on several keys works with any suffix, also an empty one.
 - **Import CSV / text files**: the message on decimals names only columns that became numbers. A
   file with very long runs of line ends no longer causes a long wait.
@@ -72,7 +80,8 @@ less memory.
   filtered. A value with more decimal places than an exact decimal column has is left out: `1.555`
   found the rows with `1.56`.
 - A project file with data nested too deeply is refused when it opens, as a damaged file.
-- The report after a program that ended without a message keeps each name on one line.
+- The report after a program that ended without a message keeps each name on one line, and it says
+  when a step asked for more memory at once than was free.
 - Plugins: `ctx.database` has a keyword `read_only` (a connector can override `connect_read_only`;
   one that doesn't gets a normal connection, so plugins work as before). `ctx.check_memory` is
   new for plugins that read in batches. `Database.read`, `Database.read_table` and

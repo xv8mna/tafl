@@ -545,8 +545,8 @@ formulas and SQL. Numbers, choices and checkboxes take no parameters.
 | `Folder` | `D:\Reports` | a fixed text |
 | `Limit` | `500` | a fixed number (also: dates `2026-10-01`, date-times `2026-10-01 08:30`) |
 
-Formulas are worked out when the project opens, when the parameters change, on **Reload data**
-(Ctrl+R) and for every run. The previews in between keep these values, so `=NOW()` doesn't
+Formulas are worked out when the project opens (in protected view: when you trust the project),
+when the parameters change, on **Reload data** (Ctrl+R) and for every run. The previews in between keep these values, so `=NOW()` doesn't
 change with every edit. A formula may take 5 seconds: a slower one is stopped and counts as an
 error. The dialog shows each value as it is now, or what is wrong.
 

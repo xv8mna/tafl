@@ -802,11 +802,14 @@ check the project for you. From then on it works like a project of your own:
 So trust a project only when you trust the person it comes from and you have read it. Before you
 run it, look at its exports and commands, above all **Delete files** and **Run SQL command**.
 
-Tafl knows a project by the content of its file (a SHA-256 value). The list of the last 1,000 files
-is in the settings of this computer, not in the project: a project can't answer for itself.
+Tafl knows a project by the content of its file and by its folder (a SHA-256 value). The list of the
+last 1,000 values is in the settings of this computer, not in the project: a project can't answer
+for itself.
 
 - A new project is trusted, and a file that you save from a trusted project is known.
-- A copy of a known file is known too, wherever it is.
+- A copy of a known file in the same folder is known too.
+- A file in another folder opens in protected view once, also when you moved it yourself: its
+  relative paths point to other files there.
 - A file that was changed elsewhere, also by a colleague, opens in protected view again.
 - A project that was in **File → Open recent** before Tafl had a protected view opens as before.
 
@@ -1807,8 +1810,8 @@ the parameters above it as `{Day}`. **↑** and **↓** change the order.
 | `=LAST_DAY({Day})` | the last day of that month |
 | `=STRFTIME(NOW(), '%Y-%m-%d %H-%M')` | date and time as text, for a file name |
 
-Formulas are worked out when the project opens, when you click **OK** in the dialog, on **Reload
-data** (Ctrl+R) and at the start of every run. In between, the values stay as they are, so
+Formulas are worked out when the project opens (in protected view: when you trust the project),
+when you click **OK** in the dialog, on **Reload data** (Ctrl+R) and at the start of every run. In between, the values stay as they are, so
 `=NOW()` doesn't change with every edit. A formula may take 5 seconds at most.
 
 ### Use a parameter in a setting
@@ -1975,7 +1978,8 @@ Filter big tables in the query: only the rows you need are read. Numbers keep al
 
 Imports run while you edit, so they must change nothing. A SQLite file is opened for reading only:
 a query that changes data stops with a message, and so do `ATTACH` and a PRAGMA that does more than
-read. On SQL Server, Tafl rolls back whatever a query changes, but a query that commits by itself
+read. A database in WAL mode stays as it is, but SQLite can put its small `-shm` and `-wal` files
+beside it to read it. On SQL Server, Tafl rolls back whatever a query changes, but a query that commits by itself
 keeps its changes ([Projects from other people](#projects-from-other-people)).
 
 A program that stops during a change leaves a SQLite file unfinished. An import only reads, so it
@@ -2353,8 +2357,8 @@ the file with a new time counts as a change as well. Then **Open in sheet** is s
 Until you add a new sheet as a table, its data is only in that window: Tafl keeps no copy, and it
 is gone if the app crashes. A `•` in the title bar marks a sheet with unsaved data.
 
-A known limit: a small, unusual file can end the program. A damaged Excel or Parquet file of a few
-kilobytes can make Tafl close at once while it reads the file, without a question. An unsaved sheet
+A known limit: a small, unusual file can end the program. An unusual or damaged Excel or Parquet file
+of a few kilobytes can make Tafl close at once while it reads the file, without a question. An unsaved sheet
 is then lost. So add a sheet as a table before you open a file or a project that you don't know.
 
 - Closing a sheet with unsaved data asks first: **Add as table…**, **Don't keep** or **Cancel**.
