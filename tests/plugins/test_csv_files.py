@@ -1,5 +1,6 @@
 import datetime as dt
 import sys
+import time
 from decimal import Decimal
 from pathlib import Path
 
@@ -202,6 +203,19 @@ def test_the_log_names_the_columns_with_the_other_decimal_separator(act, tmp_pat
     assert ctx.messages == [("info", "Encoding utf-8, delimiter semicolon, decimal comma")]
 
 
+def test_the_log_names_only_columns_that_became_numbers(act, tmp_path):
+    (tmp_path / "t.csv").write_text("Preis;Netto;Code\n1,5;0.500;0.250\n2,5;1.250;abc\n3,5;2.000;1.000\n", encoding="utf-8")
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "t.csv")}, ctx)
+    assert df["Netto"].to_list() == [0.5, 1.25, 2.0] and df["Code"].to_list() == ["0.250", "abc", "1.000"]
+    assert ctx.messages == [("info", "Encoding utf-8, delimiter semicolon, decimal comma (decimal point in Netto)")]
+    (tmp_path / "text.csv").write_text("Preis;Code\n1,5;0.500\n2,5;abc\n", encoding="utf-8")
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "text.csv")}, ctx)
+    assert df["Code"].to_list() == ["0.500", "abc"]
+    assert ctx.messages == [("info", "Encoding utf-8, delimiter semicolon, decimal comma")]
+
+
 def test_line_ends_converted_twice(act, tmp_path):
     (tmp_path / "p.csv").write_bytes(b"Artikel;Preis\r\r\nA;1.5\r\r\nB;2.25\r\r\n")
     ctx = StubContext()
@@ -213,6 +227,18 @@ def test_line_ends_converted_twice(act, tmp_path):
     assert df["Notiz"].to_list() == ["x; y", "z", None]
     (tmp_path / "t.csv").write_text("Artikel;Gewicht\nA;0.500\t\nB;1.250\t\n", encoding="utf-8")  # tabs at the end
     assert act("csv.import", None, {"file": str(tmp_path / "t.csv")})["Gewicht"].to_list() == [0.5, 1.25]
+    (tmp_path / "many.csv").write_bytes(b'a;b\r\r\r\r\n1;"x\ry"\r\n2;z\r\r\n')  # more than two; one inside a value stays
+    assert act("csv.import", None, {"file": str(tmp_path / "many.csv")}).to_dict(as_series=False) == {"a": [1, 2], "b": ["x\ry", "z"]}
+
+
+def test_a_long_run_of_carriage_returns_takes_no_long_time(act, tmp_path):
+    """Each carriage return of the run started the search again, with the Python lock held: the
+    time grew with the square of the run, and 160 KB took 16 s without any way to stop it."""
+    (tmp_path / "r.csv").write_bytes(b"a;b\r\r\n1;2\r\r\n" + b"\r" * 120_000 + b"x")
+    start = time.perf_counter()
+    out = act("csv.import", None, {"file": str(tmp_path / "r.csv")})
+    assert time.perf_counter() - start < 2
+    assert out.row(0) == ("1", 2)  # the carriage returns and the x are one more value of the first column
 
 
 def test_a_file_with_one_column(act, tmp_path):

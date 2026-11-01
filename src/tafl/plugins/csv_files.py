@@ -129,8 +129,10 @@ def import_csv(df, p, ctx):
         if not p.detect_types:
             return data
         decimal, columns = (p.decimal, {}) if p.decimal != "auto" else _guess_decimal(data, separators[0])
-        decimals.append((decimal, [name for name, own in columns.items() if own != decimal]))
-        return _detect_types(data, {name: columns.get(name, decimal) for name in data.columns}, ctx.warn)
+        typed = _detect_types(data, {name: columns.get(name, decimal) for name in data.columns}, ctx.warn)
+        others = [name for name, own in columns.items() if own != decimal]
+        decimals.append((decimal, [name for name in others if typed.schema[name].is_numeric()]))  # others stayed text
+        return typed
 
     out = combine(parts, p, folder, prepare=detect_types)
     decimal = [_describe_decimals(*decimals[0])] if decimals else []
@@ -151,7 +153,7 @@ def _read_text_file(path: Path, p, warn: Callable[[str], None]) -> tuple[pl.Data
     data, encoding = _to_utf8(raw, p.encoding, path.name, warn)
     del raw  # after a byte order mark, ``data`` is a copy: the file would be in memory twice
     if b"\r\r\n" in data:  # line ends converted twice: one line end, not a \r at the end of the last value
-        data = re.sub(rb"\r+\n", b"\r\n", data)
+        data = re.sub(rb"(?<!\r)\r+\n", b"\r\n", data)  # only from the start of a run: from each \r would take long
     sample = data[:65536].decode("utf-8", errors="ignore")
     separator = files.detect_delimiter(sample, p.skip_lines) if p.delimiter == "auto" else _separator(p.delimiter)
     options = dict(separator=separator, has_header=False, skip_lines=p.skip_lines, raise_if_empty=False, encoding="utf8-lossy")
