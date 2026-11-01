@@ -555,7 +555,7 @@ class Shot:
         """Open a project. With several tables, all are calculated (as after a look at the map),
         so that each shows its status. The status bar says "Opened demo.tafl" only for the demo:
         the reader builds the other projects, and doesn't open them."""
-        if not self.window.open_path(path):
+        if not self.window.open_path(path, trusted=True):
             raise RuntimeError(f"could not open {path}")
         self.wait()
         if len(self.session.project.tables) > 1:

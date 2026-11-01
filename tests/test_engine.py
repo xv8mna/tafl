@@ -10,9 +10,11 @@ import polars as pl
 import pytest
 
 from tafl.api import ActionError, Cancelled, P, action, expressions
-from tafl.core import Engine, Project, Registry, ResultCache, Status
+from tafl.api.parameters import Failed
+from tafl.core import Engine, Parameter, Project, Registry, ResultCache, Status
 from tafl.core.cancel import CancelEvent
-from tafl.core.engine import Imported
+from tafl.core.engine import Imported, _Evaluation
+from tafl.core.parameters import NOT_WORKED_OUT
 
 CSV = "Id;Customer;Amount;Date\n1;A;10,5;01.01.2025\n2;B;20;02.01.2025\n3;A;5;03.01.2025\n"
 
@@ -782,3 +784,24 @@ def test_the_cache_limit_follows_the_installed_memory(monkeypatch):
     monkeypatch.setattr(engine, "installed_memory", lambda: None)
     assert ResultCache().max_bytes == 2 * 1024**3
     assert ResultCache(100).max_bytes == 100
+
+
+def test_a_protected_engine_calculates_nothing(project, registry, monkeypatch):
+    """Protected view: every calculation stops before the first step, so no source is looked at, and
+    the formulas of the parameters are not worked out."""
+    project.parameters.append(Parameter("Day", "=TODAY()"))
+    engine = Engine(project, registry)
+    engine.protected = True
+    with monkeypatch.context() as stopped:
+        stopped.setattr(_Evaluation, "_step", lambda *_arguments: pytest.fail("a step was calculated"))
+        stopped.setattr(expressions, "evaluate", lambda *_arguments: pytest.fail("a formula was worked out"))
+        twin = engine.snapshot()
+        assert twin.protected
+        results = [twin.evaluate("Orders"), twin.evaluate("Orders", until=0), *twin.run().values(), *twin.run(mode="preview").values()]
+        assert all(result.skipped and not result.steps and not result.ok for result in results)
+        assert twin.evaluate_all("Orders") == {}
+        assert twin.parameter_values()["Day"] == Failed(NOT_WORKED_OUT)
+
+    engine.protected = False  # trusted: the values are worked out, none of the above was kept
+    assert engine.parameter_values()["Day"] != Failed(NOT_WORKED_OUT)
+    assert engine.evaluate("Orders").ok

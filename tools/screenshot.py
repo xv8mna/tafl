@@ -65,7 +65,7 @@ def main() -> None:
     window.resize(width, height)
     window.show()
     if args.project:
-        window.open_path(args.project)
+        window.open_path(args.project, trusted=True)
     if args.table:
         session.select_table(session.project.table(args.table).id)
     if args.step:

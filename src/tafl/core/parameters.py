@@ -31,6 +31,7 @@ from .cancel import stopping
 from .project import Project
 
 TIME_LIMIT = 5.0  # seconds a parameter's formula may take
+NOT_WORKED_OUT = "not worked out in protected view"
 # The settings that get the values as text (P.Code with a language other than SQL too)
 _TEXTS = (P.Text, P.File, P.Folder, P.Column, P.Columns)
 
@@ -58,6 +59,15 @@ def values(project: Project, overrides: Mapping[str, str] | None = None, *, limi
             value = _override_hint(value, text.lstrip()[1:], found, own, given)
         found[parameter.name] = value
     return found
+
+
+def written(project: Project) -> dict[str, Any]:
+    """``values`` with nothing worked out, for protected view: the fixed values as typed, and a
+    Failed for each formula."""
+    return {
+        parameter.name: Failed(NOT_WORKED_OUT) if parameter.value.lstrip().startswith("=") else fixed(parameter.value)
+        for parameter in project.parameters
+    }
 
 
 def problems(project: Project, overrides: Mapping[str, str] | None = None, *, ignore_unused: bool = False) -> list[str]:

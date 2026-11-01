@@ -17,10 +17,13 @@ from PySide6.QtWidgets import (
     QDialog,
     QDockWidget,
     QFileDialog,
+    QFrame,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QPushButton,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
@@ -38,7 +41,7 @@ from .checks import checks
 from .connections_dialog import ConnectionsDialog
 from .data_panel import DataPanel
 from .find_panel import FindPanel
-from .labels import message_box, tooltip_text
+from .labels import WrappedLabel, message_box, tooltip_text
 from .map import MapView
 from .parameters_dialog import ParametersDialog
 from .run_panel import RunPanel
@@ -52,6 +55,10 @@ log = logging.getLogger("tafl")
 
 _FILTER = f"{APP_NAME} projects (*{EXTENSION});;All files (*.*)"
 _MAX_RECENT = 8
+_PROTECTED_BAR = (
+    "Protected view: this project comes from somewhere else. Tafl has calculated nothing and touched none "
+    "of its files or databases. Read its steps first."
+)
 
 
 class MainWindow(QMainWindow):
@@ -89,7 +96,14 @@ class MainWindow(QMainWindow):
         self.views = QStackedWidget(self)
         self.views.addWidget(self.splitter)
         self.views.addWidget(self.map_view)
-        self.setCentralWidget(self.views)
+        self.protected_bar = ProtectedBar(session, self)
+        central = QWidget(self)
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self.protected_bar)
+        central_layout.addWidget(self.views, 1)
+        self.setCentralWidget(central)
 
         self.run_panel = RunPanel(session, self)
         self.run_dock = QDockWidget("Run results", self)
@@ -123,6 +137,8 @@ class MainWindow(QMainWindow):
         session.structure_changed.connect(self._update_actions)
         session.selection_changed.connect(self._update_actions)
         session.undo_changed.connect(self._update_actions)
+        session.protected_changed.connect(lambda _protected: self._update_actions())
+        session.run_wants_trust.connect(self._run_wants_trust)
         session.run_busy_changed.connect(self._run_busy)
         session.busy_changed.connect(self._calc_busy)
         session.run_finished.connect(self._run_finished)
@@ -275,7 +291,7 @@ class MainWindow(QMainWindow):
         has_tables = bool(self.session.project.tables)
         running = self.session.running
         self.run_action.setEnabled(has_tables and not running)
-        self.reload_action.setEnabled(has_tables)
+        self.reload_action.setEnabled(has_tables and not self.session.protected)
         self.run_table_action.setEnabled(self.session.table is not None and not running)
         self.stop_action.setEnabled(running and not self.session.stopping)
 
@@ -303,9 +319,10 @@ class MainWindow(QMainWindow):
         if path:
             self.open_path(path)
 
-    def open_path(self, path: str | Path) -> bool:
+    def open_path(self, path: str | Path, trusted: bool | None = None) -> bool:
+        """``trusted``: see ``Session.open_project``."""
         try:
-            upgraded = self.session.open_project(path)
+            upgraded = self.session.open_project(path, trusted)
         except (ProjectError, OSError) as e:
             message_box(self, "Open project", f"Could not open {path}:\n\n{e}")
             return False
@@ -457,6 +474,26 @@ class MainWindow(QMainWindow):
         if self.session.table_id:
             self.session.run_project([self.session.table_id])
 
+    def _run_wants_trust(self, table_ids: list[str] | None) -> None:
+        """A run in protected view (from any place: the toolbar, a menu of a table): it needs a yes."""
+        if self.ask_trust_and_run():
+            self.session.trust_project()
+            self.session.run_project(table_ids)
+
+    def ask_trust_and_run(self) -> bool:
+        box = QMessageBox(QMessageBox.Icon.Warning, "Run project", "Trust this project and run it?", parent=self)
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setInformativeText(
+            "Tafl has calculated nothing yet. A run reads the project's files and databases, and "
+            "carries out its exports and commands. From then on the project works as always."
+        )
+        run = box.addButton("Trust and run", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        return box.clickedButton() is run
+
     def stop_run(self) -> None:
         """Stop the run after the step that is running (an export of a big table may take a while)."""
         if not self.session.running:
@@ -486,6 +523,9 @@ class MainWindow(QMainWindow):
         _, step = session.find_step(step_id)
         sheet_format = session.sheet_format(step)
         if sheet_format is None:
+            return
+        if session.protected:  # the sheet would read the file of the step
+            self.statusBar().showMessage("Protected view: Edit in sheet works after you trust this project", 10000)
             return
         try:
             path = session.sheet_file(step)
@@ -827,6 +867,24 @@ class MainWindow(QMainWindow):
         checks().stop_all()  # the checks of formula fields: nothing waits for them
         self.session.wait(5000)
         event.accept()
+
+
+class ProtectedBar(QFrame):
+    """The bar at the top of the window in protected view."""
+
+    def __init__(self, session: Session, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("ProtectedBar")
+        self.text = WrappedLabel(_PROTECTED_BAR, self)
+        self.button = QPushButton("Trust this project", self)
+        self.button.clicked.connect(session.trust_project)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(10)
+        layout.addWidget(self.text, 1)
+        layout.addWidget(self.button)
+        session.protected_changed.connect(self.setVisible)
+        self.setVisible(session.protected)
 
 
 def _text_dialog(parent: QWidget, title: str, text: str) -> None:

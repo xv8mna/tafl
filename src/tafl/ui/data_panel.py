@@ -32,7 +32,7 @@ from .filter_pane import FilterPane
 from .filters import Filter, apply, to_json
 from .frame_model import FrameModel
 from .labels import ElidedLabel, WrappedLabel
-from .session import Session, count, first_error, missing_settings, size_text, waiting_text
+from .session import PROTECTED, Session, count, first_error, missing_settings, size_text, waiting_text
 from .worker import Worker
 
 MAX_COPY_CELLS = 2_000_000  # more is a case for an export
@@ -139,6 +139,7 @@ class DataPanel(QWidget):
         session.results_changed.connect(self.refresh)
         session.structure_changed.connect(self.refresh)
         session.filters_changed.connect(lambda _table_id: self.refresh())
+        session.protected_changed.connect(self._protected_changed)
         session.busy_changed.connect(self.busy.setVisible)
         self.refresh()
 
@@ -159,6 +160,9 @@ class DataPanel(QWidget):
             return
         number = table.steps.index(step) + 1
         self.subtitle.setText(f"after step {number}: {session.describe(step)}")
+        if session.protected:
+            self._no_data(table.id, PROTECTED)
+            return
         if not table.enabled:
             self._no_data(
                 table.id,
@@ -225,6 +229,11 @@ class DataPanel(QWidget):
                 f"{shown.height:,} of {count(df.height, 'row')} × {count(df.width, 'column')}  ·  filtered   ·   {timing}"
             )
             self.info.setStyleSheet(f"color: {theme.ACCENT_TEXT};")
+
+    def _protected_changed(self, _protected: bool) -> None:
+        """No old data behind the message: the grid is empty until the results are there."""
+        self.model.set_frame(None)
+        self.refresh()
 
     def _filtered(self, table_id: str, df: pl.DataFrame) -> pl.DataFrame:
         """The rows that pass the table's instant filters (the same frame again if nothing changed)."""

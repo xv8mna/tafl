@@ -1,3 +1,4 @@
+import hashlib
 import json
 import stat
 import tempfile
@@ -201,3 +202,15 @@ def test_a_file_of_another_format_is_refused(tmp_path):
     other.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ProjectError):
         Project.load(other)
+
+
+def test_the_digest_is_of_the_bytes_of_the_file(tmp_path):
+    project = sample_project()
+    assert project.digest == ""  # no file yet
+    path = project.save(tmp_path / "sales.tafl")
+    assert project.digest == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert Project.load(path).digest == project.digest
+
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())  # the same project in other bytes
+    other = Project.load(path)
+    assert other == project and other.digest == hashlib.sha256(path.read_bytes()).hexdigest() != project.digest

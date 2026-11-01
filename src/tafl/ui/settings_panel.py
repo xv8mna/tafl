@@ -97,6 +97,7 @@ class SettingsPanel(QWidget):
         session.structure_changed.connect(self.refresh)
         session.step_changed.connect(lambda _: self.refresh())
         session.results_changed.connect(self.refresh)
+        session.protected_changed.connect(lambda _: self.refresh())
         self.refresh()
 
     @property
@@ -294,6 +295,7 @@ class SettingsPanel(QWidget):
             project_dir=session.project.directory,
             edit_connections=self._edit_connections,
             parameters=session.parameter_values,
+            protected=session.protected,
         )
 
     def _clear(self, title: str, text: str) -> None:

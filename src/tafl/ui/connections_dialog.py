@@ -150,7 +150,8 @@ class ConnectionsDialog(QDialog):
             self.type_label.setText(f"Unknown connection type '{connection.type}' (plugin missing)")
             return
         self.type_label.setText(connector.name)
-        self._form = ParamForm(connector.params, FormContext(project_dir=self.session.project.directory), self)
+        context = FormContext(project_dir=self.session.project.directory, protected=self.session.protected)
+        self._form = ParamForm(connector.params, context, self)
         self._form.set_values(json_ready(resolve(connector.params, connection.settings)))
         self._form.changed.connect(lambda values: self._changed(connection, values))
         self.form_host.addWidget(self._form)
@@ -188,6 +189,9 @@ class ConnectionsDialog(QDialog):
         connection = self._current()
         connector = connection and self.registry.connectors.get(connection.type)
         if connector is None:
+            return
+        if self.session.protected:  # a test opens the database
+            self._show_result("Protected view: Test connection works after you trust this project.")
             return
         settings, values = dict(connection.settings), self.session.parameter_values
         ctx = Context(project_dir=self.session.project.directory)

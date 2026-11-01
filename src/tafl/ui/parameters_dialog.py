@@ -165,19 +165,24 @@ class ParametersDialog(QDialog):
         self._show_problems(found)
         if self._calculated is not None and _same(found, self._calculated):
             return
+        protected = self.session.protected
+        if not protected:  # no formula is worked out until the project is trusted
+            self._work_out(found)
+        self._calculated = found
+        self.table.blockSignals(True)
+        for row, parameter in enumerate(found):
+            if parameter.value.lstrip().startswith("="):
+                self._show(row, "(Protected view: not worked out)" if protected else "…", theme.TEXT_DIM)
+            else:
+                self._show(row, _label(fixed(parameter.value)), theme.TEXT_DIM)
+        self.table.blockSignals(False)
+
+    def _work_out(self, found: list[Parameter]) -> None:
         if _same(found, self.session.project.parameters):
             engine = self.session.engine  # the values as the calculation uses them
             self._worker.start(lambda _cancel: (found, engine.parameter_values()))
         else:
             self._worker.start(lambda _cancel: (found, parameters.values(Project(parameters=found))))
-        self._calculated = found
-        self.table.blockSignals(True)
-        for row, parameter in enumerate(found):
-            if parameter.value.lstrip().startswith("="):
-                self._show(row, "…", theme.TEXT_DIM)
-            else:
-                self._show(row, _label(fixed(parameter.value)), theme.TEXT_DIM)
-        self.table.blockSignals(False)
 
     def _show_values(self, outcome: tuple[list[Parameter], dict[str, Any]]) -> None:
         found, worked_out = outcome

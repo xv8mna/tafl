@@ -615,6 +615,7 @@ class FindPanel(QWidget):
         session.step_changed.connect(self._step_changed)
         session.results_changed.connect(self._results_changed)
         session.busy_changed.connect(self._busy_changed)
+        session.protected_changed.connect(self._protected_changed)
         self._take_baseline()
 
     def _toggle(self, text: str, tip: str) -> QToolButton:
@@ -758,6 +759,10 @@ class FindPanel(QWidget):
         if self.problems_button.isChecked():  # "calculating all tables…"
             self._schedule()
 
+    def _protected_changed(self, _protected: bool) -> None:
+        self._stale = True  # the formulas of the parameters have values now
+        self._schedule()
+
     def _results_changed(self) -> None:
         if self.session.engine.reload_token != self._token:  # values like =NOW() are new now
             self._stale = True
@@ -800,7 +805,7 @@ class FindPanel(QWidget):
         for table in opened.tables:
             for step in table.steps:
                 if (action := actions.get(step.action)) is not None:
-                    step.params = _rebased(step.params, action.params, opened.directory, folder)
+                    step.params = _rebased(step.params, action.params, opened.directory, folder, look=not self.session.protected)
         opened.path = self.session.project.path
         self._baseline = project_index.signatures(opened, actions)
 
@@ -844,6 +849,8 @@ class FindPanel(QWidget):
             text = "" if calculating else "Nothing found"
         if calculating:
             text = f"{text} · calculating all tables…" if text else "Calculating all tables…"
+        if query.problems and self.session.protected:
+            text = "Protected view: Problems finds them after you trust this project"
         self.summary.setText(text)
 
     # --- the list ----------------------------------------------------------------------------

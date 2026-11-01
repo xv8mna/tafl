@@ -37,10 +37,12 @@ from tafl.core import (
     sheet,
 )
 
+from . import trust
 from .labels import shortened
 from .theme import GROUP_COLORS
 from .worker import Worker
 
+PROTECTED = "Protected view: nothing is calculated until you trust this project."
 _DEFAULT_TABLE_NAME = re.compile(r"Table \d+")
 _UNDO_LIMIT = 100
 _KEY_NAME = re.compile(r"(?i)(id|nr|no|number|key|code|nummer)$")
@@ -76,6 +78,8 @@ class Session(QObject):
     filters_changed = Signal(str)  # the instant filters of a table changed: table id
     new_sheet_wanted = Signal(bool, object, object)  # paste?, map position or None, group id or None
     sheet_edit_wanted = Signal(str)  # step id
+    protected_changed = Signal(bool)  # the project is in protected view now, or not any more
+    run_wants_trust = Signal(object)  # a run in protected view: the tables of run_project
     error = Signal(str)  # unexpected problems (tracebacks)
 
     def __init__(self, registry: Registry, parent: QObject | None = None) -> None:
@@ -92,6 +96,7 @@ class Session(QObject):
         self._undo: list[dict[str, Any]] = []
         self._redo: list[dict[str, Any]] = []
         self._stamp: tuple[int, int] | None = None  # the project file as it was opened or saved
+        self._digest = ""  # its SHA-256 then: what trusting the project adds to the list of known files
         self._stopping = False
         self.run_seconds: float | None = None  # how long the last run took
         self._run_done: dict[str, TableResult] = {}  # the tables the latest run has calculated so far
@@ -123,11 +128,14 @@ class Session(QObject):
     def new_project(self) -> None:
         self._set_project(Project())
 
-    def open_project(self, path: str | Path) -> list[Step]:
-        """Open a project; returns the steps that were upgraded to newer action versions."""
+    def open_project(self, path: str | Path, trusted: bool | None = None) -> list[Step]:
+        """Open a project; returns the steps that were upgraded to newer action versions. A
+        project that isn't ``trusted`` opens in protected view (None: as ``trust`` knows its file)."""
         project = Project.load(path)
+        if trusted is None:
+            trusted = trust.is_known(project.digest, project.path)
         stamp = _stamp(project.path)
-        self._set_project(project)
+        self._set_project(project, protected=not trusted)
         self._stamp = stamp
         upgraded = self.engine.upgrade_steps()
         if upgraded:
@@ -154,6 +162,9 @@ class Session(QObject):
                     connection.settings = settings
             raise
         self._stamp = _stamp(saved)
+        self._digest = self.project.digest
+        if not self.protected:  # a file this window wrote: saving in protected view makes nothing known
+            trust.add(self._digest)
         self._set_dirty(False)
         if before is not None:
             self._rebase_history(old_dir, target.parent)
@@ -169,11 +180,27 @@ class Session(QObject):
         now = _stamp(current)
         return now is not None and now != self._stamp
 
-    def _set_project(self, project: Project) -> None:
+    @property
+    def protected(self) -> bool:
+        """The project is in protected view: it can be read and edited, but the engine calculates
+        nothing and looks at none of its files or databases."""
+        return self.engine.protected
+
+    def trust_project(self) -> None:
+        """"Trust this project": its file counts as known, and the project works as always."""
+        if self.protected:
+            trust.add(self._digest)
+            self.engine.protected = False
+            self.calculate_now()
+            self.protected_changed.emit(False)
+
+    def _set_project(self, project: Project, protected: bool = False) -> None:
         self._worker.cancel()
         self._stamp = None
+        self._digest = project.digest
         self.project = project
         self.engine = Engine(project, self.registry, self.engine.cache)
+        self.engine.protected = protected
         self.results = {}
         self._all = False
         self._recheck.clear()
@@ -187,6 +214,7 @@ class Session(QObject):
         self.structure_changed.emit()
         self.selection_changed.emit()
         self.undo_changed.emit()
+        self.protected_changed.emit(protected)
         self.calculate_now()
 
     # --- selection ---------------------------------------------------------------------------
@@ -260,6 +288,8 @@ class Session(QObject):
         table, result = self.table, self.result
         if table is None or step is None or step not in table.steps:
             return ""
+        if self.protected:
+            return PROTECTED
         index = table.steps.index(step)
         if not table.enabled:
             return f"“{table.name}” is turned off, so it isn't calculated. Turn it on to see a preview."
@@ -386,6 +416,8 @@ class Session(QObject):
             self._calculate_stale()
 
     def _calculate(self, scope: str, table_id: str | None, table_ids: list[str] | None = None) -> None:
+        if self.protected:  # the engine would calculate nothing: no background work for that
+            return
         engine = self.engine.snapshot()
         if scope == "table":
             self._worker.start(lambda cancel: ("table", engine.evaluate_all(table_id, cancel=cancel)))
@@ -429,7 +461,11 @@ class Session(QObject):
     def run_project(self, table_ids: list[str] | None = None) -> None:
         """Run tables (default: all) with exports and commands, in the background. A run that is
         stopped sends run_stopped with the tables calculated before the stop, and the one that
-        was stopped (``TableResult.stopped``, with the steps that ran)."""
+        was stopped (``TableResult.stopped``, with the steps that ran). In protected view nothing
+        runs: run_wants_trust goes out, and the main window asks."""
+        if self.protected:
+            self.run_wants_trust.emit(table_ids)
+            return
         engine = self.engine.snapshot()
         done: dict[str, TableResult] = {}  # filled while the run goes on
 
@@ -662,14 +698,18 @@ class Session(QObject):
         return Path(os.path.normpath(Context(project_dir=self.project.directory).resolve_path(params["file"])))
 
     def sheet_outdated(self, step: Step) -> bool:
-        """Whether the file of ``step`` is no longer as Tafl last wrote it (see ``sheet_seen``)."""
+        """Whether the file of ``step`` is no longer as Tafl last wrote it (see ``sheet_seen``). In
+        protected view it isn't looked at."""
+        if self.protected:
+            return False
         path = self.sheet_file(step)
         known = (self._sheet_stamps.get(os.path.normcase(path)), step.params[files.SHEET_KEY].get("stamp"))
         return sheet.stamp_of(path) not in known
 
     def sheet_seen(self, path: Path) -> None:
         """The user was told that the file has changed, and opens it: the question comes once."""
-        self._remember_stamp(path, sheet.stamp_of(path))
+        if not self.protected:
+            self._remember_stamp(path, sheet.stamp_of(path))
 
     def sheet_path_problem(self, path: Path) -> str | None:
         """Why the import of a sheet's file could not read it back as it is stored in a step: a
@@ -1164,15 +1204,16 @@ class Session(QObject):
         relative to the project file. A path that starts with a parameter ({Folder}\\orders.csv)
         stays as it is: the parameter may stand for a whole folder. The settings get new dicts:
         the undo and redo steps share the old ones (see ``_rebase_history``)."""
+        look = not self.protected
         for table in self.project.tables:
             for step in table.steps:
                 action = self.registry.actions.get(step.action)
                 if action is not None:
-                    step.params = _rebased(step.params, action.params, old_dir, new_dir)
+                    step.params = _rebased(step.params, action.params, old_dir, new_dir, look=look)
         for connection in self.project.connections:
             connector = self.registry.connectors.get(connection.type)
             if connector is not None:
-                connection.settings = _rebased(connection.settings, connector.params, old_dir, new_dir)
+                connection.settings = _rebased(connection.settings, connector.params, old_dir, new_dir, look=look)
 
     def _rebase_history(self, old_dir: Path | None, new_dir: Path) -> None:
         """The paths in the undo and redo steps, after the project was saved in another folder:
@@ -1183,7 +1224,7 @@ class Session(QObject):
 
         def rebased(values: dict[str, Any], spec: tuple[Param, ...]) -> dict[str, Any]:
             if id(values) not in done:
-                done[id(values)] = values, _rebased(values, spec, old_dir, new_dir)
+                done[id(values)] = values, _rebased(values, spec, old_dir, new_dir, look=not self.protected)
             return done[id(values)][1]
 
         for state in (*self._undo, *self._redo):
@@ -1291,13 +1332,16 @@ def _json_equal(a: Any, b: Any) -> bool:
     return json_ready(a) == json_ready(b)
 
 
-def _rebased(values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | None, new_dir: Path) -> dict[str, Any]:
+def _rebased(
+    values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | None, new_dir: Path, *, look: bool = True
+) -> dict[str, Any]:
     values = dict(values)
-    _rebase(values, spec, old_dir, new_dir)
+    _rebase(values, spec, old_dir, new_dir, look)
     return values
 
 
-def _rebase(values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | None, new_dir: Path) -> None:
+def _rebase(values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | None, new_dir: Path, look: bool) -> None:
+    """``look``: whether the disk may be asked (not in protected view)."""
     for param in spec:
         if param.kind not in ("file", "folder"):
             continue
@@ -1308,7 +1352,7 @@ def _rebase(values: dict[str, Any], spec: tuple[Param, ...], old_dir: Path | Non
             continue
         first = re.split(r"[\\/]", expanded, maxsplit=1)[0]
         # A variable of a batch file or another PC, if no file or folder has that name
-        if re.match(r"%[^%]+%", first) and not (old_dir is not None and (old_dir / first).exists()):
+        if re.match(r"%[^%]+%", first) and not (look and old_dir is not None and (old_dir / first).exists()):
             continue
         if not path.is_absolute():
             if old_dir is None:

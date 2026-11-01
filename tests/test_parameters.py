@@ -802,3 +802,13 @@ def test_the_warnings_read_the_sql_as_the_connection_does(tmp_path, registry):
     assert result.ok, result.first_error
     assert result.steps[0].messages == []
     assert unknown(query, {"Id": 1}, sql=True) == ["Other"]  # read the default way: a carriage return ends a comment
+
+
+def test_in_protected_view_no_formula_is_worked_out(monkeypatch):
+    monkeypatch.setattr(expressions, "evaluate", lambda *_arguments: pytest.fail("a formula was worked out"))
+    project = Project(parameters=[Parameter("Year", "2026"), Parameter("Day", " =TODAY()"), Parameter("Text", "a=b")])
+    found = parameters.written(project)
+    assert plain(found["Year"]) == 2026 and plain(found["Text"]) == "a=b"
+    assert found["Day"] == Failed(parameters.NOT_WORKED_OUT)
+    with pytest.raises(ActionError, match=r"\{Day\} has an error: not worked out in protected view"):
+        fill_text("{Day}.csv", found)

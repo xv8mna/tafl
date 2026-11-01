@@ -295,6 +295,9 @@ class Engine:
         self.cancel: threading.Event | None = None
         # Part of every source's cache key: raising it makes all sources read their data again.
         self.reload_token = 0
+        # A project nobody has trusted yet (protected view, see ui/trust.py): no table is calculated,
+        # no source is looked at, and the formulas of the parameters are not worked out
+        self.protected = False
         # Values given for the project's parameters, e.g. by `tafl run --set Day=2026-10-01`
         self.parameter_overrides: dict[str, str] = {}
         # The parameters' values by what they were worked out from (shared with snapshots)
@@ -313,6 +316,7 @@ class Engine:
         twin = Engine(copy.deepcopy(self.project), self.registry, self.cache)
         twin.reload_token = self.reload_token
         twin.cancel = self.cancel
+        twin.protected = self.protected
         twin.parameter_overrides = dict(self.parameter_overrides)
         twin._parameter_values, twin._parameter_lock = self._parameter_values, self._parameter_lock
         return twin
@@ -321,7 +325,10 @@ class Engine:
         """Name -> value of the project's parameters (a Failed for one that can't be worked out).
         They are worked out again only when the parameters, the overrides or the reload token
         change (a run reloads): the calculations in between use the same values, so that =NOW()
-        doesn't change with every edit."""
+        doesn't change with every edit. In protected view no formula is worked out, and nothing is
+        kept: the real values come when the project is trusted."""
+        if self.protected:
+            return parameters.written(self.project)
         key = (
             tuple((p.name, p.value) for p in self.project.parameters),
             tuple(sorted(self.parameter_overrides.items())),
@@ -532,6 +539,8 @@ class _Evaluation:
         self.parameters = engine.parameter_values()
 
     def table(self, table_id: str, until: int | None = None) -> TableResult:
+        if self.engine.protected:  # every calculation comes here: nothing goes on to the steps
+            return TableResult(table_id, skipped="is in protected view")
         full = until is None
         if full and table_id in self.results:
             return self.results[table_id]

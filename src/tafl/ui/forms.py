@@ -74,6 +74,7 @@ class FormContext:
     project_dir: Path | None = None
     edit_connections: Callable[[], None] | None = None
     parameters: Callable[[], dict[str, Any]] = dict  # name -> value of the project's parameters
+    protected: bool = False  # protected view: no path of a setting is looked at
 
 
 class Editor(QWidget):
@@ -890,7 +891,9 @@ class PathEditor(Editor):
         self._edit.setText(self._last)
 
     def _browse(self) -> None:
-        start = self._absolute(self.value()) or str(self.ctx.project_dir or Path.home())
+        # The dialog goes to the folder it starts in: in protected view, not to a path of the project
+        written = "" if self.ctx.protected else self._absolute(self.value())
+        start = written or str(self.ctx.project_dir or Path.home())
         if self.param.kind == "folder":
             chosen = QFileDialog.getExistingDirectory(self, self.param.label, start)
         elif getattr(self.param, "mode", "open") == "save":

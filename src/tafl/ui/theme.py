@@ -120,6 +120,8 @@ QLabel#WarningBox {{
 QLabel#InfoBox {{
     background: #33414f; border: 1px solid #47617a; color: #cfe0f0; border-radius: 4px; padding: 6px 8px;
 }}
+QFrame#ProtectedBar {{ background: #4a4030; border-bottom: 1px solid #7a6538; }}
+QFrame#ProtectedBar QLabel {{ color: #f0dcb4; }}
 QLineEdit[missing="true"], QComboBox[missing="true"] {{ color: {STATUS_TEXT["error"]}; }}
 QFrame#ListCard {{ background: {ALTERNATE}; border: 1px solid {BORDER}; border-radius: 4px; }}
 QLabel[found="true"], QLineEdit[found="true"], QPlainTextEdit[found="true"], QComboBox[found="true"],

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 from tafl import APP_FOLDER, APP_NAME, COMMAND, crash
 from tafl.core import Registry, Status
 
-from . import theme
+from . import theme, trust
 from .labels import message_box
 from .main_window import MainWindow
 from .session import Session
@@ -42,6 +42,7 @@ def _main(argv: list[str] | None, stopped: list[crash.Stopped]) -> int:
     app = QApplication.instance() or QApplication(argv)
     theme.apply(app)
     app.setWindowIcon(theme.app_icon())
+    trust.first_start()
 
     # tools\build.py: the built app starts, opens a project and calculates every table, and nobody
     # is there to click a message away. Exit code 3: a table that has an error or no result, or a
@@ -71,7 +72,7 @@ def _main(argv: list[str] | None, stopped: list[crash.Stopped]) -> int:
     if len(argv) > 1:
         try:
             if check:
-                session.open_project(argv[1])  # an error goes to the log instead of a message box
+                session.open_project(argv[1], trusted=True)  # an error goes to the log instead of a message box
             else:
                 window.open_path(argv[1])
         except Exception:

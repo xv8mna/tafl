@@ -160,8 +160,8 @@ def test_the_startup_check_fails_after_an_unexpected_error(start, monkeypatch, q
     monkeypatch.setattr(QMessageBox, "exec", lambda box: shown.append(box.text()))
     opened = Session.open_project
 
-    def open_project(session, path):
-        opened(session, path)
+    def open_project(session, path, trusted=None):
+        opened(session, path, trusted)
         if error == "while opening":
             raise RuntimeError(error)
         if error == "later":  # e.g. in a slot: Qt passes it to sys.excepthook

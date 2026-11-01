@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -172,6 +173,7 @@ class Project:
     groups: list[Group] = field(default_factory=list)
     parameters: list[Parameter] = field(default_factory=list)
     path: Path | None = field(default=None, compare=False)
+    digest: str = field(default="", compare=False)  # SHA-256 of the file as it was last read or written
 
     @property
     def directory(self) -> Path | None:
@@ -297,15 +299,15 @@ class Project:
         if target is None:
             raise ProjectError("No file name given")
         target = target.resolve()
-        text = json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+        data = (json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(prefix=target.name, suffix=".tmp", dir=target.parent)
         except PermissionError:
             raise ProjectError(f"No permission to save in {target.parent}: save the project in another folder") from None
         try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-                f.write(text + "\n")
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
             os.replace(tmp, target)
         except BaseException as error:
             Path(tmp).unlink(missing_ok=True)
@@ -313,13 +315,15 @@ class Project:
                 raise ProjectError(f"{target.name} is read-only, so it can't be saved") from None
             raise
         self.path = target
+        self.digest = hashlib.sha256(data).hexdigest()
         return target
 
     @classmethod
     def load(cls, path: str | Path) -> Project:
         file = Path(path).resolve()
+        raw = file.read_bytes()
         try:
-            text = file.read_text(encoding="utf-8-sig")  # also with the BOM some editors write
+            text = raw.decode("utf-8-sig")  # also with the BOM some editors write
         except UnicodeDecodeError as e:
             raise ProjectError(f"The project file {file.name} can't be read: it is not UTF-8 text") from e
         try:
@@ -329,12 +333,14 @@ class Project:
         if _nested_too_deeply(data):
             raise ProjectError(f"The project file {file.name} is damaged: its data is nested too deeply")
         try:
-            return cls.from_dict(data, path=file)
+            project = cls.from_dict(data, path=file)
         except ProjectError:
             raise
         except Exception as e:  # valid JSON, but parts are missing or of the wrong kind
             problem = _content_problem(data) or f"{type(e).__name__}: {e}"
             raise ProjectError(f"The project file {file.name} is damaged: {problem}") from e
+        project.digest = hashlib.sha256(raw).hexdigest()
+        return project
 
     def _repair_ids(self) -> None:
         """Give tables/steps/groups that lack an id (or share one) a fresh one; forget group

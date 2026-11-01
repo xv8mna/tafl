@@ -8,6 +8,7 @@ import pytest  # noqa: E402
 from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QDialog, QMessageBox  # noqa: E402
 
+from tafl.ui import trust  # noqa: E402
 from tafl.ui.main_window import MainWindow  # noqa: E402
 from tafl.ui.session import Session  # noqa: E402
 
@@ -19,6 +20,22 @@ def isolated_settings(tmp_path_factory):
     """Keep the tests away from the user's real window settings and recent files."""
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path_factory.mktemp("settings")))
+
+
+@pytest.fixture(autouse=True)
+def known_projects(request, monkeypatch):
+    """Projects open as if Tafl knew them, unless a test asks for ``protected_view``."""
+    if "protected_view" not in request.fixturenames:
+        monkeypatch.setattr(trust, "is_known", lambda _digest, _path: True)
+
+
+@pytest.fixture
+def protected_view(qapp):
+    """Projects open as in the app, and Tafl knows none yet."""
+    qapp.setOrganizationName("Tafl Tests")
+    settings = QSettings()
+    for key in (trust._DIGESTS, trust._PATHS, "recent"):
+        settings.remove(key)
 
 
 @pytest.fixture(autouse=True)
