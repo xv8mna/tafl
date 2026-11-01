@@ -105,6 +105,65 @@ def test_a_new_name_never_takes_the_name_of_a_key_column(act, how):
     assert out.columns == ["K", "__key0", "__key0__2"] and out.rows() == [("1", "y", "x")]
 
 
+THIS = pl.DataFrame({"Region": ["N", "S"], "Code": [1, 2], "Net": [10, 20]})
+OTHER = pl.DataFrame({"Region": ["N", "W"], "Code": [1, 3], "Tax": [100, 300]})
+BOTH_KEYS = [{"column": "Region", "other_column": "Region"}, {"column": "Code", "other_column": "Code"}]
+
+
+@pytest.mark.parametrize("suffix", ["", " (2)", "_x", "   "])
+def test_a_full_join_on_two_keys_with_any_suffix(act, suffix):
+    """Polars stopped for an emptied suffix: "column with name 'Region' has more than one occurrence"."""
+    params = {"other": "other", "match": BOTH_KEYS, "how": "full", "suffix": suffix}
+    out = act("table.merge", THIS, params, StubContext(tables={"other": OTHER}))
+    assert out.columns == ["Region", "Code", "Net", "Tax"]
+    assert out.rows() == [("N", 1, 10, 100), ("S", 2, 20, None), ("W", 3, None, 300)]
+
+
+@pytest.mark.parametrize("how", ["lookup", "left", "inner", "full"])
+def test_an_empty_suffix_still_gives_a_free_name(act, how):
+    params = {"other": "other", "match": BOTH_KEYS, "how": how, "suffix": ""}
+    other = OTHER.with_columns(Net=pl.Series([1, 3]))
+    out = act("table.merge", THIS, params, StubContext(tables={"other": other}))
+    assert out.columns == ["Region", "Code", "Net", "Tax", "Net2"]
+    assert out.row(0) == ("N", 1, 10, 100, 1)
+
+
+@pytest.mark.parametrize(("column", "suffix"), [("Region (2)", " (2)"), ("Code (2)", " (2)"), ("Region_x", "_x"), ("Region__other__", "")])
+def test_a_full_join_next_to_a_column_named_like_a_key_with_the_suffix(act, column, suffix):
+    """The same fault with a suffix that is not empty: the key column of the other table with the
+    suffix was a name of this table for a moment."""
+    this = THIS.rename({"Net": column})
+    params = {"other": "other", "match": BOTH_KEYS, "how": "full", "suffix": suffix}
+    out = act("table.merge", this, params, StubContext(tables={"other": OTHER}))
+    assert out.columns == ["Region", "Code", column, "Tax"]
+    assert out.rows() == [("N", 1, 10, 100), ("S", 2, 20, None), ("W", 3, None, 300)]
+
+
+@pytest.mark.parametrize("suffix", ["", " (2)"])
+def test_a_full_join_when_keys_of_the_other_table_have_names_of_this_table(act, suffix):
+    this = pl.DataFrame({"K": ["N", "S"], "L": [1, 2], "Region": ["r", "s"], "Code": [7, 8]})
+    match = [{"column": "K", "other_column": "Region"}, {"column": "L", "other_column": "Code"}]
+    params = {"other": "other", "match": match, "how": "full", "suffix": suffix}
+    out = act("table.merge", this, params, StubContext(tables={"other": OTHER}))
+    assert out.columns == ["K", "L", "Region", "Code", "Tax"]
+    assert out.rows() == [("N", 1, "r", 7, 100), ("S", 2, "s", 8, None), ("W", 3, None, None, 300)]
+
+
+def test_a_full_join_on_keys_of_two_types_with_an_empty_suffix(act):
+    this = THIS.with_columns(pl.col("Code").cast(pl.String))
+    params = {"other": "other", "match": BOTH_KEYS, "how": "full", "suffix": ""}
+    out = act("table.merge", this, params, StubContext(tables={"other": OTHER}))
+    assert out.schema["Code"] == pl.String
+    assert out.rows() == [("N", "1", 10, 100), ("S", "2", 20, None), ("W", "3", None, 300)]
+
+
+def test_the_spare_suffix_gives_no_name_of_this_table():
+    from tafl.plugins.combine import _spare_suffix
+
+    assert _spare_suffix(["a", "b"], ["a"]) == "__other__"
+    assert _spare_suffix(["a", "a__other__", "a__other___"], ["a"]) == "__other____"
+
+
 def test_append(act):
     ctx = StubContext(tables={"b": pl.DataFrame({"x": ["3"], "y": [True]})})
     a = pl.DataFrame({"x": [1, 2]})

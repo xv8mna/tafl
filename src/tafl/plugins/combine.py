@@ -147,7 +147,7 @@ def merge(df, p, ctx):
         left_on=left_on,
         right_on=right_keys,
         how={"lookup": "left", "left": "left", "inner": "inner", "full": "full"}[p.how],
-        suffix=p.suffix,
+        suffix=_spare_suffix(left.columns, right.columns),
         coalesce=True,
         maintain_order="left_right" if p.how == "full" else "left",
     )
@@ -215,6 +215,18 @@ def _free_name(name: str, suffix: str, taken: set[str]) -> str:
         count += 1
         candidate = f"{name}{numbered.group(1)}{count}{numbered.group(3)}" if numbered else f"{name}{suffix}{count}"
     return candidate
+
+
+def _spare_suffix(left: list[str], right: list[str]) -> str:
+    """A suffix for the join itself: for a moment, a full join with several keys names the key
+    columns of the other table with it. The new columns have their final names by then, so it
+    isn't in the result; it only must not give a name of this table, as an empty suffix does, or
+    " (2)" next to a column "Region (2)"."""
+    taken = set(left)
+    suffix = "__other__"
+    while any(name + suffix in taken for name in right):
+        suffix += "_"
+    return suffix
 
 
 def _compared_keys(left, right, left_on, right_on, ctx):
