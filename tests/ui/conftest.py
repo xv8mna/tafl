@@ -9,6 +9,7 @@ from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QDialog, QMessageBox  # noqa: E402
 
 from tafl.ui import trust  # noqa: E402
+from tafl.ui.collector import Collector  # noqa: E402
 from tafl.ui.main_window import MainWindow  # noqa: E402
 from tafl.ui.session import Session  # noqa: E402
 
@@ -20,6 +21,14 @@ def isolated_settings(tmp_path_factory):
     """Keep the tests away from the user's real window settings and recent files."""
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path_factory.mktemp("settings")))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def collector(qapp):
+    """As in the app: reference cycles are collected on this thread, not on a worker's."""
+    collector = Collector()
+    yield collector
+    collector.stop()
 
 
 @pytest.fixture(autouse=True)

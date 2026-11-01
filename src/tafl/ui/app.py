@@ -16,6 +16,7 @@ from tafl import APP_FOLDER, APP_NAME, COMMAND, crash
 from tafl.core import Registry, Status
 
 from . import theme, trust
+from .collector import Collector
 from .labels import message_box
 from .main_window import MainWindow
 from .session import Session
@@ -40,6 +41,7 @@ def _main(argv: list[str] | None, stopped: list[crash.Stopped]) -> int:
     QApplication.setOrganizationName(APP_NAME)
     QApplication.setApplicationName(APP_NAME)
     app = QApplication.instance() or QApplication(argv)
+    collector = Collector()
     theme.apply(app)
     app.setWindowIcon(theme.app_icon())
     trust.first_start()
@@ -94,7 +96,10 @@ def _main(argv: list[str] | None, stopped: list[crash.Stopped]) -> int:
             app.exit(3 if problems else 0)
 
         QTimer.singleShot(0, finish)
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        collector.stop()
 
 
 def _report_stopped(window: QWidget, stopped: list[crash.Stopped], dialogs: bool = True) -> None:
