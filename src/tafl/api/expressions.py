@@ -18,6 +18,7 @@ from __future__ import annotations
 import atexit
 import difflib
 import itertools
+import json
 import re
 import shutil
 import string
@@ -95,14 +96,18 @@ _ROW = "__etl_row__"
 _FRAME = "__frame"  # the data of a formula that is calculated on a table (see _needs_table)
 _SAFE = {"enable_external_access": False, "autoinstall_known_extensions": False, "autoload_known_extensions": False}
 # DuckDB's settings and catalog: no use in a formula, and they show paths of this computer. The
-# same for functions that run a text as a query (what it calls can't be seen) and for those
-# that would stay in force for the formulas of the next project.
+# same for functions that run or plan a text as a query (what it calls can't be seen) and for
+# those that would stay in force for the formulas of the next project.
 _BLOCKED = {
     "current_setting", "getvariable", "which_secret",
-    "query", "query_table", "json_execute_serialized_sql",
+    "query", "query_table", "json_execute_serialized_sql", "json_serialize_plan",
     "enable_logging", "disable_logging", "truncate_duckdb_logs", "enable_profiling", "disable_profiling", "checkpoint", "force_checkpoint",
 }  # fmt: skip
 _BLOCKED_PREFIXES = ("duckdb_", "pragma_")
+# Names that are only blocked where DuckDB reads them as a table (see _reads_blocked_table): a column
+# may have them, and HISTOGRAM is also a normal function. pg_settings is DuckDB's settings as a view;
+# the two others read the table that a text names, which a formula can build while it runs.
+_BLOCKED_TABLES = {"pg_settings", "histogram", "histogram_values"}
 _SANDBOX = (
     "a formula can only use the data of the step: no files, network, extensions or settings "
     "(use an import step for files)"
@@ -436,8 +441,9 @@ def _connection() -> duckdb.DuckDBPyConnection:
 
 def _query(con: duckdb.DuckDBPyConnection, sql: str, formula: str) -> duckdb.DuckDBPyRelation:
     """``sql``, which holds ``formula``, once DuckDB itself has confirmed how it is read: one
-    SELECT, with its texts and names where ``tokenize`` found them. The checks on the formula
-    rest on that reading. Only the statement that was checked runs."""
+    SELECT, with its texts and names where ``tokenize`` found them, that doesn't read a blocked
+    table. The checks on the formula rest on that reading. Only the statement that was checked
+    runs."""
     try:
         sql.encode()
         statements = con.extract_statements(sql)
@@ -445,7 +451,33 @@ def _query(con: duckdb.DuckDBPyConnection, sql: str, formula: str) -> duckdb.Duc
         raise ActionError("Formula error: the formula holds a broken character") from None
     if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT or not _same_reading(sql):
         raise ActionError(f"Formula error: DuckDB doesn't read this as one expression, so it isn't calculated\nFormula: {formula}")
+    if _reads_blocked_table(con, sql):
+        raise ActionError(f"Formula error: {_SANDBOX}\nFormula: {formula}")
     return con.sql(statements[0])
+
+
+def _reads_blocked_table(con: duckdb.DuckDBPyConnection, sql: str) -> bool:
+    """Whether ``sql`` reads one of _BLOCKED_TABLES, by DuckDB's own parse tree: a table can follow
+    many more words than FROM and JOIN, and its name can be a text such as E'pg\\x5fsettings'.
+    Without a tree the answer is yes."""
+    tree = json.loads(con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0])
+    if tree["error"]:
+        return True
+    nodes = [tree]
+    while nodes:  # not by recursion: a formula can nest deeper than Python goes
+        node = nodes.pop()
+        if isinstance(node, list):
+            nodes += node
+        elif isinstance(node, dict):
+            nodes += node.values()
+            name = ""
+            if node.get("type") == "BASE_TABLE":
+                name = node["table_name"]
+            elif node.get("type") == "TABLE_FUNCTION":
+                name = node["function"].get("function_name", "")
+            if _fold(name) in _BLOCKED_TABLES:
+                return True
+    return False
 
 
 def _same_reading(sql: str) -> bool:

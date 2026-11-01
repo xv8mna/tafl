@@ -280,6 +280,7 @@ def test_a_shadowed_round_cant_reach_a_later_project(tmp_path, registry):
 def test_functions_that_run_a_text_or_stay_in_force_are_refused(people):
     for formula in (
         "(SELECT a FROM json_execute_serialized_sql(json_serialize_sql('SELECT current_setting(''threads'') AS a')))",
+        "json_serialize_plan('SELECT current_setting(''threads'')', optimize := TRUE)",  # the value is in the plan
         "(SELECT COUNT(*) FROM enable_logging(storage = 'file', storage_path = 'x'))",
         "(SELECT COUNT(*) FROM enable_logging())",
         "(SELECT COUNT(*) FROM disable_logging())",
@@ -531,6 +532,103 @@ def test_a_formula_cant_read_settings_or_its_temp_folder(people, tmp_path, monke
     (tmp_path / ".tmp" / "inside.csv").write_text("a\n1\n", encoding="utf-8")
     with pytest.raises(ActionError, match="a formula can only use the data of the step"):
         expressions.evaluate(people, "(SELECT COUNT(*) FROM read_csv('.tmp/inside.csv'))")
+
+
+def test_a_formula_cant_read_the_settings_as_a_table(people):
+    """pg_settings shows the same as current_setting with a plain SELECT, in more ways of naming
+    it than the words of a formula show."""
+    for formula in (
+        "(SELECT setting FROM pg_settings WHERE name = 'temp_directory')",
+        "(SELECT setting FROM pg_catalog.pg_settings WHERE name = 'temp_directory')",
+        "(SELECT setting FROM system.pg_catalog.pg_settings WHERE name = 'temp_directory')",
+        "(SELECT setting FROM PG_Catalog.PG_Settings WHERE name = 'temp_directory')",
+        "(SELECT setting FROM \"pg_settings\" WHERE name = 'temp_directory')",
+        "(SELECT setting FROM \"PG_SETTINGS\" WHERE name = 'temp_directory')",
+        "(SELECT setting FROM [pg_settings] WHERE name = 'temp_directory')",
+        "(SELECT setting FROM 'pg_settings' WHERE name = 'temp_directory')",
+        r"(SELECT setting FROM E'pg\x5fsettings' WHERE name = 'temp_directory')",
+        "(SELECT setting FROM $$pg_settings$$ WHERE name = 'temp_directory')",
+        "(SELECT MAX(setting) FROM __input, pg_settings)",
+        "(SELECT 1 FROM __input POSITIONAL JOIN pg_settings LIMIT 1)",
+        "(SELECT 1 FROM __input JOIN /* a */ pg_settings ON TRUE LIMIT 1)",
+        "(FROM pg_settings SELECT MAX(setting))",
+        "(WITH t AS (FROM pg_settings) SELECT MAX(setting) FROM t)",
+        "EXISTS (FROM pg_settings)",
+        "(SELECT MAX(setting) FROM (TABLE pg_settings))",
+        "(SELECT MAX(max) FROM (SUMMARIZE pg_settings))",
+        "(SELECT COUNT(*) FROM (DESCRIBE pg_settings))",
+        "(SELECT COUNT(*) FROM (SHOW pg_settings))",
+        "(SELECT COUNT(*) FROM (UNPIVOT pg_settings ON name INTO NAME a VALUE b))",
+        "(SELECT COUNT(*) FROM (PIVOT pg_settings ON name IN ('temp_directory') USING FIRST(setting)))",
+    ):
+        with pytest.raises(ActionError, match="a formula can only use the data of the step"):
+            expressions.evaluate(people, formula)
+    with pytest.raises(ActionError, match="doesn't read this as one expression"):  # it needs a statement before it
+        expressions.evaluate(people, "(SELECT COUNT(*) FROM (PIVOT __input ON [Age] IN (SELECT setting FROM pg_settings)))")
+
+
+def test_a_table_named_by_a_text_is_refused(people):
+    """A text can be built at run time, so it can't be checked: what reads a table by a text can't run."""
+    for formula in (
+        "(SELECT COUNT(*) FROM histogram_values('pg_' || 'settings', setting))",
+        "(SELECT MAX(bin) FROM histogram_values('pg_settings', name, technique := 'sample'))",
+        "(SELECT COUNT(*) FROM histogram('pg_' || 'settings', setting))",
+        "(SELECT COUNT(*) FROM \"histogram_values\"('pg_settings', setting))",
+        "(SELECT COUNT(*) FROM [HISTOGRAM]('pg_settings', setting))",
+        "(SELECT COUNT(*) FROM system.main.histogram_values('pg_settings', setting))",
+        "(SELECT COUNT(*) FROM __input, LATERAL histogram_values('pg_settings', setting))",
+        "(SELECT COUNT(*) FROM histogram_values('__input', [Age]))",
+        "(SELECT COUNT(*) FROM histogram_values('(SELECT current_setting(''threads'') AS v)', v))",
+    ):
+        with pytest.raises(ActionError, match="a formula can only use the data of the step"):
+            expressions.evaluate(people, formula)
+
+
+def test_the_names_of_those_tables_stay_free_for_columns_and_texts():
+    frame = pl.DataFrame({"pg_settings": [1, 2], "histogram": [3, 4], "histogram_values": [5, 6], "note": ["pg_settings", "x"]})
+    for formula, expected in (
+        ("[pg_settings] + 1", [2, 3]),
+        ('"pg_settings" + 1', [2, 3]),
+        ("pg_settings + 1", [2, 3]),
+        ("PG_SETTINGS + 1", [2, 3]),
+        ("__input.pg_settings + 1", [2, 3]),
+        ("COALESCE([pg_settings], 0) + 1", [2, 3]),
+        ("(SELECT MAX(pg_settings) FROM __input)", [2, 2]),
+        ("[histogram] + [histogram_values]", [8, 10]),
+        ("histogram + histogram_values", [8, 10]),
+        ("[note] = 'pg_settings'", [True, False]),
+        ("[note] LIKE 'pg_%'", [True, False]),
+        ("'FROM pg_settings'", ["FROM pg_settings"] * 2),
+        ("CARDINALITY(HISTOGRAM([histogram]) OVER ())", [2, 2]),  # the normal function of that name
+        ("(SELECT CARDINALITY(HISTOGRAM(histogram)) FROM __input)", [2, 2]),
+        ("CARDINALITY(HISTOGRAM_EXACT([histogram], LIST_VALUE(3, 4)) OVER ())", [2, 2]),
+        ("CARDINALITY(LIST_HISTOGRAM(LIST_VALUE([note], [note])))", [1, 1]),
+    ):
+        assert expressions.evaluate(frame, formula).to_list() == expected, formula
+
+
+def test_catalog_views_show_only_the_table_of_the_formula(people):
+    assert expressions.evaluate(people.head(1), "(SELECT string_agg(table_name) FROM information_schema.tables)")[0] == "__input"
+    assert expressions.evaluate(people.head(1), "(SELECT COUNT(*) FROM pg_catalog.pg_type)")[0] > 0
+
+
+def test_every_formula_passes_through_the_tree_of_duckdb(people):
+    """It can be read for every statement that DuckDB reads, however deep. Where it can't, the answer is no."""
+    assert expressions.evaluate(people.head(1), "CASE WHEN TRUE THEN " * 400 + "1" + " END" * 400)[0] == 1
+    assert expressions._reads_blocked_table(expressions._connection(), "(SELECT")
+    assert not expressions._reads_blocked_table(expressions._connection(), "SELECT 1")
+
+
+def test_nothing_else_in_duckdb_leads_to_the_settings():
+    """An update of DuckDB can bring a new way: then it belongs in the blocked names."""
+    con = expressions._connection()
+    views = con.execute("SELECT DISTINCT view_name FROM duckdb_views() WHERE sql ILIKE '%setting%'").fetchall()
+    assert views == [("pg_settings",)]
+    macros = con.execute(
+        "SELECT DISTINCT function_name FROM duckdb_functions() WHERE function_type IN ('macro', 'table_macro') "
+        r"AND regexp_matches(macro_definition, '(?i)\b(query|query_table|histogram_values)\s*\(|setting')"
+    ).fetchall()
+    assert {name for name, in macros if not name.startswith(expressions._BLOCKED_PREFIXES)} == expressions._BLOCKED_TABLES - {"pg_settings"}
 
 
 def test_functions_of_extensions_and_unknown_types(people):
