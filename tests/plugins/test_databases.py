@@ -1,15 +1,40 @@
 import datetime as dt
 import decimal
 import os
+import random
 import sqlite3
+import time
 import uuid
 
 import polars as pl
 import pytest
 
-from tafl.api import ActionError, Context
+from tafl.api import ActionError, Context, unique_names
 from tafl.api.parameters import Fixed
 from tafl.core import Engine, Parameter, Project
+
+
+def test_unique_names_take_the_first_free_number():
+    assert unique_names(["a", "a", "a (2)", "a", "b", "a", "A"]) == ["a", "a (2)", "a (2) (2)", "a (3)", "b", "a (4)", "A"]
+    assert unique_names(["a (3)", "a", "a", "a", "a"]) == ["a (3)", "a", "a (2)", "a (4)", "a (5)"]
+    generator = random.Random(1)
+    for _ in range(500):
+        names = generator.choices(["a", "a (2)", "a (3)", "a (2) (2)", "b", ""], k=generator.randrange(1, 30))
+        seen: list[str] = []
+        for name in names:  # by the rule itself: each name counts up from 2
+            number = 1
+            while (candidate := name if number == 1 else f"{name} ({number})") in seen:
+                number += 1
+            seen.append(candidate)
+        assert unique_names(names) == seen, names
+
+
+def test_many_equal_names_take_no_long_time():
+    """All names of a file can be equal. Each name counted up from 2 again: 20,000 took 40 s."""
+    start = time.perf_counter()
+    names = unique_names(["a"] * 8_000)
+    assert time.perf_counter() - start < 2
+    assert names[:3] == ["a", "a (2)", "a (3)"] and names[-1] == "a (8000)"
 
 
 @pytest.fixture

@@ -477,12 +477,14 @@ def text_length(series: pl.Series) -> int:
 def unique_names(names: Sequence[str]) -> list[str]:
     """Make column names unique: ``id, id`` -> ``id, id (2)``."""
     seen: set[str] = set()
+    numbers: dict[str, int] = {}  # the last number of each name: all up to it are taken
     result = []
     for name in names:
-        candidate, number = name, 1
+        candidate, number = name, numbers.get(name, 1)
         while candidate in seen:
             number += 1
             candidate = f"{name} ({number})"
+        numbers[name] = number
         seen.add(candidate)
         result.append(candidate)
     return result
