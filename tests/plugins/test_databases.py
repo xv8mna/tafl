@@ -215,6 +215,83 @@ def test_an_import_from_a_share(project, registry, tmp_path):
     assert import_table(project, registry, table="orders").df.height == 2
 
 
+@pytest.fixture
+def program_limits():
+    """Puts back what a PRAGMA changes for the whole program. The tests use values that do no harm:
+    a hard_heap_limit of 1 would stop every later use of SQLite in this process."""
+    yield
+    with closing(sqlite3.connect(":memory:")) as con:
+        for pragma in ("hard_heap_limit = 0", "soft_heap_limit = 0", "temp_store_directory = ''", "data_store_directory = ''"):
+            con.execute(f"PRAGMA {pragma}")
+
+
+def _heap_limits() -> tuple[int, int]:
+    with closing(sqlite3.connect(":memory:")) as con:
+        return con.execute("PRAGMA hard_heap_limit").fetchone()[0], con.execute("PRAGMA soft_heap_limit").fetchone()[0]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "PRAGMA hard_heap_limit = 2000000000",
+        "pragma main.HARD_HEAP_LIMIT(2000000000)",
+        'PRAGMA "soft_heap_limit" = 2000000000',
+        "SELECT * FROM pragma_hard_heap_limit",
+        "SELECT * FROM pragma_soft_heap_limit",
+        "PRAGMA temp_store_directory = '{folder}'",
+        "PRAGMA data_store_directory = '{folder}'",
+        "PRAGMA wal_checkpoint",
+        "PRAGMA shrink_memory",
+        "PRAGMA optimize",
+        "PRAGMA writable_schema = ON",
+        "PRAGMA threads = 2",
+        "PRAGMA user_version = 5",
+        "PRAGMA journal_mode = DELETE",
+        "PRAGMA a_pragma_of_a_later_version",
+    ],
+)
+@pytest.mark.parametrize("mode", ["preview", "run"])
+def test_an_import_refuses_a_pragma_that_reaches_beyond_it(project, registry, tmp_path, program_limits, query, mode):
+    """A limit on the heap holds for the whole program, and with a small one every later use of
+    SQLite fails until the program ends: a rollback can't undo that."""
+    table = project.add_table("Pragma")
+    project.add_step(table, "db.import", {"connection": "db", "mode": "query", "query": query.format(folder=tmp_path)})
+    result = Engine(project, registry).evaluate(table.id, mode=mode)
+    assert result.first_error == "An import can use only PRAGMAs that read, such as table_info"
+    assert _heap_limits() == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("query", "column", "value"),
+    [
+        ("PRAGMA table_info(orders)", "name", "id"),
+        ("PRAGMA main.table_xinfo('orders')", "name", "id"),
+        ("PRAGMA TABLE_INFO = orders", "name", "id"),
+        ("SELECT * FROM pragma_table_info('orders')", "name", "id"),
+        ("SELECT p.name FROM sqlite_master AS m, pragma_table_info(m.name) AS p WHERE m.name = 'orders'", "name", "id"),
+        ("PRAGMA table_list", "name", "orders"),
+        ("PRAGMA table_list(orders)", "name", "orders"),
+        ("PRAGMA database_list", "name", "main"),
+        ("PRAGMA integrity_check", "integrity_check", "ok"),
+        ("PRAGMA quick_check(1)", "quick_check", "ok"),
+        ("PRAGMA user_version", "user_version", 0),
+        ("PRAGMA journal_mode", "journal_mode", "delete"),
+        ("PRAGMA encoding", "encoding", "UTF-8"),
+        ("SELECT page_count * page_size > 0 AS size FROM pragma_page_count, pragma_page_size", "size", 1),
+    ],
+)
+def test_pragmas_that_read_keep_working(project, registry, query, column, value):
+    result = import_table(project, registry, mode="query", query=query)
+    assert result.ok and value in result.df[column].to_list()
+
+
+def test_the_pragmas_that_read_are_all_known_to_sqlite():
+    with closing(sqlite3.connect(":memory:")) as con:
+        known = {name for (name,) in con.execute("SELECT name FROM pragma_pragma_list")}
+    assert databases._READING_PRAGMAS <= known
+    assert databases._PRAGMAS_WITH_ARGUMENT <= databases._READING_PRAGMAS
+
+
 def test_only_imports_are_read_only(project, registry, tmp_path):
     """A connection stays writable for all that writes, and a read-only one stays so whatever it runs."""
     context = StubContext(connections={"db": (registry.connectors["sqlite"], {"file": str(tmp_path / "data.db")})})

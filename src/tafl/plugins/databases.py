@@ -804,12 +804,13 @@ class SQLite(Connector):
         """Nothing is written, also not by the recovery after an interrupted change, which SQLite
         starts on the first read (a journal that came with the file can name any file to delete).
         A WAL database is read with its -wal file, which stays as it is. No ATTACH: SQLite opens
-        an attached file for writing, also from a read-only connection."""
+        an attached file for writing, also from a read-only connection. Only PRAGMAs that read."""
         path = ctx.resolve_path(settings.file)
         if not path.is_file():
             raise ActionError(f"SQLite file not found: {path}")
         connection = sqlite3.connect(_read_only_uri(path), uri=True, autocommit=False)
         connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
+        connection.set_authorizer(_authorize_reading)
         return connection
 
     def error_message(self, error):
@@ -824,6 +825,8 @@ class SQLite(Connector):
             )
         if code == "SQLITE_READONLY":
             return "The database can't be changed here: an import only reads, and a read-only file stays as it is"
+        if code == "SQLITE_AUTH":
+            return "An import can use only PRAGMAs that read, such as table_info"
         return text
 
     def list_tables(self, conn):
@@ -916,6 +919,31 @@ class SQLite(Connector):
         finally:
             conn.set_authorizer(None)
         return conn.total_changes - before
+
+
+# The PRAGMAs of a read-only connection. All others stay out, also those of later versions of SQLite:
+# they can act on the whole program, which a rollback doesn't undo (hard_heap_limit, soft_heap_limit,
+# threads), on files (temp_store_directory, data_store_directory, wal_checkpoint) or on the connection.
+_READING_PRAGMAS = frozenset({
+    "application_id", "auto_vacuum", "collation_list", "compile_options", "data_version", "database_list", "encoding",
+    "foreign_key_check", "foreign_key_list", "freelist_count", "function_list", "index_info", "index_list", "index_xinfo",
+    "integrity_check", "journal_mode", "module_list", "page_count", "page_size", "pragma_list", "quick_check",
+    "schema_version", "table_info", "table_list", "table_xinfo", "user_version",
+})  # fmt: skip
+# Those that an argument tells what to read. For the others it would be a new value.
+_PRAGMAS_WITH_ARGUMENT = frozenset({
+    "foreign_key_check", "foreign_key_list", "index_info", "index_list", "index_xinfo", "integrity_check", "quick_check",
+    "table_info", "table_list", "table_xinfo",
+})  # fmt: skip
+
+
+def _authorize_reading(action, name, argument, *_where):
+    """SQLite asks this for each part of a statement. A PRAGMA as a table (pragma_table_info('x'))
+    comes by here too, when it runs."""
+    if action != sqlite3.SQLITE_PRAGMA:
+        return sqlite3.SQLITE_OK
+    allowed = _READING_PRAGMAS if argument is None else _PRAGMAS_WITH_ARGUMENT
+    return sqlite3.SQLITE_OK if name.lower() in allowed else sqlite3.SQLITE_DENY
 
 
 def _read_only_uri(path: Path) -> str:
