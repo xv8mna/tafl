@@ -282,11 +282,25 @@ def test_without_the_line_of_rust_the_cause_is_a_guess():
     stopped = crash.Stopped([{"project": "Sales", "table": "Orders", "number": 2, "action": "Pivot", "free": None}])
     assert stopped.says("Tafl stopped") == (
         "Tafl stopped in table “Orders”, step 2 (Pivot) of project Sales, without a message. "
-        "The usual cause is too little memory."
+        "The usual cause is too little memory, or a damaged or unusual file."
     )
     assert crash.Stopped([]).says("The run stopped") == (
-        "The run stopped, without a message. The usual cause is too little memory."
+        "The run stopped, without a message. The usual cause is too little memory, or a damaged or unusual file."
     )
+
+
+def test_a_step_that_asks_for_more_than_there_is_is_named_as_such():
+    """A small file can claim a size no computer has: then little memory is not the cause."""
+    step = {"project": "Sales", "table": "Orders", "number": 2, "action": "Import", "free": 8 * 1024**3}
+    line = f"memory allocation of {512 * 1024**3} bytes failed"
+    assert crash.Stopped([step], line).says("The run stopped") == (
+        "The run stopped in table “Orders”, step 2 (Import) of project Sales: a step asked for 512.0 GB of memory at "
+        "once, and 8.0 GB was free when it started. The data can be too big for this computer, or a file is damaged "
+        "or unusual."
+    )
+    small = crash.Stopped([step], "memory allocation of 4096 bytes failed").says("The run stopped")
+    assert small.endswith(": the computer ran out of memory. 8.0 GB was free when the step started.")
+    assert crash.Stopped([], line).says("The run stopped") == "The run stopped: the computer ran out of memory."
 
 
 def test_a_name_in_a_report_can_t_look_like_a_line_of_the_log():
@@ -328,7 +342,7 @@ def test_a_run_that_ends_without_a_line(folder, plugins, tmp_path):
     assert ended.returncode == crash.CRASHED
     assert ended.stderr == (
         "Error: The run stopped in table “Orders”, step 2 (Ends) of project Sales, without a message. The usual cause "
-        "is too little memory. The steps after it did not run (exit code 0xc0000409).\n"
+        "is too little memory, or a damaged or unusual file. The steps after it did not run (exit code 0xc0000409).\n"
     )
 
 

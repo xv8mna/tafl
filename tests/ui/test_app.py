@@ -76,7 +76,7 @@ def test_the_startup_check_only_logs_why_the_program_ended(start, window, tmp_pa
     start()
     app_module._report_stopped(window, [crash.Stopped([])], dialogs=False)
     logged = (tmp_path / APP_FOLDER / f"{COMMAND}.log").read_text(encoding="utf-8")
-    assert f"{APP_NAME} stopped, without a message. The usual cause is too little memory." in logged
+    assert f"{APP_NAME} stopped, without a message. The usual cause is too little memory, or a damaged or unusual file." in logged
 
 
 def test_a_window_without_a_console_keeps_what_a_library_prints(start, monkeypatch):

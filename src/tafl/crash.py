@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -39,7 +40,7 @@ CRASHED = 3  # exit code of a run that ended without an error message
 _STOPPED = 130  # exit code of a run that Ctrl+C stopped
 _STATUS = 0xC0000000  # from here on, exit codes are the status of a Windows program that was ended
 _CHILD = "TAFL_RUN_CHILD"  # set for the child process of a run
-_NO_MEMORY = "memory allocation of"  # the start of the line Rust prints before it ends the program
+_NO_MEMORY = re.compile(r"memory allocation of (\d+)?")  # the start of the line Rust prints before it ends the program
 _STD_ERROR = 0xFFFFFFF4  # STD_ERROR_HANDLE
 _MEMINFO = Path("/proc/meminfo")
 
@@ -215,10 +216,17 @@ class Stopped:
             for step in self.steps
         )
         text = f"{what} in {places}" if places else what
-        if _NO_MEMORY not in self.errors:
-            return f"{text}, without a message. The usual cause is too little memory."
-        text += ": the computer ran out of memory."
+        found = _NO_MEMORY.search(self.errors)
+        if found is None:
+            return f"{text}, without a message. The usual cause is too little memory, or a damaged or unusual file."
         free = [step["free"] for step in self.steps if step.get("free") is not None]
+        asked = int(found[1] or 0)
+        if free and asked > min(free):  # more than the computer could give: not only what was left
+            return (
+                f"{text}: a step asked for {_gb(asked)} of memory at once, and {_gb(min(free))} was free when it "
+                "started. The data can be too big for this computer, or a file is damaged or unusual."
+            )
+        text += ": the computer ran out of memory."
         return f"{text} {_gb(min(free))} was free when the step started." if free else text
 
 
