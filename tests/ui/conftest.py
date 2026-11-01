@@ -43,7 +43,7 @@ def protected_view(qapp):
     """Projects open as in the app, and Tafl knows none yet."""
     qapp.setOrganizationName("Tafl Tests")
     settings = QSettings()
-    for key in (trust._DIGESTS, trust._PATHS, "recent"):
+    for key in (trust._VALUES, trust._PATHS, "recent"):
         settings.remove(key)
 
 

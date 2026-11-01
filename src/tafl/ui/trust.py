@@ -2,11 +2,13 @@
 but nothing is calculated, and none of its files or databases is touched, until it is trusted.
 
 The list is kept in the settings of this computer, not in the project file: a project can't answer
-for itself. It holds SHA-256 values of files (``Project.digest``), so a file that was changed
-elsewhere is unknown again. No widgets here."""
+for itself. A value on the list stands for the file (``Project.digest``) in its folder: a file that
+was changed elsewhere is unknown again, and so is a copy in another folder, where the project's
+relative paths point to other files. No widgets here."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,7 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings
 
 LIMIT = 1_000  # values kept, newest first
-_DIGESTS = "trusted_projects"
+_VALUES = "trusted_projects"
 _PATHS = "trusted_paths"  # the recent list when protected view came: see ``first_start``
 
 
@@ -25,15 +27,28 @@ def is_known(digest: str, path: str | Path) -> bool:
     paths = _read(_PATHS)
     if key in paths:
         _write(_PATHS, [other for other in paths if other != key])
-    elif digest not in _read(_DIGESTS):
+    elif _value(digest, path) not in _read(_VALUES):
         return False
-    add(digest)
+    add(digest, path)
     return True
 
 
-def add(digest: str) -> None:
-    """The file with this SHA-256 value is known from now on."""
-    _write(_DIGESTS, [digest, *(other for other in _read(_DIGESTS) if other != digest)][:LIMIT])
+def add(digest: str, path: str | Path) -> None:
+    """The file with this SHA-256 value at ``path`` is known from now on."""
+    value = _value(digest, path)
+    _write(_VALUES, [value, *(other for other in _read(_VALUES) if other != value)][:LIMIT])
+
+
+def drop(digest: str, path: str | Path) -> None:
+    """The file with this SHA-256 value at ``path`` is known no more."""
+    value = _value(digest, path)
+    _write(_VALUES, [other for other in _read(_VALUES) if other != value])
+
+
+def forget_path(path: str | Path) -> None:
+    """What ``first_start`` kept of ``path`` no longer holds: another file is there now."""
+    key = _path_key(path)
+    _write(_PATHS, [other for other in _read(_PATHS) if other != key])
 
 
 def first_start() -> None:
@@ -45,6 +60,11 @@ def first_start() -> None:
         recent = settings.value("recent", [])
         recent = [recent] if isinstance(recent, str) else list(recent or [])
         _write(_PATHS, [_path_key(path) for path in recent])
+
+
+def _value(digest: str, path: str | Path) -> str:
+    folder = os.path.dirname(_path_key(path))
+    return hashlib.sha256(f"{digest}\n{folder}".encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _path_key(path: str | Path) -> str:

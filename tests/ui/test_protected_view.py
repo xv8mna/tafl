@@ -354,7 +354,7 @@ def test_nothing_of_the_project_is_touched_until_it_is_trusted(window, session, 
         wait_a_moment(qtbot, session)
         assert recorder.hits == [] and started == [] and session.results == {}
         assert session.protected
-        assert trust._read(trust._DIGESTS) == []
+        assert trust._read(trust._VALUES) == []
 
     recorder = Recorder(monkeypatch)  # the engine is on its way again
     window.protected_bar.button.click()
@@ -399,6 +399,65 @@ def test_browse_doesnt_start_at_a_path_of_the_project(qtbot, session, tmp_path, 
     browse(True)
     browse(False)
     assert seen == [str(tmp_path), rf"{OUTSIDE}\in.csv"]
+
+
+def test_browse_in_the_window_knows_about_protected_view(window, session, outside, monkeypatch):
+    seen = []
+
+    def chosen(_parent, _title, start, _filter):
+        seen.append(start)
+        return "", ""
+
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", chosen)
+    session.open_project(outside)
+    table = session.project.find_table("csv.import 1")
+    session.select_table(table.id)
+    session.select_step(table.steps[0].id)
+
+    def browse():
+        window.settings_panel.form.findChildren(PathEditor)[0]._browse()
+
+    browse()
+    session.trust_project()  # the form follows
+    browse()
+    assert seen[0] == str(outside.parent) and reaches_outside(seen[1])
+
+
+def test_browse_in_the_connections_knows_about_protected_view(window, session, outside, monkeypatch, qtbot):
+    seen = []
+
+    def chosen(_parent, _title, start, _filter):
+        seen.append(start)
+        return "", ""
+
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", chosen)
+    session.open_project(outside)
+    dialog = ConnectionsDialog(session, window)
+    qtbot.addWidget(dialog)
+    dialog.list.setCurrentRow(1)
+    dialog._form.findChildren(PathEditor)[0]._browse()
+    dialog.reject()
+    assert seen == [str(outside.parent)]
+
+
+def test_find_shows_values_after_trust(window, session, tmp_path, settle, qtbot):
+    project = Project(parameters=[Parameter("Day", "=TODAY()")])
+    table = project.add_table("T")
+    project.add_step(table, "csv.export", {"file": "{Day}.csv"})
+    session.open_project(project.save(tmp_path / "day.tafl"))
+    window.show()
+    window.open_find()
+    wait_a_moment(qtbot, session)
+    before = window.find_panel._index
+    session.trust_project()
+    settle(session)
+    wait_a_moment(qtbot, session)
+    assert window.find_panel._index is not before  # searched again, with the value of Day
+
+
+def test_the_window_passes_on_what_it_is_told(window, session, demo):
+    assert window.open_path(demo, trusted=True)
+    assert not session.protected
 
 
 # --- run ---------------------------------------------------------------------------------------------
@@ -462,14 +521,39 @@ def test_a_file_that_changed_elsewhere_asks_again(session, demo, registry):
     assert session.protected
 
 
-def test_the_same_file_elsewhere_is_known(session, demo, tmp_path):
-    """A value of the bytes, not of a path."""
+def test_the_same_file_under_another_name_is_known(session, demo):
     session.open_project(demo)
     session.trust_project()
-    copy = tmp_path / "another name.tafl"
+    copy = demo.with_name("another name.tafl")
     copy.write_bytes(demo.read_bytes())
     session.open_project(copy)
     assert not session.protected
+
+
+def test_the_same_file_in_another_folder_asks(session, demo, tmp_path):
+    """Its relative paths point to other files there. The demo is public: anyone can send it with
+    data of their own."""
+    session.open_project(demo)
+    session.trust_project()
+    folder = tmp_path / "from elsewhere"
+    folder.mkdir()
+    copy = folder / demo.name
+    copy.write_bytes(demo.read_bytes())
+    session.open_project(copy)
+    assert session.protected
+    session.trust_project()
+    session.open_project(copy)
+    assert not session.protected
+    session.open_project(demo)  # and the first folder stays known
+    assert not session.protected
+
+
+def test_the_value_is_of_the_file_as_it_is_on_disk(session, demo):
+    """Not of the text that was read from it: a mark at the start of the file counts too."""
+    raw = b"\xef\xbb\xbf" + demo.read_bytes()
+    demo.write_bytes(raw)
+    session.open_project(demo)
+    assert session.project.digest == hashlib.sha256(raw).hexdigest()
 
 
 def test_a_project_cant_answer_for_itself(session, demo):
@@ -486,13 +570,51 @@ def test_saving_in_protected_view_adds_nothing(session, demo, tmp_path, registry
     session.open_project(demo)
     session.set_note(session.project.tables[0].steps[0].id, "edited")
     session.save_project()
-    assert session.protected and trust._read(trust._DIGESTS) == []
+    assert session.protected and trust._read(trust._VALUES) == []
     session.save_project(tmp_path / "other.tafl")
-    assert session.protected and trust._read(trust._DIGESTS) == []
+    assert session.protected and trust._read(trust._VALUES) == []
     for path in (demo, tmp_path / "other.tafl"):
         other = Session(registry)
         other.open_project(path)
         assert other.protected
+
+
+def test_a_save_in_protected_view_ends_what_the_recent_list_gave_that_path(session, demo, tmp_path, registry):
+    mine = tmp_path / "mine.tafl"
+    mine.write_bytes(demo.read_bytes().replace(b"demo", b"mine"))
+    QSettings().setValue("recent", [str(mine)])
+    trust.first_start()
+    session.open_project(demo)
+    assert session.protected
+    session.save_project(mine)
+    other = Session(registry)
+    other.open_project(mine)
+    assert other.protected
+
+
+def test_saves_of_one_project_take_one_place_on_the_list(session, demo, registry):
+    session.open_project(demo)
+    session.trust_project()  # the file as it was opened
+    step = session.project.tables[0].steps[0]
+    for number in range(5):
+        session.set_note(step.id, f"note {number}")
+        session.save_project()
+    assert len(trust._read(trust._VALUES)) == 2
+    other = Session(registry)
+    other.open_project(demo)
+    assert not other.protected
+
+
+def test_save_as_leaves_the_first_file_known(session, demo, tmp_path, registry):
+    session.open_project(demo)
+    session.trust_project()
+    session.set_note(session.project.tables[0].steps[0].id, "edited")
+    session.save_project()
+    copy = session.save_project(tmp_path / "elsewhere.tafl")
+    other = Session(registry)
+    for path in (demo, copy):
+        other.open_project(path)
+        assert not other.protected
 
 
 def test_trusting_after_a_save_in_protected_view_knows_the_file_as_saved(session, demo):
@@ -506,10 +628,10 @@ def test_trusting_after_a_save_in_protected_view_knows_the_file_as_saved(session
 
 def test_a_file_saved_by_a_trusted_window_is_known(session, demo, tmp_path, registry):
     session.open_project(demo, trusted=True)
-    assert trust._read(trust._DIGESTS) == []  # opened with trust, and nothing was written
+    assert trust._read(trust._VALUES) == []  # opened with trust, and nothing was written
     session.set_note(session.project.tables[0].steps[0].id, "edited")
     saved = session.save_project()
-    assert trust._read(trust._DIGESTS) == [hashlib.sha256(saved.read_bytes()).hexdigest()]
+    assert trust._read(trust._VALUES) == [trust._value(hashlib.sha256(saved.read_bytes()).hexdigest(), saved)]
     other = Session(registry)
     other.open_project(saved)
     assert not other.protected
@@ -522,30 +644,31 @@ def test_a_file_saved_by_a_trusted_window_is_known(session, demo, tmp_path, regi
 
 
 def test_the_list_of_known_files_keeps_the_newest(qapp):
-    full = [f"{number:064x}" for number in range(trust.LIMIT)]
-    trust._write(trust._DIGESTS, full)
-    trust.add("new")
-    assert trust._read(trust._DIGESTS) == ["new", *full[:-1]]
-    trust.add(full[-2])  # known again: first, once
-    assert trust._read(trust._DIGESTS) == [full[-2], "new", *full[:-2]]
+    full = [trust._value(f"{number:064x}", "here") for number in range(trust.LIMIT)]
+    trust._write(trust._VALUES, full)
+    trust.add("new", "here")
+    new = trust._value("new", "here")
+    assert trust._read(trust._VALUES) == [new, *full[:-1]]
+    trust.add(f"{trust.LIMIT - 2:064x}", "here")  # known again: first, once
+    assert trust._read(trust._VALUES) == [full[-2], new, *full[:-2]]
 
 
 def test_opening_a_known_file_keeps_it_on_the_list(session, demo):
     session.open_project(demo)
     session.trust_project()
-    digest = session.project.digest
-    trust._write(trust._DIGESTS, [*(f"{number:064x}" for number in range(trust.LIMIT - 1)), digest])  # next to go
+    value = trust._value(session.project.digest, demo)
+    trust._write(trust._VALUES, [*(f"{number:064x}" for number in range(trust.LIMIT - 1)), value])  # next to go
     session.open_project(demo)
-    assert trust._read(trust._DIGESTS)[0] == digest
+    assert trust._read(trust._VALUES)[0] == value
 
 
 @pytest.mark.parametrize("value", ["no list", '{"a": 1}', "[1, 2]", ""])
 def test_a_list_that_can_t_be_read_knows_nothing(session, demo, value):
-    QSettings().setValue(trust._DIGESTS, value)
+    QSettings().setValue(trust._VALUES, value)
     session.open_project(demo)
     assert session.protected
     session.trust_project()
-    assert trust._read(trust._DIGESTS) == [session.project.digest]
+    assert trust._read(trust._VALUES) == [trust._value(session.project.digest, demo)]
 
 
 # --- the first start ---------------------------------------------------------------------------------
@@ -563,7 +686,7 @@ def test_the_recent_list_counts_once_at_the_first_start(session, demo, tmp_path,
 
     session.open_project(demo)  # a project of the recent list opens as before, and its value is known now
     assert not session.protected
-    assert trust._read(trust._DIGESTS) == [session.project.digest]
+    assert trust._read(trust._VALUES) == [trust._value(session.project.digest, demo)]
     session.open_project(demo)
     assert not session.protected
 
@@ -572,6 +695,14 @@ def test_the_recent_list_counts_once_at_the_first_start(session, demo, tmp_path,
     assert session.protected
 
     session.open_project(other)
+    assert not session.protected
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows doesn't tell upper case from lower case")
+def test_a_recent_path_counts_in_any_case(session, demo):
+    QSettings().setValue("recent", [str(demo).upper()])
+    trust.first_start()
+    session.open_project(demo)
     assert not session.protected
 
 
@@ -612,7 +743,7 @@ def test_the_app_makes_the_copy_and_opens_a_project_in_protected_view(qapp, monk
     qapp.setOrganizationName(APP_NAME)  # what the app reads
     qapp.setApplicationName(APP_NAME)
     settings = QSettings()
-    settings.remove(trust._DIGESTS)
+    settings.remove(trust._VALUES)
     settings.remove(trust._PATHS)
     settings.setValue("recent", [str(other)])
     demo.write_bytes(demo.read_bytes() + b"\n")

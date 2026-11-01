@@ -97,6 +97,7 @@ class Session(QObject):
         self._redo: list[dict[str, Any]] = []
         self._stamp: tuple[int, int] | None = None  # the project file as it was opened or saved
         self._digest = ""  # its SHA-256 then: what trusting the project adds to the list of known files
+        self._saved: tuple[str, Path] | None = None  # what the last save added to that list
         self._stopping = False
         self.run_seconds: float | None = None  # how long the last run took
         self._run_done: dict[str, TableResult] = {}  # the tables the latest run has calculated so far
@@ -163,8 +164,13 @@ class Session(QObject):
             raise
         self._stamp = _stamp(saved)
         self._digest = self.project.digest
-        if not self.protected:  # a file this window wrote: saving in protected view makes nothing known
-            trust.add(self._digest)
+        if self.protected:  # saving in protected view makes nothing known, whatever was at that path
+            trust.forget_path(saved)
+        else:  # a file this window wrote; the state it replaces in that file takes no place on the list
+            if self._saved is not None and self._saved[1] == saved:
+                trust.drop(*self._saved)
+            trust.add(self._digest, saved)
+            self._saved = self._digest, saved
         self._set_dirty(False)
         if before is not None:
             self._rebase_history(old_dir, target.parent)
@@ -189,7 +195,7 @@ class Session(QObject):
     def trust_project(self) -> None:
         """"Trust this project": its file counts as known, and the project works as always."""
         if self.protected:
-            trust.add(self._digest)
+            trust.add(self._digest, self.project.path)
             self.engine.protected = False
             self.calculate_now()
             self.protected_changed.emit(False)
@@ -198,6 +204,7 @@ class Session(QObject):
         self._worker.cancel()
         self._stamp = None
         self._digest = project.digest
+        self._saved = None
         self.project = project
         self.engine = Engine(project, self.registry, self.engine.cache)
         self.engine.protected = protected
