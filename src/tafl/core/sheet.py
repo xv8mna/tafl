@@ -17,12 +17,11 @@ from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 from typing import Any, NamedTuple
-from xml.sax.saxutils import escape
 
 import polars as pl
 import xlsxwriter
 
-from tafl.api import Action, ActionError, Cancelled, Context, files, unique_names
+from tafl.api import Action, ActionError, Cancelled, Context, files, unique_names, xlsx
 
 BLOCK = 256  # rows of a column read at a time for the grid
 MAX_CELLS = 40_000_000  # the peak memory of a paste grows with the text: this protects the PC
@@ -56,10 +55,7 @@ _PROTECTED_PARTS = 1 << 17  # pieces of text kept apart at most: a Python string
 _NAME_SPACES = str.maketrans("\r\n\t", "   ")
 
 _XLSX_ROWS, _XLSX_COLUMNS, _XLSX_TEXT = 1_048_575, 16_384, 32_767  # below the names; characters in a cell
-_XLSX_RICH_TEXT = 1 << 20  # what xlsxwriter may get for a cell: the XML of the longest cell fits
 _XLSX_PART = 50_000  # cells written between two looks at the Stop button
-_XLSX_ESCAPE = re.compile(r"_(?=x[0-9a-fA-F]{4}[_\x00-\x08\x0b-\x1f])")  # a control character gets a _ of its own
-_XLSX_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f]")
 _XLSX_ROWS_SHARE = 0.9  # of the time: the rest is for packing the file, and a Stop waits for its end
 _XLSX_CELL_BYTES, _XLSX_ROW_BYTES = 50, 40  # in the sheet's XML, without the text
 _XLSX_BIG = 3 << 29  # bytes of XML, 1.5 GB: the zip format needs its 64-bit extension from 2 GB on
@@ -887,8 +883,8 @@ def _write_xlsx(
             },
         )
         sheet = book.add_worksheet("Sheet1")
-        sheet.xls_strmax = _XLSX_RICH_TEXT  # format_problem has looked at the length of the cells
-        sheet._escape_control_characters = _xlsx_escaped
+        sheet.xls_strmax = xlsx.RICH_TEXT  # format_problem has looked at the length of the cells
+        sheet._escape_control_characters = xlsx.escaped
         try:
             if _big_xml(frame):
                 book.use_zip64()  # only then: Excel may offer to repair such a file
@@ -897,13 +893,13 @@ def _write_xlsx(
             sheet.ignore_errors({"number_stored_as_text": f"A1:XFD{height + 1}"})  # no green corners
             bold = book.add_format({"bold": True})
             for column, name in enumerate(frame.columns):
-                sheet.write_string(0, column, _xlsx_text(name), bold)
+                sheet.write_string(0, column, xlsx.cell_text(name), bold)
             part = max(_XLSX_PART // width, 1)
             for start in range(0, height, part):
                 for row, values in enumerate(frame.slice(start, part).iter_rows(), start + 1):
                     for column, value in enumerate(values):
                         if value is not None:
-                            sheet.write_string(row, column, _xlsx_text(value))
+                            sheet.write_string(row, column, xlsx.cell_text(value))
                 if cancelled is not None and cancelled():
                     raise Cancelled()
                 if progress is not None:
@@ -917,23 +913,6 @@ def _write_xlsx(
             sheet.row_data_fh.close()
     if progress is not None:
         progress(1.0)
-
-
-def _xlsx_text(value: str) -> str:
-    """The text as xlsxwriter must get it. With ``constant_memory``, it writes a string from <r> to
-    </r> into the file as it is, as its own XML of rich text. Such a text goes in as that XML: one
-    run of plain text, with its characters escaped, which every program reads as the text."""
-    return f"<r><t>{escape(value)}</t></r>" if value.startswith("<r>") and value.endswith("</r>") else value
-
-
-def _xlsx_escaped(data: Any) -> Any:
-    """As xlsxwriter's method, which misses the second of two escapes that share a _, as in
-    _x1200_x1600_: a program that reads the file would turn it into another character."""
-    if not isinstance(data, str):
-        return data
-    data = _XLSX_ESCAPE.sub("_x005F_", data)
-    data = _XLSX_CONTROL.sub(lambda found: f"_x{ord(found[0]):04X}_", data)
-    return data.replace("￾", "_xFFFE_").replace("￿", "_xFFFF_")
 
 
 def _big_xml(frame: pl.DataFrame) -> bool:

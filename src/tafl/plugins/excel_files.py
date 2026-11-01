@@ -46,7 +46,7 @@ _TABLE_STYLES = [
 _INTEGER_TYPES = (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
 # Cells with only a time are date-times on Excel's day 0
 _DAY_ZERO = [dt.date(1899, 12, 30), dt.date(1899, 12, 31), dt.date(1904, 1, 1)]
-_MAX_ROWS, _MAX_COLUMNS, _MAX_TEXT = 1_048_575, 16_384, 32_767  # below the header row; characters in a cell
+_MAX_ROWS, _MAX_COLUMNS = 1_048_575, 16_384  # below the header row
 
 
 def _migrate_import(params: dict, from_version: int) -> dict:
@@ -299,6 +299,9 @@ def export_excel(df, p, ctx):
     percentages, dd.mm.yyyy for dates. Excel shows them in your regional style. Binary values
     are written as hex text (0x0102FF). A sheet holds up to 1,048,575 rows below its header
     and 32,767 characters in a cell.
+
+    Text stays text, exactly as it is: =1+1 is no formula, and a web address is no clickable
+    link in the file.
     """
     path = ctx.resolve_path(p.file)
     suffix = path.suffix.lower()
@@ -324,7 +327,7 @@ def export_excel(df, p, ctx):
             "the file must exist, and 'If the file exists' must be 'Replace only this sheet'"
         )
     data = _excel_values(df)
-    long = sum(int((data[c].str.len_chars() > _MAX_TEXT).sum()) for c, t in data.schema.items() if t == pl.String)
+    long = sum(int((data[c].str.len_chars() > xlsx.MAX_TEXT).sum()) for c, t in data.schema.items() if t == pl.String)
     rows = f"{df.height:,} row{'s' if df.height != 1 else ''}"
     if into_sheet:
         replaced = xlsx.replace_sheet(path, sheet, lambda book: _write(data, book, sheet, p), ctx.warn)
@@ -341,7 +344,7 @@ def export_excel(df, p, ctx):
         ctx.log(f"Wrote {rows} to {path} (sheet '{sheet}')")
     if long:
         texts = "1 text was" if long == 1 else f"{long:,} texts were"
-        ctx.warn(f"{texts} cut to {_MAX_TEXT:,} characters, the most an Excel cell holds")
+        ctx.warn(f"{texts} cut to {xlsx.MAX_TEXT:,} characters, the most an Excel cell holds")
 
 
 def _excel_values(df: pl.DataFrame) -> pl.DataFrame:
@@ -356,20 +359,19 @@ def _excel_values(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _write(df: pl.DataFrame, workbook, sheet: str, p) -> None:
-    """Writes the table to a new workbook (a file, or an xlsxwriter workbook) as an Excel table."""
-    if df.width == 0:  # e.g. a folder import without files: an empty sheet, as the CSV export writes an empty file
-        book = workbook if isinstance(workbook, xlsxwriter.Workbook) else xlsxwriter.Workbook(str(workbook))
-        book.add_worksheet(sheet)
-        if book is not workbook:
-            book.close()
-        return
+    """Writes the table to a new workbook (a file, or an xlsxwriter workbook) as an Excel table. A
+    table without columns, e.g. of a folder import without files, gives an empty sheet, as the CSV
+    export writes an empty file."""
+    own = not isinstance(workbook, xlsxwriter.Workbook)
+    book = xlsxwriter.Workbook(str(workbook), xlsx.BOOK_OPTIONS) if own else workbook
     dtype_formats: dict = {pl.Date: p.date_format, pl.Datetime: p.datetime_format, pl.Duration: "[h]:mm:ss"}
     dtype_formats |= {t: p.integer_format for t in _INTEGER_TYPES}
     dtype_formats |= {pl.Float32: p.number_format, pl.Float64: p.number_format, pl.Decimal: p.number_format}
-    column_formats = {row.column: row.format for row in p.column_formats if row.column and row.format}
-    df.write_excel(
-        workbook=workbook,
-        worksheet=sheet,
+    xlsx.write_frame(
+        df,
+        book,
+        sheet,
+        column_formats={row.column: row.format for row in p.column_formats if row.column and row.format},
         table_name=_table_name(sheet),
         table_style=None if p.table_style == "none" else p.table_style,
         header_format={"bold": True} if p.bold_header else None,
@@ -377,8 +379,9 @@ def _write(df: pl.DataFrame, workbook, sheet: str, p) -> None:
         autofit=p.autofit,
         freeze_panes="A2" if p.freeze_header else None,
         dtype_formats=dtype_formats,
-        column_formats=column_formats or None,
     )
+    if own:
+        book.close()
 
 
 def _table_name(sheet: str) -> str:

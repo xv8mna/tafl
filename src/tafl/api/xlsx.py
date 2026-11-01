@@ -1,4 +1,9 @@
-"""Writing one sheet into an existing Excel workbook (.xlsx, .xlsm): everything else stays.
+"""Writing a table to an Excel sheet with its text as text, and one sheet into an existing Excel
+workbook (.xlsx, .xlsm): everything else stays.
+
+``write_frame`` writes a table with each text and each column name as a string, exactly as it
+is. ``cell_text`` and ``escaped`` are what xlsxwriter must get for that, also when it writes a
+sheet row by row.
 
 An Excel file is a zip of XML parts. ``replace_sheet`` lets xlsxwriter write the new sheet
 into an empty workbook and moves that sheet and its Excel table into the existing workbook:
@@ -30,16 +35,25 @@ import shutil
 import zipfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 from urllib.parse import unquote
 from xml.sax.saxutils import escape
 
+import polars as pl
 from lxml import etree
 from xlsxwriter import Workbook
+from xlsxwriter.sharedstrings import SharedStrings
+from xlsxwriter.worksheet import Worksheet
 
 from .errors import ActionError
 from .files import _scratch_folder, read_error, replace_file
 
+MAX_TEXT = 32_767  # characters in a cell
+RICH_TEXT = 1 << 20  # what xlsxwriter may get for a cell: the XML of the longest cell fits
+BOOK_OPTIONS = {"strings_to_formulas": False, "strings_to_urls": False, "nan_inf_to_errors": True}
+
+_ESCAPE = re.compile(r"_(?=x[0-9a-fA-F]{4}[_\x00-\x08\x0b-\x1f])")  # a control character gets a _ of its own
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f]")
 _MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _PACKAGE = "http://schemas.openxmlformats.org/package/2006/relationships"
 _DOCUMENT = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -77,6 +91,54 @@ _BEFORE_CALC = (
 )  # fmt: skip
 
 
+def write_frame(
+    frame: pl.DataFrame, book: Workbook, sheet: str, column_formats: dict[str, str] | None = None, **options
+) -> None:
+    """Adds the sheet to the workbook, with the frame as an Excel table: ``DataFrame.write_excel``
+    with its ``options``. By itself, that makes a formula from a text like {=1+1} and a link from
+    a text like http://... (or an empty cell, when the sheet has too many links or the address is
+    too long), and it takes a text from <r> to </r> for XML. Here each text and each column name
+    is a string, exactly as it is, cut to ``MAX_TEXT`` characters. So no address is clickable."""
+    target = book.add_worksheet(sheet)
+    target.xls_strmax = RICH_TEXT  # the cut comes before ``cell_text``, whose XML is longer than the text
+    target.add_write_handler(str, _write_text)
+    if not frame.width:
+        return
+    names = [name[:MAX_TEXT] for name in frame.columns]
+    headers = dict(zip(frame.columns, map(cell_text, names)))  # add_table writes these without the handler
+    formats = {headers.get(column, column): code for column, code in (column_formats or {}).items()}
+    frame.rename(headers).write_excel(workbook=book, worksheet=target, column_formats=formats, **options)
+    for table in target.tables:  # its list of columns needs the names themselves, in the form of a cell's text
+        for column, name in zip(table["columns"], names):
+            column["name"] = escaped(name)
+
+
+def _write_text(sheet: Worksheet, row: int, column: int, value: str, cell_format: Any = None) -> int | None:
+    """What xlsxwriter's ``write`` does with a text. An empty text goes on its usual way (None):
+    an empty cell."""
+    return sheet.write_string(row, column, cell_text(value[:MAX_TEXT]), cell_format) if value else None
+
+
+def cell_text(value: str) -> str:
+    """The text as xlsxwriter must get it. It writes a string from <r> to </r> into the file as it
+    is, as its own XML of rich text. Such a text goes in as that XML: one run of plain text, with
+    its characters escaped, which every program reads as the text."""
+    return f"<r><t>{escape(value)}</t></r>" if value.startswith("<r>") and value.endswith("</r>") else value
+
+
+def escaped(data: Any) -> Any:
+    """As xlsxwriter's method, which misses the second of two escapes that share a _, as in
+    _x1200_x1600_: a program that reads the file would turn it into another character."""
+    if not isinstance(data, str):
+        return data
+    data = _ESCAPE.sub("_x005F_", data)
+    data = _CONTROL.sub(lambda found: f"_x{ord(found[0]):04X}_", data)
+    return data.replace("\ufffe", "_xFFFE_").replace("\uffff", "_xFFFF_")
+
+
+SharedStrings._escape_control_characters = staticmethod(escaped)  # its object only exists while a workbook closes
+
+
 def replace_sheet(
     target: Path, sheet: str, write: Callable[[Workbook], object], warn: Callable[[str], None] | None = None
 ) -> str | None:
@@ -89,11 +151,11 @@ def replace_sheet(
     ``warn`` is told so. A sheet with pivot tables, slicers or timelines of its own is not
     replaced (an ActionError): Excel connects them with other parts of the workbook.
 
-    ``write`` gets an empty xlsxwriter workbook (with the target's date system; text that
-    starts with = stays text) and adds one sheet to it, e.g. with
-    ``df.write_excel(workbook=book, worksheet=sheet)``. The target is replaced only when all
-    is written (see ``files.replace_file``); until then the new file is next to it, with a name
-    starting with ~$.
+    ``write`` gets an empty xlsxwriter workbook (with the target's date system) and adds one
+    sheet to it, with ``write_frame``: this function copies what the sheet's parts hold, and a
+    text that xlsxwriter took for XML would become XML of the workbook. The target is replaced
+    only when all is written (see ``files.replace_file``); until then the new file is next to
+    it, with a name starting with ~$.
     """
     with replace_file(target, warn) as temporary:
         try:
@@ -106,8 +168,7 @@ def replace_sheet(
             book = _Package(archive)
             replacement = _Replacement(book, sheet)
             written = Path(folder) / "sheet.xlsx"
-            options = {"date_1904": replacement.date_1904, "strings_to_formulas": False, "nan_inf_to_errors": True}
-            new = Workbook(str(written), options)
+            new = Workbook(str(written), {**BOOK_OPTIONS, "date_1904": replacement.date_1904})
             try:
                 write(new)
             except BaseException:

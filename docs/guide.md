@@ -1978,6 +1978,8 @@ way:
 - A sheet holds 1,048,575 rows below its header: a bigger table stops the export (filter it, or
   export to CSV). Texts longer than 32,767 characters are cut, with a warning.
 - A sheet name has at most 31 characters, without `[ ] : * ? / \`.
+- Text stays text, exactly as it is, in the cells and in the column names: `=1+1` is text and no
+  formula, and a web address is text and no clickable link.
 
 ### Replace only one sheet
 

@@ -180,7 +180,7 @@ def test_a_failed_export_leaves_the_old_file(act, tmp_path, monkeypatch):
     before = path.read_bytes()
 
     def broken(self, workbook=None, **options):
-        Path(workbook).write_bytes(b"PK")
+        Path(workbook.filename).write_bytes(b"PK")
         raise pl.exceptions.InvalidOperationError("broken")
 
     monkeypatch.setattr(pl.DataFrame, "write_excel", broken)
