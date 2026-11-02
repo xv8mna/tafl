@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QStringListModel, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QCompleter,
@@ -29,8 +29,10 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QScrollBar,
     QSizePolicy,
     QSplitter,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -169,6 +171,13 @@ class _Canvas(QGraphicsView):
         font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
         self.setFont(font)
         self.viewport().setFont(font)
+        for bar in (self.horizontalScrollBar(), self.verticalScrollBar()):
+            # By the user only (a drag, a click, a key), before the bar takes the new position
+            bar.actionTriggered.connect(lambda _action, bar=bar: self._scrolled(bar))
+
+    def _scrolled(self, bar: QScrollBar) -> None:
+        if bar.sliderPosition() != bar.value():  # a key at the end of the bar moves nothing
+            self.map_view.auto_fit = False
 
     def zoom(self, factor: float) -> None:
         current = self.transform().m11()
@@ -418,7 +427,9 @@ class MapView(QWidget):
         self.group_nodes: dict[str, GroupNode] = {}  # collapsed groups
         self.edges: list[Edge] = []
         self.frames: dict[str, GroupFrame] = {}  # expanded groups
-        self.auto_fit = True  # fit the map into the window until the user zooms, pans, drags or jumps
+        # Fit the map into the window until the user zooms, pans, drags or jumps: True for the
+        # overview, "all" after Show all
+        self.auto_fit: bool | str = True
         self._saving = False
         self._grabbed: Box | None = None
         self._drag_frames: dict[str, QRectF] = {}  # the group frames as they were when a drag began
@@ -805,29 +816,34 @@ class MapView(QWidget):
         return any(e.link.step == step_id and e.lit for e in self.edges)
 
     def fit(self, overview: bool = False) -> None:
-        """The whole project in the window (at most 100%). ``overview`` (the automatic fit) doesn't
-        zoom out below 30%: a bigger project shows its beginning, top left."""
+        """The whole project in the window (at most 100%). ``overview`` (the automatic fit before a
+        Show all) doesn't zoom out below 30%: a bigger project shows its beginning, top left."""
         bounds = self.scene.itemsBoundingRect()
         viewport = self.canvas.viewport().rect()
         if bounds.isEmpty() or viewport.width() < 50 or viewport.height() < 50:
             return
+        if not overview:  # from now on all of it, also when the bars go and the viewport grows
+            self.auto_fit = "all"
         self._show(bounds, 1.0, 0.3 if overview else _MIN_ZOOM)
 
     def refit(self) -> None:
         if self.auto_fit:
-            self.fit(overview=True)
+            self.fit(overview=self.auto_fit != "all")
 
     def _show(self, rect: QRectF, max_scale: float, min_scale: float = _MIN_ZOOM) -> None:
         """Zoom so that ``rect`` fills the window, within the limits; if it doesn't fit, show its
         top left part."""
         margin = 40
-        # The room without scroll bars: a scale that follows them could need a bar, and then not
-        # need it, and the fit (on every resize of the viewport) would go on for ever.
-        viewport = QRect(QPoint(0, 0), self.canvas.maximumViewportSize())
-        scale = min(viewport.width() / (rect.width() + 2 * margin), viewport.height() / (rect.height() + 2 * margin))
+        # The room with both scroll bars, shown or not: a scale that follows them could need a bar,
+        # and then not need it, and the fit (on every resize of the viewport) would go on for ever.
+        extent = QStyle.PixelMetric.PM_ScrollBarExtent
+        bar = self.canvas.style().pixelMetric(extent, None, self.canvas.verticalScrollBar())
+        room = self.canvas.maximumViewportSize() - QSize(bar, bar)
+        scale = min(room.width() / (rect.width() + 2 * margin), room.height() / (rect.height() + 2 * margin))
         scale = min(max(scale, min_scale), max_scale)
         self.canvas.resetTransform()
         self.canvas.scale(scale, scale)
+        viewport = self.canvas.viewport().rect()
         width, height = viewport.width() / scale, viewport.height() / scale
         center = rect.center()
         if width < rect.width() + 2 * margin:
@@ -1137,7 +1153,8 @@ class MapView(QWidget):
         menu.addSeparator()
         menu.addAction("Rename…\tF2", lambda: self.rename_table(table_id))
         menu.addAction("Duplicate", lambda: self.session.duplicate_table(table_id))
-        menu.addAction("Run this table", lambda: self.session.run_project([table_id]))
+        run = menu.addAction("Run this table", lambda: self.session.run_project([table_id]))
+        run.setEnabled(not self.session.running)
         menu.addSeparator()
         menu.addAction("Delete…\tDel", lambda: self.delete_tables(selected))
         menu.exec(screen_pos)

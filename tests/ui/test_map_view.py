@@ -1,3 +1,4 @@
+import pytest
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtTest import QTest
 
@@ -133,3 +134,155 @@ def test_the_automatic_fit_ends_in_a_wide_low_window(window, settle, session, de
             if canvas.transform().m11() > 0.3001:  # at the lower limit of the fit a project can be too big
                 seen = canvas.mapToScene(canvas.viewport().rect()).boundingRect()
                 assert seen.contains(view.scene.itemsBoundingRect()), (width, height)  # the margin takes the bars
+
+
+def chain_of_tables(registry, tmp_path, count=12):
+    (tmp_path / "a.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    project = Project(name="Chain")
+    before = project.add_table("T0")
+    project.add_step(before, registry.actions["csv.import"], {"file": "a.csv"})
+    for number in range(1, count):
+        table = project.add_table(f"T{number}")
+        project.add_step(table, registry.actions["table.derive"], {"table": before.id})
+        before = table
+    return project.save(tmp_path / "chain.tafl")
+
+
+def test_show_all_stays_when_the_automatic_fit_showed_a_part(window, settle, session, registry, tmp_path, qapp):
+    """The bars go when the scale gets smaller, and the automatic fit that the bigger viewport
+    starts must not take the scale back to its lower limit."""
+    view = open_map(window, session, chain_of_tables(registry, tmp_path), settle)
+    window.show()
+    window.resize(1366, 728)
+    qapp.processEvents()
+    canvas = view.canvas
+    assert view.auto_fit
+    assert not canvas.mapToScene(canvas.viewport().rect()).boundingRect().contains(view.scene.itemsBoundingRect())
+    view.fit()
+    qapp.processEvents()
+    assert canvas.mapToScene(canvas.viewport().rect()).boundingRect().contains(view.scene.itemsBoundingRect())
+
+
+def test_show_all_stays_in_force_when_the_window_changes_size(window, settle, session, registry, tmp_path, qapp):
+    """As the automatic fit before it, until a zoom or a move: also in a smaller window."""
+    view = open_map(window, session, chain_of_tables(registry, tmp_path), settle)
+    window.show()
+    window.resize(1366, 728)
+    qapp.processEvents()
+    view.fit()
+    canvas = view.canvas
+    for width, height in ((1000, 600), (1600, 900), (900, 560)):
+        window.resize(width, height)
+        qapp.processEvents()
+        seen = canvas.mapToScene(canvas.viewport().rect()).boundingRect()
+        assert seen.contains(view.scene.itemsBoundingRect()), (width, height)
+
+
+def grouped_chains(registry, tmp_path):
+    (tmp_path / "a.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    project = Project(name="Groups")
+    for g in range(3):
+        group = project.add_group(f"G{g}")
+        before = project.add_table(f"G{g}T0")
+        project.add_step(before, registry.actions["csv.import"], {"file": "a.csv"})
+        before.group = group.id
+        for number in range(1, 8):
+            table = project.add_table(f"G{g}T{number}")
+            project.add_step(table, registry.actions["table.derive"], {"table": before.id})
+            table.group = group.id
+            before = table
+    return project.save(tmp_path / "groups.tafl")
+
+
+def all_in_view(view):
+    canvas = view.canvas
+    return canvas.mapToScene(canvas.viewport().rect()).boundingRect().contains(view.scene.itemsBoundingRect())
+
+
+def test_show_all_stays_in_force_when_groups_close_and_open(window, settle, session, registry, tmp_path, qapp):
+    """A map with other boxes gets the scale for them, not the one it had."""
+    view = open_map(window, session, grouped_chains(registry, tmp_path), settle)
+    window.show()
+    window.resize(1366, 728)
+    qapp.processEvents()
+    assert not all_in_view(view)  # the automatic fit: 30 % at least
+    view.fit()
+    qapp.processEvents()
+    small = view.canvas.transform().m11()
+    assert all_in_view(view)
+    view.group_bar.collapse_all.click()
+    view.rebuild()
+    qapp.processEvents()
+    assert all_in_view(view) and view.canvas.transform().m11() > small
+    view.group_bar.collapse_all.click()  # Expand all
+    view.rebuild()
+    qapp.processEvents()
+    assert all_in_view(view) and view.canvas.transform().m11() == pytest.approx(small)
+
+
+@pytest.mark.parametrize("move", ["bar", "key"])
+def test_a_move_with_a_scroll_bar_or_a_key_ends_show_all(window, settle, session, registry, tmp_path, qapp, move):
+    """As a drag of the background does: the next change of the map must not take the view back."""
+    view = open_map(window, session, grouped_chains(registry, tmp_path), settle)
+    window.show()
+    window.resize(1366, 728)
+    qapp.processEvents()
+    view.fit()
+    qapp.processEvents()
+    canvas = view.canvas
+    across, down = canvas.horizontalScrollBar(), canvas.verticalScrollBar()
+    bar = down if down.maximum() > down.value() else across
+    assert view.auto_fit == "all" and bar.maximum() > bar.value()
+    if move == "bar":
+        bar.setSliderPosition(bar.maximum())  # as a drag of the handle
+    else:
+        canvas.setFocus()
+        QTest.keyClick(canvas, Qt.Key.Key_PageDown if bar is down else Qt.Key.Key_Right)
+    moved = bar.value()
+    assert not view.auto_fit
+    session.rename_table(session.project.tables[0].id, "First")
+    view.rebuild()
+    qapp.processEvents()
+    assert bar.value() == moved
+
+
+def test_a_key_that_cannot_move_the_map_keeps_show_all(window, settle, session, registry, tmp_path, qapp):
+    """At the end of the bar (or with no bar), Down and Page Down move nothing."""
+    view = open_map(window, session, chain_of_tables(registry, tmp_path, 20), settle)
+    window.show()
+    window.resize(1366, 728)
+    qapp.processEvents()
+    view.fit()
+    qapp.processEvents()
+    canvas = view.canvas
+    down = canvas.verticalScrollBar()
+    down.setValue(down.maximum())  # not by the user: Show all stays
+    assert view.auto_fit == "all"
+    seen = canvas.mapToScene(canvas.viewport().rect()).boundingRect()
+    canvas.setFocus()
+    for key in (Qt.Key.Key_Down, Qt.Key.Key_PageDown):
+        QTest.keyClick(canvas, key)
+    assert canvas.mapToScene(canvas.viewport().rect()).boundingRect() == seen
+    assert view.auto_fit == "all"
+    window.resize(1000, 600)
+    qapp.processEvents()
+    assert all_in_view(view)
+
+
+@pytest.mark.parametrize("bars",["", "QScrollBar:vertical { width: 30px } QScrollBar:horizontal { height: 30px }"])
+def test_show_all_shows_all_of_a_project_at_a_small_scale(window, settle, session, registry, tmp_path, qapp, bars):
+    """Below about 18 % the margin around the project is narrower on the screen than half a scroll
+    bar, so the scale leaves room for both bars, as wide as a style sheet makes them. At these
+    sizes the bars are there."""
+    view = open_map(window, session, chain_of_tables(registry, tmp_path), settle)
+    window.show()
+    canvas = view.canvas
+    canvas.setStyleSheet(bars)
+    view.auto_fit = False  # as after a zoom: the size of the window doesn't change the view
+    for width, height in ((800, 500), (840, 540), (880, 500), (900, 600), (960, 540), (1024, 600)):
+        window.resize(width, height)
+        qapp.processEvents()
+        view.fit()
+        qapp.processEvents()
+        seen = canvas.mapToScene(canvas.viewport().rect()).boundingRect()
+        assert seen.contains(view.scene.itemsBoundingRect()), (width, height)
