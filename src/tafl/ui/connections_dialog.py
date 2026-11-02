@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from tafl.api import ActionError, Context
+from tafl.api.database import open_database
 from tafl.api.params import resolve
 from tafl.core import Connection, parameters
 
@@ -206,7 +207,7 @@ class ConnectionsDialog(QDialog):
             except ActionError as e:
                 return False, str(e)
             try:
-                with connector.open(filled, ctx, read_only=True) as db:
+                with open_database(connector, filled, ctx, read_only=True) as db:
                     count = len(db.tables())
                     return True, f"Connected — {count} {'table or view' if count == 1 else 'tables and views'}"
             except Exception as e:

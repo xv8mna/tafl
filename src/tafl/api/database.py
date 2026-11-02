@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from .errors import NO_MEMORY, ActionError, Cancelled
+from .errors import NO_MEMORY, ActionError, Cancelled, TaflError
 from .parameters import fill_sql, sql_literal, sql_spans
 from .params import Param, Params, resolve
 
@@ -51,9 +51,9 @@ class Connector:
 
     def connect_read_only(self, settings: Params, ctx: Context) -> Any:
         """``connect`` for work that only reads (``ctx.database(…, read_only=True)``). A database
-        that can open a connection so that nothing can be written overrides it; the default is a
-        normal connection."""
-        return self.connect(settings, ctx)
+        that can open a connection so that nothing can be written overrides it, and only such a
+        connector gets ``read_only=True`` in ``open``; the default is a normal connection."""
+        return self.connect(settings, ctx, create=False)
 
     def quote(self, identifier: str) -> str:
         return '"' + identifier.replace('"', '""') + '"'
@@ -230,6 +230,16 @@ class Connector:
         return Database(self, raw)
 
 
+def open_database(
+    connector: Connector, settings: Mapping[str, Any], ctx: Context, *, create: bool = False, read_only: bool = False
+) -> Database:
+    """``connector.open``. A connector may override ``open`` without the keyword ``read_only``, so
+    that keyword goes only to one that overrides ``connect_read_only``: others have no use for it."""
+    if read_only and type(connector).connect_read_only is not Connector.connect_read_only:
+        return connector.open(settings, ctx, create=create, read_only=True)
+    return connector.open(settings, ctx, create=create)
+
+
 def connector(id: str, name: str, *, params: Sequence[Param] = ()) -> Callable[[type], Connector]:
     """Declare a database type by decorating a ``Connector`` subclass."""
 
@@ -372,6 +382,8 @@ class Database:
     def tables(self) -> list[str]:
         try:
             return self.connector.list_tables(self.raw)
+        except TaflError:
+            raise
         except Exception as e:
             raise ActionError(_reason(e, self.connector.error_message)) from e
 

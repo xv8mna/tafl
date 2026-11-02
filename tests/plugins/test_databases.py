@@ -18,7 +18,7 @@ import polars as pl
 import pytest
 
 from tafl import crash
-from tafl.api import ActionError, Cancelled, Connector, Context, frame_from_cursor, unique_names
+from tafl.api import ActionError, Cancelled, Connector, Context, P, frame_from_cursor, unique_names
 from tafl.api import database as api_database
 from tafl.api.parameters import Fixed
 from tafl.api.testing import StubContext
@@ -428,6 +428,98 @@ def test_read_only_asks_nothing_of_a_connector_that_cant_do_it():
     assert asked == [False]
     with pytest.raises(ActionError, match="not available"):
         Context().database("none", read_only=True)
+
+
+class _SqliteFile(Connector):
+    """A connector from a plugin, for a SQLite file."""
+
+    id = name = "plugin"
+    params = (P.File("file", "File"),)
+
+    def connect(self, settings, ctx, *, create=False):
+        return sqlite3.connect(ctx.resolve_path(settings.file))
+
+
+class _OwnOpen(_SqliteFile):
+    """``open`` with the keywords it had before ``read_only``."""
+
+    def open(self, settings, ctx, *, create=False):
+        return super().open(settings, ctx, create=create)
+
+
+class _RequiredCreate(_SqliteFile):
+    """``connect`` without a default for ``create``: ``open`` always gives it."""
+
+    def connect(self, settings, ctx, *, create):
+        return super().connect(settings, ctx, create=create)
+
+
+@pytest.mark.parametrize("plugin", [_OwnOpen, _RequiredCreate])
+def test_an_import_works_with_a_connector_that_knows_nothing_of_read_only(plugin, project, registry, monkeypatch):
+    monkeypatch.setitem(registry.connectors, "plugin", plugin())
+    project.add_connection("plugin", "plugin", file="data.db")
+    result = import_table(project, registry, connection="plugin", table="orders")
+    assert result.first_error is None and result.df["id"].to_list() == [1, 2]
+
+
+def test_an_import_gives_read_only_to_a_connector_that_overrides_connect_read_only(project, registry, monkeypatch):
+    opened = []
+
+    class Careful(_SqliteFile):
+        def connect_read_only(self, settings, ctx):
+            opened.append("connect_read_only")
+            return super().connect(settings, ctx)
+
+        def open(self, settings, ctx, *, create=False, read_only=False):
+            opened.append(read_only)
+            return super().open(settings, ctx, create=create, read_only=read_only)
+
+    monkeypatch.setitem(registry.connectors, "plugin", Careful())
+    project.add_connection("plugin", "plugin", file="data.db")
+    assert import_table(project, registry, connection="plugin", table="orders").df["id"].to_list() == [1, 2]
+    assert opened == [True, "connect_read_only"]
+
+
+def test_a_connector_that_knows_nothing_of_read_only_still_gets_create():
+    asked = []
+
+    class Recording(Connector):
+        def open(self, settings, ctx, *, create=False):
+            asked.append(create)
+
+    api_database.open_database(Recording(), {}, Context(), create=True)
+    assert asked == [True]
+
+
+def test_the_default_for_work_that_only_reads_gives_connect_its_create(tmp_path):
+    context = StubContext(connections={"db": (_RequiredCreate(), {"file": str(tmp_path / "a.db")})})
+    with context.database("db", read_only=True) as db:
+        assert db.read("SELECT 1 AS a")["a"].to_list() == [1]
+
+
+class _Refuses(Connector):
+    """The list of tables ends in ``error``. Errors of the driver get words of this connector."""
+
+    def __init__(self, error):
+        self.error = error
+
+    def list_tables(self, conn):
+        raise self.error
+
+    def error_message(self, error):
+        return f"The driver says: {error}"
+
+
+@pytest.mark.parametrize("error", [ActionError("Ask the admin for the list of tables"), Cancelled()])
+def test_the_list_of_tables_leaves_a_message_of_the_connector_and_stop_as_they_are(error):
+    with pytest.raises(type(error)) as raised:
+        api_database.Database(_Refuses(error), None).tables()
+    assert raised.value is error
+
+
+def test_the_list_of_tables_puts_an_error_of_the_driver_in_the_words_of_the_connector():
+    with pytest.raises(ActionError, match="^The driver says: gone$"):
+        api_database.Database(_Refuses(sqlite3.OperationalError("gone")), None).tables()
 
 
 def test_detect_types_turns_iso_text_into_dates(project, registry):

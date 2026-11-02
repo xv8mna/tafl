@@ -50,6 +50,7 @@ from tafl.api import (
     SkipRest,
     ValidationContext,
 )
+from tafl.api.database import open_database
 from tafl.api.errors import NO_MEMORY
 from tafl.api.expressions import is_panic
 from tafl.api.parameters import fill_sql
@@ -902,7 +903,7 @@ class _StepContext(Context):
         if connector is None:
             raise ActionError(f"Unknown connection type '{definition.type}'. Is its plugin installed?")
         settings = self._evaluation.connection_settings(definition.settings, connector)
-        return connector.open(settings, self, create=create, read_only=read_only)
+        return open_database(connector, settings, self, create=create, read_only=read_only)
 
     def check_memory(self) -> None:
         if (short := self._evaluation.short_of_memory(started=True)) is not None:

@@ -4,8 +4,54 @@ one selected meanwhile, whose Test button stays usable. It says how many tables 
 import sqlite3
 from contextlib import closing
 
+import pytest
+
+from tafl.api import ActionError, Connector, P
 from tafl.core import Connection
 from tafl.ui.connections_dialog import ConnectionsDialog
+
+
+class SqliteFile(Connector):
+    """A connector from a plugin, for a SQLite file."""
+
+    id = name = "plugin"
+    params = (P.File("file", "File"),)
+
+    def connect(self, settings, ctx, *, create=False):
+        return sqlite3.connect(settings.file)
+
+    def list_tables(self, conn):
+        return [name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+
+
+class OwnOpen(SqliteFile):
+    """``open`` with the keywords it had before ``read_only``."""
+
+    def open(self, settings, ctx, *, create=False):
+        return super().open(settings, ctx, create=create)
+
+
+class RequiredCreate(SqliteFile):
+    """``connect`` without a default for ``create``: ``open`` always gives it."""
+
+    def connect(self, settings, ctx, *, create):
+        return super().connect(settings, ctx, create=create)
+
+
+def result_of_the_test(connector, session, qtbot, monkeypatch, tmp_path) -> str:
+    """What the Test button says about ``connector``, on a database with one table."""
+    database = tmp_path / "a.db"
+    with closing(sqlite3.connect(database)) as db:
+        db.execute("CREATE TABLE a (x INTEGER)")
+    monkeypatch.setitem(session.registry.connectors, "plugin", connector)
+    session.project.connections = [Connection("a", "plugin", {"file": str(database)})]
+    dialog = ConnectionsDialog(session)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.list.setCurrentRow(0)
+    dialog._test()
+    qtbot.waitUntil(lambda: dialog.test_button.isEnabled(), timeout=10_000)
+    return dialog.test_result.toPlainText()
 
 
 def test_a_slow_test_result_stays_with_its_connection(session, qtbot, monkeypatch):
@@ -90,3 +136,35 @@ def test_the_test_says_how_many_tables_and_views(session, qtbot, tmp_path):
         dialog._test()
         qtbot.waitUntil(lambda: dialog.test_button.isEnabled(), timeout=10_000)
         assert dialog.test_result.toPlainText() == text
+
+
+@pytest.mark.parametrize("plugin", [OwnOpen, RequiredCreate])
+def test_the_test_works_with_a_connector_that_knows_nothing_of_read_only(plugin, session, qtbot, monkeypatch, tmp_path):
+    assert result_of_the_test(plugin(), session, qtbot, monkeypatch, tmp_path) == "Connected — 1 table or view"
+
+
+def test_the_test_gives_read_only_to_a_connector_that_overrides_connect_read_only(session, qtbot, monkeypatch, tmp_path):
+    opened = []
+
+    class Careful(SqliteFile):
+        def connect_read_only(self, settings, ctx):
+            opened.append("connect_read_only")
+            return super().connect(settings, ctx)
+
+        def open(self, settings, ctx, *, create=False, read_only=False):
+            opened.append(read_only)
+            return super().open(settings, ctx, create=create, read_only=read_only)
+
+    assert result_of_the_test(Careful(), session, qtbot, monkeypatch, tmp_path) == "Connected — 1 table or view"
+    assert opened == [True, "connect_read_only"]
+
+
+def test_the_test_shows_a_message_of_the_connector_as_it_is(session, qtbot, monkeypatch, tmp_path):
+    class Refuses(SqliteFile):
+        def list_tables(self, conn):
+            raise ActionError("Ask the admin for the list of tables")
+
+        def error_message(self, error):
+            return f"The driver says: {error}"
+
+    assert result_of_the_test(Refuses(), session, qtbot, monkeypatch, tmp_path) == "Ask the admin for the list of tables"
