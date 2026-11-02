@@ -1,5 +1,12 @@
 # Changes
 
+## Unreleased
+
+- A project file with half of a character in it (a lone surrogate such as `\ud800`, which
+  another program can write) opens with `�` in its place, and can be saved again. Before, a save
+  stopped with a message about surrogates. Two names or settings that differ only in such halves
+  become the same.
+
 ## 0.6.1 – 2026-11-02
 
 A project from somewhere else is now read first and trusted after that. The rest is fixes: text

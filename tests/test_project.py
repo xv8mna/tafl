@@ -1,6 +1,7 @@
 import hashlib
 import json
 import math
+import re
 import stat
 import tempfile
 import time
@@ -288,6 +289,34 @@ def test_half_of_a_character_from_another_program_becomes_a_replacement_characte
     project.save()
     assert Project.load(path).to_dict() == project.to_dict()
     assert "check \ufffd later" in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("half", ["\ud800", "\ud9ff", "\udbff", "\udc00"])
+@pytest.mark.parametrize("case", ["lower", "upper"])
+def test_each_half_is_found_alone_in_either_case(tmp_path, half, case):
+    """JSON allows \\uDC00 as well as \\udc00, and a file may hold no other escape: a text cut in
+    the middle of an emoji leaves only a \\ud83d."""
+    data = sample_project().to_dict()
+    data["tables"][0]["steps"][0]["params"]["file"] = f"orders{half}.csv"
+    text = json.dumps(data)
+    if case == "upper":
+        text = re.sub(r"\\u(d[0-9a-f]{3})", lambda m: "\\u" + m[1].upper(), text)
+    assert len(re.findall(r"(?i)\\ud[89a-f]", text)) == 1
+    path = tmp_path / "half.tafl"
+    path.write_text(text, encoding="utf-8")
+    project = Project.load(path)
+    assert project.tables[0].steps[0].params["file"] == "orders\ufffd.csv"
+    project.save()
+
+
+def test_deep_data_with_half_of_a_character_is_refused_as_damaged(tmp_path):
+    """The replacement recurses, so it comes after the check of the nesting."""
+    data = sample_project().to_dict()
+    data["tables"][0]["note"] = "VALUE"
+    path = tmp_path / "deep.tafl"
+    path.write_text(json.dumps(data).replace('"VALUE"', "[" * 5000 + '"\\ud800"' + "]" * 5000), encoding="utf-8")
+    with pytest.raises(ProjectError, match="nested too deeply"):
+        Project.load(path)
 
 
 def test_a_file_of_another_format_is_refused(tmp_path):
