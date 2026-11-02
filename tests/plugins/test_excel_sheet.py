@@ -439,7 +439,9 @@ def test_a_part_of_2_gib_or_more_gets_zip64_and_the_others_stay_as_they_are(act,
         assert archive.read("xl/media/big.bin") == big
         newer = {info.filename for info in archive.infolist() if info.extract_version >= zipfile.ZIP64_VERSION}
     assert newer == {"xl/media/big.bin"}
-    assert openpyxl.load_workbook(report, read_only=True)["Data"]["A2"].value == "Huber"
+    book = openpyxl.load_workbook(report, read_only=True)  # it keeps the file open until close()
+    assert book["Data"]["A2"].value == "Huber"
+    book.close()
 
 
 def test_a_tag_cut_in_two_by_a_piece_is_found():
