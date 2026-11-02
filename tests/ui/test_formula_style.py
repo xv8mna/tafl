@@ -13,12 +13,13 @@ from tafl.ui.formula_style import FormulaHighlighter, bracket_selections
 
 
 def _colors(edit):
-    """(text, color name) of each colored piece, line by line."""
+    """(text, color name) of each colored piece, line by line (Qt counts in UTF-16 units)."""
     found = []
     block = edit.document().firstBlock()
     while block.isValid():
+        line = block.text().encode("utf-16-le")
         for piece in block.layout().formats():
-            text = block.text()[piece.start : piece.start + piece.length]
+            text = line[2 * piece.start : 2 * (piece.start + piece.length)].decode("utf-16-le")
             color = piece.format.foreground().color().name()
             name = next((k for k, v in theme.FORMULA_COLORS.items() if QColor(v).name() == color), color)
             found.append((text, name))
@@ -106,7 +107,44 @@ def test_the_time_to_color_a_formula_grows_with_its_lines(qapp):
             seconds.append(time.perf_counter() - started)
         return min(seconds)
 
-    assert best_of_three(5_000) < 30 * best_of_three(500)
+    assert best_of_three(20_000) < 30 * best_of_three(2_000)  # a short time would fit in one slice of a busy CPU
+
+
+def test_one_character_outside_the_bmp_does_not_slow_the_colors(qapp):
+    """Qt counts such a character twice, so its index and its position differ from there on. Most
+    of the time goes into the lines, not into finding the positions: as long as without it, not
+    several times as long, as when each position goes through the text before it."""
+
+    def best_of_three(formula):
+        seconds = []
+        for _ in range(3):
+            edit = QPlainTextEdit()
+            FormulaHighlighter(edit.document())
+            started = time.perf_counter()
+            edit.setPlainText(formula)
+            seconds.append(time.perf_counter() - started)
+        return min(seconds)
+
+    lines = "\n".join(f"[c{i}] + {i} ||" for i in range(5_000)) + " ''"
+    plain, wide = best_of_three("-- x\n" + lines), best_of_three("-- 😀\n" + lines)
+    assert wide < 2 * plain
+
+
+def test_colors_stay_in_place_after_a_character_outside_the_bmp(qapp):
+    edit = QPlainTextEdit()
+    FormulaHighlighter(edit.document())
+    edit.setPlainText("'😀' || [Net] -- 😀😀\n'😀a𝄞' || ROUND(1) /* 😀\n😀 */ + 2")
+    assert _colors(edit) == [
+        ("'😀'", "text"),
+        ("[Net]", "column"),
+        ("-- 😀😀", "comment"),
+        ("'😀a𝄞'", "text"),
+        ("ROUND", "function"),
+        ("1", "number"),
+        ("/* 😀", "comment"),
+        ("😀 */", "comment"),
+        ("2", "number"),
+    ]
 
 
 def test_a_change_that_keeps_the_length_is_colored_too(qapp):

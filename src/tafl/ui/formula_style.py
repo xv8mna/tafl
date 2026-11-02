@@ -4,7 +4,7 @@ at the cursor."""
 
 from __future__ import annotations
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -188,9 +188,10 @@ class _Positions:
     def __init__(self, text: str) -> None:
         self._text = text
         self._simple = len(text.encode("utf-16-le")) == 2 * len(text)
+        self._wide = [] if self._simple else [i for i, ch in enumerate(text) if ord(ch) > 0xFFFF]  # the indexes of those
 
     def __call__(self, index: int) -> int:
-        return index if self._simple else len(self._text[:index].encode("utf-16-le")) // 2
+        return index + bisect_left(self._wide, index)
 
     def index(self, position: int) -> int:
         if self._simple:
