@@ -15,7 +15,7 @@ from typing import Any
 import polars as pl
 
 from .context import Context, Mode
-from .database import Connector, Database
+from .database import Connector, Database, open_database
 from .errors import ActionError
 
 
@@ -43,7 +43,7 @@ class StubContext(Context):
         if connection not in self.connections:
             raise ActionError(f"Connection '{connection}' is not available here")
         connector, settings = self.connections[connection]
-        return connector.open(settings, self, create=create, read_only=read_only)
+        return open_database(connector, settings, self, create=create, read_only=read_only)
 
     @property
     def warnings(self) -> list[str]:

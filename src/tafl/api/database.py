@@ -234,8 +234,10 @@ def open_database(
     connector: Connector, settings: Mapping[str, Any], ctx: Context, *, create: bool = False, read_only: bool = False
 ) -> Database:
     """``connector.open``. A connector may override ``open`` without the keyword ``read_only``, so
-    that keyword goes only to one that overrides ``connect_read_only``: others have no use for it."""
-    if read_only and type(connector).connect_read_only is not Connector.connect_read_only:
+    that keyword goes only to one that overrides ``connect_read_only``: others have no use for it.
+    A fake in a plugin's tests need not be a ``Connector`` at all."""
+    default = Connector.connect_read_only
+    if read_only and getattr(type(connector), "connect_read_only", default) is not default:
         return connector.open(settings, ctx, create=create, read_only=True)
     return connector.open(settings, ctx, create=create)
 
@@ -462,9 +464,10 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
     (when ``dtype`` is Int64 or a Decimal without decimal places) become Int64 when every value
     fits, other decimals Float64 when it keeps every value as it is; else they stay Decimal
     (``dtype`` when it is one), or text beyond its 38 digits. Columns holding several kinds of
-    values (possible in SQLite) become text instead of losing values. A value that is an
-    ``ActionError`` (what a driver's output converter gives for a value it can't read) stops
-    the reading with its message, where ``{column}`` stands for the column's name.
+    values (possible in SQLite) become text instead of losing values, with a blob as hex digits.
+    A value that is an ``ActionError`` (what a driver's output converter gives for a value it
+    can't read) stops the reading with its message, where ``{column}`` stands for the column's
+    name.
     """
     kinds = {type(v) for v in values if v is not None}
     if any(issubclass(kind, ActionError) for kind in kinds):
@@ -472,11 +475,11 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
         raise ActionError(str(problem).replace("{column}", name))
     if decimal.Decimal in kinds:
         return _decimals(name, values, dtype)
-    if kinds & {bytes, bytearray, memoryview}:
+    if kinds and kinds <= set(_BLOBS):
         values = [None if v is None else bytes(v) for v in values]
         dtype = pl.Binary
     elif len(kinds) > 1 and not kinds <= {int, float} and not kinds <= {dt.date, dt.datetime}:
-        values = [None if v is None else str(v) for v in values]
+        values = [None if v is None else _text(v) for v in values]
         dtype = pl.String
     elif kinds and not kinds <= _NATIVE:
         values = [None if v is None else str(v) for v in values]  # e.g. UUID
@@ -488,6 +491,12 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
 
 
 _NATIVE = {str, int, float, bool, dt.date, dt.datetime, dt.time, dt.timedelta}
+_BLOBS = (bytes, bytearray, memoryview)
+
+
+def _text(value: Any) -> str:
+    """A value of a column of several kinds: a blob as Change type writes it, 0x0102FF."""
+    return "0x" + bytes(value).hex().upper() if isinstance(value, _BLOBS) else str(value)
 
 
 def _decimals(name: str, values: list[Any], dtype: pl.DataType | None) -> pl.Series:

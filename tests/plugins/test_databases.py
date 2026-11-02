@@ -491,9 +491,40 @@ def test_a_connector_that_knows_nothing_of_read_only_still_gets_create():
     assert asked == [True]
 
 
+@pytest.mark.parametrize("keywords", [{}, {"read_only": True}])
+def test_a_stub_context_opens_a_connector_that_knows_nothing_of_read_only(keywords, project, tmp_path):
+    context = StubContext(connections={"db": (_OwnOpen(), {"file": str(tmp_path / "data.db")})})
+    with context.database("db", **keywords) as db:
+        assert db.read("SELECT COUNT(*) AS n FROM orders")["n"].to_list() == [2]
+
+
+def test_an_import_on_a_stub_context_works_with_a_fake_that_is_no_connector(act, project, tmp_path):
+    class Fake:
+        def open(self, settings, ctx, *, create=False):
+            return api_database.Database(Connector(), sqlite3.connect(tmp_path / "data.db"))
+
+    context = StubContext(connections={"db": (Fake(), {})})
+    out = act("db.import", params={"connection": "db", "mode": "table", "table": "orders"}, ctx=context)
+    assert out["id"].to_list() == [1, 2]
+
+
+def test_a_stub_context_gives_read_only_to_a_connector_that_overrides_connect_read_only(project, tmp_path):
+    opened = []
+
+    class Careful(_SqliteFile):
+        def connect_read_only(self, settings, ctx):
+            opened.append("connect_read_only")
+            return super().connect(settings, ctx)
+
+    context = StubContext(connections={"db": (Careful(), {"file": str(tmp_path / "data.db")})})
+    with context.database("db"):
+        assert opened == []
+    with context.database("db", read_only=True):
+        assert opened == ["connect_read_only"]
+
+
 def test_the_default_for_work_that_only_reads_gives_connect_its_create(tmp_path):
-    context = StubContext(connections={"db": (_RequiredCreate(), {"file": str(tmp_path / "a.db")})})
-    with context.database("db", read_only=True) as db:
+    with _RequiredCreate().open({"file": str(tmp_path / "a.db")}, Context(), read_only=True) as db:
         assert db.read("SELECT 1 AS a")["a"].to_list() == [1]
 
 
@@ -538,6 +569,56 @@ def test_detect_types_says_why_long_numbers_stay_text(project, registry):
 
 def test_column_with_mixed_values_becomes_text(project, registry):
     assert import_table(project, registry, table="messy").df["value"].to_list() == ["1", "two", None]
+
+
+@pytest.mark.parametrize(
+    "stored, shown",
+    [
+        ((5, b"\x01\xff"), ["5", "0x01FF"]),  # bytes(5) would be five zero bytes
+        ((-1, b"ab"), ["-1", "0x6162"]),
+        (("abc", b"ab"), ["abc", "0x6162"]),
+        ((1.5, b"ab"), ["1.5", "0x6162"]),
+    ],
+)
+def test_a_blob_beside_another_kind_of_value_becomes_text(project, registry, tmp_path, stored, shown):
+    con = sqlite3.connect(tmp_path / "data.db")
+    con.execute("CREATE TABLE mixed (value)")
+    con.executemany("INSERT INTO mixed VALUES (?)", [(value,) for value in (*stored, None)])
+    con.commit()
+    con.close()
+    column = import_table(project, registry, table="mixed").df["value"]
+    assert column.dtype == pl.String and column.to_list() == [*shown, None]
+
+
+def test_a_column_of_blobs_stays_binary(project, registry, tmp_path):
+    con = sqlite3.connect(tmp_path / "data.db")
+    con.execute("CREATE TABLE blobs (value)")
+    con.executemany("INSERT INTO blobs VALUES (?)", [(None,), (b"ab",)])
+    con.commit()
+    con.close()
+    column = import_table(project, registry, table="blobs").df["value"]
+    assert column.dtype == pl.Binary and column.to_list() == [None, b"ab"]
+
+
+def test_no_two_engines_share_a_read_of_a_database(project, registry, tmp_path):
+    """A window keeps its cache for the next project, and a database can't say that it changed:
+    the same file opened again, or another project with the same query, reads again."""
+    table = project.add_table("T")
+    project.add_step(table, "db.import", {"connection": "db", "table": "orders"})
+    first = Engine(project, registry)
+    assert first.evaluate(table.id).df.height == 2
+    con = sqlite3.connect(tmp_path / "data.db")
+    con.execute("INSERT INTO orders VALUES (3, 'C', 1.0, '2025-01-03')")
+    con.commit()
+    con.close()
+    assert first.evaluate(table.id).df.height == 2  # from the cache, until Reload data
+    second = Engine(project, registry, first.cache)
+    assert second.evaluate(table.id).df.height == 3
+    snapshot = first.snapshot()
+    assert snapshot.reload_token == first.reload_token and snapshot.evaluate(table.id).df.height == 2
+    tokens = {first.reload_token, second.reload_token}
+    first.reload()
+    assert first.reload_token not in tokens and first.evaluate(table.id).df.height == 3
 
 
 def test_errors(project, registry):
