@@ -4,6 +4,7 @@ at the cursor."""
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -24,6 +25,8 @@ _MORE_KEYWORDS = {
     "year", "years", "quarter", "month", "months", "week", "weeks", "day", "days", "hour", "hours", "minute",
     "minutes", "second", "seconds",
 }  # fmt: skip
+
+_Spans = tuple[list[tuple[int, int, str]], list[int]]  # (start, end, kind) in Qt positions, in order, and their ends
 
 
 def _format(color: str, *, italic: bool = False, bold: bool = False) -> QTextCharFormat:
@@ -60,7 +63,8 @@ class FormulaHighlighter(QSyntaxHighlighter):
         self._values: dict[str, Any] | None = None  # the parameters: name -> value; None: not known
         self._parameters: set[str] | None = None  # their names, stripped and in lowercase
         self._text: str | None = None  # the formula the spans are for
-        self._spans: list[tuple[int, int, str]] = []  # (start, end, kind) in Qt positions
+        self._stamp = (0, 0)  # its revision and length
+        self._spans: list[_Spans] = []  # the tokens, then the {parameters} colored over them
 
     def set_columns(self, names: Iterable[str] | None) -> None:
         known = None if names is None else {expressions._fold(n) for n in names}
@@ -78,22 +82,26 @@ class FormulaHighlighter(QSyntaxHighlighter):
             self.rehighlight()
 
     def highlightBlock(self, text: str) -> None:
-        formula = self.document().toPlainText()
-        if formula != self._text:
-            self._text, self._spans = formula, self._color(formula)
+        document = self.document()
+        stamp = document.revision(), document.characterCount()  # Qt colors an empty block first, at the same revision
+        if self._text is None or stamp != self._stamp:  # the same for every line of a pass: this runs once
+            self._text, self._stamp = document.toPlainText(), stamp
+            self._spans = self._color(self._text)
         start = self.currentBlock().position()
         end = start + self.currentBlock().length()
         open_at_end = -1
-        for span_start, span_end, kind in self._spans:
-            if span_end <= start or span_start >= end:
-                continue
-            first = max(span_start, start)
-            self.setFormat(first - start, min(span_end, end) - first, self._formats[kind])
-            if span_end > end - 1:  # goes on in the next line: when it changes, that line is colored again
-                open_at_end = hash((span_start, span_end, kind)) & 0x3FFFFFFF
+        for spans, ends in self._spans:
+            for index in range(bisect_right(ends, start), len(spans)):
+                span_start, span_end, kind = spans[index]
+                if span_start >= end:
+                    break
+                first = max(span_start, start)
+                self.setFormat(first - start, min(span_end, end) - first, self._formats[kind])
+                if span_end > end - 1:  # goes on in the next line: when it changes, that line is colored again
+                    open_at_end = hash((span_start, span_end, kind)) & 0x3FFFFFFF
         self.setCurrentBlockState(open_at_end)
 
-    def _color(self, formula: str) -> list[tuple[int, int, str]]:
+    def _color(self, formula: str) -> list[_Spans]:
         tokens = expressions.tokenize(formula)
         spans = []
         position = _Positions(formula)
@@ -101,11 +109,12 @@ class FormulaHighlighter(QSyntaxHighlighter):
             kind = _kind(formula, tokens, index, self._known, self._values)
             if kind:
                 spans.append((position(token.start), position(token.end), kind))
-        for start, end, name, place in formula_places(formula):  # after the tokens: colored over them
+        over = []
+        for start, end, name, place in formula_places(formula):
             known = self._parameters is None or name.strip().lower() in self._parameters
             if known or place == "formula":  # an unknown {name} in a text or a name stays as it is
-                spans.append((position(start), position(end), "parameter" if known else "unknown"))
-        return spans
+                over.append((position(start), position(end), "parameter" if known else "unknown"))
+        return [(found, [span[1] for span in found]) for found in (spans, over)]
 
 
 def _kind(

@@ -91,6 +91,41 @@ def test_coloring_a_long_formula_is_quick(qapp):
     assert statistics.median(seconds) < 0.01  # one pause of the garbage collector is no slow coloring
 
 
+def test_the_time_to_color_a_formula_grows_with_its_lines(qapp):
+    """Each line finds its colors in the spans of the formula: ten times the lines take about ten
+    times as long, not a hundred times, as when each line goes through all of them."""
+
+    def best_of_three(lines):
+        formula = "\n".join(f"[c{i}] + {i} ||" for i in range(lines)) + " ''"
+        seconds = []
+        for _ in range(3):
+            edit = QPlainTextEdit()
+            FormulaHighlighter(edit.document())
+            started = time.perf_counter()
+            edit.setPlainText(formula)
+            seconds.append(time.perf_counter() - started)
+        return min(seconds)
+
+    assert best_of_three(5_000) < 30 * best_of_three(500)
+
+
+def test_a_change_that_keeps_the_length_is_colored_too(qapp):
+    edit = QPlainTextEdit()
+    highlighter = FormulaHighlighter(edit.document())
+    highlighter.set_columns(["Net"])
+    edit.setPlainText("1 +\n[Net]")
+    assert _colors(edit)[-1] == ("[Net]", "column")
+    cursor = edit.textCursor()
+    cursor.setPosition(7)
+    cursor.setPosition(8, QTextCursor.MoveMode.KeepAnchor)
+    cursor.insertText("x")
+    assert _colors(edit)[-1] == ("[Nex]", "unknown")
+    edit.undo()
+    assert _colors(edit)[-1] == ("[Net]", "column")
+    edit.redo()
+    assert _colors(edit)[-1] == ("[Nex]", "unknown")
+
+
 def test_later_lines_follow_a_change_of_where_a_comment_ends(qapp):
     edit = QPlainTextEdit()
     highlighter = FormulaHighlighter(edit.document())
