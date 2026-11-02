@@ -364,7 +364,9 @@ def test_nothing_of_the_project_is_touched_until_it_is_trusted(window, session, 
     window.show_map(True)
     settle(session, 60_000)
     assert len(session.results) == len(project.tables)
-    assert {"os.path.isfile", "os.path.isdir", "pyodbc.connect"} <= recorder.calls  # the test sees what it looks for
+    # The test sees what it looks for: pathlib looks at a path with os.path.isfile from Python 3.14 on, with os.stat before
+    looks = {"os.path.isfile", "os.path.isdir"} if sys.version_info >= (3, 14) else {"os.stat"}
+    assert looks | {"pyodbc.connect"} <= recorder.calls
     assert any(OUTSIDE in path for _, path in recorder.hits)
     session._set_dirty(False)
     assert saved.is_file()

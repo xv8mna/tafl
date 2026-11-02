@@ -332,7 +332,9 @@ class Project:
             raise ProjectError(f"The project file {file.name} can't be read: it is not UTF-8 text") from e
         try:
             data = json.loads(text)
-        except (ValueError, RecursionError) as e:  # ValueError includes json.JSONDecodeError
+        except RecursionError as e:  # Python 3.12 and 3.13 stop reading at about 1,000 levels
+            raise ProjectError(f"The project file {file.name} is damaged: its data is nested too deeply") from e
+        except ValueError as e:  # includes json.JSONDecodeError
             raise ProjectError(f"The project file {file.name} is damaged: {e}") from e
         if _nested_too_deeply(data):
             raise ProjectError(f"The project file {file.name} is damaged: its data is nested too deeply")
