@@ -267,7 +267,8 @@ class TablesPanel(QWidget):
                 menu.addSeparator()
                 menu.addAction("Rename\tF2", lambda: self.tree.editItem(item))
                 menu.addAction("Duplicate", lambda: self.session.duplicate_table(table_id))
-                menu.addAction("Run this table", lambda: self.session.run_project([table_id]))
+                run = menu.addAction("Run this table", lambda: self.session.run_project([table_id]))
+                run.setEnabled(not self.session.running)
                 enabled = self.session.project.table(table_id).enabled
                 menu.addAction(
                     "Turn table off" if enabled else "Turn table on",

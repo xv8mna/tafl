@@ -2,18 +2,211 @@
 not red), Undo and Reload data refresh the tables that aren't selected, the map shows a table
 whose rest was skipped, and a run reports its own duration and real errors only."""
 
+import threading
+import types
+
 import pytest
 
-from tafl.core import Project, Status, StepResult, TableResult
+from tafl.api import ActionError, Mode, P, action
+from tafl.core import Project, Registry, Status, StepResult, TableResult
 from tafl.ui import theme
 from tafl.ui.labels import tooltip_text
+from tafl.ui.session import Session
 from tafl.ui.steps_panel import _ROLE as CARD
 
 WAITING = "waits for “Orders”, whose step 11 is not complete yet"
+HOLD, ENTERED, GO = threading.Event(), threading.Event(), threading.Event()
+INSIDE: list[int] = []  # one item for each gate that waits now
+
+
+@action("test.gate", "Gate", params=[P.Text("fail", "Fail")])
+def _gate(df, p, ctx):
+    """In a preview while HOLD is set: says it started, then waits until the test lets it go on.
+    Fails when its setting says so."""
+    if ctx.mode == Mode.PREVIEW and HOLD.is_set():
+        INSIDE.append(1)
+        ENTERED.set()
+        GO.wait(20)
+        INSIDE.pop()
+    if p.get("fail") == "yes":
+        raise ActionError("Failed on purpose")
+    return df
+
+
+@pytest.fixture
+def gated(qapp, tmp_path):
+    """A session with the step "test.gate", and a file a.csv."""
+    registry = Registry()
+    registry.load_builtin()
+    module = types.ModuleType("gates")
+    module.gate = _gate
+    registry.add_module(module)
+    (tmp_path / "a.csv").write_text("A\n1\n", encoding="utf-8")
+    HOLD.clear()
+    ENTERED.clear()
+    GO.clear()
+    INSIDE.clear()
+    session = Session(registry)
+    yield session
+    HOLD.clear()
+    GO.set()
+    session.wait()
 
 
 def table_item(window, name):
     return next(i for i in window.tables_panel._table_items() if i.text(0) == name)
+
+
+def gated_project(session, settle, tmp_path, used=False):
+    """Edited (a.csv, then the gate), User (from Edited) when ``used``, and Other (a.csv): all
+    calculated."""
+    actions = session.registry.actions
+    project = Project()
+    edited = project.add_table("Edited")
+    project.add_step(edited, actions["csv.import"], {"file": "a.csv"})
+    project.add_step(edited, actions["test.gate"], {"fail": "no"})
+    if used:
+        user = project.add_table("User")
+        project.add_step(user, actions["table.derive"], {"table": edited.id})
+    other = project.add_table("Other")
+    project.add_step(other, actions["csv.import"], {"file": "a.csv"})
+    session.open_project(project.save(tmp_path / "p.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    assert [session.table_status(t.id) for t in session.project.tables] == ["ok"] * len(session.project.tables)
+    return session.project.tables
+
+
+@pytest.mark.parametrize("used", [True, False], ids=["used", "alone"])
+@pytest.mark.parametrize("when", ["waiting", "calculating"])
+def test_an_edit_just_before_a_click_on_another_table_leaves_no_old_status(gated, settle, qtbot, tmp_path, when, used):
+    """The click stops the timer of the edit, or the calculation that the timer started, and
+    calculates the other table. A table that no other table uses must not hide behind a user."""
+    session = gated
+    *edited_and_user, other = gated_project(session, settle, tmp_path, used)
+    if when == "calculating":
+        HOLD.set()
+    session.set_params(edited_and_user[0].steps[1].id, {"fail": "yes"})
+    if when == "calculating":
+        qtbot.waitUntil(ENTERED.is_set, timeout=10_000)
+        assert session.busy and not session._timer.isActive()
+    session.select_table(other.id)
+    HOLD.clear()
+    GO.set()
+    settle(session)
+    assert [session.table_status(t.id) for t in edited_and_user] == ["error"] * len(edited_and_user)
+    assert session.table_status(other.id) == "ok"
+
+
+def test_after_the_click_the_edited_table_waits_for_its_stopped_calculation(gated, settle, qtbot, tmp_path):
+    """A stop takes effect between steps, so the calculation of the edit can still read a big file.
+    A second read of it at the same time takes twice the memory, and the next click would wait for
+    a thread. After the stopped calculation, the cache has the data."""
+    session = gated
+    edited, other = gated_project(session, settle, tmp_path)
+    HOLD.set()
+    session.set_params(edited.steps[1].id, {"fail": "yes"})
+    qtbot.waitUntil(ENTERED.is_set, timeout=10_000)
+    with qtbot.waitSignal(session.results_changed, timeout=10_000):
+        session.select_table(other.id)
+    qtbot.wait(200)  # time for a calculation that starts now to reach the gate
+    assert len(INSIDE) == 1 and session.busy  # it waits, and the window says so
+    GO.set()
+    settle(session)
+    assert session.table_status(edited.id) == "error" and session.table_status(other.id) == "ok"
+
+
+def waiting_session(session, settle, qtbot, tmp_path):
+    """Edited and Other (each a.csv, then the gate): the calculation of an edit of Edited waits in
+    the gate, a click on Other stops it, and the session waits for it before Edited again."""
+    actions = session.registry.actions
+    project = Project()
+    for name in ("Edited", "Other"):
+        table = project.add_table(name)
+        project.add_step(table, actions["csv.import"], {"file": "a.csv"})
+        project.add_step(table, actions["test.gate"], {"fail": "no"})
+    path = project.save(tmp_path / "p.tafl")
+    session.open_project(path, trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    edited, other = session.project.tables
+    HOLD.set()
+    session.set_params(edited.steps[1].id, {"fail": "yes"})
+    qtbot.waitUntil(ENTERED.is_set, timeout=10_000)
+    HOLD.clear()  # only the stopped calculation waits in the gate
+    with qtbot.waitSignal(session.results_changed, timeout=10_000):
+        session.select_table(other.id)
+    qtbot.wait(100)
+    assert len(INSIDE) == 1 and session.busy
+    return path, edited, other
+
+
+@pytest.mark.parametrize("how", ["empty", "protected"])
+def test_another_project_ends_the_wait_at_once(gated, settle, qtbot, tmp_path, how):
+    """The window must not say "Calculating…" for a project that calculates nothing."""
+    session = gated
+    path, *_ = waiting_session(session, settle, qtbot, tmp_path)
+    if how == "empty":
+        session.new_project()
+    else:
+        session.open_project(path, trusted=False)
+    assert not session.busy
+    GO.set()
+    settle(session)
+
+
+def test_an_edit_during_the_wait_is_calculated_before_the_rest(gated, settle, qtbot, tmp_path):
+    """The end of the stopped calculation comes while the timer of the edit runs: the edited table
+    goes first, as always, and the rest after it."""
+    session = gated
+    _path, edited, other = waiting_session(session, settle, qtbot, tmp_path)
+    starts = []
+    start = session._worker.start
+    session._worker.start = lambda work: (starts.append(session._timer.isActive()), start(work))[1]
+    session.set_params(other.steps[1].id, {"fail": "no, after all"})
+    GO.set()
+    settle(session)
+    assert starts and not any(starts)  # nothing started during the timer
+    assert session.table_status(edited.id) == "error" and session.table_status(other.id) == "ok"
+
+
+def test_closing_during_the_wait_starts_nothing_after_it(gated, settle, qtbot, tmp_path):
+    """A calculation that starts after the window closed would keep the program open."""
+    session = gated
+    waiting_session(session, settle, qtbot, tmp_path)
+    starts = []
+    start = session._worker.start
+    session._worker.start = lambda work: (starts.append(1), start(work))[1]
+    GO.set()
+    assert session.wait(5_000)  # as the window does when it closes
+    qtbot.wait(100)  # the report of the stopped calculation comes now
+    assert not starts and not session.busy
+
+
+def test_the_result_of_an_earlier_edit_does_not_settle_a_later_one(gated, settle, qtbot, tmp_path):
+    """The calculation of edit 1 reports while the timer of edit 2 runs: the table is still
+    unsettled, and a click during the calculation of edit 2 calculates it again."""
+    session = gated
+    edited, other = gated_project(session, settle, tmp_path)
+    session._timer.setInterval(1_000)  # time for the report of edit 1 while the timer of edit 2 runs
+    HOLD.set()
+    session.set_params(edited.steps[1].id, {"fail": "yes"})
+    qtbot.waitUntil(ENTERED.is_set, timeout=10_000)
+    ENTERED.clear()
+    session.set_params(edited.steps[1].id, {"fail": "no, after all"})
+    GO.set()
+    qtbot.waitUntil(lambda: not session.busy, timeout=10_000)
+    assert session._timer.isActive() and session.table_status(edited.id) == "error"  # the result of edit 1
+    GO.clear()
+    qtbot.waitUntil(ENTERED.is_set, timeout=10_000)  # the calculation of edit 2
+    assert session.busy and not session._timer.isActive()
+    session.select_table(other.id)
+    HOLD.clear()
+    GO.set()
+    settle(session)
+    assert session.table_status(edited.id) == "ok"
 
 
 def add_merge_to_orders(window, settle, session, demo):
@@ -188,11 +381,12 @@ def test_selecting_a_table_calculates_nothing_else_again(window, settle, session
 
 
 def test_an_unexpected_failure_is_reported_once(session, qtbot):
-    session._recheck = {"t1", "t2"}
+    session._recheck, session._unsettled = {"t1", "t2"}, "t1"
     with qtbot.waitSignal(session.error) as reported:
         session._worker.failed.emit("Traceback …\nRuntimeError: something unexpected")
     assert reported.args == ["Traceback …\nRuntimeError: something unexpected"]
     assert session._recheck == set()  # the next edit doesn't calculate them (and fail) again
+    assert session._unsettled is None  # nor the next click
 
 
 @pytest.fixture

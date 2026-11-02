@@ -100,12 +100,17 @@ class Session(QObject):
         self._saved: tuple[str, Path] | None = None  # what the last save added to that list
         self._opened = 0  # counts the projects opened here (the Project object can't tell: an undo replaces it)
         self._run_opened = 0  # that count when the latest run started
+        self._run_engine: Engine | None = None  # the snapshot the latest run works on
         self._stopping = False
         self.run_seconds: float | None = None  # how long the last run took
         self._run_done: dict[str, TableResult] = {}  # the tables the latest run has calculated so far
         # Tables whose results are out of date (a table they use changed, or Reload data): they
         # are calculated again after the selected table, so that no table shows an old status.
         self._recheck: set[str] = set()
+        # The table that was selected at the latest edit (of any table), until a calculation that
+        # started after that edit reports it: a click on another table stops that calculation
+        self._unsettled: str | None = None
+        self._held = False  # the calculation of _recheck waits for a stopped job (see _calculate_stale)
         self._waiting: dict[str, tuple[str, int, list[str]] | None] = {}  # waits_for, until results change
         # The last stamp of the files that sheets wrote, or that the user was told about (normalised
         # path -> stamp). It outlives the project: after an undo or a project that wasn't saved, a
@@ -116,9 +121,10 @@ class Session(QObject):
         self._worker.finished.connect(self._on_results)
         self._worker.failed.connect(self._failed)
         self._worker.busy_changed.connect(self.busy_changed)
+        self._worker.drained.connect(self._on_drained)
         self._runner = Worker(self)
         self._runner.finished.connect(self._on_run_finished)
-        self._runner.failed.connect(self.error)
+        self._runner.failed.connect(self._on_run_failed)
         self._runner.cancelled.connect(self._on_run_stopped)
         self._runner.busy_changed.connect(self.run_busy_changed)
         self._timer = QTimer(self)
@@ -214,6 +220,8 @@ class Session(QObject):
         self.results = {}
         self._all = False
         self._recheck.clear()
+        self._unsettled = None
+        self._hold(False)
         self._waiting.clear()
         self._undo.clear()
         self._redo.clear()
@@ -249,6 +257,10 @@ class Session(QObject):
     def select_table(self, table_id: str | None) -> None:
         if table_id == self.table_id:
             return
+        if self.table_id is not None and (self._timer.isActive() or self._unsettled == self.table_id):
+            # An edit that isn't calculated yet: the calculation of the other table stops it
+            self._recheck |= ({self.table_id} | self.users({self.table_id})) & set(self.results)
+        self._unsettled = None
         self.table_id = table_id
         self.step_id = None
         self.selection_changed.emit()
@@ -388,10 +400,11 @@ class Session(QObject):
         """Tables whose steps use ``table_id``."""
         return [t for t in self.project.tables if t.id != table_id and table_id in self.engine.dependencies(t.id)]
 
-    def users(self, table_ids: Iterable[str]) -> set[str]:
-        """Ids of the tables that use any of ``table_ids``, directly or through other tables."""
+    def users(self, table_ids: Iterable[str], engine: Engine | None = None) -> set[str]:
+        """Ids of the tables that use any of ``table_ids``, directly or through other tables, in
+        the open project (or in the project of ``engine``)."""
         direct: dict[str, set[str]] = {}
-        for link in self.engine.links():
+        for link in (engine or self.engine).links():
             if link.enabled:
                 direct.setdefault(link.source, set()).add(link.target)
         found: set[str] = set()
@@ -408,9 +421,14 @@ class Session(QObject):
         cut short."""
         return shortened(self.engine.describe(step), _SUMMARY)
 
+    def describe_in_run(self, step: Step) -> str:
+        """``describe`` for a step of the latest run: it names the tables of that run."""
+        return shortened(self.run_engine.describe(step), _SUMMARY)
+
     # --- calculating -------------------------------------------------------------------------
 
     def recalculate(self) -> None:
+        self._unsettled = self.table_id
         self._timer.start()
 
     def calculate_now(self) -> None:
@@ -428,6 +446,7 @@ class Session(QObject):
     def _calculate(self, scope: str, table_id: str | None, table_ids: list[str] | None = None) -> None:
         if self.protected:  # the engine would calculate nothing: no background work for that
             return
+        self._held = False  # the worker says that it is busy now
         engine = self.engine.snapshot()
         if scope == "table":
             self._worker.start(lambda cancel: ("table", engine.evaluate_all(table_id, cancel=cancel)))
@@ -438,8 +457,23 @@ class Session(QObject):
 
     def _calculate_stale(self) -> None:
         stale = [t.id for t in self.project.tables if t.id in self._recheck]
-        if stale:
+        if stale and self._worker.running and not self._worker.busy:
+            # A stopped job still runs its step, maybe the read of the same big file: after it, the
+            # cache has the data. Now both threads would read it, and the next click would wait.
+            self._hold(True)
+        elif stale:
             self._calculate("tables", None, stale)
+
+    def _on_drained(self) -> None:
+        if self._held and not self._timer.isActive():  # (an edit: its timer calculates first)
+            self._calculate_stale()
+        self._hold(False)
+
+    def _hold(self, held: bool) -> None:
+        """Only while the worker isn't busy: ``busy`` changes with it."""
+        if held != self._held:
+            self._held = held
+            self.busy_changed.emit(held)
 
     def set_overview(self, enabled: bool) -> None:
         """While the project map is shown, every table is calculated (for its status)."""
@@ -469,11 +503,14 @@ class Session(QObject):
         self.calculate_now()
 
     def run_project(self, table_ids: list[str] | None = None) -> None:
-        """Run tables (default: all) with exports and commands, in the background. A run that is
-        stopped sends run_stopped with the tables calculated before the stop, and the one that
-        was stopped (``TableResult.stopped``, with the steps that ran). A run goes on when another
-        project is opened, and reports as always, but the tables of that project don't take its
-        results. In protected view nothing runs: run_wants_trust goes out, and the main window asks."""
+        """Run tables (default: all) with exports and commands, in the background. During a run
+        this does nothing: a new run would end that one without a report. A run that is stopped
+        sends run_stopped with the tables calculated before the stop, and the one that was stopped
+        (``TableResult.stopped``, with the steps that ran). A run goes on when another project is
+        opened, and reports as always, but the tables of that project don't take its results. In
+        protected view nothing runs: run_wants_trust goes out, and the main window asks."""
+        if self.running:
+            return
         if self.protected:
             self.run_wants_trust.emit(table_ids)
             return
@@ -488,6 +525,7 @@ class Session(QObject):
         self._stopping = False
         self._run_done = done
         self._run_opened = self._opened
+        self._run_engine = engine
         self._runner.start(work)
 
     def cancel_run(self) -> None:
@@ -497,24 +535,39 @@ class Session(QObject):
         self._runner.cancel()
 
     @property
+    def run_engine(self) -> Engine:
+        """The engine with the project as the latest run has it, for the report of that run."""
+        return self._run_engine if self._run_engine is not None else self.engine
+
+    @property
+    def run_is_open(self) -> bool:
+        """The project of the latest run is still the open project."""
+        return self._run_opened == self._opened
+
+    @property
     def stopping(self) -> bool:
         """Stop was pressed, and the run is finishing the step it is in."""
         return self._stopping and self._runner.busy
 
     @property
     def busy(self) -> bool:
-        return self._worker.busy
+        return self._worker.busy or self._held
 
     @property
     def running(self) -> bool:
         return self._runner.busy
 
     def wait(self, msecs: int = 30_000) -> bool:
-        """Wait for background work (tests, closing the app)."""
-        return self._worker.wait(msecs) and self._runner.wait(msecs)
+        """Wait for background work (tests, closing the app). The calculation that waits for a
+        stopped job (see _calculate_stale) doesn't start after this: the window may be closed."""
+        done = self._worker.wait(msecs) and self._runner.wait(msecs)
+        self._hold(False)
+        return done
 
     def _on_results(self, outcome: tuple[str, dict[str, TableResult]]) -> None:
         scope, results = outcome
+        if self._unsettled in results and not self._timer.isActive():  # only a job after the edit can report now
+            self._unsettled = None
         changed = [t for t, r in results.items() if _signature(self.results.get(t)) != _signature(r)]
         self._update_results(results)
         if scope == "table" and changed:  # the tables that use a changed table show old results now
@@ -528,6 +581,7 @@ class Session(QObject):
     def _failed(self, text: str) -> None:
         # Not again and again after every edit or selection
         self._recheck.clear()
+        self._unsettled = None
         self._all = False
         self.error.emit(text)
 
@@ -538,16 +592,48 @@ class Session(QObject):
 
     def _on_run_finished(self, outcome: tuple[dict[str, TableResult], int, float]) -> None:
         results, reload_token, self.run_seconds = outcome
-        if self._run_opened == self._opened:  # not a run of the project before: table ids repeat across projects
+        if self.run_is_open:  # not a run of the project before: table ids repeat across projects
+            reloaded = self.engine.reload_token > reload_token  # during the run: its results are older
             self.engine.reload_token = max(self.engine.reload_token, reload_token)  # previews reuse the run
-            self._update_results(results)
+            changed = self._changed_since_run() | (set(results) if reloaded else set())
+            self._update_results({t: r for t, r in results.items() if t not in changed})
+            self._recheck |= changed
             self.results_changed.emit()
         self.run_finished.emit(results)
+        self._run_done = {}  # its frames: nothing else needs them, and no limit counts them
         self.calculate_now()
+
+    def _changed_since_run(self) -> set[str]:
+        """The tables that are no longer what the latest run calculated, and the tables that use
+        them, as they are now or as the run had them (a table it used may be gone)."""
+        engine = self._run_engine
+        ran, now = engine.project, self.project
+        same_parameters = [p.to_dict() for p in ran.parameters] == [p.to_dict() for p in now.parameters]
+        same_connections = [c.to_dict() for c in ran.connections] == [c.to_dict() for c in now.connections]
+        if not (same_parameters and same_connections):
+            return {t.id for t in now.tables}
+        before = {t.id: _calculated(t) for t in ran.tables}
+        after = {t.id: _calculated(t) for t in now.tables}
+        changed = {id_ for id_ in before.keys() | after.keys() if before.get(id_) != after.get(id_)}
+        return changed | self.users(changed) | self.users(changed, engine)
 
     def _on_run_stopped(self) -> None:
         # The run has ended (only the latest run reports it): its tables are no longer changing
+        self._take_token()
         self.run_stopped.emit(dict(self._run_done))
+        self._run_done = {}
+
+    def _on_run_failed(self, text: str) -> None:
+        self._take_token()
+        self._run_done = {}
+        self.error.emit(text)
+
+    def _take_token(self) -> None:
+        """After a run that didn't end: the cache keeps the steps of a few reads, so the steps of the
+        run push out what the open project read before, but only the steps that it reached. The
+        steps after them would stay, older than the new read of the steps they use."""
+        if self.run_is_open:  # a project opened since then has reads of its own
+            self.engine.reload_token = max(self.engine.reload_token, self._run_engine.reload_token)
 
     # --- editing tables ----------------------------------------------------------------------
 
@@ -1292,6 +1378,11 @@ def waiting_text(waiting: tuple[str, int, list[str]], *, capital: bool = False) 
     """"waits for “Orders”, whose step 9 is not complete yet" (see ``Session.waits_for``)."""
     name, number, _ = waiting
     return f"{'W' if capital else 'w'}aits for “{name}”, whose step {number} is not complete yet"
+
+
+def _calculated(table: Table) -> tuple:
+    """What a calculation of the table reads: not its place on the map, group, filters or notes."""
+    return table.name, table.enabled, [(s.id, s.action, s.version, s.enabled, s.params) for s in table.steps]
 
 
 def _signature(result: TableResult | None) -> tuple | None:

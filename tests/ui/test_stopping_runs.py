@@ -1,26 +1,33 @@
 """Stopping a run, and closing the window while the project runs."""
 
+import sqlite3
 import threading
 import time
 import types
 
 import pytest
+from PySide6.QtCore import QPoint
+from PySide6.QtWidgets import QMenu
 
-from tafl.api import Mode, action
-from tafl.core import Project, Registry, Status, StepResult, TableResult
-from tafl.ui import theme
+from tafl.api import ActionError, Mode, action
+from tafl.core import Connection, Engine, Parameter, Project, Registry, Status, StepResult, TableResult
+from tafl.ui import tables_panel, theme
 from tafl.ui.main_window import MainWindow
+from tafl.ui.map import view as map_view
 from tafl.ui.session import Session
 
-STARTED, RELEASE = threading.Event(), threading.Event()
+STARTED, RELEASE, FAIL = threading.Event(), threading.Event(), threading.Event()
 
 
 @action("test.wait_on_run", "Wait (when run)")
 def _wait_on_run(df, p, ctx):
-    """In a run: says it started, then waits until the test lets it go on."""
+    """In a run: says it started, then waits until the test lets it go on, and fails if the test
+    set FAIL."""
     if ctx.mode == Mode.RUN:
         STARTED.set()
         RELEASE.wait(20)
+        if FAIL.is_set():
+            raise ActionError("Failed on purpose")
     return df
 
 
@@ -37,11 +44,13 @@ def slow_registry():
 @pytest.fixture
 def running(qapp, qtbot, slow_registry, tmp_path, monkeypatch):
     """A window with a project whose run exports a quick table, then waits in the second step
-    of the next table; the run is started."""
+    of the next table; the last table uses that one, a parameter, and exports. The run is started."""
     STARTED.clear()
     RELEASE.clear()
+    FAIL.clear()
     (tmp_path / "data.csv").write_text("A;B\n1;2\n", encoding="utf-8")
     project = Project()
+    project.parameters = [Parameter("Factor", "2")]
     quick = project.add_table("Quick")
     project.add_step(quick, slow_registry.actions["csv.import"], {"file": "data.csv"})
     project.add_step(quick, slow_registry.actions["csv.export"], {"file": "quick.csv"})
@@ -49,6 +58,10 @@ def running(qapp, qtbot, slow_registry, tmp_path, monkeypatch):
     project.add_step(table, slow_registry.actions["csv.import"], {"file": "data.csv"})
     project.add_step(table, slow_registry.actions["test.wait_on_run"], {})
     project.add_step(table, slow_registry.actions["rows.sort"], {"by": [{"column": "A", "order": "asc"}]})
+    last = project.add_table("Last")
+    project.add_step(last, slow_registry.actions["table.derive"], {"table": table.id})
+    project.add_step(last, slow_registry.actions["calc.columns"], {"columns": [{"name": "F", "formula": "A * {Factor}"}]})
+    project.add_step(last, slow_registry.actions["csv.export"], {"file": "last.csv"})
     path = project.save(tmp_path / "slow.tafl")
     qapp.setOrganizationName("Tafl Tests")
     session = Session(slow_registry)
@@ -68,6 +81,203 @@ def running(qapp, qtbot, slow_registry, tmp_path, monkeypatch):
     session._set_dirty(False)
     window.close()
     window.deleteLater()
+
+
+def another_project(registry, tmp_path, names=("First", "Second")):
+    """A project in a folder of its own, whose first table waits in a run. Ids count from one in
+    every project, so its ids are those of the project that runs, for other tables."""
+    folder = tmp_path / "next"
+    folder.mkdir()
+    (folder / "data.csv").write_text("C\n3\n", encoding="utf-8")
+    project = Project()
+    for name in names:
+        project.add_step(project.add_table(name), registry.actions["csv.import"], {"file": "data.csv"})
+    project.add_step(project.tables[0], registry.actions["test.wait_on_run"], {})
+    return project.save(folder / "next.tafl")
+
+
+@pytest.fixture
+def shop(slow_registry, tmp_path):
+    """A project that reads a database, waits in a run, and exports. A database has no time
+    stamp or size that says it changed, so only a new reload token reads it again."""
+    with sqlite3.connect(tmp_path / "shop.db") as database:
+        database.execute("CREATE TABLE items (id INTEGER)")
+        database.execute("INSERT INTO items VALUES (1)")
+    STARTED.clear()
+    RELEASE.clear()
+    FAIL.clear()
+    project = Project(name="Shop")
+    project.add_connection("Shop", "sqlite", file="shop.db")
+    table = project.add_table("Items")
+    project.add_step(table, slow_registry.actions["db.import"], {"connection": "Shop", "table": "items"})
+    project.add_step(table, slow_registry.actions["test.wait_on_run"], {})
+    project.add_step(table, slow_registry.actions["csv.export"], {"file": "out.csv"})
+    return project.save(tmp_path / "shop.tafl")
+
+
+@pytest.fixture
+def two_reads(slow_registry, tmp_path):
+    """Three tables on one database: the run waits in the second table, before it reaches the
+    third, which starts from the first. All have a result of the first read."""
+    with sqlite3.connect(tmp_path / "shop.db") as database:
+        database.execute("CREATE TABLE items (id INTEGER)")
+        database.execute("INSERT INTO items VALUES (1)")
+    STARTED.clear()
+    RELEASE.clear()
+    FAIL.clear()
+    project = Project(name="Shop")
+    project.add_connection("Shop", "sqlite", file="shop.db")
+    items = project.add_table("Items")
+    project.add_step(items, slow_registry.actions["db.import"], {"connection": "Shop", "table": "items"})
+    slow = project.add_table("Slow")
+    project.add_step(slow, slow_registry.actions["db.import"], {"connection": "Shop", "query": "SELECT 5 AS n", "mode": "query"})
+    project.add_step(slow, slow_registry.actions["test.wait_on_run"], {})
+    copy = project.add_table("Copy")
+    project.add_step(copy, slow_registry.actions["table.derive"], {"table": items.id})
+    project.add_step(copy, slow_registry.actions["calc.columns"], {"columns": [{"name": "F", "formula": "id * 7"}]})
+    return project.save(tmp_path / "shop.tafl")
+
+
+def opened(session, path, qtbot):
+    session.open_project(path, trusted=True)
+    session.calculate_all(True)
+    qtbot.waitUntil(lambda: not session.busy and len(session.results) == 3, timeout=10_000)
+    session.calculate_all(False)
+    return session.project.tables
+
+
+def add_row(path):
+    with sqlite3.connect(path.parent / "shop.db") as database:
+        database.execute("INSERT INTO items VALUES (2)")
+
+
+def exported(path):
+    return (path.parent / "out.csv").read_text(encoding="utf-8-sig").split()
+
+
+def run_to_the_end(session, qtbot):
+    RELEASE.set()
+    session.run_project()
+    qtbot.waitUntil(lambda: not session.running and not session.busy and not session._timer.isActive(), timeout=10_000)
+
+
+def lines(tree):
+    return [[tree.topLevelItem(i).text(c) for c in range(2)] for i in range(tree.topLevelItemCount())]
+
+
+def test_the_run_after_a_stop_reads_a_database_again(qtbot, slow_registry, shop):
+    """The stopped run took its reload token with it: the next one must not take the same."""
+    session = Session(slow_registry)
+    session.open_project(shop, trusted=True)
+    qtbot.waitUntil(lambda: not session.busy, timeout=10_000)
+    session.run_project()
+    assert STARTED.wait(10)
+    session.cancel_run()
+    RELEASE.set()
+    qtbot.waitUntil(lambda: not session.running, timeout=10_000)
+    add_row(shop)
+    run_to_the_end(session, qtbot)
+    assert exported(shop) == ["id", "1", "2"]
+
+
+def test_two_stopped_runs_leave_no_table_with_the_rows_of_the_first_read(qtbot, slow_registry, two_reads):
+    """Each stopped run has a place in the cache of the steps it reached, and the steps that it
+    didn't reach keep the first read. A new read of the first table leads to them: the cache
+    can't see that they are older, so a stopped run gives its token to the open project."""
+    session = Session(slow_registry)
+    items, _slow, copy = opened(session, two_reads, qtbot)
+    for _ in range(2):
+        add_row(two_reads)
+        STARTED.clear()
+        RELEASE.clear()
+        session.run_project()
+        assert STARTED.wait(10)
+        session.cancel_run()
+        RELEASE.set()
+        qtbot.waitUntil(lambda: not session.running and not session.busy, timeout=10_000)
+    session.select_table(copy.id)
+    qtbot.waitUntil(lambda: not session.busy and not session._timer.isActive(), timeout=10_000)
+    assert session.result.df["id"].to_list() == [1, 2, 2]
+    assert session.results[items.id].df["id"].to_list() == [1, 2, 2]
+
+
+@pytest.mark.parametrize("end", ["finished", "stopped", "failed"])
+def test_reload_data_during_a_run_stays_after_the_run(qtbot, slow_registry, two_reads, monkeypatch, end):
+    """The results of the run are older than the reload: a table that isn't selected doesn't go
+    back to them, and keeps no status of them. A run that doesn't end takes no older token
+    back to the open project."""
+    session = Session(slow_registry)
+    _items, slow, copy = opened(session, two_reads, qtbot)
+    session.select_table(slow.id)  # a change of the selected table would reach its users
+    qtbot.waitUntil(lambda: not session.busy and not session._timer.isActive(), timeout=10_000)
+    if end == "failed":
+        run = Engine.run
+
+        def failing(*arguments, **keywords):
+            results = run(*arguments, **keywords)
+            if keywords.get("mode", Mode.RUN) == Mode.RUN:  # not the previews
+                raise RuntimeError("It broke at the end")
+            return results
+
+        monkeypatch.setattr(Engine, "run", failing)
+    session.run_project()
+    assert STARTED.wait(10)
+    add_row(two_reads)
+    session.reload_sources()
+    qtbot.waitUntil(lambda: not session.busy and not session._recheck, timeout=10_000)
+    assert session.results[copy.id].df["id"].to_list() == [1, 2]
+    token = session.engine.reload_token
+    if end == "stopped":
+        session.cancel_run()
+    RELEASE.set()
+    qtbot.waitUntil(lambda: not session.running and not session.busy and not session._recheck, timeout=10_000)
+    assert session.results[copy.id].df["id"].to_list() == [1, 2]
+    assert session.engine.reload_token == token
+    session.select_table(copy.id)
+    qtbot.waitUntil(lambda: not session.busy and not session._timer.isActive(), timeout=10_000)
+    assert session.result.df["id"].to_list() == [1, 2]
+
+
+def test_the_run_after_a_failed_run_reads_a_database_again(qtbot, slow_registry, shop, monkeypatch):
+    session = Session(slow_registry)
+    errors = []
+    session.error.connect(errors.append)
+    session.open_project(shop, trusted=True)
+    qtbot.waitUntil(lambda: not session.busy, timeout=10_000)
+    run = Engine.run
+
+    def failing(*arguments, **keywords):
+        run(*arguments, **keywords)
+        raise RuntimeError("It broke at the end")
+
+    monkeypatch.setattr(Engine, "run", failing)
+    run_to_the_end(session, qtbot)
+    assert errors and "It broke at the end" in errors[0]
+    assert session._run_done == {}  # what it calculated stays out of memory
+    assert session.engine.reload_token == session.run_engine.reload_token
+    monkeypatch.setattr(Engine, "run", run)
+    add_row(shop)
+    run_to_the_end(session, qtbot)
+    assert exported(shop) == ["id", "1", "2"]
+
+
+@pytest.mark.parametrize("twin", [False, True])
+def test_a_project_opened_again_reads_a_database_again(qtbot, slow_registry, shop, twin):
+    """The window keeps its cache from one project to the next. Also another project of the
+    folder with the same query."""
+    session = Session(slow_registry)
+    session.open_project(shop, trusted=True)
+    qtbot.waitUntil(lambda: not session.busy, timeout=10_000)
+    run_to_the_end(session, qtbot)
+    assert exported(shop) == ["id", "1"]
+    add_row(shop)
+    other = shop.with_name("twin.tafl")
+    other.write_bytes(shop.read_bytes())
+    session.open_project(other if twin else shop, trusted=True)
+    qtbot.waitUntil(lambda: not session.busy and not session._timer.isActive(), timeout=10_000)
+    assert session.result.df["id"].to_list() == [1, 2]
+    run_to_the_end(session, qtbot)
+    assert exported(shop) == ["id", "1", "2"]
 
 
 def test_stop_says_it_stops_and_that_it_stopped(running, qtbot):
@@ -90,8 +300,7 @@ def test_the_run_results_say_what_ran_before_the_stop(running, qtbot, tmp_path):
     RELEASE.set()
     qtbot.waitUntil(lambda: not session.running, timeout=10_000)
     tree = window.run_panel.tree
-    rows = [[tree.topLevelItem(i).text(c) for c in range(2)] for i in range(tree.topLevelItemCount())]
-    assert rows == [["Quick", "ok"], ["Slow", "stopped at step 3"]]
+    assert lines(tree) == [["Quick", "ok"], ["Slow", "stopped at step 3"]]
     quick, slow = tree.topLevelItem(0), tree.topLevelItem(1)
     assert [quick.child(i).text(1) for i in range(quick.childCount())] == ["1 row × 2 columns"] * 2  # the export ran
     assert (tmp_path / "quick.csv").exists()
@@ -190,28 +399,303 @@ def test_undo_during_a_run_keeps_the_results_of_all_tables(running, qtbot):
 
 
 @pytest.mark.parametrize("stopped", [False, True])
+def test_the_data_of_a_run_goes_with_its_report(running, qtbot, stopped):
+    """Only a stopped run needs the data on the way, and no limit of the cache counts it."""
+    window, session = running, running.session
+    assert session._run_done  # the first table is done
+    if stopped:
+        window.stop_action.trigger()
+    RELEASE.set()
+    qtbot.waitUntil(lambda: not session.running, timeout=10_000)
+    assert session._run_done == {}
+
+
+@pytest.mark.parametrize("change", ["position", "filter", "group", "note"])
+def test_a_change_of_view_during_a_run_keeps_what_the_run_found(running, qtbot, change):
+    """No calculation reads these: a preview would turn the error of the run into ok."""
+    session = running.session
+    slow = session.project.tables[1]
+    if change == "position":
+        session.set_positions({slow.id: (100.0, 200.0)})
+    elif change == "filter":
+        session.set_filters(slow.id, [{"column": "A", "values": ["1"]}])
+    elif change == "group":
+        session.add_group("G", [slow.id])
+    else:
+        session.set_note(slow.steps[1].id, "A note")
+    FAIL.set()
+    RELEASE.set()
+    qtbot.waitUntil(lambda: not session.running and not session.busy and not session._timer.isActive(), timeout=10_000)
+    assert session.table_status(slow.id) == "error"
+
+
+@pytest.mark.parametrize("stopped", [False, True])
 def test_a_run_of_the_project_before_leaves_no_result_in_the_next_project(running, qtbot, slow_registry, tmp_path, stopped):
     """Ids count from one in every project. A table that isn't selected isn't calculated, so
     nothing would replace a result it was given."""
     window, session = running, running.session
-    folder = tmp_path / "next"
-    folder.mkdir()
-    (folder / "data.csv").write_text("C\n3\n", encoding="utf-8")
-    project = Project()
-    for name in ("First", "Second"):
-        project.add_step(project.add_table(name), slow_registry.actions["csv.import"], {"file": "data.csv"})
-    assert window.open_path(project.save(folder / "next.tafl"))
+    assert window.open_path(another_project(slow_registry, tmp_path))
     assert session.running and not session.protected
     first, second = session.project.tables
+    token = session.engine.reload_token
     if stopped:
         window.stop_action.trigger()
     RELEASE.set()
     qtbot.waitUntil(lambda: not session.running and not session.busy and not session._timer.isActive(), timeout=10_000)
     assert second.id not in session.results and session.table_status(second.id) == "pending"
     assert session.results[first.id].df.columns == ["C"]  # calculated for this project, as always
-    assert session.engine.reload_token == 0
+    assert session.engine.reload_token == token
     assert window.run_panel.summary.text().startswith("Run stopped at " if stopped else "Run finished")
     assert not window.stop_action.isEnabled()
+
+
+@pytest.mark.parametrize("trusted", [True, False])
+def test_the_report_of_a_run_names_its_tables_when_another_project_is_open(running, settle, slow_registry, tmp_path, trusted):
+    """The open project doesn't have the tables with the errors, and its ids mean other tables."""
+    window, session = running, running.session
+    assert window.open_path(another_project(slow_registry, tmp_path, ["Only"]), trusted=trusted)
+    selected = session.table_id, session.step_id
+    FAIL.set()
+    RELEASE.set()
+    settle(session)
+    tree = window.run_panel.tree
+    assert [line[0] for line in lines(tree)] == ["Quick", "Slow", "Last"]
+    assert lines(tree)[1] == ["Slow", "Failed on purpose"]
+    slow = tree.topLevelItem(1)
+    assert slow.child(1).text(0).startswith("2. Wait (when run)") and slow.child(1).text(1) == "Failed on purpose"
+    assert "3 tables, 2 with errors, " in window.run_panel.summary.text()
+    assert window.statusBar().currentMessage() == "Run finished with errors — see Run results"
+    for line in (slow, slow.child(1), tree.topLevelItem(0)):  # the first line's id is in the open project too
+        tree.itemDoubleClicked.emit(line, 0)
+        assert (session.table_id, session.step_id) == selected
+
+
+def test_the_report_of_a_stopped_run_names_its_tables_when_another_project_is_open(running, settle, slow_registry, tmp_path):
+    window, session = running, running.session
+    assert window.open_path(another_project(slow_registry, tmp_path, ["Only"]))
+    window.stop_action.trigger()
+    RELEASE.set()
+    settle(session)
+    tree = window.run_panel.tree
+    assert lines(tree) == [["Quick", "ok"], ["Slow", "stopped at step 3"]]
+    assert tree.topLevelItem(1).child(2).text(1) == "stopped"
+
+
+def test_the_report_of_a_run_after_a_new_empty_project(running, settle):
+    window, session = running, running.session
+    session.new_project()
+    RELEASE.set()
+    settle(session)
+    assert lines(window.run_panel.tree) == [["Quick", "ok"], ["Slow", "ok"], ["Last", "ok"]]
+
+
+def test_the_steps_of_a_run_name_its_tables_when_another_project_is_open(running, settle, slow_registry, tmp_path):
+    window, session = running, running.session
+    assert window.open_path(another_project(slow_registry, tmp_path, ["First", "Second", "Third"]))
+    RELEASE.set()
+    settle(session)
+    derive = window.run_panel.tree.topLevelItem(2).child(0).text(0)
+    assert "Slow" in derive and "Second" not in derive
+
+
+def test_a_line_of_the_run_before_goes_nowhere_during_the_next_run(running, settle, slow_registry, tmp_path):
+    """The latest run is then one of the open project, but the line is not."""
+    window, session = running, running.session
+    RELEASE.set()
+    settle(session)
+    line = window.run_panel.tree.topLevelItem(1)
+    assert window.open_path(another_project(slow_registry, tmp_path))
+    settle(session)
+    selected = session.table_id
+    STARTED.clear()
+    RELEASE.clear()
+    window.run_project()
+    assert STARTED.wait(10) and session.run_is_open
+    window.run_panel.tree.itemDoubleClicked.emit(line, 0)
+    assert session.table_id == selected
+
+
+def test_a_table_deleted_during_a_run_leaves_no_old_status(running, settle):
+    """The run still reports it, and the table that used it has lost its source: a table that
+    isn't selected shows that too."""
+    window, session = running, running.session
+    quick, slow, last = session.project.tables
+    session.delete_table(slow.id)
+    RELEASE.set()
+    settle(session)
+    assert session.table_status(last.id) == "error"
+    assert slow.id not in session.results
+    tree = window.run_panel.tree
+    assert [line[0] for line in lines(tree)] == ["Quick", "Slow", "Last"]
+    tree.itemDoubleClicked.emit(tree.topLevelItem(1), 0)
+    assert session.table_id == quick.id
+
+
+def test_a_second_run_during_a_run_changes_nothing(running, settle, tmp_path):
+    window, session = running, running.session
+    reported = []
+    session.run_finished.connect(lambda results: reported.append(list(results)))
+    job, engine = session._runner._latest, session.run_engine
+    session.run_project([session.project.tables[1].id])
+    session.run_project()
+    assert session.running and session._runner._latest == job and session.run_engine is engine
+    RELEASE.set()
+    settle(session)
+    assert reported == [[t.id for t in session.project.tables]]
+    assert "3 tables" in window.run_panel.summary.text()
+    assert (tmp_path / "last.csv").is_file()  # the export after the wait
+
+
+def test_a_second_run_of_a_protected_project_during_a_run_asks_nothing(running, settle, slow_registry, tmp_path, monkeypatch):
+    window, session = running, running.session
+    assert window.open_path(another_project(slow_registry, tmp_path), trusted=False)
+    monkeypatch.setattr(window, "ask_trust_and_run", lambda: pytest.fail("asked to trust a project"))
+    session.run_project([session.project.tables[0].id])
+    assert session.protected and session.running
+    RELEASE.set()
+    settle(session)
+    assert session.protected and (tmp_path / "last.csv").is_file()
+
+
+def run_entry_after_a_click(monkeypatch, module, click):
+    """Whether "Run this table" can be chosen in the menu that ``click`` opens."""
+    shown = []
+
+    class Menu(QMenu):
+        def exec(self, *args):  # instead of showing it
+            shown.append(next(a for a in self.actions() if a.text() == "Run this table").isEnabled())
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "QMenu", Menu)
+        click()
+    return shown[0]
+
+
+def test_run_this_table_is_off_in_the_list_of_tables_during_a_run(running, settle, monkeypatch):
+    session, panel = running.session, running.tables_panel
+
+    def click():
+        panel._context_menu(panel.tree.visualItemRect(panel.tree.topLevelItem(0)).center())
+
+    assert not run_entry_after_a_click(monkeypatch, tables_panel, click)
+    RELEASE.set()
+    settle(session)
+    assert run_entry_after_a_click(monkeypatch, tables_panel, click)
+
+
+def test_run_this_table_is_off_on_the_map_during_a_run(running, settle, monkeypatch):
+    window, session = running, running.session
+    window.show_map(True)
+    view = window.map_view
+    view.rebuild()
+    node = view.nodes[session.project.tables[0].id]
+
+    def click():
+        view.node_menu(node, QPoint())
+
+    assert not run_entry_after_a_click(monkeypatch, map_view, click)
+    RELEASE.set()
+    settle(session)
+    assert run_entry_after_a_click(monkeypatch, map_view, click)
+
+
+def test_an_edit_during_a_run_leaves_no_old_status(running, settle):
+    """The table isn't selected, and the run calculated it as it was: it is calculated again,
+    and so is the table that uses it. The report stays what the run did."""
+    window, session = running, running.session
+    quick, slow, last = session.project.tables
+    session.set_params(slow.steps[0].id, {"file": "gone.csv"})
+    RELEASE.set()
+    settle(session)
+    assert session.table_id == quick.id
+    assert session.table_status(quick.id) == "ok"
+    assert session.table_status(slow.id) == session.table_status(last.id) == "error"
+    assert not session._recheck
+    assert lines(window.run_panel.tree) == [["Quick", "ok"], ["Slow", "ok"], ["Last", "ok"]]
+
+
+@pytest.mark.parametrize("change", ["table off", "step off", "step moved"])
+def test_a_change_of_what_a_table_does_during_a_run_leaves_no_result_of_the_run(running, settle, change):
+    session = running.session
+    slow = session.project.tables[1]
+    reported = []
+    session.run_finished.connect(reported.append)
+    if change == "table off":
+        session.set_table_enabled([slow.id], False)
+    elif change == "step off":
+        session.set_enabled(slow.steps[2].id, False)
+    else:
+        session.move_step(slow.steps[2].id, 1)
+    RELEASE.set()
+    settle(session)
+    assert session.results[slow.id] is not reported[0][slow.id] and not session._recheck
+
+
+@pytest.mark.parametrize("new", [False, True], ids=["renamed", "new"])
+def test_a_step_that_finds_its_table_during_a_run_leaves_no_old_status(running, settle, new):
+    """A step can name a table: the run gave an error, and that table is there by now."""
+    session = running.session
+    quick, slow, last = session.project.tables
+    RELEASE.set()
+    settle(session)
+    session.set_params(last.steps[0].id, {"table": "Later"})
+    settle(session)
+    STARTED.clear()
+    RELEASE.clear()
+    session.run_project()
+    assert STARTED.wait(10)
+    table = session.duplicate_table(slow.id) if new else slow
+    session.rename_table(table.id, "Later")
+    session.select_table(quick.id)  # a table that changes while it is selected tells its users by itself
+    RELEASE.set()
+    settle(session)
+    assert session.table_status(last.id) == "ok"
+
+
+def test_a_change_of_parameters_during_a_run_leaves_no_old_status(running, settle, tmp_path):
+    session = running.session
+    session.set_parameters([Parameter("Factor", "3")])
+    RELEASE.set()
+    settle(session)
+    assert session.results[session.project.tables[2].id].df["F"].to_list() == [3]
+    assert (tmp_path / "last.csv").read_text(encoding="utf-8-sig").split() == ["A;B;F", "1;2;2"]  # the run used the old value
+
+
+def test_a_change_of_connections_during_a_run_calculates_every_table_again(running, settle):
+    session = running.session
+    reported = []
+    session.run_finished.connect(reported.append)
+    session.set_connections([Connection("New", "sqlite")])
+    RELEASE.set()
+    settle(session)
+    assert [session.table_status(t.id) for t in session.project.tables] == ["ok"] * 3
+    assert not any(session.results[t.id] is reported[0][t.id] for t in session.project.tables)
+
+
+@pytest.mark.parametrize("undone", [False, True], ids=["no edit", "an edit undone"])
+def test_a_run_of_the_project_as_it_is_keeps_its_results(running, settle, undone):
+    """Nothing is calculated again: the tables that aren't selected have the results of the run."""
+    session = running.session
+    reported = []
+    session.run_finished.connect(reported.append)
+    if undone:
+        session.set_note(session.project.tables[1].steps[0].id, "edited")
+        session.undo()
+    RELEASE.set()
+    settle(session)
+    assert all(session.results[t.id] is reported[0][t.id] for t in session.project.tables[1:])
+
+
+def test_save_as_during_a_run_leaves_every_table_ok(running, settle, tmp_path):
+    """The saved paths differ now, so the tables are calculated again: none stays pending."""
+    session = running.session
+    folder = tmp_path / "elsewhere"
+    folder.mkdir()
+    session.save_project(folder / "moved.tafl")
+    RELEASE.set()
+    settle(session)
+    assert [session.table_status(t.id) for t in session.project.tables] == ["ok"] * 3
+    assert not session._recheck and not session.dirty
 
 
 def test_stop_also_stops_a_formula_that_runs(qapp, qtbot, slow_registry, tmp_path, monkeypatch):

@@ -594,6 +594,7 @@ def test_work_of_the_project_before_stays_out_of_protected_view(under_way, qtbot
     assert window.open_path(unknown)
     assert session.protected and not session.busy and window.busy_label.text() == ""
     assert session.running == was_running and window.stop_action.isEnabled() == was_running
+    token = session.engine.reload_token
     RELEASE.set()
     assert session.wait()
     wait_a_moment(qtbot, session)
@@ -603,9 +604,10 @@ def test_work_of_the_project_before_stays_out_of_protected_view(under_way, qtbot
     assert session.results == {}
     assert session.table_status(first.id) == session.table_status(second.id) == "pending"
     assert session.input_frame(session.step) is None
-    assert session.engine.reload_token == 0 and session.engine._parameter_values == {}
+    assert session.engine.reload_token == token and session.engine._parameter_values == {}
     editor = window.settings_panel.form.findChildren(ExpressionEditor)[0]
-    assert editor.line.text() == PROTECTED and evaluated == []
+    qtbot.waitUntil(lambda: editor.line.text() == PROTECTED, timeout=10_000)
+    assert evaluated == []
     assert not window.protected_bar.isHidden() and window.data_panel.message.text() == PROTECTED
     assert window.data_panel.model.frame is None
 

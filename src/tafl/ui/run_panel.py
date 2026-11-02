@@ -27,6 +27,7 @@ class RunPanel(QWidget):
         super().__init__(parent)
         self.session = session
         self._warnings = 0  # of the run shown
+        self._lines_open = False  # the project of the run shown is the open project
         self.summary = WrappedLabel("No run yet. Press F5 to run the project.", self)
         self.summary.setObjectName("Dim")
         self.tree = QTreeWidget(self)
@@ -44,6 +45,10 @@ class RunPanel(QWidget):
         layout.addWidget(self.tree, 1)
         session.run_finished.connect(self._run_finished)
         session.run_stopped.connect(self.show_stopped)
+        session.project_changed.connect(self._project_changed)
+
+    def _project_changed(self) -> None:
+        self._lines_open = False
 
     def _run_finished(self, results: dict[str, TableResult]) -> None:
         self.show_results(results, self.session.run_seconds)
@@ -74,13 +79,16 @@ class RunPanel(QWidget):
     def _show_tables(self, results: dict[str, TableResult]) -> tuple[int, int, float]:
         """The tables and their steps. Returns how many tables have errors, how many were skipped,
         and the time of their steps added up; ``_warnings`` is how many warnings the steps gave.
-        The steps with warnings are open, so that the warnings are seen."""
+        The steps with warnings are open, so that the warnings are seen. Names and steps are those
+        of the run: its project may be closed or edited by now, and ids repeat across projects."""
         self.tree.clear()
+        self._lines_open = self.session.run_is_open
+        project = self.session.run_engine.project
         failed = skipped = 0
         total = 0.0
         self._warnings = 0
         for table_id, result in results.items():
-            table = self.session.project.find_table(table_id)
+            table = project.find_table(table_id)
             if table is None:
                 continue
             if result.skipped:
@@ -122,7 +130,7 @@ class RunPanel(QWidget):
                 if step is None:
                     continue
                 text = _result_text(step_result)
-                child = QTreeWidgetItem([f"{number}. {self.session.describe(step)}", text, f"{step_result.seconds:.2f} s"])
+                child = QTreeWidgetItem([f"{number}. {self.session.describe_in_run(step)}", text, f"{step_result.seconds:.2f} s"])
                 status = _STATUS[step_result.status]
                 if any(level == "warning" for level, _ in step_result.messages):
                     status = "warning" if status == "ok" else status  # as in the list of steps
@@ -139,7 +147,7 @@ class RunPanel(QWidget):
                 top.addChild(child)
             for index, step in enumerate(not_run):  # the step that was running, then the rest
                 text = "not run" if index else "stopped"
-                child = QTreeWidgetItem([f"{steps[step.id][0]}. {self.session.describe(step)}", text, ""])
+                child = QTreeWidgetItem([f"{steps[step.id][0]}. {self.session.describe_in_run(step)}", text, ""])
                 child.setIcon(0, theme.status_icon("pending" if index else "warning"))
                 child.setForeground(1, theme.status_text_color("skipped" if index else "warning"))
                 child.setToolTip(1, "Not run: the run was stopped before this step" if index else "The run was stopped here")
@@ -157,9 +165,11 @@ class RunPanel(QWidget):
 
     def _jump(self, item: QTreeWidgetItem, _column: int) -> None:
         target = item.data(0, Qt.ItemDataRole.UserRole) or (item.parent() and item.parent().data(0, Qt.ItemDataRole.UserRole))
-        if not target:
+        if not target or not self._lines_open:
             return
         table_id, step_id = target
+        if self.session.project.find_table(table_id) is None:  # deleted since the run
+            return
         self.session.select_table(table_id)
         if step_id:
             self.session.select_step(step_id)

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import threading
 import time
@@ -284,6 +285,9 @@ def default_cache_bytes() -> int:
 _BROKEN = (Exception, SystemExit, KeyboardInterrupt)
 
 
+_RELOADS = itertools.count(1)
+
+
 def _stop_if(cancel: threading.Event | None) -> None:
     """Raise Cancelled if ``cancel`` is set. Ctrl+C on the command line sets it before it
     interrupts, and a stopped DuckDB query is reported as an error: what goes wrong while it is
@@ -300,8 +304,12 @@ class Engine:
         # Stops the work when set (Ctrl+C on the command line); calculations without a cancel
         # event of their own use it. A KeyboardInterrupt while it isn't set is a plugin's error.
         self.cancel: threading.Event | None = None
-        # Part of every source's cache key: raising it makes all sources read their data again.
-        self.reload_token = 0
+        # Part of every source's cache key: a new one makes all sources read their data again. The
+        # cache outlives an engine and a database can't say that it changed, so a new engine takes
+        # a token that no engine had before. A snapshot takes over the token of its engine, and when
+        # a run ends or stops, the open project takes the newer of its token and the run's
+        # (ui/session.py).
+        self.reload_token = next(_RELOADS)
         # A project nobody has trusted yet (protected view, see ui/trust.py): no table is calculated,
         # no source is looked at, and the formulas of the parameters are not worked out
         self.protected = False
@@ -315,7 +323,7 @@ class Engine:
 
     def reload(self) -> None:
         """Re-read all sources on the next calculation (databases can't tell us they changed)."""
-        self.reload_token += 1
+        self.reload_token = next(_RELOADS)
 
     def snapshot(self) -> Engine:
         """An engine on a copy of the project that shares this engine's cache, for calculating in

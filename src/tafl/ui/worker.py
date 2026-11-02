@@ -20,28 +20,48 @@ class _Signals(QObject):
     cancelled = Signal(int)
 
 
+class _Count:
+    """The jobs whose thread runs their work now, outdated ones too."""
+
+    def __init__(self) -> None:
+        self.value = 0
+        self._lock = threading.Lock()
+
+    def add(self, step: int) -> None:
+        with self._lock:
+            self.value += step
+
+
 class _Job(QRunnable):
-    def __init__(self, job_id: int, work: Callable[[], Any], signals: _Signals) -> None:
+    def __init__(self, job_id: int, work: Callable[[], Any], signals: _Signals, running: _Count) -> None:
         super().__init__()
         self.job_id = job_id
         self.work = work
         self.signals = signals
+        self.running = running
 
     def run(self) -> None:
+        self.running.add(1)
+        try:
+            report, args = self._outcome()
+        finally:
+            self.running.add(-1)  # before the report: what it starts may ask whether a job still runs
+        report.emit(*args)
+
+    def _outcome(self) -> tuple[Any, tuple[Any, ...]]:
         try:
             result = self.work()
         except Cancelled:
-            self.signals.cancelled.emit(self.job_id)
+            return self.signals.cancelled, (self.job_id,)
         except Exception:
-            self.signals.failed.emit(self.job_id, traceback.format_exc())
+            return self.signals.failed, (self.job_id, traceback.format_exc())
         except BaseException as e:
             # A crash inside Polars (Rust), or plugin code that tries to end the program
             # (sys.exit, KeyboardInterrupt): report it instead of going silent
             if not (is_panic(e) or isinstance(e, SystemExit | KeyboardInterrupt)):
                 raise
-            self.signals.failed.emit(self.job_id, traceback.format_exc())
-        else:
-            self.signals.done.emit(self.job_id, result)
+            return self.signals.failed, (self.job_id, traceback.format_exc())
+        return self.signals.done, (self.job_id, result)
 
 
 class Worker(QObject):
@@ -52,6 +72,9 @@ class Worker(QObject):
     failed = Signal(str)  # traceback of the latest job
     cancelled = Signal()  # the latest job stopped because it was cancelled
     busy_changed = Signal(bool)
+    # After a report: no job runs its work any more, also no outdated one (a job that a slot of the
+    # report started may not have its thread yet: it is busy)
+    drained = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -65,10 +88,17 @@ class Worker(QObject):
         self._latest = 0
         self._busy = False
         self._cancel: CancelEvent | None = None
+        self._running = _Count()
 
     @property
     def busy(self) -> bool:
         return self._busy
+
+    @property
+    def running(self) -> bool:
+        """A job runs its work in a thread, maybe an outdated one: a cancel takes effect only between
+        steps. A job that start() has just given to the pool counts once its thread takes it."""
+        return self._running.value > 0
 
     def start(self, work: Callable[[threading.Event], Any]) -> None:
         """Run ``work(cancel_event)`` in the background. The event is a CancelEvent, so the work
@@ -78,7 +108,7 @@ class Worker(QObject):
         cancel = CancelEvent()
         self._cancel = cancel
         self._latest += 1
-        self._pool.start(_Job(self._latest, lambda: work(cancel), self._signals))
+        self._pool.start(_Job(self._latest, lambda: work(cancel), self._signals, self._running))
         self._set_busy(True)
 
     def cancel(self) -> None:
@@ -100,16 +130,23 @@ class Worker(QObject):
         if job_id == self._latest:
             self._set_busy(False)
             self.finished.emit(result)
+        self._ended()
 
     def _on_failed(self, job_id: int, text: str) -> None:
         if job_id == self._latest:
             self._set_busy(False)
             self.failed.emit(text)
+        self._ended()
 
     def _on_cancelled(self, job_id: int) -> None:
         if job_id == self._latest:
             self._set_busy(False)
             self.cancelled.emit()
+        self._ended()
+
+    def _ended(self) -> None:
+        if not self.running:
+            self.drained.emit()
 
     def _set_busy(self, busy: bool) -> None:
         if busy != self._busy:
