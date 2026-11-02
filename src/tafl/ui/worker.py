@@ -85,6 +85,13 @@ class Worker(QObject):
         if self._cancel is not None:
             self._cancel.set()
 
+    def forget(self) -> None:
+        """Cancel the latest job and take nothing more from it: a cancel only takes effect between
+        steps, so a job in its last step would still report. Its thread ends in the background."""
+        self.cancel()
+        self._latest += 1
+        self._set_busy(False)
+
     def wait(self, msecs: int = -1) -> bool:
         """Wait for all jobs (for tests and when closing the app)."""
         return self._pool.waitForDone(msecs)

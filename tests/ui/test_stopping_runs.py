@@ -175,6 +175,45 @@ def test_run_results_show_how_long_the_run_took(running, qtbot):
     assert window.run_panel.summary.text().endswith(f", {session.run_seconds:.2f} s")
 
 
+def test_undo_during_a_run_keeps_the_results_of_all_tables(running, qtbot):
+    """An undo replaces the project object, but it is still the project that runs."""
+    window, session = running, running.session
+    session.set_note(session.project.tables[0].steps[0].id, "edited")
+    before = session.project
+    session.undo()
+    assert session.project is not before
+    RELEASE.set()
+    qtbot.waitUntil(lambda: not session.running, timeout=10_000)
+    assert set(session.results) == {t.id for t in session.project.tables}  # the second table only comes from the run
+    assert session.result.ok and session.results[session.project.tables[1].id].ok
+    assert window.run_panel.summary.text().startswith("Run finished")
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+def test_a_run_of_the_project_before_leaves_no_result_in_the_next_project(running, qtbot, slow_registry, tmp_path, stopped):
+    """Ids count from one in every project. A table that isn't selected isn't calculated, so
+    nothing would replace a result it was given."""
+    window, session = running, running.session
+    folder = tmp_path / "next"
+    folder.mkdir()
+    (folder / "data.csv").write_text("C\n3\n", encoding="utf-8")
+    project = Project()
+    for name in ("First", "Second"):
+        project.add_step(project.add_table(name), slow_registry.actions["csv.import"], {"file": "data.csv"})
+    assert window.open_path(project.save(folder / "next.tafl"))
+    assert session.running and not session.protected
+    first, second = session.project.tables
+    if stopped:
+        window.stop_action.trigger()
+    RELEASE.set()
+    qtbot.waitUntil(lambda: not session.running and not session.busy and not session._timer.isActive(), timeout=10_000)
+    assert second.id not in session.results and session.table_status(second.id) == "pending"
+    assert session.results[first.id].df.columns == ["C"]  # calculated for this project, as always
+    assert session.engine.reload_token == 0
+    assert window.run_panel.summary.text().startswith("Run stopped at " if stopped else "Run finished")
+    assert not window.stop_action.isEnabled()
+
+
 def test_stop_also_stops_a_formula_that_runs(qapp, qtbot, slow_registry, tmp_path, monkeypatch):
     """A slow formula doesn't make Stop wait for it: its query is interrupted."""
     (tmp_path / "data.csv").write_text("A;B\n1;2\n", encoding="utf-8")

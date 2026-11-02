@@ -9,6 +9,8 @@ import json
 import os
 import sqlite3
 import sys
+import threading
+import types
 
 import pyodbc
 import pytest
@@ -17,14 +19,15 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from tafl import APP_NAME
 from tafl.api import ActionError, Kind, P, files
+from tafl.api import action as new_action
 from tafl.api.parameters import Failed, plain
-from tafl.core import Parameter, Project, Status, engine, sheet
+from tafl.core import Parameter, Project, Registry, Status, engine, formula_preview, sheet
 from tafl.core.parameters import NOT_WORKED_OUT
 from tafl.ui import app as app_module
 from tafl.ui import theme, trust
 from tafl.ui.checks import checks
 from tafl.ui.connections_dialog import ConnectionsDialog
-from tafl.ui.forms import FormContext, PathEditor
+from tafl.ui.forms import ExpressionEditor, FormContext, PathEditor
 from tafl.ui.main_window import MainWindow
 from tafl.ui.parameters_dialog import ParametersDialog
 from tafl.ui.session import PROTECTED, Session
@@ -508,6 +511,128 @@ def test_the_question_before_a_run_has_cancel_as_its_default(window, session, mo
     assert shown[0][:3] == ("Trust this project and run it?", "Cancel", "Cancel")
 
 
+# --- work of the project before ------------------------------------------------------------------------
+
+HOLD, STARTED, RELEASE = threading.Event(), threading.Event(), threading.Event()
+
+
+@new_action("test.hold", "Hold")
+def _hold(df, p, ctx):
+    """While a test asks for it: says it started, then waits until the test lets it go on."""
+    if HOLD.is_set():
+        STARTED.set()
+        RELEASE.wait(20)
+    return df
+
+
+@pytest.fixture(scope="module")
+def holding_registry():
+    registry = Registry()
+    registry.load_builtin()
+    module = types.ModuleType("holding")
+    module.hold = _hold
+    registry.add_module(module)
+    return registry
+
+
+@pytest.fixture(params=["job", "run"])
+def under_way(request, qapp, qtbot, holding_registry, tmp_path):
+    """A window with a known project, whose calculation or run is held in the last step of the
+    first table, and the path of an unknown project: another folder, other tables and other data,
+    with the same ids and the same name of its data file."""
+    for event in (HOLD, STARTED, RELEASE):
+        event.clear()
+    actions = holding_registry.actions
+    mine, theirs = tmp_path / "mine", tmp_path / "theirs"
+    for folder, text in ((mine, "A\n1\n2\n"), (theirs, "A\n5\n")):
+        folder.mkdir()
+        (folder / "data.csv").write_text(text, encoding="utf-8")
+    project = Project()
+    table = project.add_table("Mine")
+    project.add_step(table, actions["csv.import"], {"file": "data.csv"})
+    project.add_step(table, actions["test.hold"], {})
+    project.add_step(project.add_table("Mine too"), actions["csv.import"], {"file": "data.csv"})
+    known = project.save(mine / "mine.tafl")
+    project = Project()
+    table = project.add_table("Theirs")
+    project.add_step(table, actions["csv.import"], {"file": "data.csv"})
+    project.add_step(table, actions["calc.columns"], {"columns": [{"name": "B", "formula": "A * 7"}]})
+    project.add_step(project.add_table("Theirs too"), actions["csv.import"], {"file": "data.csv"})
+    unknown = project.save(theirs / "theirs.tafl")
+
+    session = Session(holding_registry)
+    window = MainWindow(session)
+    window.show()
+    if request.param == "job":
+        HOLD.set()
+    window.open_path(known, trusted=True)
+    if request.param == "run":
+        qtbot.waitUntil(lambda: not session.busy, timeout=10_000)
+        HOLD.set()
+        window.run_project()
+    assert STARTED.wait(10)
+    yield window, unknown
+    RELEASE.set()
+    session.cancel_run()
+    session.wait()
+    qapp.processEvents()
+    session._set_dirty(False)
+    window.close()
+    window.deleteLater()
+
+
+def test_work_of_the_project_before_stays_out_of_protected_view(under_way, qtbot, monkeypatch):
+    """Its step ends normally after the open, and the ids mean something else now: no status, no
+    data for a formula, and what the bar says stays true."""
+    window, unknown = under_way
+    session = window.session
+    was_running = session.running
+    evaluated = []
+    evaluate = formula_preview._evaluate
+    monkeypatch.setattr(formula_preview, "_evaluate", lambda *arguments: evaluated.append(arguments) or evaluate(*arguments))
+
+    assert window.open_path(unknown)
+    assert session.protected and not session.busy and window.busy_label.text() == ""
+    assert session.running == was_running and window.stop_action.isEnabled() == was_running
+    RELEASE.set()
+    assert session.wait()
+    wait_a_moment(qtbot, session)
+
+    first, second = session.project.tables
+    assert session.project.path == unknown and session.step.action == "calc.columns"
+    assert session.results == {}
+    assert session.table_status(first.id) == session.table_status(second.id) == "pending"
+    assert session.input_frame(session.step) is None
+    assert session.engine.reload_token == 0 and session.engine._parameter_values == {}
+    editor = window.settings_panel.form.findChildren(ExpressionEditor)[0]
+    assert editor.line.text() == PROTECTED and evaluated == []
+    assert not window.protected_bar.isHidden() and window.data_panel.message.text() == PROTECTED
+    assert window.data_panel.model.frame is None
+
+    assert window.run_panel.summary.text().startswith("Run finished") == was_running  # a run still reports
+    assert not window.stop_action.isEnabled() and window.run_action.isEnabled()
+
+    window.protected_bar.button.click()
+    qtbot.waitUntil(lambda: not session.busy and not session._timer.isActive(), timeout=10_000)
+    assert not session.protected and session.result.df["B"].to_list() == [35]  # its own data
+
+
+def test_data_that_reaches_protected_view_goes_to_no_formula(session, demo, settle):
+    """Should a new path bring in a result, the formulas of the project still get no data."""
+    session.open_project(demo, trusted=True)
+    table = session.project.table("Orders").id
+    session.select_table(table)
+    settle(session)
+    result = session.result
+    step = session.table.steps[1]
+    assert session.input_frame(step) is not None
+    session.open_project(demo, trusted=False)
+    session.select_table(table)
+    session.results[table] = result
+    assert session.input_frame(session.find_step(step.id)[1]) is None
+    assert session.input_columns(session.find_step(step.id)[1]) is None
+
+
 # --- what counts as known ------------------------------------------------------------------------------
 
 
@@ -615,6 +740,33 @@ def test_save_as_leaves_the_first_file_known(session, demo, tmp_path, registry):
     for path in (demo, copy):
         other.open_project(path)
         assert not other.protected
+
+
+def test_save_as_into_the_same_folder_leaves_the_first_file_known(session, demo, registry):
+    """Both files have the same value then: a later save of the copy takes it from neither."""
+    session.open_project(demo)
+    session.trust_project()
+    copy = session.save_project(demo.with_name("next month.tafl"))
+    assert copy.read_bytes() == demo.read_bytes()
+    session.set_note(session.project.tables[0].steps[0].id, "edited")
+    session.save_project()
+    other = Session(registry)
+    for path in (demo, copy):
+        other.open_project(path)
+        assert not other.protected
+
+
+def test_a_save_with_no_change_leaves_a_copy_from_before_known(session, demo, registry):
+    session.open_project(demo)
+    session.trust_project()
+    before = demo.with_name("before.tafl")
+    before.write_bytes(demo.read_bytes())
+    session.save_project()
+    session.set_note(session.project.tables[0].steps[0].id, "edited")
+    session.save_project()
+    other = Session(registry)
+    other.open_project(before)
+    assert not other.protected
 
 
 def test_trusting_after_a_save_in_protected_view_knows_the_file_as_saved(session, demo):

@@ -98,6 +98,8 @@ class Session(QObject):
         self._stamp: tuple[int, int] | None = None  # the project file as it was opened or saved
         self._digest = ""  # its SHA-256 then: what trusting the project adds to the list of known files
         self._saved: tuple[str, Path] | None = None  # what the last save added to that list
+        self._opened = 0  # counts the projects opened here (the Project object can't tell: an undo replaces it)
+        self._run_opened = 0  # that count when the latest run started
         self._stopping = False
         self.run_seconds: float | None = None  # how long the last run took
         self._run_done: dict[str, TableResult] = {}  # the tables the latest run has calculated so far
@@ -169,8 +171,8 @@ class Session(QObject):
         else:  # a file this window wrote; the state it replaces in that file takes no place on the list
             if self._saved is not None and self._saved[1] == saved:
                 trust.drop(*self._saved)
-            trust.add(self._digest, saved)
-            self._saved = self._digest, saved
+            # A value that was on the list stays there: it can also stand for another file in that folder
+            self._saved = (self._digest, saved) if trust.add(self._digest, saved) else None
         self._set_dirty(False)
         if before is not None:
             self._rebase_history(old_dir, target.parent)
@@ -201,7 +203,8 @@ class Session(QObject):
             self.protected_changed.emit(False)
 
     def _set_project(self, project: Project, protected: bool = False) -> None:
-        self._worker.cancel()
+        self._worker.forget()
+        self._opened += 1
         self._stamp = None
         self._digest = project.digest
         self._saved = None
@@ -274,9 +277,9 @@ class Session(QObject):
     def input_frame(self, step: Step | None) -> pl.DataFrame | None:
         """The table going into ``step``: the result of the last step before it that has one.
         None while the steps before it are not calculated as they are now (e.g. one was just
-        moved), or when one of them has an error."""
+        moved), when one of them has an error, and in protected view: no formula sees data there."""
         table, result = self.table, self.result
-        if step is None or table is None or result is None or step not in table.steps:
+        if self.protected or step is None or table is None or result is None or step not in table.steps:
             return None
         before = table.steps[: table.steps.index(step)]
         if [r.step_id for r in result.steps[: len(before)]] != [s.id for s in before]:
@@ -468,8 +471,9 @@ class Session(QObject):
     def run_project(self, table_ids: list[str] | None = None) -> None:
         """Run tables (default: all) with exports and commands, in the background. A run that is
         stopped sends run_stopped with the tables calculated before the stop, and the one that
-        was stopped (``TableResult.stopped``, with the steps that ran). In protected view nothing
-        runs: run_wants_trust goes out, and the main window asks."""
+        was stopped (``TableResult.stopped``, with the steps that ran). A run goes on when another
+        project is opened, and reports as always, but the tables of that project don't take its
+        results. In protected view nothing runs: run_wants_trust goes out, and the main window asks."""
         if self.protected:
             self.run_wants_trust.emit(table_ids)
             return
@@ -483,6 +487,7 @@ class Session(QObject):
 
         self._stopping = False
         self._run_done = done
+        self._run_opened = self._opened
         self._runner.start(work)
 
     def cancel_run(self) -> None:
@@ -533,9 +538,10 @@ class Session(QObject):
 
     def _on_run_finished(self, outcome: tuple[dict[str, TableResult], int, float]) -> None:
         results, reload_token, self.run_seconds = outcome
-        self.engine.reload_token = max(self.engine.reload_token, reload_token)  # previews reuse the run
-        self._update_results(results)
-        self.results_changed.emit()
+        if self._run_opened == self._opened:  # not a run of the project before: table ids repeat across projects
+            self.engine.reload_token = max(self.engine.reload_token, reload_token)  # previews reuse the run
+            self._update_results(results)
+            self.results_changed.emit()
         self.run_finished.emit(results)
         self.calculate_now()
 

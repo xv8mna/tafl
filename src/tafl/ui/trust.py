@@ -33,10 +33,13 @@ def is_known(digest: str, path: str | Path) -> bool:
     return True
 
 
-def add(digest: str, path: str | Path) -> None:
-    """The file with this SHA-256 value at ``path`` is known from now on."""
+def add(digest: str, path: str | Path) -> bool:
+    """The file with this SHA-256 value at ``path`` is known from now on. Returns whether its value
+    is new on the list."""
     value = _value(digest, path)
-    _write(_VALUES, [value, *(other for other in _read(_VALUES) if other != value)][:LIMIT])
+    known = _read(_VALUES)
+    _write(_VALUES, [value, *(other for other in known if other != value)][:LIMIT])
+    return value not in known
 
 
 def drop(digest: str, path: str | Path) -> None:
