@@ -22,6 +22,7 @@ from .labels import LONG_TIP_LINES, tooltip_text
 BLOCK = 256
 _MAX_BLOCKS = 64
 _MAX_TEXT = 500
+_TIP_TEXT = 100 * LONG_TIP_LINES  # tooltip_text shows no more
 
 Index = QModelIndex | QPersistentModelIndex
 _ROOT = QModelIndex()
@@ -38,6 +39,10 @@ class DisplayFormat:
     def formatter(self, dtype: pl.DataType) -> Callable[[Any], str]:
         if dtype == pl.String:
             return lambda v: v if len(v) <= _MAX_TEXT else v[:_MAX_TEXT] + "…"
+        if dtype == pl.Binary:  # as text a byte takes up to 4 characters
+            return lambda v: str(v) if len(v) <= _MAX_TEXT else str(v[:_MAX_TEXT]) + "…"
+        if dtype.is_nested():  # a list or a record can hold cells of any size
+            return _start_of_text
         if dtype.is_float():
             return self.number
         if dtype == pl.Date:
@@ -108,7 +113,13 @@ class FrameModel(QAbstractTableModel):
                 return "" if role == Qt.ItemDataRole.DisplayRole else "(empty)"
             text = self._formatters[index.column()](value)
             if role == Qt.ItemDataRole.ToolTipRole:
-                return tooltip_text(str(value), LONG_TIP_LINES) if len(str(value)) > 40 else None
+                if isinstance(value, bytes):  # the part that the cell shows
+                    tip = text
+                elif isinstance(value, list | dict):  # the part that a tooltip shows
+                    tip = _start_of_text(value, _TIP_TEXT)
+                else:
+                    tip = str(value)
+                return tooltip_text(tip, LONG_TIP_LINES) if len(tip) > 40 else None
             return text
         if role == Qt.ItemDataRole.TextAlignmentRole:
             horizontal = Qt.AlignmentFlag.AlignRight if self._numeric[index.column()] else Qt.AlignmentFlag.AlignLeft
@@ -145,19 +156,58 @@ class FrameModel(QAbstractTableModel):
 
     def copier(self) -> Callable[[pl.Series], list[str]] | None:
         """A function that turns a column of the frame (or part of it) into the texts the grid
-        shows, for copying cells: texts in full, in quotes as Excel writes them when they have
-        tabs or line breaks. It can run in another thread."""
+        shows, for copying cells: nothing is cut, and texts are in quotes as Excel writes them
+        when they have tabs or line breaks. It can run in another thread."""
         if self._df is None:
             return None
-        full = {
-            name: (excel_text if dtype == pl.String else self.display.formatter(dtype)) for name, dtype in self._df.schema.items()
-        }
+
+        def whole(dtype: pl.DataType) -> Callable[[Any], str]:
+            if dtype == pl.String:
+                return excel_text
+            return str if dtype == pl.Binary or dtype.is_nested() else self.display.formatter(dtype)
+
+        full = {name: whole(dtype) for name, dtype in self._df.schema.items()}
 
         def texts(column: pl.Series) -> list[str]:
             show = full[column.name]
             return ["" if value is None else show(value) for value in column.to_list()]
 
         return texts
+
+
+def _start_of_text(value: Any, most: int = _MAX_TEXT) -> str:
+    text = str(_first_part(value, most))
+    return text if len(text) <= most else text[:most] + "…"
+
+
+def _first_part(value: Any, most: int) -> Any:
+    """A part of ``value`` whose text starts with the first ``most`` characters of the text of all
+    of it: the time it takes doesn't grow with the size of a list or of the values in it."""
+    if isinstance(value, str | bytes):
+        if len(value) <= most:
+            return value
+        part = value[:most]
+        for quote in ("'", '"') if isinstance(value, str) else (b"'", b'"'):
+            if quote in value and quote not in part:  # in a list, its quotes depend on them
+                part += quote
+        return part
+    if isinstance(value, list):
+        part, size = [], 0
+        for item in value:
+            if size > most:
+                break
+            part.append(_first_part(item, most))
+            size += len(repr(part[-1])) + 2  # the text of a list shows the repr of its items
+        return part
+    if isinstance(value, dict):
+        record, size = {}, 0
+        for key, item in value.items():
+            if size > most:
+                break
+            record[key] = _first_part(item, most)
+            size += len(repr(key)) + len(repr(record[key])) + 4  # the text of a record: {'key': value, ...}
+        return record
+    return value
 
 
 def excel_text(text: str) -> str:

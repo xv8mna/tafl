@@ -41,6 +41,16 @@ def test_copy_cells_as_excel_pastes_them(session, qtbot):
     assert QApplication.clipboard().text() == '"Ben\tBerlin"\t\r\n"Say ""hi""\nthere"\t\r\n\t4'
 
 
+def test_a_cell_that_the_grid_cuts_is_copied_whole(session, qtbot):
+    value = bytes(range(256)) * 10
+    df = pl.DataFrame({"B": [value], "L": [[value]]}, schema={"B": pl.Binary, "L": pl.List(pl.Binary)})
+    panel = grid(session, df)
+    qtbot.addWidget(panel)
+    select(panel, (0, 0, 0, 1))
+    panel.copy_selection()
+    assert QApplication.clipboard().text() == f"{value}\t{[value]}"
+
+
 def test_select_all_and_copy_a_big_grid(session, qtbot):
     """300,000 × 4 cells: Ctrl+A took 3.5 s and Ctrl+C 5 s, and copied nothing."""
     rows = 300_000
