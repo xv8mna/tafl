@@ -2,18 +2,19 @@
 
 import datetime as dt
 import json
+import math
 import time
 from decimal import Decimal as D
 
 import polars as pl
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from tafl.api.testing import StubContext
 from tafl.core import Project
-from tafl.ui import app
-from tafl.ui.filter_pane import FilterPane
+from tafl.ui import app, filter_pane
+from tafl.ui.filter_pane import MAX_CARDS, FilterPane
 from tafl.ui.filters import (
     Filter,
     apply,
@@ -27,6 +28,7 @@ from tafl.ui.filters import (
     to_json,
     unusable,
 )
+from tafl.ui.labels import tooltip_text
 
 DATA = pl.DataFrame(
     {
@@ -89,6 +91,23 @@ def test_binary_values_are_read_from_their_hex_text():
     assert apply(DATA, [Filter("Code", ["0x", "0x69742773"])])["Code"].to_list() == [b"it's", b""]
     assert apply(DATA, [Filter("Code", ["abc", 7])]).height == 0
     assert apply(DATA, [Filter("Code", ["abc", 7], excluded=True)]).height == DATA.height
+
+
+@pytest.mark.parametrize("stored", ["", " ", "61", "0x61 ", "0x00ff", "abcd", 5])
+def test_a_binary_value_counts_only_in_the_form_that_is_written(stored):
+    assert from_json([stored], pl.Binary) == []
+    assert apply(DATA, [Filter("Code", [stored])]).height == 0
+    assert apply(DATA, [Filter("Code", [stored], excluded=True)]).height == DATA.height
+    assert formula(Filter("Code", [stored]), pl.Binary) == "FALSE"
+
+
+def test_the_check_of_a_big_binary_value_keeps_no_state_per_byte():
+    """It runs in each condition, in the window's thread: a repeated group in the pattern takes
+    about 0.8 s and 1 GB for 5 MB."""
+    value = "0x" + "AB" * 5_000_000
+    started = time.perf_counter()
+    assert len(from_json([value], pl.Binary)[0]) == 5_000_000
+    assert time.perf_counter() - started < 0.4
 
 
 def test_filters_are_saved_but_are_not_edits(session, qtbot):
@@ -667,3 +686,158 @@ def test_closing_keeps_the_window_when_saving_fails(window, session, monkeypatch
     assert not window.close()
     assert session.dirty and len(warnings) == 1
     assert warnings[0].startswith(f"Could not save {path}:\n\nThe project holds a value that can't be stored in its file")
+
+
+@pytest.mark.parametrize("value", [math.inf, -math.inf, math.nan])
+def test_closing_with_save_keeps_a_filter_when_a_stored_map_position_is_not_a_finite_number(
+    window, settle, session, registry, monkeypatch, tmp_path, value
+):
+    """Before, the program ended with an error, and the filter was lost."""
+    data = tmp_path / "cells.parquet"
+    pl.DataFrame({"City": ["a", "b", None]}).write_parquet(data)
+    project = Project(name="Cells")
+    table = project.add_table("T")
+    project.add_step(table, registry.actions["parquet.import"], {"file": str(data)})
+    table.group = project.add_group("G").id
+    path = project.save(tmp_path / "cells.tafl")
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    stored["tables"][0]["position"] = [value, 0]
+    stored["groups"][0]["position"] = [value, 0]
+    path.write_text(json.dumps(stored), encoding="utf-8")
+    assert window.open_path(path)
+    settle(session)
+    monkeypatch.setattr(window, "ask_save", lambda reason: "save")
+    panel = window.data_panel
+    panel.filter_by("City", ["a"])
+    settle(session)
+    assert session.dirty and panel.model.frame["City"].to_list() == ["a"]
+    assert window.close()
+    assert not session.dirty
+    saved = Project.load(path)
+    assert saved.tables[0].filters == [{"column": "City", "values": ["a"]}]
+    assert saved.tables[0].position is None and saved.groups[0].position is None
+    panel.filter_button.setChecked(False)
+
+
+@pytest.fixture
+def few_cards(monkeypatch):
+    """The cards of very many filters would take gigabytes of widgets: a card for each ends the test."""
+    built = []
+    create = filter_pane.FilterCard
+
+    def counted(*args):
+        built.append(args)
+        assert len(built) < 10 * MAX_CARDS, "a card for every filter"
+        return create(*args)
+
+    monkeypatch.setattr(filter_pane, "FilterCard", counted)
+
+
+def test_a_project_with_very_many_filters_opens_unchanged(window, session, registry, tmp_path, few_cards, protected_view):
+    """A project file written by hand can hold any number of filters, and the filter pane shows
+    the filters of a table as soon as the project opens, here in protected view."""
+    filters = [{"column": f"c{number}", "values": ["a"]} for number in range(12_000)]
+    project = Project(name="Many filters")
+    table = project.add_table("A")
+    project.add_step(table, registry.actions["csv.import"], {"file": "a.csv"})
+    table.filters = filters
+    path = project.save(tmp_path / "many.tafl")
+    started = time.perf_counter()
+    assert window.open_path(path)
+    assert time.perf_counter() - started < 10
+    assert session.protected
+    pane = window.data_panel.filter_pane
+    assert [(card.index, card.column) for card in pane.cards] == [(number, f"c{number}") for number in range(MAX_CARDS)]
+    assert len(pane.findChildren(QWidget)) < 40 * MAX_CARDS
+    assert pane.too_many.text().startswith("11,900 more filters are on this table: too many to show.\n")
+    assert pane.too_many.text().endswith("remove 11,901 to add another.")
+    assert not pane.too_many.isHidden() and not pane.add_button.isEnabled()
+    assert session.project.tables[0].filters == filters and not session.dirty
+
+
+def test_a_filter_past_the_limit_brings_the_line_into_view(window, settle, session, demo, qapp):
+    """A menu of the grid has no other way to say why nothing happens. The pane has no bar to
+    scroll to the side: the line and the cards stay where they are across."""
+    panel, orders = open_orders(window, settle, session, demo, 8)
+    window.show()
+    session.set_filters(orders.id, [{"column": "Status", "values": []}] * MAX_CARDS)
+    panel.filter_button.setChecked(True)
+    qapp.processEvents()
+    pane = panel.filter_pane
+    pane.container.setMinimumWidth(pane.scroll.viewport().width() + 200)  # as with a big font
+    qapp.processEvents()
+    viewport = pane.scroll.viewport()
+    in_view = lambda: viewport.rect().contains(pane.too_many.mapTo(viewport, pane.too_many.rect().center()))  # noqa: E731
+    assert not in_view()
+    panel.filter_by("City")
+    qapp.processEvents()
+    assert in_view() and pane.scroll.horizontalScrollBar().value() == 0
+
+
+def test_filters_without_a_card_still_apply_and_are_kept(window, settle, session, demo, few_cards):
+    panel, orders = open_orders(window, settle, session, demo, 8)
+    pane = panel.filter_pane
+    panel.filter_by("City")
+    hamburg = listed(pane.cards[0])["Hamburg"]
+    filters = [{"column": "Status", "values": []}] * 11_999 + [{"column": "City", "values": ["Hamburg"]}]
+    started = time.perf_counter()
+    session.set_filters(orders.id, filters)
+    assert time.perf_counter() - started < 60  # each of the cards would take seconds
+    assert len(pane.cards) == MAX_CARDS and panel.filter_button.text() == "Filters (1)"
+    assert panel.model.frame.height == hamburg and set(panel.model.frame["City"].to_list()) == {"Hamburg"}
+    assert sum(listed(pane.cards[3]).values()) == hamburg  # a card counts the rows of the filters without one
+    card = pane.cards[3]
+    card.apply_only(card.model.index(0, 0))  # a card changes its own filter and no other
+    stored = session.filters(orders.id)
+    assert stored[3]["values"] and stored[:3] + stored[4:] == filters[:3] + filters[4:]
+    assert session.project.to_dict()["tables"][1]["filters"] == stored
+
+
+def test_a_filter_cannot_be_added_at_the_limit_of_the_cards(window, settle, session, demo):
+    panel, orders = open_orders(window, settle, session, demo, 8)
+    pane = panel.filter_pane
+    session.set_filters(orders.id, [{"column": "Status", "values": []}] * (MAX_CARDS - 1))
+    assert len(pane.cards) == MAX_CARDS - 1 and pane.add_button.isEnabled() and pane.too_many.isHidden()
+    panel.filter_by("City")  # what the menus of the grid do
+    most = f"A table shows {MAX_CARDS} filters at most: remove one to add another."
+    assert len(pane.cards) == MAX_CARDS and not pane.add_button.isEnabled()
+    assert not pane.too_many.isHidden() and pane.too_many.text() == most and pane.add_button.toolTip() == tooltip_text(most)
+    full = session.filters(orders.id)
+    panel.filter_by("Size")
+    panel.filter_by("Size", ["large"])
+    pane.add_filter("City", again=True)  # what the menu of the button does
+    assert session.filters(orders.id) == full
+    panel.filter_by("City", ["Hamburg"])  # a filter that is there gets the values
+    assert session.filters(orders.id)[-1] == {"column": "City", "values": ["Hamburg"]}
+    assert set(panel.model.frame["City"].to_list()) == {"Hamburg"}
+    session.set_filters(orders.id, [*full, full[0]])
+    most = f"A table shows {MAX_CARDS} filters at most: remove 2 to add another."
+    assert pane.too_many.text() == f"1 more filter is on this table: too many to show.\n{most}"
+    assert not pane.too_many.isHidden() and not pane.add_button.isEnabled()
+    pane.remove(0)
+    pane.remove(0)
+    assert len(pane.cards) == MAX_CARDS - 1 and pane.add_button.isEnabled() and pane.too_many.isHidden()
+    assert "right-click" in pane.add_button.toolTip()
+
+
+def test_a_filter_past_the_cards_takes_no_values_from_the_grid(window, settle, session, demo):
+    """It has no card that would show or clear them."""
+    panel, orders = open_orders(window, settle, session, demo, 8)
+    stored = [*[{"column": "Status", "values": []}] * MAX_CARDS, {"column": "City", "values": []}]
+    session.set_filters(orders.id, stored)
+    panel.filter_by("City", ["Hamburg"])
+    assert session.filters(orders.id) == stored
+
+
+def test_a_filter_without_a_card_leaves_the_values_of_a_card_in_its_list(window, settle, session, demo):
+    """It takes rows, not values: a value with no rows left stays with the count 0, so that
+    the card shows what is selected."""
+    panel, orders = open_orders(window, settle, session, demo, 8)
+    pane = panel.filter_pane
+    first, other = sorted(set(panel.model.frame["CustomerNo"].to_list()))[:2]
+    empty = [{"column": "Status", "values": []}] * (MAX_CARDS - 1)
+    session.set_filters(orders.id, [{"column": "CustomerNo", "values": [first]}, *empty, {"column": "CustomerNo", "values": [other]}])
+    card = pane.cards[0]
+    assert card.status.text().endswith("· 1 selected")
+    assert [value for value in card.model.applied()] == [first]
+    assert panel.model.frame.height == 0

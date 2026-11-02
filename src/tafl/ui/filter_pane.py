@@ -22,6 +22,7 @@ from PySide6.QtCore import (
     QModelIndex,
     QPersistentModelIndex,
     Qt,
+    QTimer,
 )
 from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPalette, QShortcut
 from PySide6.QtWidgets import (
@@ -56,6 +57,7 @@ from .filters import (
     PERIODS,
     VALUE,
     Filter,
+    apply,
     default_options,
     facet,
     facets_for,
@@ -76,6 +78,8 @@ Index = QModelIndex | QPersistentModelIndex
 _ROOT = QModelIndex()
 _BAR = Qt.ItemDataRole.UserRole + 1  # share of the rows (0..1), for the bar behind the count
 _LIST_ROWS = 8  # rows a card shows before it scrolls
+MAX_CARDS = 100  # the filters after these only apply, without a card: a card takes about 1 MB of widgets
+_ADD_TIP = "Add a filter for a column (or right-click a column or a cell in the grid)"
 
 
 class _Values(QAbstractTableModel):
@@ -441,7 +445,14 @@ class FilterCard(QFrame):
 
     # --- showing -------------------------------------------------------------------------------
 
-    def update_values(self, df: pl.DataFrame | None, filters: list[Filter], index: int, display: DisplayFormat) -> None:
+    def update_values(
+        self,
+        df: pl.DataFrame | None,
+        filters: list[Filter],
+        index: int,
+        display: DisplayFormat,
+        rows: pl.DataFrame | None = None,
+    ) -> None:
         f = filters[index]
         self.index = index
         self._filter = f
@@ -453,7 +464,7 @@ class FilterCard(QFrame):
             why = f"Not used at this step: {reason}."
         else:
             why = None
-        result = facet(df, filters, index) if why is None else None
+        result = facet(df, filters, index, rows) if why is None else None
         if result is None and why is None:
             why = "These values can't be listed."
         listed = result is not None
@@ -580,7 +591,7 @@ class FilterPane(QWidget):
         title = QLabel("Filters", self)
         title.setObjectName("PanelTitle")
         self.add_button = QPushButton("+ Filter", self)
-        self.add_button.setToolTip("Add a filter for a column (or right-click a column or a cell in the grid)")
+        self.add_button.setToolTip(tooltip_text(_ADD_TIP))
         self.add_menu = QMenu(self.add_button)
         self.add_menu.aboutToShow.connect(self._fill_add_menu)
         self.add_button.setMenu(self.add_menu)
@@ -598,17 +609,25 @@ class FilterPane(QWidget):
         self.hint.setWordWrap(True)
         self.hint.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.hint.setMargin(6)
+        self.too_many = QLabel(self)
+        self.too_many.setTextFormat(Qt.TextFormat.PlainText)
+        self.too_many.setObjectName("Dim")
+        self.too_many.setWordWrap(True)
+        self.too_many.setMargin(6)
+        self.too_many.hide()
         container = QWidget(self)
         self.cards_layout = QVBoxLayout(container)
         self.cards_layout.setContentsMargins(2, 2, 2, 2)
         self.cards_layout.setSpacing(8)
         self.cards_layout.addWidget(self.hint)
+        self.cards_layout.addWidget(self.too_many)  # the cards go before this line
         self.cards_layout.addStretch(1)
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(container)
+        self.scroll = scroll
         self.container = container
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -630,18 +649,29 @@ class FilterPane(QWidget):
         if shown == self._shown and df is self.df:
             return
         self._shown, self.table_id, self.df = shown, table_id, df
-        if [(c.column, c.facet) for c in self.cards] != [(f.column, f.facet) for f in filters]:
+        first = filters[:MAX_CARDS]  # the number of a card is the index of its filter
+        if [(c.column, c.facet) for c in self.cards] != [(f.column, f.facet) for f in first]:
             for card in self.cards:
                 self.cards_layout.removeWidget(card)
                 card.hide()
                 card.deleteLater()  # a card may still be handling a click
-            self.cards = [FilterCard(self, f) for f in filters]
+            self.cards = [FilterCard(self, f) for f in first]
             for number, card in enumerate(self.cards):
                 self.cards_layout.insertWidget(number + 1, card)
+        # The filters without a card narrow the rows once: for each card, they would take minutes
+        rows = None if df is None else apply(df, filters[MAX_CARDS:])
         for number, card in enumerate(self.cards):
-            card.update_values(df, filters, number, self.display)
+            card.update_values(df, first, number, self.display, rows)
+        more = len(filters) - len(first)
+        full = len(filters) >= MAX_CARDS
+        most = f"A table shows {MAX_CARDS} filters at most: remove {f'{more + 1:,}' if more else 'one'} to add another."
+        self.too_many.setText(
+            f"{more:,} more filter{'s are' if more != 1 else ' is'} on this table: too many to show.\n{most}" if more else most
+        )
+        self.too_many.setVisible(full)
         self.hint.setVisible(not filters)
-        self.add_button.setEnabled(table_id is not None)
+        self.add_button.setEnabled(table_id is not None and not full)
+        self.add_button.setToolTip(tooltip_text(most if full else _ADD_TIP))
 
     def _fill_add_menu(self) -> None:
         self.add_menu.clear()
@@ -661,14 +691,26 @@ class FilterPane(QWidget):
 
     def add_filter(self, column: str, values: list[Any] | None = None, again: bool = False) -> None:
         """A filter for ``column`` (with ``values`` applied). If the column has a filter by values
-        already, that one gets the values; ``again`` adds another filter in any case."""
+        already, that one gets the values; ``again`` adds another filter in any case, unless the
+        table has MAX_CARDS filters: a new one would have no card, and so would a filter past them
+        that takes the values. The line under the cards says so, and comes into view."""
         filters = self.filters()
-        existing = next((f for f in filters if f.column == column and (values is None or f.facet == "values")), None)
+        first = filters[:MAX_CARDS]
+        existing = next((f for f in first if f.column == column and (values is None or f.facet == "values")), None)
         if existing is None or again:
+            if len(filters) >= MAX_CARDS:
+                QTimer.singleShot(0, self.scroll, self._show_too_many)
+                return
             filters.append(Filter(column, list(values or [])))
         elif values is not None:
             existing.values, existing.excluded = list(values), False
         self._save(filters)
+
+    def _show_too_many(self) -> None:
+        across = self.scroll.horizontalScrollBar()
+        kept = across.value()  # there is no bar to scroll back: the cards must not move to the side
+        self.scroll.ensureWidgetVisible(self.too_many)
+        across.setValue(kept)
 
     def set_facet(self, index: int, facet_name: str) -> None:
         """Filter by values, time periods, number ranges, text length or a pattern (the

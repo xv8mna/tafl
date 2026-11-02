@@ -282,10 +282,10 @@ def _convert(value: Any, dtype: pl.DataType) -> Any:
         raise ValueError(value)
     if isinstance(value, bool):  # True is an int in Python: don't let it match 1
         raise ValueError(value)
-    if dtype == pl.Binary:
-        if not isinstance(value, str):
+    if dtype == pl.Binary:  # only as to_json writes it: the card compares the stored text with that form
+        if not isinstance(value, str) or len(value) % 2 or not re.fullmatch(r"0x[0-9A-F]*", value):
             raise ValueError(value)
-        return bytes.fromhex(value.removeprefix("0x"))
+        return bytes.fromhex(value[2:])
     if dtype.is_integer():
         number = float(value) if isinstance(value, str) else value
         if not float(number).is_integer():
@@ -341,14 +341,17 @@ def apply(df: pl.DataFrame, filters: list[Filter]) -> pl.DataFrame:
     return df.filter(pl.all_horizontal(conditions)) if conditions else df
 
 
-def facet(df: pl.DataFrame, filters: list[Filter], index: int) -> tuple[pl.DataFrame, int] | None:
+def facet(
+    df: pl.DataFrame, filters: list[Filter], index: int, rows: pl.DataFrame | None = None
+) -> tuple[pl.DataFrame, int] | None:
     """The values filter ``index`` offers (cells, periods, ranges, ...) with how often each
     occurs among the rows that pass the *other* filters (0 = not possible with them), and how
-    many rows those are. None if the filter can't be used with this data."""
+    many rows those are. ``rows``: the rows of ``df`` that passed more filters already. None if
+    the filter can't be used with this data."""
     picked = keys(filters[index], df.schema)
     if picked is None:
         return None
-    base = apply(df, [f for i, f in enumerate(filters) if i != index])
+    base = apply(df if rows is None else rows, [f for i, f in enumerate(filters) if i != index])
     try:
         values = df.select(picked.alias(VALUE)).unique()
         counts = base.group_by(picked.alias(VALUE)).agg(pl.len().alias(COUNT))
