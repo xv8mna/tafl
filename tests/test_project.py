@@ -270,6 +270,26 @@ def test_a_project_file_with_a_byte_order_mark_opens(tmp_path):
     assert Project.load(path).to_dict() == data
 
 
+def test_half_of_a_character_from_another_program_becomes_a_replacement_character(tmp_path):
+    """Another program may write a lone surrogate ("\\ud800", e.g. from a text cut in the middle
+    of a character): the rest of the text stays, and the project can be saved again."""
+    data = sample_project().to_dict()
+    steps = data["tables"][0]["steps"]
+    steps[1]["note"] = "check \ud800 later"
+    steps[0]["params"] = {"file": "orders\udc00.csv", "sheet\udbff": "a \U0001f600 b"}
+    data["connections"][0]["settings"]["database"] = r"C:\ud800\Sales"  # a backslash and "ud800": no surrogate
+    path = tmp_path / "other.tafl"
+    path.write_text(json.dumps(data), encoding="utf-8")  # as \ud800, \udc00, \udbff and \ud83d\ude00
+    project = Project.load(path)
+    assert project.tables[0].steps[1].note == "check \ufffd later"
+    assert project.tables[0].steps[0].params == {"file": "orders\ufffd.csv", "sheet\ufffd": "a \U0001f600 b"}
+    assert project.connections[0].settings["database"] == r"C:\ud800\Sales"
+
+    project.save()
+    assert Project.load(path).to_dict() == project.to_dict()
+    assert "check \ufffd later" in path.read_text(encoding="utf-8")
+
+
 def test_a_file_of_another_format_is_refused(tmp_path):
     other = tmp_path / "other.tafl"
     data = sample_project().to_dict()

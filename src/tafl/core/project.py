@@ -338,6 +338,8 @@ class Project:
             raise ProjectError(f"The project file {file.name} is damaged: {e}") from e
         if _nested_too_deeply(data):
             raise ProjectError(f"The project file {file.name} is damaged: its data is nested too deeply")
+        if _SURROGATE_ESCAPE.search(text):  # UTF-8 has no surrogates: only a "\ud800" in the JSON brings one
+            data = _whole_characters(data)
         try:
             project = cls.from_dict(data, path=file)
         except ProjectError:
@@ -377,6 +379,24 @@ class Project:
             for step in table.steps:
                 if not step.id:
                     step.id = new_id("s")
+
+
+_SURROGATE = re.compile(r"[\ud800-\udfff]")  # half of a character; a Python text holds only lone ones
+_SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")  # how a JSON text writes one
+
+
+def _whole_characters(data: Any) -> Any:
+    """The data of a project file with each lone surrogate (half of a character, e.g. a
+    "\\ud800" written by another program) replaced by U+FFFD, in texts and in keys. The file
+    couldn't be saved with them, and Qt drops them. Call it after ``_nested_too_deeply``: it
+    recurses."""
+    if isinstance(data, str):
+        return _SURROGATE.sub("\ufffd", data)
+    if isinstance(data, list):
+        return [_whole_characters(value) for value in data]
+    if isinstance(data, dict):
+        return {_whole_characters(key): _whole_characters(value) for key, value in data.items()}
+    return data
 
 
 def _nested_too_deeply(data: Any) -> bool:
