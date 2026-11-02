@@ -128,14 +128,24 @@ def test_an_empty_suffix_still_gives_a_free_name(act, how):
     assert out.row(0) == ("N", 1, 10, 100, 1)
 
 
-@pytest.mark.parametrize(("column", "suffix"), [("Region (2)", " (2)"), ("Code (2)", " (2)"), ("Region_x", "_x"), ("Region__other__", "")])
-def test_a_full_join_next_to_a_column_named_like_a_key_with_the_suffix(act, column, suffix):
+@pytest.mark.parametrize(
+    ("column", "suffix", "table"),
+    [
+        ("Region (2)", " (2)", "this"),
+        ("Code (2)", " (2)", "this"),
+        ("Region_x", "_x", "this"),
+        ("Region__other__", "", "this"),
+        ("Region__other__", "", "other"),
+        ("Region__other__", " (2)", "other"),
+    ],
+)
+def test_a_full_join_next_to_a_column_named_like_a_key_with_the_suffix(act, column, suffix, table):
     """The same fault with a suffix that is not empty: the key column of the other table with the
-    suffix was a name of this table for a moment."""
-    this = THIS.rename({"Net": column})
+    suffix was a name of one of the tables for a moment."""
+    this, other =(THIS.rename({"Net": column}), OTHER) if table == "this" else (THIS, OTHER.rename({"Tax": column}))
     params = {"other": "other", "match": BOTH_KEYS, "how": "full", "suffix": suffix}
-    out = act("table.merge", this, params, StubContext(tables={"other": OTHER}))
-    assert out.columns == ["Region", "Code", column, "Tax"]
+    out = act("table.merge", this, params, StubContext(tables={"other": other}))
+    assert out.columns == ["Region", "Code", this.columns[2], other.columns[2]]
     assert out.rows() == [("N", 1, 10, 100), ("S", 2, 20, None), ("W", 3, None, 300)]
 
 
@@ -157,11 +167,12 @@ def test_a_full_join_on_keys_of_two_types_with_an_empty_suffix(act):
     assert out.rows() == [("N", "1", 10, 100), ("S", "2", 20, None), ("W", "3", None, 300)]
 
 
-def test_the_spare_suffix_gives_no_name_of_this_table():
+def test_the_spare_suffix_gives_no_name_of_either_table():
     from tafl.plugins.combine import _spare_suffix
 
     assert _spare_suffix(["a", "b"], ["a"]) == "__other__"
     assert _spare_suffix(["a", "a__other__", "a__other___"], ["a"]) == "__other____"
+    assert _spare_suffix(["a"], ["a", "a__other__"]) == "__other___"
 
 
 def test_append(act):

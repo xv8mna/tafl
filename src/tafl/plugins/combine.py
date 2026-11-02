@@ -220,9 +220,9 @@ def _free_name(name: str, suffix: str, taken: set[str]) -> str:
 def _spare_suffix(left: list[str], right: list[str]) -> str:
     """A suffix for the join itself: for a moment, a full join with several keys names the key
     columns of the other table with it. The new columns have their final names by then, so it
-    isn't in the result; it only must not give a name of this table, as an empty suffix does, or
+    isn't in the result; it only must not give a name of either table, as an empty suffix does, or
     " (2)" next to a column "Region (2)"."""
-    taken = set(left)
+    taken = {*left, *right}
     suffix = "__other__"
     while any(name + suffix in taken for name in right):
         suffix += "_"
