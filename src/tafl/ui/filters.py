@@ -14,10 +14,11 @@ A filter can group the cells of its column first (its mode, called facet here):
 
 A filter is stored with its table in the project file:
 ``{"column": "Date", "facet": "period", "options": {"by": "month"}, "values": ["2025-01"]}``.
-Values are JSON (dates as ISO text) and are converted to the column's type when the filter is
-used, so a filter keeps working when a step changes a column's type. No values = the filter is
-shown but doesn't filter. ``"except": true`` turns it around: all values except these. That
-keeps a selection of most of many values short (all of them: ``"values": []``).
+Values are JSON (dates as ISO text, binary data as hex text: 0x0102FF) and are converted to the
+column's type when the filter is used, so a filter keeps working when a step changes a column's
+type. No values = the filter is shown but doesn't filter. ``"except": true`` turns it around: all
+values except these. That keeps a selection of most of many values short (all of them:
+``"values": []``).
 """
 
 from __future__ import annotations
@@ -250,6 +251,12 @@ def to_json(value: Any) -> Any:
         return str(value)
     if isinstance(value, dt.timedelta):
         return value.total_seconds()
+    if isinstance(value, bytes):  # as the step that changes a column's type writes it
+        return "0x" + value.hex().upper()
+    if isinstance(value, list):
+        return [to_json(v) for v in value]
+    if isinstance(value, dict):
+        return {k: to_json(v) for k, v in value.items()}
     return value
 
 
@@ -275,6 +282,10 @@ def _convert(value: Any, dtype: pl.DataType) -> Any:
         raise ValueError(value)
     if isinstance(value, bool):  # True is an int in Python: don't let it match 1
         raise ValueError(value)
+    if dtype == pl.Binary:
+        if not isinstance(value, str):
+            raise ValueError(value)
+        return bytes.fromhex(value.removeprefix("0x"))
     if dtype.is_integer():
         number = float(value) if isinstance(value, str) else value
         if not float(number).is_integer():
@@ -416,4 +427,6 @@ def _sql(value: Any) -> str:
         return f"TIME '{value.isoformat()}'"
     if isinstance(value, dt.timedelta):
         return f"INTERVAL '{value.total_seconds()} seconds'"
+    if isinstance(value, bytes):
+        return f"from_hex('{value.hex()}')"
     return "'" + str(value).replace("'", "''") + "'"

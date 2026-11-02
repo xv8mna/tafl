@@ -34,6 +34,7 @@ DATA = pl.DataFrame(
         "Net": [10.5, 20.0, 5.0, None, 7.25, 1.0],
         "Date": [dt.date(2025, 1, 1), dt.date(2025, 1, 2), None, dt.date(2025, 1, 1), dt.date(2025, 2, 1), dt.date(2025, 2, 1)],
         "Paid": [True, False, None, True, True, False],
+        "Code": [b"a", b"\x00\xff", None, b"a", b"it's", b""],
     }
 )
 
@@ -63,18 +64,31 @@ def test_facets_count_values_among_the_rows_of_the_other_filters():
         Filter("Date", ["2025-01-01"]),
         Filter("Net", [10.5, 7.25]),
         Filter("Paid", [False]),
+        Filter("Code", ["0x61", "0x00FF"]),
+        Filter("Code", ["0x", "0x69742773", None]),  # no bytes, a quote, empty cells
     ],
 )
 def test_a_filter_as_formula_keeps_the_same_rows(registry, chosen):
     action = registry.actions["rows.filter_formula"]
     condition = formula(chosen, DATA.schema[chosen.column])
-    assert action.run(DATA, action.resolve({"condition": condition}), StubContext()).equals(apply(DATA, [chosen]))
+    filtered = apply(DATA, [chosen])
+    assert filtered.height and action.run(DATA, action.resolve({"condition": condition}), StubContext()).equals(filtered)
 
 
 def test_values_are_stored_as_json():
     assert [to_json(v) for v in (dt.date(2025, 1, 2), dt.datetime(2025, 1, 2, 3, 4), "x", 1.5, None)] == [
         "2025-01-02", "2025-01-02T03:04:00", "x", 1.5, None,
     ]
+    assert [to_json(v) for v in (b"\x00\xff", b"", [dt.date(2025, 1, 2), None], {"a": [b"a"]})] == [
+        "0x00FF", "0x", ["2025-01-02", None], {"a": ["0x61"]},
+    ]
+
+
+def test_binary_values_are_read_from_their_hex_text():
+    assert from_json(["0x00FF", "0x", None, "abc", "0xZZ", "0x0x61", 7, 1.5, True], pl.Binary) == [b"\x00\xff", b""]
+    assert apply(DATA, [Filter("Code", ["0x", "0x69742773"])])["Code"].to_list() == [b"it's", b""]
+    assert apply(DATA, [Filter("Code", ["abc", 7])]).height == 0
+    assert apply(DATA, [Filter("Code", ["abc", 7], excluded=True)]).height == DATA.height
 
 
 def test_filters_are_saved_but_are_not_edits(session, qtbot):
@@ -387,6 +401,7 @@ def test_number_ranges_text_length_and_patterns(window, settle, session, demo):
         Filter("City", ["Köln"], excluded=True),  # empty cells stay
         Filter("Net", [10.5], excluded=True),
         Filter("Date", [], excluded=True),  # all values: doesn't filter
+        Filter("Code", ["0x61", None], excluded=True),
     ],
 )
 def test_all_values_except_some(registry, chosen):
@@ -584,3 +599,71 @@ def test_a_column_of_lists_or_records_is_not_filtered(session, qtbot):
         (card,) = pane.cards
         assert card.status.text() == "Not used at this step: a column of lists or records can't be filtered."
         assert unusable(Filter(column), df.schema) and apply(df, [Filter(column, [[1]])]) is df
+
+
+def saved_project_of(window, settle, session, registry, tmp_path, df):
+    """A project that reads ``df``, open in the window, and the data panel."""
+    data = tmp_path / "cells.parquet"
+    df.write_parquet(data)
+    project = Project(name="Cells")
+    project.add_step(project.add_table("T"), registry.actions["parquet.import"], {"file": str(data)})
+    assert window.open_path(project.save(tmp_path / "cells.tafl"))
+    settle(session)
+    return window.data_panel
+
+
+def test_a_filter_on_binary_data_is_saved_and_can_be_made_a_step(window, settle, session, registry, tmp_path):
+    """Before, the filter stopped Save with an error, and its step kept no rows."""
+    df = pl.DataFrame({"Code": [b"a", b"\x00\xff", None, b"a"], "Nr": [1, 2, 3, 4]})
+    panel = saved_project_of(window, settle, session, registry, tmp_path, df)
+    panel.filter_by("Code", [to_json(b"a")])  # what the cell's right-click menu does
+    assert panel.model.frame["Nr"].to_list() == [1, 4]
+    assert window.save_project()
+    saved = json.loads(session.project.path.read_text(encoding="utf-8"))
+    assert saved["tables"][0]["filters"] == [{"column": "Code", "values": ["0x61"]}]
+
+    assert window.open_path(session.project.path)
+    settle(session)
+    panel.filter_button.setChecked(True)
+    panel.refresh()
+    assert panel.model.frame["Nr"].to_list() == [1, 4]
+    (card,) = panel.filter_pane.cards
+    assert card.pending() == ["0x61"]
+    panel.filter_pane.add_as_step(0)
+    settle(session)
+    assert session.step.params["condition"] == "[Code] IN (from_hex('61'))"
+    assert panel.model.frame["Nr"].to_list() == [1, 4]
+    panel.filter_button.setChecked(False)
+
+
+@pytest.mark.parametrize(
+    "cells, expected",
+    [
+        ([[dt.date(2024, 1, 1)], [dt.date(2024, 1, 2)]], ["2024-01-01"]),
+        ([{"Day": dt.date(2024, 1, 1)}, {"Day": dt.date(2024, 1, 2)}], {"Day": "2024-01-01"}),
+    ],
+    ids=["list", "record"],
+)
+def test_a_filter_on_a_cell_of_dates_in_a_list_or_record_is_saved(window, settle, session, registry, tmp_path, cells, expected):
+    panel = saved_project_of(window, settle, session, registry, tmp_path, pl.DataFrame({"Dates": cells, "Nr": [1, 2]}))
+    panel.filter_by("Dates", [to_json(panel.model.value(0, 0))])  # what the cell's right-click menu does
+    assert window.save_project()
+    saved = json.loads(session.project.path.read_text(encoding="utf-8"))
+    assert saved["tables"][0]["filters"] == [{"column": "Dates", "values": [expected]}]
+    assert window.open_path(session.project.path)
+    settle(session)
+    assert panel.model.frame["Nr"].to_list() == [1, 2]  # such a column can't be filtered
+    panel.filter_button.setChecked(False)
+
+
+def test_closing_keeps_the_window_when_saving_fails(window, session, monkeypatch, tmp_path):
+    """Before, the program ended with an error, and the changes were lost."""
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: warnings.append(box.text()))
+    monkeypatch.setattr(window, "ask_save", lambda reason: "save")
+    path = session.project.save(tmp_path / "kept.tafl")
+    session.set_filters(session.project.add_table("T").id, [{"column": "City", "values": [object()]}])
+    assert session.dirty
+    assert not window.close()
+    assert session.dirty and len(warnings) == 1
+    assert warnings[0].startswith(f"Could not save {path}:\n\nThe project holds a value that can't be stored in its file")

@@ -299,7 +299,10 @@ class Project:
         if target is None:
             raise ProjectError("No file name given")
         target = target.resolve()
-        data = (json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        try:
+            data = (json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        except (TypeError, ValueError) as e:
+            raise ProjectError(f"The project holds a value that can't be stored in its file: {e}") from e
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(prefix=target.name, suffix=".tmp", dir=target.parent)
@@ -350,18 +353,27 @@ class Project:
             if not item.id or item.id in seen:
                 item.id = ""
             seen.add(item.id)
+        highest: dict[str, int] = {}
+
+        def new_id(prefix: str) -> str:  # as _new_id, which takes too long for many items without an id
+            if prefix not in highest:
+                numbers = [int(m.group(1)) for u in seen if (m := re.fullmatch(rf"{prefix}(\d+)", u))]
+                highest[prefix] = max(numbers, default=0)
+            highest[prefix] += 1
+            return f"{prefix}{highest[prefix]}"
+
         for group in self.groups:
             if not group.id:
-                group.id = self._new_id("g")
+                group.id = new_id("g")
         groups = {g.id for g in self.groups}
         for table in self.tables:
             if not table.id:
-                table.id = self._new_id("t")
+                table.id = new_id("t")
             if table.group not in groups:
                 table.group = ""
             for step in table.steps:
                 if not step.id:
-                    step.id = self._new_id("s")
+                    step.id = new_id("s")
 
 
 def _nested_too_deeply(data: Any) -> bool:

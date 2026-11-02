@@ -2,6 +2,7 @@ import hashlib
 import json
 import stat
 import tempfile
+import time
 
 import pytest
 
@@ -82,6 +83,50 @@ def test_duplicate_or_missing_ids_are_repaired():
     project = Project.from_dict(data)
     ids = [t.id for t in project.tables] + [s.id for t in project.tables for s in t.steps]
     assert len(ids) == len(set(ids)) and all(ids)
+
+
+def test_new_ids_count_on_from_the_highest_number_of_their_letter():
+    steps = [{"action": "a", "id": "s007"}, {"action": "b"}, {"action": "c", "id": "t12"}]
+    tables = [
+        {"name": "T", "id": "x9", "group": "g3", "steps": steps},
+        {"name": "U", "group": "g9", "steps": [{"action": "d", "id": "s007"}, {"action": "e", "id": "g"}]},
+    ]
+    groups = [{"name": "A", "id": "g3"}, {"name": "B"}, {"name": "C", "id": "g3"}]
+    project = Project.from_dict({"format": "tafl-project", "groups": groups, "tables": tables})
+    assert [g.id for g in project.groups] == ["g3", "g4", "g5"]
+    assert [(t.id, t.group) for t in project.tables] == [("x9", "g3"), ("t13", "")]
+    assert [s.id for t in project.tables for s in t.steps] == ["s007", "s8", "t12", "s9", "g"]
+
+
+def test_steps_without_an_id_take_about_as_long_as_steps_with_one():
+    """20,000 steps without an id, a file of 332 KB, once took three minutes."""
+
+    def best_time(steps):  # of some tries: a test run can be busy for a moment
+        data = {"format": "tafl-project", "tables": [{"name": "T", "steps": steps}]}
+        times = []
+        for _ in range(3):
+            started = time.perf_counter()
+            project = Project.from_dict(data)
+            times.append(time.perf_counter() - started)
+        return min(times), project
+
+    with_ids, _ = best_time([{"action": "x", "id": f"s{n}"} for n in range(20_000)])
+    without_ids, project = best_time([{"action": "x"} for _ in range(20_000)])
+    assert project.tables[0].steps[-1].id == "s20000"
+    assert without_ids < 10 * with_ids
+
+
+def test_a_value_that_a_file_can_not_hold_is_refused_and_the_file_stays(tmp_path):
+    project = sample_project()
+    path = project.save(tmp_path / "project.tafl")
+    before = path.read_bytes()
+    loop = []
+    loop.append(loop)
+    for value in (object(), b"bytes", loop):
+        project.tables[0].filters = [{"column": "City", "values": [value]}]
+        with pytest.raises(ProjectError, match="holds a value that can't be stored in its file"):
+            project.save()
+        assert path.read_bytes() == before and list(tmp_path.iterdir()) == [path]
 
 
 def test_invalid_files_are_rejected(tmp_path):
