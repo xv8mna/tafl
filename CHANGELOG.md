@@ -24,6 +24,23 @@ less memory.
 - **The window can no longer hang during a calculation**: Python's clean-up of old objects could
   run on a calculation thread and wait for the window, while the window waited for it. It now runs
   on the window's thread only.
+- **The project map can no longer lock the window**: at some window sizes the automatic fit and the
+  scroll bars pushed each other without end.
+- **A project that you open during a calculation or a run** no longer gets results of the project
+  before, and the Run results keep the names of the tables of their own project.
+- **A run always reads a database again.** After Stop, after a run that failed, or in a project
+  opened in the same window, a run could take the rows of the read before from memory: its export
+  then held old data, with no error. A project that you open again shows the new data too.
+- **Run this table** is off during a run: it ended the run without a word, and the rest of the
+  run didn't happen.
+- A table that you change during a run is calculated again after the run, so that it keeps no
+  status of the run. A filter, a note or a place on the map is no such change.
+- **Reload data** during a run stays in force: at the end of the run, no table goes back to the
+  older data of the run.
+- After Stop, after a run that failed, and after a run of a project that is closed by then, the
+  window no longer keeps an extra copy of the data of that run. Only the cache keeps it, within
+  its limit.
+- A table that you change just before you click another table no longer keeps its old status.
 - **Excel export: text stays text**, exactly as it is, in the cells and in the column names, in a
   new file, a replaced file, a replaced or added sheet and a workbook with macros. No text becomes
   a formula or a link any more, and a text with special characters can't move other values or
@@ -69,24 +86,39 @@ less memory.
   time gives a clear message. **Is one of** on a whole-number column leaves out values that the
   column can't hold, such as `1,5`, instead of stopping. **Fill empty values** takes times too: a
   fixed value for a time column must now be a time. Very big whole numbers keep all their digits in
-  both steps. A column of time spans or binary data says that it can't be compared with a typed
-  value.
+  both steps. A column of time spans says that a typed value can't be used with it.
 - **Merge**: a full join on several keys works with any suffix, also an empty one.
+- **Import from a database**: a SQLite column with a number or a text beside a binary value
+  becomes text, with the binary value as hex digits (`0x0102FF`). The number 5 became five zero
+  bytes, with no error, and other mixes stopped the import.
+- A cell of binary data shows its first 500 bytes, and a list or a record its first 500 characters:
+  one big cell made the grid wait at each paint. Ctrl+C still copies the whole value.
+- **Show all** on the project map shows all of a big project also right after it opens, down to
+  the smallest zoom (5 %). It stayed at 30 %. After Show all, the map keeps all of the project in
+  view when the window changes size or groups open and close, until you zoom or move the map or
+  a box.
 - **Import CSV / text files**: the message on decimals names only columns that became numbers. A
   file with very long runs of line ends no longer causes a long wait.
 - A file with thousands of equal column names no longer takes minutes.
 - **Filter pane**: a filter that a project file holds in a wrong form counts as not set, and is no
   error on each refresh. A filter on a column of lists or records says that such a column can't be
   filtered. A value with more decimal places than an exact decimal column has is left out: `1.555`
-  found the rows with `1.56`.
+  found the rows with `1.56`. A filter on a column of binary values can be saved, and **Add as
+  step** keeps the same rows. A table shows 100 filters at most: more from a project file apply
+  and stay in the file, and a line under the cards counts them.
+- A project that can't be saved says so, and the window stays open with your work.
 - A project file with data nested too deeply is refused when it opens, as a damaged file.
+- A project file written by hand with thousands of steps without an id, or a formula of thousands of
+  lines, no longer blocks the window for minutes. A step with more than 1,000 rows in a list shows
+  their number in place of the rows, and keeps them.
 - The report after a program that ended without a message keeps each name on one line, and it says
   when a step asked for more memory at once than was free.
 - Plugins: `ctx.database` has a keyword `read_only` (a connector can override `connect_read_only`;
   one that doesn't gets a normal connection, so plugins work as before). `ctx.check_memory` is
   new for plugins that read in batches. `Database.read`, `Database.read_table` and
-  `frame_from_cursor` take an optional `between`, and `Database.run_script` runs a command with
-  the error handling of the other methods. `tafl.api.xlsx` has `write_frame`, `cell_text` and
+  `frame_from_cursor` take an optional `between` (a `Database` subclass that overrides `read` or
+  `read_table` must take it too), and `Database.run_script` runs a command with the error
+  handling of the other methods. `tafl.api.xlsx` has `write_frame`, `cell_text` and
   `escaped`, for writing text as text.
 - The user guide: a warning at the CSV export (a file for people goes to Excel, CSV goes to
   programs), a known limit in chapter 10 (a small, unusual file can end the program, and an unsaved

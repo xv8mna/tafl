@@ -535,7 +535,8 @@ a short note ("first step of a table", "runs when the project is run").
 - A `*` after a name marks a setting the step needs.
 - **…** next to a file or folder opens a file dialog. You can also type the path.
 - Lists of settings (renames, conditions, formulas) have **+ Add** for a new row, and **▲**,
-  **▼** and **✕** at the end of each row to move or remove it.
+  **▼** and **✕** at the end of each row to move or remove it. A list of more than 1,000 rows
+  shows only its number: the rows stay as they are.
 
 The box at the top of the settings shows what the step reported when it was calculated: what an
 import detected ("Encoding utf-8, delimiter semicolon, decimal comma"), how many rows a merge
@@ -607,7 +608,8 @@ blue), and the button says **Filters (2)**.
   step, and removes the card. As a step, the filter applies in runs and exports too.
 
 Each table has its own filters. They are saved with the project, but they are no edits: undo
-doesn't change them.
+doesn't change them. A table shows 100 filters at most. More filters from a project file apply
+and stay in the file: a line under the cards counts them.
 
 ### The Find panel
 
@@ -704,7 +706,8 @@ search field.
 
 - **Run project** (F5) calculates all tables and executes their exports and commands.
 - **Run this table** (Shift+F5, in the **Project** menu or a table's right-click menu) does the
-  same for the selected table and the tables it uses. Their exports run too.
+  same for the selected table and the tables it uses. Their exports run too. During a run,
+  both are off.
 - **Stop** stops a running formula at once, and an import from a database within a moment. SQL
   Server can stop a query only when rows arrive: a query that gives no row for a long time runs on
   until the first one comes. Another step that is running finishes first: an export can take a
@@ -720,8 +723,9 @@ step, or the table that is already selected, only shows what was calculated.
 **Run results** open after every run (and with **View → Run results**). They list every table
 and its steps, with the result, the time and the messages, such as the file an export wrote. A
 step with a warning is orange and open, so that the warning shows, and the first line counts the
-warnings ("…, no errors, 1 warning"). Double-click a line to go to that table and step; the
-arrow in front of a line opens and closes it. [Run and save](#run-and-save) in chapter 2 has a picture.
+warnings ("…, no errors, 1 warning"). Double-click a line to go to that table and step, while
+the project of that run is open. The arrow in front of a line opens and closes it.
+[Run and save](#run-and-save) in chapter 2 has a picture.
 
 If you close the window during a run, Tafl asks: **Wait, then close**, or **Stop the run**
 (after the step that is running), or **Cancel**.
@@ -807,11 +811,13 @@ last 1,000 values is in the settings of this computer, not in the project: a pro
 for itself.
 
 - A new project is trusted, and a file that you save from a trusted project is known.
-- A copy of a known file in the same folder is known too.
+- A copy of a known file in the same folder is known too. Only a copy of a state that you saved
+  in this window asks again, after your next save of the original.
 - A file in another folder opens in protected view once, also when you moved it yourself: its
   relative paths point to other files there.
 - A file that was changed elsewhere, also by a colleague, opens in protected view again.
-- A project that was in **File → Open recent** before Tafl had a protected view opens as before.
+- A project that was in **File → Open recent** before Tafl had a protected view opens as before,
+  once, whatever the file holds then.
 
 `tafl.exe run` and `tafl.exe show` have no protected view: you start them on purpose, for one
 project, and they calculate it at once ([chapter 12](#12-running-projects-on-a-schedule)). Read a
@@ -1625,9 +1631,11 @@ turned off; tables that are off or skipped are drawn pale. Point at a box, a row
 a tooltip with more.
 
 To move around, drag the empty background; Ctrl + mouse wheel zooms; **Show all** (or the key 0)
-fits the whole project into the window. Drag boxes to arrange them by hand: the arrangement is
+fits the whole project into the window, also when the window changes size later, until you zoom,
+move the map or drag a box. Drag boxes to arrange them by hand: the arrangement is
 saved with the project, and what is in the way moves down, so boxes never pile up. **Arrange
-automatically** puts the tables back in columns from left to right, in the order the data flows.
+automatically** puts the tables back in columns from left to right, in the order the data flows,
+and fits the map into the window as when the project opens.
 
 ### Connect tables on the map
 
@@ -2068,7 +2076,8 @@ way:
 - The new file replaces the old one only when it is complete: if an export fails, the old file
   stays as it was. A missing folder is created.
 - A sheet holds 1,048,575 rows below its header: a bigger table stops the export (filter it, or
-  export to CSV). Texts longer than 32,767 characters are cut, with a warning.
+  export to CSV). Texts longer than 32,767 characters are cut, with a warning. A longer list,
+  record or column name is cut with no warning.
 - A sheet name has at most 31 characters, without `[ ] : * ? / \`, and it can't start or end with
   `'`.
 - An Excel table can't tell `Name` from `NAME`: with two such column names, the export stops
@@ -2814,7 +2823,7 @@ After a run, **Run results** say "Run finished at …: 3 tables, 2 with errors" 
 status bar says "Run finished with errors — see Run results". A table with an error shows its
 message, the failed step, and the steps after it as "not run (earlier error)": their exports
 didn't run. Tables without errors ran completely, with their exports. Double-click a line to go
-to that step.
+to that step, while the project of that run is open.
 
 ![Run results with an error: which table and step failed, and the steps that did not run](guide/error-run-results.png)
 

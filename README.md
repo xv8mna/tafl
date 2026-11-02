@@ -479,7 +479,8 @@ date-times with a time zone are written in that zone's local time. Text stays te
 is, in the cells and in the column names, however the file is written: `=1+1` is no formula, and
 a column of web addresses is not clickable in the file. A sheet holds 1,048,575 rows
 below its header: a bigger table stops the export (filter it, or export to CSV). A cell holds
-32,767 characters: longer texts are cut, with a warning. Column names must differ in more than
+32,767 characters: longer texts are cut, with a warning, and a longer list, record or column name
+is cut with no warning. Column names must differ in more than
 upper and lower case, as an Excel table can't tell `Name` from `NAME`: the export stops before it
 changes a file. If the file exists:
 
@@ -648,12 +649,15 @@ by itself or call procedures with lasting effects, which a rollback can't undo. 
 a long time or a lot of memory. Trust a project file only when it comes from someone you trust and
 you have read it.
 
-Tafl knows a project by the SHA-256 value of its file, in a list of the last 1,000 in its settings
-on this computer, not in the project: a project can't answer for itself. A file that was changed
-elsewhere opens in protected view again, a copy of a known file is known, and a file saved from a
+Tafl knows a project by the content of its file and by its folder (a SHA-256 value), in a list of
+the last 1,000 values in its settings on this computer, not in the project: a project can't answer
+for itself. A file that was changed elsewhere opens in protected view again. A copy in the same
+folder is known. Only a copy of a state that you saved in this window asks again, after your
+next save of the original. A file in another folder opens in protected view once, because its
+relative paths point to other files there. A file saved from a
 trusted project is known. New projects are trusted. The projects of the recent list count as known
-once when a version with protected view starts for the first time; their files aren't read for
-that.
+once when a version with protected view starts for the first time, whatever the file holds then;
+their files aren't read for that.
 
 `tafl run` and `tafl show` have no protected view: a person starts them on purpose, for one
 project.
