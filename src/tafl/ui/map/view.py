@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, QStringListModel, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QCompleter,
@@ -821,7 +821,9 @@ class MapView(QWidget):
         """Zoom so that ``rect`` fills the window, within the limits; if it doesn't fit, show its
         top left part."""
         margin = 40
-        viewport = self.canvas.viewport().rect()
+        # The room without scroll bars: a scale that follows them could need a bar, and then not
+        # need it, and the fit (on every resize of the viewport) would go on for ever.
+        viewport = QRect(QPoint(0, 0), self.canvas.maximumViewportSize())
         scale = min(viewport.width() / (rect.width() + 2 * margin), viewport.height() / (rect.height() + 2 * margin))
         scale = min(max(scale, min_scale), max_scale)
         self.canvas.resetTransform()

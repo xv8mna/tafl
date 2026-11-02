@@ -3,6 +3,7 @@ from PySide6.QtTest import QTest
 
 from tafl.core import Engine, Link, Project
 from tafl.ui.map import HEADER, NODE_WIDTH, ROW, Arc, Unit, auto_layout, node_rows
+from tafl.ui.map.view import MapView
 
 
 def open_map(window, session, demo, settle):
@@ -101,3 +102,34 @@ def test_new_table_on_the_map_is_placed_and_selected(window, settle, session, de
 def test_rows_of_an_empty_table(session):
     table = session.project.add_table("Empty")
     assert [r.text for r in node_rows(session, table, set())] == ["no steps yet"]
+
+
+def test_the_automatic_fit_ends_in_a_wide_low_window(window, settle, session, demo, qapp, monkeypatch):
+    """In such a window the height sets the scale, and a scale that followed the scroll bars would
+    show the bottom bar, need no bar with the lower room, and so on without end. The limit here
+    ends that loop, so that it is a failure and not a window that hangs. Every 40 pixels: the width
+    at which this happens depends on the fonts."""
+    fits = []
+    refit = MapView.refit
+
+    def counted(view):
+        fits.append(view.canvas.viewport().size())
+        if len(fits) > 300:
+            view.auto_fit = False
+        refit(view)
+
+    monkeypatch.setattr(MapView, "refit", counted)
+    view = open_map(window, session, demo, settle)
+    window.show()
+    canvas = view.canvas
+    for height in (540, 580):
+        for width in range(920, 1321, 40):
+            fits.clear()
+            view.auto_fit = True
+            window.resize(width, height)
+            for _ in range(3):
+                qapp.processEvents()
+            assert len(fits) <= 4, (width, height)
+            if canvas.transform().m11() > 0.3001:  # at the lower limit of the fit a project can be too big
+                seen = canvas.mapToScene(canvas.viewport().rect()).boundingRect()
+                assert seen.contains(view.scene.itemsBoundingRect()), (width, height)  # the margin takes the bars
