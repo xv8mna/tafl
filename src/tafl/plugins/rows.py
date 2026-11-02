@@ -203,6 +203,8 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
         return empty if op == "empty" else ~empty
 
     if op in ("contains", "not_contains", "starts", "ends"):
+        if dtype == pl.Duration:
+            raise ActionError(_no_typed_value(c.column))
         text, needle = column.cast(pl.String), c.value
         if not case_sensitive:
             text, needle = text.str.to_lowercase(), needle.lower()
@@ -331,9 +333,15 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
         if parsed is None:
             raise ActionError(f"'{text}' is not true/false (column '{column}')")
         return parsed
-    if dtype == pl.Duration or dtype == pl.Binary:
-        raise ActionError(f"Column '{column}' holds time spans or binary data: it can't be compared with a typed value")
+    if dtype == pl.Duration:
+        raise ActionError(_no_typed_value(column))
+    if dtype == pl.Binary:
+        return pl.select(pl.lit(text).cast(pl.Binary)).item()
     return text
+
+
+def _no_typed_value(column: str) -> str:
+    return f"Column '{column}' holds time spans: a typed value can't be used with it"
 
 
 def _whole(value: str, dtype: pl.DataType) -> int | None:

@@ -331,9 +331,43 @@ def test_sort_many_texts_like_excel(act):
     assert out["Nr"][:6].to_list() == [1, 2, 3, 11, 12, 13]  # equal values keep their order
 
 
-@pytest.mark.parametrize("values", [[dt.timedelta(hours=1)], [b"abc"]], ids=["time span", "binary"])
-@pytest.mark.parametrize("operator", ["=", ">", "in"])
-def test_a_column_that_a_typed_value_cant_be_compared_with_says_so(act, values, operator):
+@pytest.mark.parametrize("operator", ["=", "!=", ">", ">=", "<", "<=", "in", "not_in", "contains", "not_contains", "starts", "ends"])
+def test_a_column_of_time_spans_says_that_a_typed_value_cant_be_used(act, operator):
     conditions = [{"column": "V", "operator": operator, "value": "1"}]
-    with pytest.raises(ActionError, match="Column 'V' holds time spans or binary data"):
-        act("rows.filter", pl.DataFrame({"V": values}), {"conditions": conditions})
+    with pytest.raises(ActionError, match="Column 'V' holds time spans: a typed value can't be used with it"):
+        act("rows.filter", pl.DataFrame({"V": [dt.timedelta(hours=1)]}), {"conditions": conditions})
+
+
+def test_filling_a_column_of_time_spans_says_that_a_typed_value_cant_be_used(act):
+    df = pl.DataFrame({"V": [dt.timedelta(hours=1), None]})
+    with pytest.raises(ActionError, match="Column 'V' holds time spans: a typed value can't be used with it"):
+        act("rows.fill", df, {"columns": ["V"], "method": "value", "value": "1"})
+
+
+BINARY = pl.DataFrame({"Name": list("abcde"), "V": [b"abc", b"\x00\xff", None, b"", b"0x41"]})
+
+
+@pytest.mark.parametrize(
+    "operator, value, expected",
+    [
+        ("=", "abc", ["a"]),
+        ("=", "", ["d"]),
+        ("=", "0x41", ["e"]),  # the text itself, not the bytes it would be as hex digits
+        ("!=", "abc", ["b", "c", "d", "e"]),
+        (">", "a", ["a"]),
+        (">=", "abc", ["a"]),
+        ("<", "a", ["b", "d", "e"]),
+        ("<=", "", ["d"]),
+        ("in", "abc; 0x41", ["a", "e"]),
+        ("not_in", "abc; 0x41", ["b", "c", "d"]),
+        ("!=", "\ud800", ["a", "b", "c", "d", "e"]),  # half a character: a project file can hold it
+    ],
+)
+def test_binary_data_is_compared_with_the_bytes_of_a_typed_value(act, operator, value, expected):
+    assert names(flt(act, BINARY, ("V", operator, value))) == expected
+
+
+def test_binary_data_can_be_filled_with_the_bytes_of_a_typed_value(act):
+    filled = act("rows.fill", BINARY, {"columns": ["V"], "method": "value", "value": "x"})
+    assert filled.schema["V"] == pl.Binary
+    assert filled["V"].to_list() == [b"abc", b"\x00\xff", b"x", b"", b"0x41"]
