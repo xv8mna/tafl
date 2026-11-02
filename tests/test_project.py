@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import stat
 import tempfile
 import time
@@ -127,6 +128,35 @@ def test_a_value_that_a_file_can_not_hold_is_refused_and_the_file_stays(tmp_path
         with pytest.raises(ProjectError, match="holds a value that can't be stored in its file"):
             project.save()
         assert path.read_bytes() == before and list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("value", [math.inf, -math.inf, math.nan])
+def test_a_map_position_that_is_not_a_finite_number_is_refused_and_the_file_stays(tmp_path, value):
+    project = sample_project()
+    project.add_group("G")
+    path = project.save(tmp_path / "project.tafl")
+    before = path.read_bytes()
+    for item in (project.tables[0], project.groups[0]):
+        item.position = (value, 0.0)
+        with pytest.raises(ProjectError, match="holds a value that can't be stored in its file"):
+            project.save()
+        assert path.read_bytes() == before and list(tmp_path.iterdir()) == [path]
+        item.position = None
+
+
+@pytest.mark.parametrize("value", [math.inf, -math.inf, math.nan])
+def test_a_stored_map_position_that_is_not_a_finite_number_counts_as_not_set(tmp_path, value):
+    project = sample_project()
+    project.add_group("G")
+    project.tables[1].position = (10.0, 20.0)
+    data = project.to_dict()
+    data["tables"][0]["position"] = [value, 0]
+    data["groups"][0]["position"] = [0, value]
+    path = tmp_path / "project.tafl"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    loaded = Project.load(path)
+    assert loaded.tables[0].position is None and loaded.groups[0].position is None
+    assert Project.load(loaded.save()).tables[1].position == (10.0, 20.0)
 
 
 def test_invalid_files_are_rejected(tmp_path):

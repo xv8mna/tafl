@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -129,7 +130,7 @@ def _position_to_json(position: tuple[float, float]) -> list[int]:
 
 
 def _position_from_json(value: Any) -> tuple[float, float] | None:
-    if isinstance(value, list) and len(value) == 2 and all(isinstance(v, (int, float)) for v in value):
+    if isinstance(value, list) and len(value) == 2 and all(isinstance(v, (int, float)) and math.isfinite(v) for v in value):
         return float(value[0]), float(value[1])
     return None
 
@@ -301,7 +302,7 @@ class Project:
         target = target.resolve()
         try:
             data = (json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, ArithmeticError) as e:
             raise ProjectError(f"The project holds a value that can't be stored in its file: {e}") from e
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
