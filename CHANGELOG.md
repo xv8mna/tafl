@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.6.1 – 2026-11-02
 
 A project from somewhere else is now read first and trusted after that. The rest is fixes: text
 stays exactly as it is in Excel files and in the window, SQLite imports only read, and runs need
