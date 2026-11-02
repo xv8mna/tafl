@@ -852,12 +852,13 @@ class ColumnsEditor(Editor):
         self._list.blockSignals(True)
         self._list.clear()
         available = self._columns or []
-        for name in [*selected, *(c for c in available if c not in selected)]:
-            item = QListWidgetItem(name if self._columns is None or name in available else f"{name}  (missing)")
+        chosen, known = set(selected), set(available)
+        for name in [*selected, *(c for c in available if c not in chosen)]:
+            item = QListWidgetItem(name if self._columns is None or name in known else f"{name}  (missing)")
             item.setData(Qt.ItemDataRole.UserRole, name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsDragEnabled)
-            item.setCheckState(Qt.CheckState.Checked if name in selected else Qt.CheckState.Unchecked)
-            if self._columns is not None and name not in available:
+            item.setCheckState(Qt.CheckState.Checked if name in chosen else Qt.CheckState.Unchecked)
+            if self._columns is not None and name not in known:
                 item.setForeground(theme.status_text_color("error"))
             self._list.addItem(item)
         self._list.blockSignals(False)
@@ -973,6 +974,7 @@ class TablesEditor(Editor):
         self._list.itemChanged.connect(lambda _: self.changed.emit())
         self.setLayout(_row(self._list))
         self._selected: list[str] = []
+        self._filled: list[tuple[str, str]] = []
         self._fill()
 
     def value(self) -> list[str]:
@@ -988,18 +990,22 @@ class TablesEditor(Editor):
 
     def refresh(self, ctx: FormContext, values: dict[str, Any]) -> None:
         super().refresh(ctx, values)
-        self._selected = self.value()
-        self._fill()
+        selected = self.value()
+        if selected != self._selected or list(ctx.tables) != self._filled:  # each fill takes time
+            self._selected = selected
+            self._fill()
 
     def _fill(self) -> None:
         self._list.blockSignals(True)
         self._list.clear()
+        self._filled = list(self.ctx.tables)
         names = dict(self.ctx.tables)
-        for table_id in [*self._selected, *(t for t in names if t not in self._selected)]:
+        chosen = set(self._selected)
+        for table_id in [*self._selected, *(t for t in names if t not in chosen)]:
             item = QListWidgetItem(names.get(table_id, f"{table_id} (missing)"))
             item.setData(Qt.ItemDataRole.UserRole, table_id)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if table_id in self._selected else Qt.CheckState.Unchecked)
+            item.setCheckState(Qt.CheckState.Checked if table_id in chosen else Qt.CheckState.Unchecked)
             self._list.addItem(item)
         self._list.blockSignals(False)
 

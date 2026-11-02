@@ -1,6 +1,7 @@
 import time
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
 from tafl.core import Project
@@ -105,6 +106,73 @@ def test_missing_columns_are_kept(qapp, registry):
     form.set_values(json_ready(action.resolve({"columns": ["gone", "A"]})))
     assert form.values()["columns"] == ["gone", "A"]
     assert form.editor("columns")._list.item(0).text() == "gone  (missing)"
+
+
+class Searched(list):
+    """A list that counts how often it is searched."""
+
+    searches = 0
+
+    def __contains__(self, item):
+        self.searches += 1
+        return super().__contains__(item)
+
+
+def texts(editor):
+    return [editor._list.item(row).text() for row in range(editor._list.count())]
+
+
+def test_columns_are_not_searched_for_in_a_list(qapp, registry):
+    """A project file can hold any number of columns, and its form opens by itself: a search through
+    all of them for each of them takes minutes."""
+    available = Searched(["a", "b", "c"])
+    form = ParamForm(registry.actions["columns.select"].params, FormContext(columns=lambda source, v: available))
+    editor = form.editor("columns")
+    editor.refresh(form.ctx, {})
+    selected = Searched(["b", "gone", "a"])
+    editor._rebuild(selected)
+    assert texts(editor) == ["b", "gone  (missing)", "a", "c"]  # the selected ones in their order, then the others
+    assert editor.value() == ["b", "gone", "a"]
+    assert selected.searches == available.searches == 0
+
+
+def test_tables_are_not_searched_for_in_a_list(qapp, registry):
+    form = ParamForm(registry.actions["table.append"].params, FormContext(tables=[("t1", "One"), ("t2", "Two"), ("t3", "Three")]))
+    editor = form.editor("tables")
+    editor._selected = Searched(["t2", "gone"])
+    editor._fill()
+    assert texts(editor) == ["Two", "gone (missing)", "One", "Three"]
+    assert editor.value() == ["t2", "gone"]
+    assert editor._selected.searches == 0
+
+
+def test_the_tables_list_fills_again_only_when_it_changes(qapp, registry):
+    """Qt takes more than twice as long for twice the rows: a refresh of the same list would
+    take seconds at many thousand tables."""
+    tables = [("t1", "One"), ("t2", "Two"), ("t3", "Three")]
+    form = ParamForm(registry.actions["table.append"].params, FormContext(tables=tables))
+    editor = form.editor("tables")
+    editor.set_value(["t2", "gone"])
+    fills = []
+    fill = editor._fill
+    editor._fill = lambda: fills.append(1) or fill()
+    editor.refresh(FormContext(tables=list(tables)), {})
+    assert fills == [] and editor.value() == ["t2", "gone"]
+    editor.refresh(FormContext(tables=[*tables, ("t4", "Four")]), {})
+    assert fills == [1] and texts(editor) == ["Two", "gone (missing)", "One", "Three", "Four"]
+    editor._list.item(2).setCheckState(Qt.CheckState.Checked)  # the row "One": a new tick fills too
+    assert len(fills) > 1 and editor.value() == ["t2", "gone", "t1"]
+    editor.refresh(FormContext(tables=[("t2", "Zwei")]), {})
+    assert texts(editor) == ["Zwei", "gone (missing)", "t1 (missing)"]
+
+
+def test_a_new_tick_moves_the_table_up_to_the_ticked_ones(qapp, registry):
+    tables = [("t1", "One"), ("t2", "Two"), ("t3", "Three")]
+    form = ParamForm(registry.actions["table.append"].params, FormContext(tables=tables))
+    editor = form.editor("tables")
+    editor.set_value(["t2"])
+    editor._list.item(2).setCheckState(Qt.CheckState.Checked)  # the row "Three"
+    assert texts(editor) == ["Two", "Three", "One"] and editor.value() == ["t2", "t3"]
 
 
 def test_a_choice_that_hides_a_field_stays_under_the_mouse(qapp, registry):
