@@ -1474,7 +1474,7 @@ def connections_sqlserver(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
 
 @picture("db-import", "Import from database: a SQL query on the SQLite connection Shop")
 def db_import(ex: Examples, shot: Callable[..., Shot]) -> QPixmap:
-    s = shot(size=(1280, 700))  # 5 rows: no room for an empty grid
+    s = shot(size=(1280, 740))  # 5 rows: no room for an empty grid, but for the help text
     s.open(ex.database(), "Customers", 1)
     return s.picture()
 
