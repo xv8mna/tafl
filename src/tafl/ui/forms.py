@@ -60,6 +60,7 @@ from .frame_model import DisplayFormat
 from .labels import tooltip_text
 
 _CHECK_DELAY_MS = 300  # a formula is checked this long after the last key
+MAX_LIST_ROWS = 1_000  # a list setting with more rows shows none: a row takes about 0.3 MB of widgets
 
 
 @dataclass
@@ -1049,6 +1050,8 @@ class ListEditor(Editor):
 
     Rows form a compact grid with one column per field. When a field holds a formula, each row
     becomes a small card instead: the short fields in one line, the formula below at full width.
+    A list of more than MAX_LIST_ROWS rows (from a project file written by hand) shows one line in
+    their place and stays as it is.
     """
 
     def __init__(self, param: List, ctx: FormContext, parent: QWidget | None = None) -> None:
@@ -1057,6 +1060,7 @@ class ListEditor(Editor):
         self._wide = [f for f in self._fields if f.kind in ("expression", "code")]
         self._rows: list[dict[str, Editor]] = []
         self._row_widgets: list[list[QWidget]] = []
+        self._kept: list[dict[str, Any]] | None = None  # a list with too many rows to show
         self._labels: dict[str, QLabel] = {}  # the header: field key -> label
         self._values: dict[str, Any] = {}
         self._grid = QGridLayout()
@@ -1066,22 +1070,35 @@ class ListEditor(Editor):
         if not self._wide:  # a choice is as wide as its text, the other fields share the rest
             for column, f in enumerate(self._fields):
                 self._grid.setColumnStretch(column, _stretch(f))
-        add = QPushButton("+ Add", self)
-        add.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        add.clicked.connect(self._add_clicked)
+        self._too_many = QLabel(self)
+        self._too_many.setTextFormat(Qt.TextFormat.PlainText)
+        self._too_many.setObjectName("Dim")
+        self._too_many.setWordWrap(True)
+        self._too_many.hide()
+        self._add = QPushButton("+ Add", self)
+        self._add.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._add.clicked.connect(self._add_clicked)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         layout.addLayout(self._grid)
-        layout.addWidget(add)
+        layout.addWidget(self._too_many)
+        layout.addWidget(self._add)
         if not self._wide:
             self._header()
 
     def value(self) -> list[dict[str, Any]]:
+        if self._kept is not None:
+            return list(self._kept)
         return [{key: editor.value() for key, editor in row.items()} for row in self._rows]
 
     def set_value(self, value: Any) -> None:
-        self._rebuild(list(value or []))
+        rows = list(value or [])
+        self._kept = rows if len(rows) > MAX_LIST_ROWS else None
+        self._rebuild([] if self._kept is not None else rows)
+        self._too_many.setText(f"{len(rows):,} rows: too many to show here. They stay as they are.")
+        self._too_many.setVisible(self._kept is not None)
+        self._add.setEnabled(self._kept is None)
 
     def refresh(self, ctx: FormContext, values: dict[str, Any]) -> None:
         super().refresh(ctx, values)
