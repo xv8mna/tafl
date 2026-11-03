@@ -234,6 +234,11 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
         value: Any = c.value if case_sensitive else c.value.lower()
     else:
         value = _literal(c.value, dtype, c.column)
+        if dtype.is_integer() and isinstance(value, float):  # no whole number the column holds: with all its digits
+            exact = dtypes.parse_decimal(c.value.strip(), _decimal_of(c.value.strip()))
+            if exact is not None:
+                compared = _whole_comparison(column, op, exact, dtype)
+                return compared.fill_null(True) if op == "!=" else compared
     if isinstance(value, Decimal):
         compared = _decimal_comparison(column, op, value, dtype.scale)
     else:
@@ -263,6 +268,22 @@ def _decimal_comparison(column: pl.Expr, op: str, value: Decimal, scale: int) ->
             return pl.when(column.is_not_null()).then(pl.lit(op == "!="))
         op = ">" if op in (">", ">=") else "<="
     return _COMPARE[op](column, pl.lit(floor, dtype=pl.Decimal(_DECIMAL_DIGITS, scale)))
+
+
+def _whole_comparison(column: pl.Expr, op: str, value: Decimal, dtype: pl.DataType) -> pl.Expr:
+    """A whole-number column compared with a typed value that it can't hold (decimal places, or
+    beyond its range), exactly: through the whole number below the value, in the column's type."""
+    floor = int(value.to_integral_value(rounding=ROUND_FLOOR))
+    if floor != value:  # between two whole numbers
+        if op in ("=", "!="):
+            return pl.when(column.is_not_null()).then(pl.lit(op == "!="))
+        op = ">" if op in (">", ">=") else "<="
+    low, high = _limits(dtype)
+    if not low <= floor <= high:  # beyond all values of the column
+        below = floor > high  # all of them are below it
+        answer = {"=": False, "!=": True, ">": not below, ">=": not below, "<": below, "<=": below}[op]
+        return pl.when(column.is_not_null()).then(pl.lit(answer))
+    return _COMPARE[op](column, pl.lit(floor, dtype=dtype))
 
 
 def _on_scale(value: Any, scale: int) -> Decimal | None:

@@ -96,6 +96,30 @@ def test_long_whole_numbers_in_typed_values(act):
     assert names(flt(act, df, ("Code", "<", "1234567890123456789"))) == ["b"]
 
 
+def test_a_typed_number_that_is_no_whole_number_of_the_column_keeps_its_digits(act):
+    """It was compared as a decimal number, whose last digits are lost: 2**63 was equal to the
+    highest Int64 and the one below it."""
+    top = 2**63 - 1
+    df = pl.DataFrame({"Name": ["a", "b", "c"], "Code": [top, top - 1, 1]})
+    beyond = str(2**63)
+    assert names(flt(act, df, ("Code", "=", beyond))) == []
+    assert names(flt(act, df, ("Code", "!=", beyond))) == ["a", "b", "c"]
+    assert names(flt(act, df, ("Code", "<", beyond))) == ["a", "b", "c"]
+    assert names(flt(act, df, ("Code", ">", beyond))) == []
+    assert names(flt(act, df, ("Code", ">", "-" + beyond))) == ["a", "b", "c"]
+    assert names(flt(act, df, ("Code", ">=", f"{top - 1}.5"))) == ["a"]  # decimal places beyond a float's
+    assert names(flt(act, df, ("Code", "<", "1e400"))) == ["a", "b", "c"]
+    unsigned = df.with_columns(pl.Series("Code", [2**64 - 1, 2**64 - 2, 1], dtype=pl.UInt64))
+    assert names(flt(act, unsigned, ("Code", "=", str(2**64)))) == []
+    assert names(flt(act, unsigned, ("Code", "<", str(2**64)))) == ["a", "b", "c"]
+    wide = 150000000000000000000000000000000000000  # beyond the 38 digits of an exact decimal
+    huge = df.with_columns(pl.Series("Code", [wide + 1, wide, -wide], dtype=pl.Int128))
+    assert names(flt(act, huge, ("Code", "<", "2.5"))) == ["c"]
+    assert names(flt(act, huge, ("Code", ">", f"{wide}.5"))) == ["a"]
+    assert names(flt(act, huge, ("Code", "=", f"{wide}.5"))) == []
+    assert names(flt(act, huge, ("Code", "<=", f"-{wide}.5"))) == []
+
+
 def test_typed_values_for_exact_decimals(act):
     ids = [D("12345678901234567890123"), D("12345678901234567890124"), D("5"), None]
     amounts = [D("12345678901234.5678"), D("12345678901234.5679"), D("1.10"), None]
