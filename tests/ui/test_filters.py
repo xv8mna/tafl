@@ -588,6 +588,71 @@ def test_the_values_of_a_decimal_column_find_their_rows(act, dtype, cells):
         assert made["Amount"].to_list() == [cell], chosen  # the step made from the filter: the same rows
 
 
+@pytest.mark.parametrize("dtype", [pl.Float64, pl.Float32])
+def test_the_values_of_a_float_column_find_their_rows_as_a_step(act, dtype):
+    """DuckDB reads 0.9931027217047139 as an exact decimal, and its cast to a float can miss the
+    value by one unit: the step made from the filter kept no row."""
+    steps = [0.9931027217047139, 1 / 3, 2 / 3, -2.5e-300, 1e300, 123456.78901234567, 0.1, -7.0, 2**60 + 0.0]
+    values = steps + [i / 997 + 1 / 7 for i in range(300)]
+    numbers = pl.DataFrame({"x": pl.Series(values, dtype=dtype)})
+    for cell in numbers["x"].unique():
+        chosen = Filter("x", [to_json(cell)])
+        expected = apply(numbers, [chosen]).height
+        made = act("rows.filter_formula", numbers, {"condition": formula(chosen, dtype), "keep": "keep"})
+        assert made.height == expected > 0, (cell, formula(chosen, dtype))
+    typed = Filter("x", [0.1])  # a value of a project file: Polars makes it a value of the column's type
+    made = act("rows.filter_formula", numbers, {"condition": formula(typed, dtype), "keep": "keep"})
+    assert made.height == apply(numbers, [typed]).height == 1
+
+
+def test_a_number_range_on_a_wide_decimal_column_works_as_a_step(act):
+    """A threshold written as an exact decimal made DuckDB cast the column to one with 10 decimal
+    places, and the step stopped."""
+    big = D("-8435767307011802148496166840000000")
+    numbers = pl.DataFrame({"Amount": pl.Series([big, D(5), D(2_000_000)], dtype=pl.Decimal(38, 0))})
+    for picked in ([0], [1], [2], [0, 2]):
+        chosen = Filter("Amount", picked, "ranges", {"thresholds": [-557641.5134930343, 1000.5]})
+        made = act("rows.filter_formula", numbers, {"condition": formula(chosen, pl.Decimal(38, 0)), "keep": "keep"})
+        assert made["Amount"].to_list() == apply(numbers, [chosen])["Amount"].to_list(), picked
+
+
+@pytest.mark.parametrize("inclusive", [True, False])
+def test_number_ranges_as_a_step_keep_the_rows_of_the_filter(act, inclusive):
+    """A threshold is a Float32 value for a Float32 column, as Polars makes it; an exact decimal with
+    more digits than a float holds is compared as a correctly rounded float, as Polars does."""
+    near = D("0.0055287354824883609699130743822903801")  # DuckDB's own cast misses it by one unit
+    cases = [
+        (pl.Series("x", [0.7, 19.99, 5.0, 0.69], dtype=pl.Float32), [0.7, 19.99]),
+        (pl.Series("x", [near, D("0.1"), D(0)], dtype=pl.Decimal(38, 37)), [float(near)]),
+    ]
+    for column, limits in cases:
+        numbers = column.to_frame()
+        for picked in range(len(limits) + 1):
+            chosen = Filter("x", [picked], "ranges", {"thresholds": limits, "lower_inclusive": inclusive})
+            made = act("rows.filter_formula", numbers, {"condition": formula(chosen, column.dtype), "keep": "keep"})
+            assert made["x"].to_list() == apply(numbers, [chosen])["x"].to_list(), (column.dtype, picked)
+
+
+def test_a_small_exact_decimal_finds_its_row_as_a_step(act):
+    """Its text had an exponent (1.17E-18), which DuckDB reads as a float."""
+    cells = [D("-0.0000000000000000011767350239096252393"), D("0.5"), D("0")]
+    numbers = pl.DataFrame({"x": pl.Series(cells, dtype=pl.Decimal(38, 37))})
+    for cell in numbers["x"]:
+        chosen = Filter("x", [to_json(cell)])
+        made = act("rows.filter_formula", numbers, {"condition": formula(chosen, pl.Decimal(38, 37)), "keep": "keep"})
+        assert made["x"].to_list() == [cell], formula(chosen, pl.Decimal(38, 37))
+
+
+def test_a_filter_without_values_keeps_all_rows_also_as_a_step(act):
+    """The window offers "Add as step" only for a filter with values, but its formula keeps the same
+    rows in any case (it kept no row)."""
+    numbers = pl.DataFrame({"x": [1.5, None, 3.0]})
+    for chosen in (Filter("x", []), Filter("x", [], excluded=True), Filter("x", [], "ranges", {"thresholds": [2]})):
+        assert apply(numbers, [chosen]).height == 3
+        made = act("rows.filter_formula", numbers, {"condition": formula(chosen, pl.Float64), "keep": "keep"})
+        assert made.height == 3, chosen
+
+
 @pytest.mark.parametrize("value", ["1.50", "1e-400"])
 def test_a_project_file_with_a_decimal_filter_opens_and_refreshes(window, settle, session, registry, tmp_path, value):
     data = tmp_path / "exact.parquet"

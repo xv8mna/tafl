@@ -27,6 +27,7 @@ import datetime as dt
 import functools
 import math
 import re
+import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Context, Decimal
@@ -366,13 +367,25 @@ def facet(
 
 def formula(f: Filter, dtype: pl.DataType) -> str:
     """The filter as a condition for the step "Filter rows by formula" (same rows)."""
+    if not f.values and not f.excluded:  # nothing picked yet: the filter keeps all rows
+        return "TRUE"
     name = "[" + f.column.replace("]", "]]") + "]"
     values = from_json(f.values, key_type(f, dtype))
+    if f.facet == "values" and dtype == pl.Float32:  # Polars compares them as Float32 values
+        values = [_single(v) for v in values]
     parts = []
     if values and f.facet == "ranges":
         limits, inclusive = thresholds(f), f.options.get("lower_inclusive", True)
+        if dtype == pl.Float32:  # Polars makes a threshold a Float32 value for such a column
+            limits = [_single(limit) for limit in limits]
+        column = name
+        if isinstance(dtype, pl.Decimal) and (dtype.precision or 38) > 15:
+            # Polars compares an exact decimal with a threshold as a correctly rounded Float64; DuckDB's
+            # cast of a decimal with more digits than a Float64 holds can miss by one unit, its reading
+            # of the text can't
+            column = f"CAST(CAST({name} AS VARCHAR) AS DOUBLE)"
         for index in sorted(v for v in values if 0 <= v <= len(limits)):
-            parts.append(_range_sql(name, limits, index, inclusive))
+            parts.append(_range_sql(column, limits, index, inclusive))
     elif values and f.facet == "regex":
         test = f"regexp_matches({name}, {_sql(str(f.options.get('pattern') or ''))})"
         parts += [test if value == MATCH else f"NOT {test}" for value in values if value in (MATCH, NO_MATCH)]
@@ -415,12 +428,28 @@ def _range_sql(name: str, limits: list[float], index: int, lower_inclusive: bool
     return " AND ".join(sides) if sides else f"{name} IS NOT NULL"
 
 
+def _single(value: Any) -> Any:
+    """A number as a Float32 value (as a Python float), rounded as Polars rounds it: beyond the
+    range of Float32 it is infinite."""
+    if not isinstance(value, float):
+        return value
+    try:
+        return struct.unpack("f", struct.pack("f", value))[0]
+    except OverflowError:
+        return math.copysign(math.inf, value)
+
+
 def _sql(value: Any) -> str:
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
     if isinstance(value, float) and not math.isfinite(value):
         return "'NaN'::DOUBLE" if math.isnan(value) else f"'{'-' if value < 0 else ''}Infinity'::DOUBLE"
-    if isinstance(value, (int, float, Decimal)):
+    if isinstance(value, float):  # as a DOUBLE: DuckDB reads 0.123 as an exact decimal, whose cast can miss by one unit
+        text = repr(value)
+        return text if "e" in text else text + "e0"
+    if isinstance(value, Decimal):  # without an exponent: DuckDB reads 1.5E-18 as a DOUBLE
+        return format(value, "f")
+    if isinstance(value, int):
         return str(value)
     if isinstance(value, dt.datetime):
         return f"TIMESTAMP '{value.isoformat(sep=' ')}'"
