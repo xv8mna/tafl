@@ -105,6 +105,7 @@ _BLOCKED = {
     "current_setting", "getvariable", "which_secret",
     "query", "query_table", "json_execute_serialized_sql", "json_serialize_plan",
     "enable_logging", "disable_logging", "truncate_duckdb_logs", "enable_profiling", "disable_profiling", "checkpoint", "force_checkpoint",
+    "setseed",
 }  # fmt: skip
 _BLOCKED_PREFIXES = ("duckdb_", "pragma_")
 # Names that are only blocked where DuckDB reads them as a table (see _reads_blocked_table): a column

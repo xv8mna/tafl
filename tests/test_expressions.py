@@ -319,6 +319,8 @@ def test_functions_that_run_a_text_or_stay_in_force_are_refused(people):
         "(SELECT COUNT(*) FROM disable_profiling())",
         "(SELECT COUNT(*) FROM checkpoint())",
         "(SELECT COUNT(*) FROM force_checkpoint())",
+        "setseed(0.25)",  # RANDOM() of the next project would give the same numbers
+        "(SELECT setseed(0.25))",
     ):
         with pytest.raises(ActionError, match="a formula can only use the data of the step"):
             expressions.evaluate(people, formula)
