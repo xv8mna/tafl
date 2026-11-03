@@ -153,7 +153,8 @@ def aggregate(df, p, ctx):
             raise ActionError(f"Choose a column for '{_FUNCTION_LABELS[calc.function]}'")
         dtype = df.schema.get(calc.column)
         _check_type(calc, dtype)
-        aggregation = _aggregation(calc, p.separator)
+        as_hex = dtype == pl.Binary and calc.function == "join" and not _bytes_are_text(df[calc.column])
+        aggregation = _aggregation(calc, p.separator, dtype, as_hex)
         if calc.function == "sum" and dtype in (pl.Int64, pl.UInt64, pl.Duration) and _sums_may_overflow(df[calc.column]):
             aggregation = pl.col(calc.column).to_physical().cast(pl.Int128).sum()
             wide.append((_result_name(calc), calc.column, dtype))
@@ -210,7 +211,16 @@ def _check_type(calc, dtype: pl.DataType | None) -> None:
     raise ActionError(f"{_FUNCTION_LABELS[calc.function]} needs {needs}; {calc.column} is {kind}")
 
 
-def _aggregation(calc, separator: str) -> pl.Expr:
+def _bytes_are_text(values: pl.Series) -> bool:
+    """Whether all these binary values are UTF-8 text: then they are joined as text, as always."""
+    try:
+        values.cast(pl.String)
+    except pl.exceptions.ComputeError:
+        return False
+    return True
+
+
+def _aggregation(calc, separator: str, dtype: pl.DataType | None, as_hex: bool) -> pl.Expr:
     column = pl.col(calc.column) if calc.column else None
     match calc.function:
         case "sum":
@@ -233,8 +243,9 @@ def _aggregation(calc, separator: str) -> pl.Expr:
             return column.drop_nulls().first()
         case "last":
             return column.drop_nulls().last()
-        case "join":
-            return column.cast(pl.String).drop_nulls().str.join(separator)
+        case "join":  # time spans have no cast to text, nor have bytes that are no text: as hex digits
+            text = dtypes.text_expr(column, dtype) if dtype == pl.Duration or as_hex else column.cast(pl.String)
+            return text.drop_nulls().str.join(separator)
     raise ActionError(f"Unknown function '{calc.function}'")
 
 

@@ -60,6 +60,30 @@ def test_number_groups(act):
         act("calc.enumerate", df, {"mode": "groups"})
 
 
+def test_join_texts_of_time_spans_and_binary_values(act):
+    """They have no cast to text: a raw error of Polars stopped the step."""
+    df = pl.DataFrame(
+        {
+            "G": ["a", "a", "b"],
+            "Span": [dt.timedelta(hours=1), dt.timedelta(days=1, minutes=2), None],
+            "Blob": [b"\xff\x00", b"abc", None],
+        }
+    )
+    out = act(
+        "calc.aggregate",
+        df,
+        {
+            "group_by": ["G"],
+            "calculations": [{"function": "join", "column": "Span", "name": "S"}, {"function": "join", "column": "Blob", "name": "B"}],
+            "separator": "; ",
+        },
+    )
+    assert out.to_dicts() == [{"G": "a", "S": "1h; 1d 2m", "B": "0xFF00; 0x616263"}, {"G": "b", "S": "", "B": ""}]
+    text = df.with_columns(pl.Series("Blob", [b"abc", "ä".encode(), None]))  # bytes that are all text stay text
+    out = act("calc.aggregate", text, {"group_by": [], "calculations": [{"function": "join", "column": "Blob"}], "separator": ", "})
+    assert out.row(0) == ("abc, ä",)
+
+
 def test_aggregate(act, people):
     out = act(
         "calc.aggregate",
