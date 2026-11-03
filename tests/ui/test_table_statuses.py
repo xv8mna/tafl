@@ -99,6 +99,120 @@ def test_an_edit_just_before_a_click_on_another_table_leaves_no_old_status(gated
     assert session.table_status(other.id) == "ok"
 
 
+@pytest.mark.parametrize("edit", ["off", "delete"])
+def test_a_check_that_reports_during_the_timer_of_an_edit_leaves_no_old_status(gated, settle, qtbot, tmp_path, edit):
+    """Reload data checks the other tables after the selected one. An edit while that check runs:
+    the check reports during the timer of the edit, with results from before the edit."""
+    session, actions = gated, gated.registry.actions
+    project = Project()
+    source = project.add_table("Source")
+    project.add_step(source, actions["csv.import"], {"file": "a.csv"})
+    user = project.add_table("User")
+    project.add_step(user, actions["table.derive"], {"table": source.id})
+    project.add_step(user, actions["test.gate"], {"fail": "no"})
+    other = project.add_table("Other")
+    project.add_step(other, actions["csv.import"], {"file": "a.csv"})
+    session.open_project(project.save(tmp_path / "p.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    source, user, other = session.project.tables
+    session.select_table(other.id)
+    settle(session)
+    session._timer.setInterval(2_000)  # the report surely comes during the timer
+    HOLD.set()
+    session.reload_sources()
+    qtbot.waitUntil(ENTERED.is_set, timeout=10_000)  # the check of Source and User waits in the gate
+    if edit == "off":
+        session.set_table_enabled([source.id], False)
+    else:
+        session.delete_tables([source.id])
+    with qtbot.waitSignal(session.results_changed, timeout=10_000):
+        GO.set()
+    assert session._timer.isActive()  # the report came during the timer
+    HOLD.clear()
+    settle(session)
+    assert session.table_status(user.id) == ("skipped" if edit == "off" else "error")
+
+
+@pytest.mark.parametrize("edit", ["off", "delete"])
+def test_a_check_of_all_tables_that_reports_during_the_timer_of_an_edit_leaves_no_old_status(
+    gated, settle, qtbot, tmp_path, edit
+):
+    """The Problems filter calculates the tables without a result after the selected one. An edit
+    while that runs: a table without a result has no mark of the edit, and the report gives it a
+    result from before."""
+    session, actions = gated, gated.registry.actions
+    project = Project()
+    source = project.add_table("Source")
+    project.add_step(source, actions["csv.import"], {"file": "a.csv"})
+    user = project.add_table("User")
+    project.add_step(user, actions["table.derive"], {"table": source.id})
+    project.add_step(user, actions["test.gate"], {"fail": "no"})
+    other = project.add_table("Other")
+    project.add_step(other, actions["csv.import"], {"file": "a.csv"})
+    session.open_project(project.save(tmp_path / "p.tafl"), trusted=True)
+    source, user, other = session.project.tables
+    session.select_table(other.id)
+    settle(session)
+    assert user.id not in session.results
+    session._timer.setInterval(2_000)  # the report surely comes during the timer
+    HOLD.set()
+    session.calculate_all(True)
+    qtbot.waitUntil(ENTERED.is_set, timeout=10_000)  # the check of all tables waits in the gate
+    if edit == "off":
+        session.set_table_enabled([source.id], False)
+    else:
+        session.delete_tables([source.id])
+    with qtbot.waitSignal(session.results_changed, timeout=10_000):
+        GO.set()
+    assert session._timer.isActive()  # the report came during the timer
+    HOLD.clear()
+    settle(session)
+    assert session.table_status(user.id) == ("skipped" if edit == "off" else "error")
+
+
+def test_the_check_of_the_selected_table_that_reports_during_the_timer_of_a_redo_leaves_no_old_status(
+    gated, settle, qtbot, tmp_path
+):
+    """Reload data calculates the selected table first. A Redo while that runs changes that table
+    and selects another one: the timer calculates the other table, and the report of the first
+    comes during the timer."""
+    session, actions = gated, gated.registry.actions
+    project = Project()
+    edited = project.add_table("Edited")
+    project.add_step(edited, actions["csv.import"], {"file": "a.csv"})
+    project.add_step(edited, actions["test.gate"], {"fail": "no"})
+    other = project.add_table("Other")
+    project.add_step(other, actions["csv.import"], {"file": "a.csv"})
+    session.open_project(project.save(tmp_path / "p.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    edited, other = session.project.tables
+    session.select_table(edited.id)
+    settle(session)
+    session.set_params(edited.steps[1].id, {"fail": "yes"})
+    settle(session)
+    session.select_table(other.id)
+    settle(session)
+    session.undo()  # Edited works again and is selected; Redo selects Other (selected at the Undo)
+    settle(session)
+    assert session.table_id == edited.id and session.table_status(edited.id) == "ok"
+    session._timer.setInterval(2_000)
+    HOLD.set()
+    session.reload_sources()
+    qtbot.waitUntil(ENTERED.is_set, timeout=10_000)  # the calculation of Edited waits in the gate
+    session.redo()
+    assert session.table_id == other.id
+    with qtbot.waitSignal(session.results_changed, timeout=10_000):
+        GO.set()
+    assert session._timer.isActive()  # the report came during the timer
+    HOLD.clear()
+    settle(session)
+    assert session.table_status(edited.id) == "error"
+
+
 def test_after_the_click_the_edited_table_waits_for_its_stopped_calculation(gated, settle, qtbot, tmp_path):
     """A stop takes effect between steps, so the calculation of the edit can still read a big file.
     A second read of it at the same time takes twice the memory, and the next click would wait for

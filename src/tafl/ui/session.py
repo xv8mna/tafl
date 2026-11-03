@@ -566,13 +566,18 @@ class Session(QObject):
 
     def _on_results(self, outcome: tuple[str, dict[str, TableResult]]) -> None:
         scope, results = outcome
-        if self._unsettled in results and not self._timer.isActive():  # only a job after the edit can report now
+        pending = self._timer.isActive()  # an edit waits: the results can be older than the project
+        if self._unsettled in results and not pending:  # only a job after the edit can report now
             self._unsettled = None
         changed = [t for t, r in results.items() if _signature(self.results.get(t)) != _signature(r)]
         self._update_results(results)
+        if pending:  # checked again after the selected table, which the timer calculates first
+            self._recheck |= {t for t in results if self.project.find_table(t) is not None}
         if scope == "table" and changed:  # the tables that use a changed table show old results now
             self._recheck |= (self.users(changed) & set(self.results)) - set(results)
         self.results_changed.emit()
+        if pending:  # the job of the timer goes on from here
+            return
         if scope == "table" and self._wants_all():  # the selected table first, then everything else
             self._calculate("all", None)
         elif scope == "table":
