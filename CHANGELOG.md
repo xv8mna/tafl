@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.6.2 – 2026-11-03
 
 - A table that uses a changed table no longer keeps its old status when Tafl finishes checking the
   other tables just after a change: for example a table turned off or deleted while **Reload data**
