@@ -1679,8 +1679,8 @@ example "Orders (derived)".
 
 Right-click the empty background for **New table here**: the table appears where you clicked, in
 the group whose frame you clicked in. The same menu has **Group the 3 selected tables…** when
-tables are selected, **Collapse all groups**, **Expand all groups**, **Arrange automatically** and
-**Show all**.
+tables are selected, **Collapse all groups** when a group is open, **Expand all groups** when a
+group is collapsed, **Arrange automatically** and **Show all**.
 
 ![The right-click menu of a table on the map](guide/map-box-menu.png)
 

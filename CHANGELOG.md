@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- A table that uses a changed table no longer keeps its old status when Tafl finishes checking the
+  other tables just after a change: for example a table turned off or deleted while **Reload data**
+  or the **Problems** filter still checks the other tables, or an **Undo** or **Redo** during a
+  calculation.
+- **Add as step** in the filter pane keeps the same rows as the filter: for decimal numbers with
+  many digits (a value such as `0.9931027217047139` found no row), for very small exact decimals,
+  and for number ranges on a column of 32-bit decimal numbers or of very wide exact decimals (the
+  step stopped).
+- **Filter rows**: a typed number that is no whole number of the column, such as
+  `9223372036854775808` on a whole-number column, keeps all its digits: `=` found the values near
+  it.
+- **Aggregate**: **Join texts** works on time spans, and on binary values that are no text (as hex
+  digits), where the step stopped.
+- A formula can't use `setseed`: it fixed the random numbers of the projects opened after it.
 - A project file with half of a character in it (a lone surrogate such as `\ud800`, which
   another program can write) opens with `�` in its place, and can be saved again. Before, a save
   stopped with a message about surrogates. Two names or settings that differ only in such halves
@@ -25,6 +39,7 @@ less memory.
   - The projects in **File → Open recent** count as known once, when this version starts for the
     first time.
   - `tafl run` and `tafl show` work as before: you start them on purpose.
+  - The file dialog of a path setting starts in the project folder, not at the path.
   - "Projects from other people" in chapter 3 of the user guide says what trust means, and what it
     doesn't: a SQL Server query that commits by itself keeps its changes, and a rollback can't undo
     that.
@@ -114,10 +129,13 @@ less memory.
   step** keeps the same rows. A table shows 100 filters at most: more from a project file apply
   and stay in the file, and a line under the cards counts them.
 - A project that can't be saved says so, and the window stays open with your work.
-- A project file with data nested too deeply is refused when it opens, as a damaged file.
+- A project file with data nested too deeply is refused when it opens, as a damaged file. A map
+  position that is not a finite number counts as not set.
 - A project file written by hand with thousands of steps without an id, or a formula of thousands of
   lines, no longer blocks the window for minutes. A step with more than 1,000 rows in a list shows
-  their number in place of the rows, and keeps them.
+  their number in place of the rows, and keeps them. The settings of a step with thousands of columns
+  or tables fill faster, and the colors of a formula with emoji no longer slow down.
+- A `PIVOT` in a formula needs its values (`ON [Column] IN (...)`), and says so.
 - The report after a program that ended without a message keeps each name on one line, and it says
   when a step asked for more memory at once than was free.
 - Plugins: `ctx.database` has a keyword `read_only` (a connector can override `connect_read_only`;
