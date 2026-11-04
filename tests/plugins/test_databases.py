@@ -621,6 +621,40 @@ def test_a_column_of_blobs_stays_binary(project, registry, tmp_path):
     assert column.dtype == pl.Binary and column.to_list() == [None, b"ab"]
 
 
+@pytest.mark.parametrize("name", ["*", "^a.*$", "^x$"])
+def test_a_column_named_like_a_pattern_keeps_its_type(name):
+    """Polars reads * as all columns and a name like ^a.*$ as a pattern, also while it makes a Series
+    of date-times or time spans: such a column of a database (SQL Server's date-times, for example)
+    became text."""
+    from tafl.api import make_series
+
+    stamp = dt.datetime(2026, 1, 2, 8, 30, 15, 600000)
+    columns = [
+        ([stamp, None], pl.Datetime("us")),
+        ([stamp.replace(tzinfo=dt.UTC), None], None),
+        ([dt.timedelta(seconds=5), None], None),
+        ([dt.date(2026, 1, 2), dt.time(8, 30)], None),  # two kinds: text
+        ([decimal.Decimal("12345678901234567.25"), None], pl.Decimal(20, 2)),
+        ([2**70, 1], None),
+    ]
+    for values, dtype in columns:
+        expected = make_series("v", values, dtype)
+        got = make_series(name, values, dtype)
+        assert (got.name, got.dtype, got.to_list()) == (name, expected.dtype, expected.to_list())
+
+    class Cursor:
+        description = [(name, None), ("abc", None)]
+        rows = [(stamp, 1), (None, 2)]
+
+        def fetchmany(self, size):
+            rows, self.rows = self.rows, []
+            return rows
+
+    frame = frame_from_cursor(Cursor())
+    assert frame.schema == pl.Schema({name: pl.Datetime("us"), "abc": pl.Int64})
+    assert frame.rows() == [(stamp, 1), (None, 2)]
+
+
 def test_no_two_engines_share_a_read_of_a_database(project, registry, tmp_path):
     """A window keeps its cache for the next project, and a database can't say that it changed:
     the same file opened again, or another project with the same query, reads again."""

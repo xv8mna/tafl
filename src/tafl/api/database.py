@@ -488,7 +488,9 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
         values = [None if v is None else str(v) for v in values]  # e.g. UUID
         dtype = pl.String
     try:
-        series = pl.Series(name, values, dtype=dtype, strict=False)
+        # named afterwards: Polars looks the Series up by its name while it makes date-times and
+        # durations, where a name like ^a.*$ is a pattern that finds nothing
+        series = pl.Series(values=values, dtype=dtype, strict=False).alias(name)
     except Exception:
         return pl.Series(name, [None if v is None else str(v) for v in values], dtype=pl.String)
     # Whole numbers beyond Int64 as decimals: Polars would make them UInt64 or Int128, and empty
@@ -525,7 +527,7 @@ def _decimals(name: str, values: list[Any], dtype: pl.DataType | None) -> pl.Ser
     series = None
     if all(v is None or v.is_finite() for v in numbers):  # a Decimal has no NaN or infinity
         try:
-            series = pl.Series(name, numbers, dtype=exact)
+            series = pl.Series(values=numbers, dtype=exact).alias(name)  # named afterwards, as in make_series
         except Exception:  # more than the 38 digits a Decimal holds
             pass
     # Polars empties a value whose digits don't fit beside the decimal places of the others
