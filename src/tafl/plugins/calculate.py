@@ -157,7 +157,7 @@ def aggregate(df, p, ctx):
             raise ActionError(f"Choose a column for '{_FUNCTION_LABELS[calc.function]}'")
         dtype = df.schema.get(calc.column)
         _check_type(calc, dtype)
-        as_hex = dtype == pl.Binary and calc.function == "join" and not _bytes_are_text(df[calc.column])
+        as_hex = dtype == pl.Binary and calc.function == "join" and not dtypes.bytes_are_text(df[calc.column])
         aggregation = _aggregation(calc, p.separator, dtype, as_hex)
         if calc.function == "sum" and dtype in (pl.Int64, pl.UInt64, pl.Duration) and _sums_may_overflow(df[calc.column]):
             aggregation = pl.col(calc.column).to_physical().cast(pl.Int128).sum()
@@ -248,15 +248,6 @@ def _check_type(calc, dtype: pl.DataType | None) -> None:
     kind = "text" if dtype == pl.String else f"a {dtypes.type_label(dtype)} column"
     needs = "a number column" if calc.function == "sum" else "a number or date column"
     raise ActionError(f"{_FUNCTION_LABELS[calc.function]} needs {needs}; {calc.column} is {kind}")
-
-
-def _bytes_are_text(values: pl.Series) -> bool:
-    """Whether all these binary values are UTF-8 text: then they are joined as text, as always."""
-    try:
-        values.cast(pl.String)
-    except pl.exceptions.ComputeError:
-        return False
-    return True
 
 
 def _aggregation(calc, separator: str, dtype: pl.DataType | None, as_hex: bool) -> pl.Expr:
