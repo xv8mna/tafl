@@ -242,6 +242,21 @@ def test_typed_times(act):
     assert act("rows.fill", df, {"columns": ["Start"], "method": "value", "value": "6:45"})["Start"][3] == dt.time(6, 45)
 
 
+def test_typed_times_keep_their_nanoseconds(act):
+    """A time with nanoseconds (from a Parquet file or a formula) and a typed one: Python's time
+    has microseconds, so 08:00:00.000000001 was 08:00:00."""
+    eight = 8 * 3600 * 10**9  # in nanoseconds
+    df = pl.DataFrame({"Name": list("abcd"), "Start": pl.Series([eight, eight + 1, eight + 1000, None]).cast(pl.Time)})
+    assert names(flt(act, df, ("Start", "=", "08:00:00.000000001"))) == ["b"]
+    assert names(flt(act, df, ("Start", "!=", "08:00:00.000000001"))) == ["a", "c", "d"]
+    assert names(flt(act, df, ("Start", ">", "08:00:00.000000001"))) == ["c"]
+    assert names(flt(act, df, ("Start", "<=", "08:00:00.000000999"))) == ["a", "b"]
+    assert names(flt(act, df, ("Start", "in", "08:00:00.000000001; 08:00:00.000001"))) == ["b", "c"]
+    assert names(flt(act, df, ("Start", "not_in", "08:00:00.000000001"))) == ["a", "c", "d"]
+    filled = act("rows.fill", df, {"columns": ["Start"], "method": "value", "value": "08:00:00.000000002"})
+    assert filled.schema["Start"] == pl.Time and filled["Start"].to_physical().to_list() == [eight, eight + 1, eight + 1000, eight + 2]
+
+
 @pytest.mark.parametrize("operator", ["=", "in", "not_in"])
 @pytest.mark.parametrize("value", ["soon", "25:00", "24:00:00", "0800"])
 def test_a_typed_value_that_is_no_time(act, operator, value):

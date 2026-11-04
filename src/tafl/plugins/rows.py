@@ -234,6 +234,8 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
             low, high = _limits(dtype)
             values = [v for v in values if isinstance(v, int) and low <= v <= high]
         listed = pl.Series(values, dtype=dtype).implode() if dtype.is_integer() else values
+        if dtype == pl.Time and values:  # Series of one time each (see _literal)
+            listed = pl.concat(values).implode()
         found = column.is_in(listed) if values else pl.lit(False)
         return found if op == "in" else (~found).fill_null(True)
 
@@ -330,7 +332,8 @@ def _too_big_with(values: pl.Series, value: int) -> tuple[int, int] | None:
 
 
 def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
-    """A value typed by the user, converted to the column's type."""
+    """A value typed by the user, converted to the column's type. A time is a Series of one value:
+    Python's time has no nanoseconds (08:30:00.000000001)."""
     value = text.strip()
     if dtype == pl.String:
         return text
@@ -363,8 +366,8 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
             )
         return parsed
     if dtype == pl.Time:
-        parsed = dtypes.parse_times(pl.Series([value]))[0]
-        if parsed is None:
+        parsed = dtypes.parse_times(pl.Series([value]))
+        if parsed.null_count():
             raise ActionError(f"'{text}' is not a time (column '{column}'); use e.g. 08:30 or 08:30:15")
         return parsed
     if dtype == pl.Boolean:
