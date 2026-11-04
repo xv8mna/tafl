@@ -179,6 +179,24 @@ def test_copied_categories_with_a_tab_or_a_line_break_are_in_quotes(qapp):
         assert model.copier()(frame[name]) == ['"a\tb"', '"c ""d""\ne"', "f"]
 
 
+class OwnText:
+    """A value of a plugin's own type with a text."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def __str__(self):
+        return self.text
+
+
+def test_copied_values_of_a_plugins_own_type_with_a_tab_or_a_line_break_are_in_quotes(qapp):
+    """As texts are: else Excel splits the cell."""
+    values = [OwnText("a\tb"), OwnText('c "d"\ne'), OwnText("f"), NoText(), None]
+    model = FrameModel()
+    model.set_frame(pl.DataFrame([pl.Series("O", values, dtype=pl.Object)]))
+    assert model.copier()(model.frame["O"]) == ['"a\tb"', '"c ""d""\ne"', "f", "(no text)", ""]
+
+
 def test_large_frames_are_read_in_blocks(qapp):
     model = FrameModel()
     model.set_frame(pl.DataFrame({"n": range(100_000)}))
