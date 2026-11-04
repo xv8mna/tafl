@@ -168,9 +168,28 @@ class _Combo(QComboBox):
 class _Spin(QSpinBox):
     """A whole number field; ``make_narrow`` makes it as wide as the number it shows (at least two
     digits, also while a number is typed) and without arrows, instead of as wide as its largest
-    possible number. The mouse wheel and the arrow keys still change the number."""
+    possible number. The mouse wheel and the arrow keys still change the number.
+
+    A number beyond its range (from a project file written by hand; Qt's numbers end at 2**31) is
+    ``kept``: the field shows it, and its value is the nearest number of the range, until a number
+    is typed or the value changes."""
 
     narrow = False
+    kept: int | None = None
+
+    def show_number(self, number: int) -> None:
+        nearest = min(max(number, self.minimum()), self.maximum())
+        self.kept = None if nearest == number else number
+        self.setValue(nearest)  # also writes the text when the value is the same
+
+    def textFromValue(self, value: int) -> str:
+        if self.kept is not None and value == min(max(self.kept, self.minimum()), self.maximum()):
+            return str(self.kept)
+        return super().textFromValue(value)
+
+    def valueFromText(self, text: str) -> int:
+        self.kept = None  # a number was typed: it is the value now
+        return super().valueFromText(text)
 
     def make_narrow(self) -> None:
         if not self.narrow:
@@ -673,19 +692,34 @@ class IntEditor(Editor):
         low, high = getattr(param, "min", None), getattr(param, "max", None)
         self._spin.setRange(-2_000_000_000 if low is None else int(low), 2_000_000_000 if high is None else int(high))
         self._spin.setKeyboardTracking(False)
-        self._spin.valueChanged.connect(self.changed)
+        self._spin.valueChanged.connect(self._value_changed)
+        self._spin.editingFinished.connect(self._typed)
+        self._kept: int | None = None
         self.setLayout(_row(self._spin, QWidget(self)))
 
     def value(self) -> int:
-        return self._spin.value()
+        return self._spin.value() if self._spin.kept is None else self._spin.kept
 
     def set_value(self, value: Any) -> None:
-        self._spin.blockSignals(True)
         try:
-            self._spin.setValue(int(value or 0))
-        except (TypeError, ValueError):
-            self._spin.setValue(0)
+            number = int(value or 0)
+        except (TypeError, ValueError, OverflowError):  # OverflowError: an infinite number
+            number = 0
+        self._spin.blockSignals(True)
+        self._spin.show_number(number)
         self._spin.blockSignals(False)
+        self._kept = self._spin.kept
+
+    def _value_changed(self) -> None:
+        self._spin.kept = self._kept = None
+        self.changed.emit()
+
+    def _typed(self) -> None:
+        """A number typed in place of a kept one is a change, also the number at the end of the
+        range: for Qt the value stays the same."""
+        if self._kept is not None and self._spin.kept is None:
+            self._kept = None
+            self.changed.emit()
 
 
 class FloatEditor(Editor):

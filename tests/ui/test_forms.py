@@ -2,6 +2,7 @@ import time
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 
 from tafl.core import Project
@@ -97,6 +98,61 @@ def test_values_of_the_wrong_kind_show_the_default(qapp, registry):
     form = ParamForm(action.params, FormContext(columns=lambda source, v: ["a"], tables=[("t2", "Other")]))
     form.set_values(json_ready(action.resolve(wrong)))
     assert {key: form.values()[key] for key in wrong} == {"other": "", "match": [], "columns": []}
+
+
+def number_form(registry, start):
+    action = registry.actions["calc.enumerate"]
+    form = ParamForm(action.params, FormContext())
+    form.set_values(json_ready(action.resolve({"start": start})))
+    return form
+
+
+@pytest.mark.parametrize("number", [2_100_000_000, 2**31, 3_000_000_000, -3_000_000_000, 2**63 - 1])
+def test_a_whole_number_beyond_the_field_shows_and_stays(qtbot, registry, number):
+    """From a project file written by hand: the field holds numbers up to 2,000,000,000 (Qt's end
+    at 2**31). It shows the number, which stays until the field is changed."""
+    form = number_form(registry, number)
+    spin = form.editor("start")._spin
+    assert spin.text() == str(number) and form.values()["start"] == number
+    with qtbot.waitSignal(form.changed) as signal:  # another setting
+        form.editor("step")._spin.setValue(2)
+    assert signal.args[0]["start"] == number
+    with qtbot.waitSignal(form.changed) as signal:  # the arrow keys go on from the end of the range
+        spin.stepBy(-1 if number > 0 else 1)
+    assert signal.args[0]["start"] == spin.value() == (1_999_999_999 if number > 0 else -1_999_999_999)
+    assert spin.text() == str(spin.value())
+
+
+def test_the_number_at_the_end_of_the_field_can_be_typed_in_place_of_a_kept_one(qtbot, registry):
+    """For Qt that is no change: the field's value is that number while it shows the kept one."""
+    form = number_form(registry, 3_000_000_000)
+    qtbot.addWidget(form)
+    form.show()
+    spin = form.editor("start")._spin
+    spin.setFocus()
+    spin.lineEdit().selectAll()
+    QTest.keyClicks(spin.lineEdit(), "2000000000")
+    with qtbot.waitSignal(form.changed) as signal:
+        QTest.keyClick(spin, Qt.Key.Key_Return)
+    assert signal.args[0]["start"] == 2_000_000_000 and spin.text() == "2000000000"
+
+
+def test_an_infinite_whole_number_shows_0(qapp, registry):
+    """As other values that are no whole number; the step's check reports it."""
+    assert number_form(registry, float("inf")).values()["start"] == 0
+
+
+def test_a_project_with_a_whole_number_beyond_the_field_opens(window, session, registry, tmp_path):
+    """The step is selected when the project opens: its settings show, and the number stays when
+    another setting changes."""
+    project = Project(name="Big number")
+    table = project.add_table("A")
+    project.add_step(table, registry.actions["calc.enumerate"], {"start": 3_000_000_000})
+    assert window.open_path(project.save(tmp_path / "big.tafl"))
+    form = window.settings_panel.form
+    assert session.step.action == "calc.enumerate" and form.values()["start"] == 3_000_000_000
+    form.editor("step")._spin.setValue(2)
+    assert session.step.params["step"] == 2 and session.step.params["start"] == 3_000_000_000
 
 
 def test_missing_columns_are_kept(qapp, registry):
