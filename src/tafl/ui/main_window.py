@@ -647,7 +647,11 @@ class MainWindow(QMainWindow):
         self._update_actions()
         if running:
             self.statusBar().showMessage("Running the project…")
-        elif self._close_after_run:
+            return
+        # A run that finished or stopped says so next; one that failed only in its error box
+        for message in ("Running the project…", "Stopping after the current step…"):
+            self._update_message(message, "")
+        if self._close_after_run:
             QTimer.singleShot(0, self, self.go_on_closing)  # after the results are shown
 
     def _calc_busy(self, busy: bool) -> None:

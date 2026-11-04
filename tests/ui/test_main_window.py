@@ -1,10 +1,13 @@
 import sys
+import threading
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import qVersion
 from PySide6.QtWidgets import QMessageBox
 
 from tafl import GUIDE_URL
+from tafl.core import Engine
 from tafl.ui import main_window
 
 
@@ -55,6 +58,30 @@ def test_typing_is_not_overwritten_but_undo_updates_the_form(window, settle, ses
     session.undo()
     formula = window.settings_panel.form.editor("columns")._rows[0]["formula"]
     assert formula.value() == "ROUND([Net] * 1.19, 2)"
+
+
+@pytest.mark.parametrize("stop", [False, True], ids=["running", "stopping"])
+def test_a_run_that_fails_leaves_no_message_that_it_runs(window, session, qtbot, monkeypatch, stop):
+    """An unexpected error in a run (a fault, not the error of a step) is shown in a box. After
+    it, the status bar must not say that the project runs, or stops, with nothing running."""
+    session.error.disconnect(window._show_error)  # the box
+    entered, leave = threading.Event(), threading.Event()
+
+    def failing(self, tables=None, **kwargs):
+        entered.set()
+        leave.wait(10)
+        raise RuntimeError("Unexpected on purpose")
+
+    monkeypatch.setattr(Engine, "run", failing)
+    session.project.add_table("Orders")
+    window.run_project()
+    assert entered.wait(10) and window.statusBar().currentMessage() == "Running the project…"
+    if stop:
+        window.stop_run()
+        assert window.statusBar().currentMessage() == "Stopping after the current step…"
+    with qtbot.waitSignal(session.error, timeout=10_000):
+        leave.set()
+    assert window.statusBar().currentMessage() == "" and window.run_action.isEnabled()
 
 
 def test_about_names_the_licenses_of_qt_and_pyside(window, monkeypatch, tmp_path):
