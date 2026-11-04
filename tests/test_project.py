@@ -120,6 +120,18 @@ def test_a_new_table_never_gets_the_id_of_a_deleted_table_that_a_step_names(acti
     assert project.add_table("Next").id == "t4"
 
 
+@pytest.mark.parametrize("digits", [4000, 4301, 5000])
+def test_new_tables_beside_a_setting_of_t_and_thousands_of_digits(digits):
+    """A text setting can be "t" and thousands of digits, e.g. a code to find (Python turns no
+    text of more than 4300 digits into a number). New tables still get ids, and different ones:
+    the id after 4000 nines is longer than the numbers that count. Only ASCII digits count."""
+    project = Project()
+    first = project.add_table("First")
+    project.add_step(first, "text.replace", {"replacements": [{"find": "t" + "9" * digits}, {"find": "t7"}, {"find": "t٩"}]})
+    ids = [project.add_table(name).id for name in ("A", "B", "C")]
+    assert ids == ([f"t{10**4000 + n}" for n in range(3)] if digits == 4000 else ["t8", "t9", "t10"])
+
+
 def test_duplicate_or_missing_ids_are_repaired():
     data = sample_project().to_dict()
     data["tables"][1]["id"] = "t1"

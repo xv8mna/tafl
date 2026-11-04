@@ -271,8 +271,12 @@ class Project:
         used = {t.id for t in self.tables} | {s.id for t in self.tables for s in t.steps} | {g.id for g in self.groups}
         if prefix == "t":  # nor the id of a deleted table that a step still names: the step would use the new table
             used |= {text for t in self.tables for s in t.steps for text in _texts(s.params)}
-        numbers = [int(m.group(1)) for u in used if (m := re.fullmatch(rf"{prefix}(\d+)", u))]
-        return f"{prefix}{max(numbers, default=0) + 1}"
+        # At most 4000 digits: Python turns no text of more than 4300 digits into a number
+        numbers = [int(m.group(1)) for u in used if (m := re.fullmatch(rf"{prefix}([0-9]{{1,4000}})", u))]
+        number = max(numbers, default=0) + 1
+        while f"{prefix}{number}" in used:  # one that doesn't count, e.g. the id after 4000 nines
+            number += 1
+        return f"{prefix}{number}"
 
     # --- files ----------------------------------------------------------------------------
 
