@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, dtypes, expressions
+from tafl.api import ActionError, P, action, col, cols, dtypes, expressions
 
 _ROW = "__etl_row__"
 _EXACT = 10**38  # the units of an exact decimal (its digits without the point) are below this
@@ -105,7 +105,7 @@ def enumerate_rows(df, p, ctx):
     if p.order_by:
         text = {name for name, dtype in df.schema.items() if dtype == pl.String}  # in the order of Sort
         work = work.sort(
-            [*partition, *(dtypes.text_sort_key(pl.col(o.column)) if o.column in text else o.column for o in p.order_by)],
+            [*cols(partition), *(dtypes.text_sort_key(col(o.column)) if o.column in text else col(o.column) for o in p.order_by)],
             descending=[*([False] * len(partition)), *(o.order == "desc" for o in p.order_by)],
             nulls_last=True,
             maintain_order=True,
@@ -113,14 +113,14 @@ def enumerate_rows(df, p, ctx):
     if p.mode == "rows":
         counter = pl.int_range(pl.len(), dtype=pl.Int64)
         if partition:
-            counter = counter.over(partition)
+            counter = counter.over(cols(partition))
         work = work.with_columns((counter * p.step + p.start).alias(p.name))
     else:
-        groups = work.select(p.group_by).unique(maintain_order=True)
+        groups = work.select(cols(p.group_by)).unique(maintain_order=True)
         groups = groups.with_columns((pl.int_range(pl.len(), dtype=pl.Int64) * p.step + p.start).alias(p.name))
-        work = work.drop(p.name, strict=False).join(
-            groups, on=p.group_by, how="left", nulls_equal=True, maintain_order="left"
-        )
+        if p.name in work.columns:  # the numbers replace a column of that name
+            work = work.drop(col(p.name))
+        work = work.join(groups, on=cols(p.group_by), how="left", nulls_equal=True, maintain_order="left")
     return work.sort(_ROW).drop(_ROW)
 
 
@@ -160,17 +160,17 @@ def aggregate(df, p, ctx):
         as_hex = dtype == pl.Binary and calc.function == "join" and not dtypes.bytes_are_text(df[calc.column])
         aggregation = _aggregation(calc, p.separator, dtype, as_hex)
         if calc.function == "sum" and dtype in (pl.Int64, pl.UInt64, pl.Duration) and _sums_may_overflow(df[calc.column]):
-            aggregation = pl.col(calc.column).to_physical().cast(pl.Int128).sum()
+            aggregation = col(calc.column).to_physical().cast(pl.Int128).sum()
             wide.append((_result_name(calc), calc.column, dtype))
         elif calc.function == "sum" and isinstance(dtype, pl.Decimal) and _sums_may_overflow(df[calc.column]):
-            aggregation = _decimal_parts(pl.col(calc.column))
+            aggregation = _decimal_parts(col(calc.column))
             wide.append((_result_name(calc), calc.column, dtype))
         aggregations.append(aggregation.alias(_result_name(calc)))
     names = [*p.group_by, *(a.meta.output_name() for a in aggregations)]
     if duplicates := sorted({n for n in names if names.count(n) > 1}):
         raise ActionError(f"Result names used twice: {', '.join(duplicates)}")
     if p.group_by:
-        out = df.group_by(p.group_by, maintain_order=True).agg(aggregations)
+        out = df.group_by(cols(p.group_by), maintain_order=True).agg(aggregations)
     else:
         out = df.select(aggregations)
     where = " in a group" if p.group_by else ""
@@ -200,7 +200,7 @@ def aggregate(df, p, ctx):
             raise ActionError(
                 f"“{name}” is {total:,}{where}: too {limit}. Change “{column}” to a decimal number before this step."
             )
-        out = out.with_columns(pl.col(name).cast(dtype))
+        out = out.with_columns(col(name).cast(dtype))
     return out
 
 
@@ -251,7 +251,7 @@ def _check_type(calc, dtype: pl.DataType | None) -> None:
 
 
 def _aggregation(calc, separator: str, dtype: pl.DataType | None, as_hex: bool) -> pl.Expr:
-    column = pl.col(calc.column) if calc.column else None
+    column = col(calc.column) if calc.column else None
     match calc.function:
         case "sum":
             return column.sum()

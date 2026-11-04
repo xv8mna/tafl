@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tafl.api import dtypes
+from tafl.api import col, dtypes
 
 from . import theme
 from .filters import (
@@ -104,7 +104,7 @@ class _Values(QAbstractTableModel):
         applies = f.picker()
         self.all = []
         texts = table.schema[VALUE] == pl.String
-        keys = table.select(dtypes.text_sort_key(pl.col(VALUE))).to_series().to_list() if texts else [None] * table.height
+        keys = table.select(dtypes.text_sort_key(col(VALUE))).to_series().to_list() if texts else [None] * table.height
         for (value, count), key in zip(table.select(VALUE, COUNT).iter_rows(), keys, strict=True):
             stored = to_json(value)
             self.all.append([value, count, stored, None, None, applies(stored), key])

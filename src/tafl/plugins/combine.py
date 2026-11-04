@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, dtypes
+from tafl.api import ActionError, P, action, col, cols, dtypes
 
 _NUMBERED = re.compile(r"(.*\()(\d+)(\)\s*)")  # a suffix like " (2)"
 _HOW = [
@@ -102,18 +102,18 @@ def merge(df, p, ctx):
     left, right, left_on, right_keys, compared = _compared_keys(df, other, [column for column, _ in pairs], right_on, ctx)
     if p.how == "full":  # a key of the other table that doesn't fit the compared type would get lost
         for name, other_name, key in compared:
-            if right.select((pl.col(other_name).is_not_null() & pl.col(key).is_null()).any()).item():
+            if right.select((col(other_name).is_not_null() & col(key).is_null()).any()).item():
                 raise ActionError(_no_common_type(df, name, other, other_name, right.schema[key]))
     own =list(dict.fromkeys(column for column, _ in pairs))  # this table's key columns, for the message
 
     if p.how in ("matching", "non_matching"):
-        keys = right.select(_once(right_keys)).unique()
+        keys = right.select(cols(_once(right_keys))).unique()
         how = "semi" if p.how == "matching" else "anti"
-        out = left.join(keys, left_on=left_on, right_on=right_keys, how=how, maintain_order="left")
+        out = left.join(keys, left_on=cols(left_on), right_on=cols(right_keys), how=how, maintain_order="left")
         unmatched = df.height - out.height if p.how == "matching" else out.height
         missed = None
         if p.how == "matching" and unmatched:
-            missed = _without_match(left, left_on, keys, right_keys, own) if out.height else df.select(own)
+            missed = _without_match(left, left_on, keys, right_keys, own) if out.height else df.select(cols(own))
         if df.height:
             ctx.log(_feedback(p.how, df.height, unmatched, missed, other.height))
         return out.drop([key for *_, key in compared])
@@ -121,11 +121,11 @@ def merge(df, p, ctx):
     columns = [c for c in (p.columns or other.columns) if c not in right_on]
     if missing := [c for c in columns if c not in other.columns]:
         raise ActionError(f"Columns not in the other table: {', '.join(missing)}")
-    right = right.select(_once([*right_keys, *columns]))
+    right = right.select(cols(_once([*right_keys, *columns])))
     if p.how == "full" and p.multiple == "first":
-        right = _first_matches(right, right_keys, left.select(_once(left_on)), left_on)
+        right = _first_matches(right, right_keys, left.select(cols(_once(left_on))), left_on)
     elif p.how == "lookup" or p.multiple == "first":
-        right = right.unique(subset=right_keys, keep="first", maintain_order=True)
+        right = right.unique(subset=cols(right_keys), keep="first", maintain_order=True)
     taken = {*left.columns, *right.columns}  # also the key columns and their copies
     renames = {}
     for column in columns:
@@ -144,8 +144,8 @@ def merge(df, p, ctx):
         left = left.with_columns(pl.repeat(True, left.height, eager=True).alias(markers[1]))
     out = left.join(
         right,
-        left_on=left_on,
-        right_on=right_keys,
+        left_on=cols(left_on),
+        right_on=cols(right_keys),
         how={"lookup": "left", "left": "left", "inner": "inner", "full": "full"}[p.how],
         suffix=_spare_suffix(left.columns, right.columns),
         coalesce=True,
@@ -155,7 +155,7 @@ def merge(df, p, ctx):
     if p.how != "inner":  # a row of this table without a match is there once, without a row of the other table
         unmatched = out[markers[0]].null_count()
         if 0 < unmatched < df.height:
-            missed = out.select([*own, markers[0]]).filter(pl.col(markers[0]).is_null()).select(own)
+            missed = out.select(cols([*own, markers[0]])).filter(col(markers[0]).is_null()).select(cols(own))
     elif out.height and p.multiple == "all":  # rows repeat, so the joined rows don't tell how many matched
         missed = _without_match(left, left_on, right, right_keys, own)
         unmatched = missed.height
@@ -164,21 +164,21 @@ def merge(df, p, ctx):
         if 0 < unmatched < df.height:
             missed = _without_match(left, left_on, right, right_keys, own)
     if unmatched == df.height:
-        missed = df.select(own)
+        missed = df.select(cols(own))
     added = out[markers[1]].null_count() if p.how == "full" else 0  # rows of the other table without a match
     out = out.drop(markers)
     if p.how == "full":  # rows only in the other table get its key, in this table's type if it fits
         for name, other_name, key in compared:
             as_hex = _as_hex(df[name])
-            back = _cast_fitting(pl.col(key), out.schema[key], df.schema[name])
-            same = (_cast_key(back, df.schema[name], out.schema[key], as_hex) == pl.col(key)).fill_null(False)
-            if out.select((pl.col(name).is_not_null() | pl.col(key).is_null() | same).all()).item():
-                out = out.with_columns(pl.coalesce(name, back).alias(name))
+            back = _cast_fitting(col(key), out.schema[key], df.schema[name])
+            same = (_cast_key(back, df.schema[name], out.schema[key], as_hex) == col(key)).fill_null(False)
+            if out.select((col(name).is_not_null() | col(key).is_null() | same).all()).item():
+                out = out.with_columns(pl.coalesce(col(name), back).alias(name))
             else:
-                wide = _cast_key(pl.col(name), df.schema[name], out.schema[key], as_hex)
-                if out.select((pl.col(name).is_not_null() & wide.is_null()).any()).item():
+                wide = _cast_key(col(name), df.schema[name], out.schema[key], as_hex)
+                if out.select((col(name).is_not_null() & wide.is_null()).any()).item():
                     raise ActionError(_no_common_type(df, name, other, other_name, out.schema[key]))
-                out = out.with_columns(pl.coalesce(wide, key).alias(name))
+                out = out.with_columns(pl.coalesce(wide, col(key)).alias(name))
     if df.height or added:  # a full join of an empty table: the rows of the other table
         ctx.log(_feedback(p.how, df.height, unmatched, missed, other.height, added))
     return out.drop([key for *_, key in compared])
@@ -203,7 +203,7 @@ def append(df, p, ctx):
     name; if a column has different types in different tables, it becomes text."""
     frames = [df, *(ctx.table(t) for t in p.tables)]
     out = pl.concat(frames, how="diagonal_relaxed")
-    return out.select(df.columns) if p.columns == "this" else out
+    return out.select(cols(df.columns)) if p.columns == "this" else out
 
 
 def _free_name(name: str, suffix: str, taken: set[str]) -> str:
@@ -251,7 +251,7 @@ def _compared_keys(left, right, left_on, right_on, ctx):
             key = f"_{key}_"
         taken.add(key)
         if left_type == right_type:  # only the other table needs the copy
-            right = right.with_columns(pl.col(right_name).alias(key))
+            right = right.with_columns(col(right_name).alias(key))
             right_keys[index] = key
             continue
         if left_type.is_numeric() and right_type.is_numeric():
@@ -264,8 +264,8 @@ def _compared_keys(left, right, left_on, right_on, ctx):
             target = pl.String
         left_hex, right_hex = _as_hex(left[left_name]), _as_hex(right[right_name])
         try:
-            left = left.with_columns(_cast_key(pl.col(left_name), left_type, target, left_hex).alias(key))
-            right = right.with_columns(_cast_key(pl.col(right_name), right_type, target, right_hex).alias(key))
+            left = left.with_columns(_cast_key(col(left_name), left_type, target, left_hex).alias(key))
+            right = right.with_columns(_cast_key(col(right_name), right_type, target, right_hex).alias(key))
         except pl.exceptions.InvalidOperationError:  # Polars has no such cast: a duration as text, a time as a date-time
             raise ActionError(
                 f"'{left_name}' ({left_type}) and '{right_name}' ({right_type}) can't be compared: choose other "
@@ -360,17 +360,20 @@ def _first_matches(right, right_keys, keys, left_on) -> pl.DataFrame:
     and a full join adds every one of them."""
     row = _free_name("__row__", "", set(right.columns))
     right = right.with_row_index(row)
-    again = right.select(_once([row, *right_keys])).filter(~pl.struct(right_keys).is_first_distinct())  # a key seen before
-    repeated = again.join(keys, left_on=right_keys, right_on=left_on, how="semi")
-    return right.filter(~pl.col(row).is_in(repeated[row].implode())).drop(row)
+    seen = ~pl.struct(cols(right_keys)).is_first_distinct()  # a key seen before
+    again = right.select(cols(_once([row, *right_keys]))).filter(seen)
+    repeated = again.join(keys, left_on=cols(right_keys), right_on=cols(left_on), how="semi")
+    return right.filter(~col(row).is_in(repeated[row].implode())).drop(row)
 
 
 def _without_match(left, left_on, right, right_keys, own) -> pl.DataFrame:
     """This table's key columns ``own`` of its rows without a match, in row order (only the key
     columns are joined)."""
-    keys = left.select(_once([*own, *left_on]))
-    out = keys.join(right.select(_once(right_keys)), left_on=left_on, right_on=right_keys, how="anti", maintain_order="left")
-    return out.select(own)
+    keys = left.select(cols(_once([*own, *left_on])))
+    out = keys.join(
+        right.select(cols(_once(right_keys))), left_on=cols(left_on), right_on=cols(right_keys), how="anti", maintain_order="left"
+    )
+    return out.select(cols(own))
 
 
 def _once(columns: list[str]) -> list[str]:

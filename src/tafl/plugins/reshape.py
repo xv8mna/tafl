@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, dtypes
+from tafl.api import ActionError, P, action, col, cols, dtypes, selector
 
 _FUNCTIONS = [
     ("sum", "Sum"),
@@ -77,7 +77,7 @@ def pivot(df, p, ctx):
         raise ActionError(f"The values of “{p.column}” ({dtypes.type_label(names_type)}) can't become column names")
     if df.height == 0:
         ctx.log("The table has no rows, so there are no new columns")
-        return df.select(rows)
+        return df.select(cols(rows))
 
     distinct = df[p.column].unique(maintain_order=True)  # in the order they first appear
     empty = _is_empty(distinct)
@@ -90,7 +90,7 @@ def pivot(df, p, ctx):
             "Choose a column with fewer values, or group them first, e.g. dates by month with a formula."
         )
     if df.height * count > _MAX_CELLS:  # the result can't have more rows than the table
-        groups = df.select(pl.struct(rows).n_unique()).item() if rows else 1
+        groups = df.select(pl.struct(cols(rows)).n_unique()).item() if rows else 1
         if groups * count > _MAX_CELLS:
             raise ActionError(
                 f"The result would have {groups:,} rows and {count:,} new columns: {groups * count:,} cells "
@@ -124,9 +124,9 @@ def pivot(df, p, ctx):
         new = [*places[:where], *places[where + 1 :], *[where] * empties.len()]
     keys = [f"row {i}" for i in range(len(rows))]
     work = df.select(
-        *(pl.col(row).alias(key) for row, key in zip(rows, keys, strict=True)),
-        pl.col(p.column).replace_strict(old, new, return_dtype=pl.UInt32).alias("name"),
-        _prepared(pl.col(p.value), p.function, value_type).alias("value"),
+        *(col(row).alias(key) for row, key in zip(rows, keys, strict=True)),
+        col(p.column).replace_strict(old, new, return_dtype=pl.UInt32).alias("name"),
+        _prepared(col(p.value), p.function, value_type).alias("value"),
     )
     summed, exact = work.schema["value"], None
     if p.function == "sum" and (summed in (pl.Int64, pl.UInt64, pl.Duration) or isinstance(summed, pl.Decimal)):
@@ -147,7 +147,7 @@ def pivot(df, p, ctx):
     ]
     out = pl.concat([pieces[0], *(piece.drop(keys) for piece in pieces[1:])], how="horizontal")  # same rows, same order
     if exact is not None:
-        out = out.with_columns(_from_units(pl.col(out.columns[len(keys) :]), exact.scale))
+        out = out.with_columns(_from_units(column, exact.scale) for column in cols(out.columns[len(keys) :]))
     out.columns = [*rows, *names]
     return out
 
@@ -397,9 +397,9 @@ def unpivot(df, p, ctx):
             ctx.log(f"“{value}” is text, so that no value of “{lost}” changes")  # digits or a date out of range
         else:
             ctx.log(f"“{value}” is text: the columns have different types ({_type_groups(df, turned)})")
-        casts = [dtypes.text_expr(pl.col(c), schema[c]).alias(c) for c in turned if schema[c] != pl.String]
+        casts = [dtypes.text_expr(col(c), schema[c]).alias(c) for c in turned if schema[c] != pl.String]
     else:
-        casts = [_cast(pl.col(c), schema[c], target).alias(c) for c in turned if schema[c] != target]
+        casts = [_cast(col(c), schema[c], target).alias(c) for c in turned if schema[c] != target]
 
     # Working names: a new column may have the name of a turned column, which is there until the end
     taken = set(df.columns)
@@ -410,7 +410,7 @@ def unpivot(df, p, ctx):
     pieces = []
     for start in range(0, max(df.height, 1), size):
         work = df.slice(start, size)
-        out = work.unpivot(on=turned, index=stay, variable_name=names, value_name=values)
+        out = work.unpivot(on=selector(turned), index=selector(stay), variable_name=names, value_name=values)
         rows, columns = work.height, len(turned)
         if rows > 1 and columns > 1:  # Polars gives all rows of one column, then of the next
             place = pl.int_range(rows * columns, dtype=pl.UInt32, eager=True)  # in the result, row by row

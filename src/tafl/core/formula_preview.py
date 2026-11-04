@@ -11,7 +11,7 @@ from typing import Any
 
 import polars as pl
 
-from tafl.api import ActionError, Cancelled, expressions
+from tafl.api import ActionError, Cancelled, cols, expressions
 from tafl.api.dtypes import type_label
 from tafl.api.parameters import fill_formula, fill_text, formula_places
 
@@ -133,7 +133,7 @@ def preview(
             return Preview(False, message, columns=columns, **_locate(typed, message))
     data = sample.data
     if used:
-        base = data.select(used).head(SHOWN_ROWS)
+        base = data.select(cols(used)).head(SHOWN_ROWS)
     else:  # nothing to show beside the result: number the rows
         base = pl.DataFrame({"Row": pl.int_range(1, min(data.height, SHOWN_ROWS) + 1, eager=True)})
     result = name.strip() or ("Condition" if condition else "Result")
@@ -333,7 +333,7 @@ def _evaluate(sample: pl.DataFrame, used: list[str], formula: str, condition: bo
     if expressions._needs_all_columns(formula):
         return expressions.evaluate(sample, formula, condition=condition)
     folded = {_fold(u) for u in used}  # with names that differ only in case: they must give the step's error
-    subset = sample.select([c for c in sample.columns if _fold(c) in folded] or sample.columns[:1])
+    subset = sample.select(cols([c for c in sample.columns if _fold(c) in folded] or sample.columns[:1]))
     try:
         return expressions.evaluate(subset, formula, condition=condition)
     except ActionError:

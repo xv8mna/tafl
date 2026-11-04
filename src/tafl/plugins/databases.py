@@ -27,6 +27,8 @@ from tafl.api import (
     P,
     action,
     all_results,
+    col,
+    cols,
     connector,
     dtypes,
     endpoints,
@@ -379,7 +381,7 @@ class SqlServer(Connector):
         changes = []
         for name, dtype in df.schema.items():
             kind, size, scale = _kind(types.get(name, ""))
-            column = pl.col(name)
+            column = col(name)
             moment = isinstance(dtype, pl.Datetime)
             if moment and dtype.time_zone and kind == "datetimeoffset":
                 changes.append(_offset_text(column, size))
@@ -410,7 +412,7 @@ class SqlServer(Connector):
                     f"Replace it first, e.g. with IIF(ISINF([{name}]), NULL, [{name}])."
                 )
         zoned = [c for c, t in df.schema.items() if isinstance(t, pl.Datetime) and t.time_zone]
-        return df.with_columns(pl.col(c).dt.replace_time_zone(None) for c in zoned)
+        return df.with_columns(col(c).dt.replace_time_zone(None) for c in zoned)
 
     def update_sql(self, table, stage, columns, keys):
         sets = ", ".join(f"x.{self.quote(c)} = s.{self.quote(c)}" for c in columns)
@@ -902,7 +904,7 @@ class SQLite(Connector):
         df = super().prepare_frame(df)
         changes = []
         for name, dtype in df.schema.items():
-            column = pl.col(name)
+            column = col(name)
             if isinstance(dtype, pl.Decimal):
                 changes.append(column.cast(pl.String))
             elif dtype == pl.Date:
@@ -1184,9 +1186,9 @@ def export_database(df, p, ctx):
         types = db.connector.column_types(db.raw, p.table)
         _check_whole_numbers(df, names, types, p.table)
         keys = _key_names(p, names) if p.mode in _KEYED else []
-        data = df.select(list(names))
+        data = df.select(cols(names))
         if p.mode == "delete":  # it writes nothing: only the key values count
-            data = data.select([c for c, n in names.items() if n in keys])
+            data = data.select(cols(c for c, n in names.items() if n in keys))
         finding = keys if p.mode in ("update", "delete") else []  # key values that only find rows
         data = _fit_lengths(data, names, types, p.table, finding)
         kinds = {name.lower(): kind for name, kind in types.items()}
@@ -1204,7 +1206,7 @@ def export_database(df, p, ctx):
         elif p.mode == "replace_where":
             deleted = db.execute(f"DELETE FROM {table} WHERE {p.condition}")
         elif p.mode in ("replace_keys", "delete"):
-            staged = data.select([c for c, n in names.items() if n in keys]).unique()
+            staged = data.select(cols(c for c, n in names.items() if n in keys)).unique()
             stage = _stage(db, staged, names, keys, db.connector.stage_types(db.raw, p.table), ctx)
             deleted = db.execute(db.connector.delete_sql(table, stage, keys))
         elif p.mode in ("update", "upsert"):
@@ -1356,7 +1358,7 @@ def _check_unique(df: pl.DataFrame, keys: list[str]) -> None:
     count = "len"
     while count in keys:  # a key column may have the name
         count = f"_{count}_"
-    repeated = df.group_by(keys, maintain_order=True).len(name=count).filter(pl.col(count) > 1)
+    repeated = df.group_by(cols(keys), maintain_order=True).len(name=count).filter(col(count) > 1)
     if repeated.height:
         example = ", ".join(f"{k} = {repeated[k][0]}" for k in keys)
         values = "1 key value occurs" if repeated.height == 1 else f"{repeated.height:,} key values occur"

@@ -17,6 +17,7 @@ from tafl.api import (
     Endpoint,
     P,
     action,
+    col,
     combine,
     dtypes,
     endpoints,
@@ -271,7 +272,7 @@ def export_csv(df, p, ctx):
     )
     data = df.with_columns(
         *(_fifteen_digits(df[c]) for c, t in df.schema.items() if t.is_float()),
-        *((pl.lit("0x") + pl.col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
+        *((pl.lit("0x") + col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
     )
     if df.width == 0:  # rows without columns (Polars can't write them): an empty file, as for no rows
         data = pl.DataFrame()

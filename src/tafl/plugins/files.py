@@ -13,7 +13,7 @@ from pathlib import Path
 
 import polars as pl
 
-from tafl.api import ActionError, Cancelled, Endpoint, P, action, endpoints, files, find_files
+from tafl.api import ActionError, Cancelled, Endpoint, P, action, col, endpoints, files, find_files
 
 
 def _folder_endpoints(p, direction: str, key: str, *, name: str = "", mode: str = "", how: str = "") -> list[Endpoint]:
@@ -466,7 +466,7 @@ def rename_files(df, p, ctx):
             raise ActionError(f"There is no column {column}")
     base = _base(p, ctx)
     renames: dict[str, tuple[Path, str]] = {}
-    for value, new in df.select(pl.col(p.column).cast(pl.String), pl.col(p.new_name).cast(pl.String)).rows():
+    for value, new in df.select(col(p.column).cast(pl.String), col(p.new_name).cast(pl.String)).rows():
         if value is not None and value.strip():
             source, _ = _resolve(value, base)
             renames.setdefault(_key(source), (source, (new or "").strip()))  # each file once

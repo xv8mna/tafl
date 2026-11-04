@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from .errors import NO_MEMORY, ActionError, Cancelled, TaflError
+from .names import col
 from .parameters import fill_sql, sql_literal, sql_spans
 from .params import Param, Params, resolve
 
@@ -146,7 +147,7 @@ class Connector:
 
     def prepare_frame(self, df: pl.DataFrame) -> pl.DataFrame:
         """The data in a form the driver can write: here, NaN becomes an empty value."""
-        return df.with_columns(pl.col(c).fill_nan(None) for c, t in df.schema.items() if t.is_float())
+        return df.with_columns(col(c).fill_nan(None) for c, t in df.schema.items() if t.is_float())
 
     def prepare_cursor(self, cursor: Any) -> None:
         """Called before writing many rows with one cursor (e.g. to switch on bulk mode)."""

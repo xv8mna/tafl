@@ -18,6 +18,7 @@ from tafl.api import (
     Endpoint,
     P,
     action,
+    col,
     combine,
     dtypes,
     endpoints,
@@ -355,9 +356,9 @@ def _excel_values(df: pl.DataFrame) -> pl.DataFrame:
     break every sum). Date-times lose their time zone (Excel has none) and keep the local time.
     Binary values become hex text (0x0102FF)."""
     return df.with_columns(
-        *(pl.when(pl.col(c).is_finite()).then(pl.col(c)).alias(c) for c, t in df.schema.items() if t.is_float()),
-        *(pl.col(c).dt.replace_time_zone(None) for c, t in df.schema.items() if isinstance(t, pl.Datetime) and t.time_zone),
-        *((pl.lit("0x") + pl.col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
+        *(pl.when(col(c).is_finite()).then(col(c)).alias(c) for c, t in df.schema.items() if t.is_float()),
+        *(col(c).dt.replace_time_zone(None) for c, t in df.schema.items() if isinstance(t, pl.Datetime) and t.time_zone),
+        *((pl.lit("0x") + col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
     )
 
 

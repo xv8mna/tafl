@@ -6,7 +6,7 @@ import re
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, dtypes
+from tafl.api import ActionError, P, action, col, dtypes
 
 
 @action(
@@ -50,7 +50,7 @@ def replace(df, p, ctx):
         if p.match == "whole":
             updates.append(_replace_whole(name, dtype, pairs, p.case_sensitive, ctx))
         else:
-            text = pl.col(name).cast(pl.String)
+            text = col(name).cast(pl.String)
             for find, new in pairs:
                 if p.match == "contains" and p.case_sensitive:
                     text = text.str.replace_all(find, new, literal=True)
@@ -80,7 +80,7 @@ def _regex_problem(error: Exception) -> str:
 
 
 def _replace_whole(name: str, dtype: pl.DataType, pairs, case_sensitive: bool, ctx) -> pl.Expr:
-    column = pl.col(name)
+    column = col(name)
     typed = _typed_pairs(pairs, dtype) if dtype != pl.String else None
     if dtype != pl.String and typed is None:
         ctx.warn(f"'{name}' was converted to text because a value isn't a {dtype}")
@@ -167,7 +167,7 @@ def clean(df, p, ctx):
     names = p.columns or [name for name, dtype in df.schema.items() if dtype == pl.String]
     updates = []
     for name in names:
-        text = pl.col(name).cast(pl.String)
+        text = col(name).cast(pl.String)
         if p.line_breaks:
             text = text.str.replace_all(r"\r\n|\r|\n", " ")
         if p.collapse_spaces:
@@ -285,13 +285,13 @@ def split(df, p, ctx):
         else:
             kept = part.filter(part.str.strip_chars() != "")
         parts = prepared.str.split(separator).list.eval(kept)
-        return df.with_columns(parts.alias(p.column)).explode(p.column, empty_as_null=True, keep_nulls=True)
+        return df.with_columns(parts.alias(p.column)).explode(col(p.column), empty_as_null=True, keep_nulls=True)
     names = _part_names(p)
     _check_part_names(names, [c for c in df.columns if p.keep or c != p.column])
     # each part in a column of its own, split once (an expression would split again for each use)
     pieces = df.select(prepared.str.splitn(separator, len(names)).alias("pieces")).unnest("pieces")
     rest = pieces.columns[-1]  # what is left after the other parts
-    more = _part(pl.col(rest), p.trim).str.contains(separator, literal=True).fill_null(False)  # as the column shows it
+    more = _part(col(rest), p.trim).str.contains(separator, literal=True).fill_null(False)  # as the column shows it
     more = pieces.select(more).to_series()
     count = more.sum()
     if count:
@@ -302,7 +302,7 @@ def split(df, p, ctx):
     if p.separator in ("space", "line"):  # the rest as it is, with its own runs of spaces and line breaks
         as_it_is = _rest_as_it_is(text, pieces[rest], p.separator, len(names) - 1)
         pieces = pieces.with_columns(df.select(as_it_is.alias(rest)).to_series())
-    new = pieces.select(_part(pl.col(field), p.trim).alias(name) for field, name in zip(pieces.columns, names))
+    new = pieces.select(_part(col(field), p.trim).alias(name) for field, name in zip(pieces.columns, names))
     columns = []
     for name in df.columns:
         if name != p.column or p.keep:
@@ -317,7 +317,7 @@ def _as_text(column: str, dtype: pl.DataType) -> pl.Expr:
     2026-01-01 08:30:00)."""
     if dtype.is_nested() or dtype in (pl.Binary, pl.Object, pl.Duration):
         raise ActionError(f"“{column}” holds {dtypes.type_label(dtype)} values, which can't be split")
-    return dtypes.text_expr(pl.col(column), dtype)
+    return dtypes.text_expr(col(column), dtype)
 
 
 def _part_names(p) -> list[str]:

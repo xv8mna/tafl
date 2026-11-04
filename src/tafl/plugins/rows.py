@@ -10,7 +10,7 @@ from typing import Any
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, dtypes, expressions
+from tafl.api import ActionError, P, action, col, cols, dtypes, expressions
 
 _OPERATORS = [
     ("=", "equals"),
@@ -121,7 +121,7 @@ def sort(df, p, ctx):
     their order."""
     text = {name for name, dtype in df.schema.items() if dtype == pl.String}
     return df.sort(
-        [dtypes.text_sort_key(df[b.column]) if b.column in text else pl.col(b.column) for b in p.by],
+        [dtypes.text_sort_key(df[b.column]) if b.column in text else col(b.column) for b in p.by],
         descending=[b.order == "desc" for b in p.by],
         nulls_last=p.empty_last,
         maintain_order=True,
@@ -144,7 +144,7 @@ def sort(df, p, ctx):
 )
 def dedupe(df, p, ctx):
     """Removes rows that are equal in the compared columns. The row order is kept."""
-    return df.unique(subset=p.columns or None, keep=p.keep, maintain_order=True)
+    return df.unique(subset=cols(p.columns) or None, keep=p.keep, maintain_order=True)
 
 
 @action(
@@ -169,7 +169,7 @@ def fill(df, p, ctx):
     only written once), the value below, or a fixed value. Empty text counts as empty."""
     updates = []
     for name in p.columns:
-        column = pl.col(name)
+        column = col(name)
         if df.schema[name] == pl.String:
             column = pl.when(column.str.strip_chars() == "").then(None).otherwise(column)
         if p.method == "value":
@@ -206,7 +206,7 @@ def fill(df, p, ctx):
 
 
 def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
-    column = pl.col(c.column)
+    column = col(c.column)
     dtype = df.schema[c.column]
     text_column = dtype == pl.String
     op = c.operator

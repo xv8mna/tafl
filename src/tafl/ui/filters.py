@@ -35,6 +35,8 @@ from typing import Any
 
 import polars as pl
 
+from tafl.api import col
+
 VALUE, COUNT = "value", "count"  # the columns of a facet
 MATCH, NO_MATCH = "match", "no match"
 _LONG = 500  # more chosen values are stored as the ones left out, if those are fewer
@@ -156,7 +158,7 @@ def keys(f: Filter, schema: pl.Schema) -> pl.Expr | None:
     length or whether it matches. None when the filter can't be used with this data."""
     if unusable(f, schema):
         return None
-    column = pl.col(f.column)
+    column = col(f.column)
     if f.facet == "period":
         by = f.options.get("by", "month")
         if by == "quarter":
@@ -362,7 +364,7 @@ def facet(
         table = values.join(counts, on=VALUE, how="left", nulls_equal=True)
     except pl.exceptions.PolarsError:
         return None
-    return table.with_columns(pl.col(COUNT).fill_null(0)), base.height
+    return table.with_columns(col(COUNT).fill_null(0)), base.height
 
 
 # --- as a step ------------------------------------------------------------------------------------
