@@ -159,8 +159,9 @@ def keys(f: Filter, schema: pl.Schema) -> pl.Expr | None:
         by = f.options.get("by", "month")
         if by == "quarter":
             return pl.format("{} Q{}", column.dt.year(), column.dt.quarter())
-        if by == "week":
-            return pl.format("{}-W{}", column.dt.iso_year(), column.dt.week().cast(pl.String).str.zfill(2))
+        if by == "week":  # the year with 4 digits, as the step's strftime writes it: 0001-W01
+            year = column.dt.iso_year().cast(pl.String).str.zfill(4)
+            return pl.format("{}-W{}", year, column.dt.week().cast(pl.String).str.zfill(2))
         return column.dt.strftime(_PERIOD_FORMATS.get(by, "%Y-%m"))
     if f.facet == "ranges":
         above = [(column >= t) if f.options.get("lower_inclusive", True) else (column > t) for t in thresholds(f)]

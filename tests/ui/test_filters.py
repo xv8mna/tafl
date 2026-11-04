@@ -321,6 +321,20 @@ def test_every_mode_as_formula_keeps_the_same_rows(registry, chosen):
     assert action.run(MODES, action.resolve({"condition": condition}), StubContext()).equals(apply(MODES, [chosen]))
 
 
+def test_weeks_before_the_year_1000_as_formula_keep_the_same_rows(registry):
+    """The year of a week had no leading zeros (1-W01), but the step writes four digits (0001-W01):
+    it kept no row."""
+    days = pl.DataFrame({"Date": [dt.date(1, 1, 1), dt.date(1, 1, 8), dt.date(999, 6, 15), dt.date(999, 12, 31), None]})
+    weeks, _ = facet(days, [Filter("Date", [], "period", {"by": "week"})], 0)
+    assert sorted(weeks["value"].drop_nulls()) == ["0001-W01", "0001-W02", "0999-W24", "1000-W01"]
+    action = registry.actions["rows.filter_formula"]
+    for week in weeks["value"].drop_nulls():
+        chosen = Filter("Date", [week], "period", {"by": "week"})
+        condition = formula(chosen, pl.Date)
+        assert action.run(days, action.resolve({"condition": condition}), StubContext()).equals(apply(days, [chosen])), week
+        assert apply(days, [chosen]).height == 1
+
+
 def test_modes_group_the_values():
     months, _ = facet(MODES, [Filter("Date", [], "period", {"by": "month"})], 0)
     assert dict(months.iter_rows()) == {"2025-01": 1, "2024-12": 1, "2025-06": 1, "2025-02": 1, None: 1}
