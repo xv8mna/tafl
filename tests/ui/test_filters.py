@@ -336,6 +336,22 @@ def test_weeks_before_the_year_1000_as_formula_keep_the_same_rows(registry):
         assert apply(days, [chosen]).height == 1
 
 
+def test_a_stored_week_of_a_year_before_1000_keeps_its_rows(registry):
+    """Such a week was stored with a shorter year (24-W18) before the year had four digits: the
+    filter kept no row, and with "except" it no longer left the row out."""
+    days = pl.DataFrame({"Date": [dt.date(24, 5, 1), dt.date(2024, 5, 1), dt.date(1, 1, 1)], "n": [1, 2, 3]})
+    stored = {"column": "Date", "facet": "period", "options": {"by": "week"}, "values": ["24-W18", "1-W01"]}
+    chosen = Filter.from_dict(stored)
+    assert apply(days, [chosen])["n"].to_list() == [1, 3]
+    assert apply(days, [Filter.from_dict({**stored, "except": True})])["n"].to_list() == [2]
+    assert chosen.values == ["0024-W18", "0001-W01"]
+    action = registry.actions["rows.filter_formula"]
+    assert action.run(days, action.resolve({"condition": formula(chosen, pl.Date)}), StubContext())["n"].to_list() == [1, 3]
+    assert Filter.from_dict({**stored, "values": ["-2-W52", "2024-W18", "24", 7, None]}).values == ["-002-W52", "2024-W18", "24", 7, None]
+    assert Filter.from_dict({**stored, "options": {"by": "month"}}).values == ["24-W18", "1-W01"]  # only weeks
+    assert Filter.from_dict({"column": "Date", "values": ["24-W18"]}).values == ["24-W18"]
+
+
 def test_modes_group_the_values():
     months, _ = facet(MODES, [Filter("Date", [], "period", {"by": "month"})], 0)
     assert dict(months.iter_rows()) == {"2025-01": 1, "2024-12": 1, "2025-06": 1, "2025-02": 1, None: 1}

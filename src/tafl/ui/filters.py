@@ -84,13 +84,16 @@ class Filter:
         right type counts as not set, so that the window can show such a filter."""
         facet = str(data.get("facet") or "values")
         values, options = data.get("values"), data.get("options")
-        return cls(
+        f = cls(
             str(data.get("column") or ""),
             [v for v in values if not isinstance(v, (list, dict))] if isinstance(values, list) else [],
             facet if facet in FACETS else "values",
             {k: v for k, v in options.items() if isinstance(v, _OPTIONS.get(k, object))} if isinstance(options, dict) else {},
             data.get("except") is True,
         )
+        if f.facet == "period" and f.options.get("by") == "week":  # stored before the year had 4 digits: 24-W18
+            f.values = [re.sub(r"^-?\d{1,3}(?=-W)", lambda m: m[0].zfill(4), v) if isinstance(v, str) else v for v in f.values]
+        return f
 
     def picker(self) -> Callable[[Any], bool]:
         """A function: whether a value (as stored) is one the filter lets through."""
