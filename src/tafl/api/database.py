@@ -463,11 +463,12 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
     Decimals keep all their digits, so that different IDs never become equal: whole numbers
     (when ``dtype`` is Int64 or a Decimal without decimal places) become Int64 when every value
     fits, other decimals Float64 when it keeps every value as it is; else they stay Decimal
-    (``dtype`` when it is one), or text beyond its 38 digits. Columns holding several kinds of
-    values (possible in SQLite), also decimals beside text, become text instead of losing values,
-    with a blob as hex digits. A value that is an ``ActionError`` (what a driver's output
-    converter gives for a value it can't read) stops the reading with its message, where
-    ``{column}`` stands for the column's name.
+    (``dtype`` when it is one), or text beyond its 38 digits. Whole numbers beside decimal
+    numbers (possible in SQLite) follow the same rules. Columns holding several kinds of
+    values, also decimals beside text, become text instead of losing values, with a blob as hex
+    digits. A value that is an ``ActionError`` (what a driver's output converter gives for a
+    value it can't read) stops the reading with its message, where ``{column}`` stands for the
+    column's name.
     """
     kinds = {type(v) for v in values if v is not None}
     if any(issubclass(kind, ActionError) for kind in kinds):
@@ -475,6 +476,8 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
         raise ActionError(str(problem).replace("{column}", name))
     if decimal.Decimal in kinds and kinds <= _NUMBERS:  # beside other kinds of values: text, below
         return _decimals(name, values, dtype)
+    if kinds == {int, float} and any(type(v) is int and abs(v) >= 10**15 for v in values):
+        return _decimals(name, values, None)  # a Float64 might round them (15 digits always fit)
     if kinds and kinds <= set(_BLOBS):
         values = [None if v is None else bytes(v) for v in values]
         dtype = pl.Binary
@@ -501,7 +504,8 @@ def _text(value: Any) -> str:
 
 
 def _decimals(name: str, values: list[Any], dtype: pl.DataType | None) -> pl.Series:
-    """``make_series`` for decimal values (and the numbers among them)."""
+    """``make_series`` for decimal values (and the numbers among them), or for whole numbers
+    beside decimal numbers."""
     numbers = [v if v is None or isinstance(v, decimal.Decimal) else decimal.Decimal(str(v)) for v in values]
     exact = dtype if isinstance(dtype, pl.Decimal) else None
     if dtype == pl.Int64 or (exact is not None and exact.scale == 0):
@@ -513,10 +517,16 @@ def _decimals(name: str, values: list[Any], dtype: pl.DataType | None) -> pl.Ser
         short = exact is not None and (exact.precision or 38) <= 15  # then every value fits
         if short or all(_float_keeps(v, f) for v, f in zip(numbers, floats)):
             return pl.Series(name, floats, dtype=pl.Float64)
-    try:
-        return pl.Series(name, numbers, dtype=exact)
-    except Exception:  # more than the 38 digits a Decimal holds
+    series = None
+    if all(v is None or v.is_finite() for v in numbers):  # a Decimal has no NaN or infinity
+        try:
+            series = pl.Series(name, numbers, dtype=exact)
+        except Exception:  # more than the 38 digits a Decimal holds
+            pass
+    # Polars empties a value whose digits don't fit beside the decimal places of the others
+    if series is None or series.null_count() > numbers.count(None):
         return pl.Series(name, [None if v is None else str(v) for v in numbers], dtype=pl.String)
+    return series
 
 
 def _float_keeps(value: decimal.Decimal | None, number: float | None) -> bool:

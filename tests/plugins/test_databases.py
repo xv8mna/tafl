@@ -590,6 +590,27 @@ def test_a_blob_beside_another_kind_of_value_becomes_text(project, registry, tmp
     assert column.dtype == pl.String and column.to_list() == [*shown, None]
 
 
+def test_whole_numbers_beside_decimal_numbers_keep_their_digits(project, registry, tmp_path):
+    """SQLite keeps whole and decimal numbers in one column. A decimal number (Float64) keeps 15
+    digits: beside a longer whole number that it would round, they become exact decimals."""
+    con = sqlite3.connect(tmp_path / "data.db")
+    con.execute("CREATE TABLE mixed (id, small, kept)")
+    rows = [(2**53 + 1, 1, 2**53), (1.5, 2.5, 0.1), (None, None, None), (-(2**63), 3, -7)]
+    con.executemany("INSERT INTO mixed VALUES (?, ?, ?)", rows)
+    con.commit()
+    con.close()
+    df = import_table(project, registry, table="mixed").df
+    assert df.schema == pl.Schema({"id": pl.Decimal(38, 1), "small": pl.Float64, "kept": pl.Float64})
+    D = decimal.Decimal
+    assert df["id"].to_list() == [D("9007199254740993.0"), D("1.5"), None, D("-9223372036854775808.0")]
+    assert df["small"].to_list() == [1.0, 2.5, None, 3.0] and df["kept"].to_list() == [2.0**53, 0.1, None, -7.0]
+    from tafl.api import make_series
+
+    assert make_series("Id", [10**18, 1e-30]).dtype == pl.Float64  # the whole number as it is
+    assert make_series("Id", [10**18 + 1, 1e-30]).to_list() == ["1000000000000000001", "1E-30"]  # beyond 38 digits
+    assert make_series("Id", [10**18 + 1, float("inf")]).to_list() == ["1000000000000000001", "Infinity"]
+
+
 def test_a_column_of_blobs_stays_binary(project, registry, tmp_path):
     con = sqlite3.connect(tmp_path / "data.db")
     con.execute("CREATE TABLE blobs (value)")
@@ -1318,6 +1339,8 @@ def test_decimals_keep_their_digits():
     assert make_series("N", [D("5")], pl.Int64).to_list() == [5]
     huge = make_series("Huge", [D("1" * 40), D("1.5")])  # more than the 38 digits of a Decimal
     assert huge.to_list() == ["1" * 40, "1.5"]
+    assert make_series("Id", [D("1" * 38), D("1.5")]).to_list() == ["1" * 38, "1.5"]  # 38 digits and a decimal place
+    assert make_series("Id", [D("1" * 20), D("NaN")]).to_list() == ["1" * 20, "NaN"]
 
 
 def test_decimals_beside_other_kinds_of_values_become_text():
