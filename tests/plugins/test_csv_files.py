@@ -241,6 +241,42 @@ def test_a_line_end_converted_twice_in_a_value_stays(act, tmp_path):
     assert out.to_dict(as_series=False) == {"Net\r\namount": [1], "B": ["x\r\ny"]}
 
 
+def test_line_ends_converted_twice_after_the_first_line(act, tmp_path):
+    """Python's csv.writer on Windows ends rows with \\r\\r\\n in a file opened without newline="", and a
+    header written on its own ends with \\n: the first line end decided, and the last value of each
+    row kept a \\r (Smith\\r matched no customer). Such a line end outside quotes counts anywhere in
+    the file, also after the first 64 KB; then also those in quoted values are converted."""
+    for header in (b"Order;Customer\r\n", b"Order;Customer\n"):
+        (tmp_path / "a.csv").write_bytes(header + b"1;Smith\r\r\n2;Doe\r\r\n")
+        out = act("csv.import", None, {"file": str(tmp_path / "a.csv")})
+        assert out.to_dict(as_series=False) == {"Order": [1, 2], "Customer": ["Smith", "Doe"]}, header
+    rows = b"".join(b"%d;Filler\r\n" % n for n in range(6000))  # more than 64 KB
+    (tmp_path / "late.csv").write_bytes(b"Order;Customer\r\n" + rows + b"9001;Smith\r\r\n")
+    assert act("csv.import", None, {"file": str(tmp_path / "late.csv")})["Customer"][-1] == "Smith"
+    (tmp_path / "q.csv").write_bytes(b'Order;Customer\r\n1;"x\r\r\ny"\r\n2;Doe\r\r\n')
+    assert act("csv.import", None, {"file": str(tmp_path / "q.csv")})["Customer"].to_list() == ["x\r\ny", "Doe"]
+    (tmp_path / "s.csv").write_bytes(b'Report "2025\r\nOrder;Customer\r\r\n1;Smith\r\r\n')  # a quote in a line skipped
+    assert act("csv.import", None, {"file": str(tmp_path / "s.csv"), "skip_lines": 1})["Customer"].to_list() == ["Smith"]
+    (tmp_path / "many.csv").write_bytes(b"Order;Customer\r\n1;Smith\r\r\n")
+    start = time.perf_counter()
+    assert act("csv.import", None, {"file": str(tmp_path / "many.csv"), "skip_lines": 10**8}).height == 0  # more than there are
+    assert time.perf_counter() - start < 2
+
+
+def test_a_line_end_converted_twice_in_a_value_of_a_wide_file_stays(act, tmp_path):
+    """The first line end of a wide table can be beyond the 64 KB looked at for the delimiter: the
+    value lost a \\r."""
+    (tmp_path / "w.csv").write_bytes(b"A;" + b"N" * 70_000 + b'\r\n"x\r\r\ny";1\r\n')
+    assert act("csv.import", None, {"file": str(tmp_path / "w.csv")})["A"].to_list() == ["x\r\r\ny"]
+
+
+def test_carriage_returns_in_values_come_back_from_an_export(act, tmp_path):
+    values = ["x\r\r\ny", "Smith\r", "a\r\nb", "q\r\r", "z"]
+    for quote_all in (False, True):
+        act("csv.export", pl.DataFrame({"a": values, "b": values}), {"file": str(tmp_path / "e.csv"), "quote_all": quote_all})
+        assert act("csv.import", None, {"file": str(tmp_path / "e.csv")}).to_dict(as_series=False) == {"a": values, "b": values}
+
+
 @pytest.mark.parametrize("delimiter", [";", ",", "\t", "|"])
 def test_the_delimiter_is_detected_beside_column_names_of_two_lines(act, tmp_path, delimiter):
     """A line break in quotes is part of its line. The first line was "Net without a delimiter:

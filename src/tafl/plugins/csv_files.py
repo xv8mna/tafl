@@ -34,7 +34,7 @@ from tafl.api import (
 _DELIMITERS = [(";", "Semicolon ;"), (",", "Comma ,"), ("tab", "Tab"), ("|", "Pipe |")]
 _ENCODINGS = {"utf-8": "UTF-8", "cp1252": "Windows (ANSI)", "latin-1": "Latin-1", "utf-16": "UTF-16"}
 _CHUNK = 1 << 20
-_SAMPLE = 65536  # bytes looked at for the delimiter and the line ends
+_SAMPLE = 65536  # bytes looked at for the delimiter
 _ONE_COLUMN = files.ONE_COLUMN
 
 # Numbers as text: 1.234,56 or 1234,56 (decimal comma) and 1,234.56 or 1234.56 (decimal point).
@@ -154,7 +154,7 @@ def _read_text_file(path: Path, p, warn: Callable[[str], None]) -> tuple[pl.Data
         raise files.read_error(error, path) from None
     data, encoding = _to_utf8(raw, p.encoding, path.name, warn)
     del raw  # after a byte order mark, ``data`` is a copy: the file would be in memory twice
-    if b"\r\r\n" in data and _converted_twice(data):  # one line end, not a \r at the end of the last value
+    if _converted_twice(data, p.skip_lines):  # one line end, not a \r at the end of the last value
         data = re.sub(rb"(?<!\r)\r+\n", b"\r\n", data)  # only from the start of a run: from each \r would take long
     sample = data[:_SAMPLE].decode("utf-8", errors="ignore")
     separator = files.detect_delimiter(sample, p.skip_lines) if p.delimiter == "auto" else _separator(p.delimiter)
@@ -179,18 +179,23 @@ def _read_text_file(path: Path, p, warn: Callable[[str], None]) -> tuple[pl.Data
     return out.rename(dict(zip(out.columns, names))), separator, encoding
 
 
-def _converted_twice(data: bytes) -> bool:
-    """Whether the line ends of the file were converted twice, as its first line end outside
-    quotes shows. In a file with other line ends, such a line end in a quoted value is part of
-    the value."""
+def _converted_twice(data: bytes, skip_lines: int) -> bool:
+    """Whether line ends of the file were converted twice: a \\r\\r\\n outside quotes, anywhere in
+    the file after the lines skipped (a header written on its own can have another line end than
+    the rows). In a file with other line ends, such a line end in a quoted value is part of the
+    value."""
     start = quotes = 0
-    end = data.find(b"\n", 0, _SAMPLE)
+    for _ in range(skip_lines):  # Polars skips them also in quotes: a quote there starts no value
+        start = data.find(b"\n", start) + 1
+        if not start:
+            return False
+    end = data.find(b"\r\r\n", start)
     while end >= 0:
         quotes += data.count(b'"', start, end)
         if quotes % 2 == 0:
-            return data[max(end - 2, 0) : end] == b"\r\r"
-        start, end = end, data.find(b"\n", end + 1, _SAMPLE)
-    return True  # none in the sample (a quote that isn't closed, a very long line): as before
+            return True
+        start, end = end, data.find(b"\r\r\n", end + 3)
+    return False
 
 
 def _read_long_rows(data: bytes, options: dict) -> tuple[pl.DataFrame, int]:
