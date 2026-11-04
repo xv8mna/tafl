@@ -1,4 +1,5 @@
 import datetime as dt
+import re
 from decimal import Decimal as D
 from zoneinfo import ZoneInfo
 
@@ -462,6 +463,29 @@ def test_filling_whole_numbers_with_a_decimal_number_says_which_would_change(act
     fits = pl.DataFrame({"V": pl.Series([2**60, None], dtype=dtype)})  # as before: a decimal number keeps it
     filled = act("rows.fill", fits, {"columns": ["V"], "method": "value", "value": value})
     assert filled.schema["V"] == pl.Float64 and filled["V"][0] == 2**60
+
+
+@pytest.mark.parametrize(
+    ("dtype", "value", "becomes"),
+    [
+        (pl.Int8, "12345678901234567891", 12345678901234567168),
+        (pl.Int64, "-12.345.678.901.234.567.891", -12345678901234567168),
+        (pl.Int64, "9007199254740993,5", 9007199254740994),
+        (pl.UInt64, "123456789012345678901", 123456789012345683968),
+        (pl.Int128, str(2**127 + 1), 2**127),
+        (pl.UInt128, str(2**128 + 1), 2**128),
+        (pl.Int64, str(2**200 + 1), 2**200),
+    ],
+)
+def test_filling_whole_numbers_with_a_typed_number_that_decimal_numbers_round_says_so(act, dtype, value, becomes):
+    """A typed number that the column's type can't hold makes it decimal numbers, which keep about
+    15 digits: the number changed without a word (12345678901234567891 became 12345678901234567168)."""
+    df = pl.DataFrame({"V": pl.Series([1, None], dtype=dtype)})
+    message = rf"^'{re.escape(value)}' doesn't fit column 'V': with it the column holds decimal numbers, which keep about 15"
+    with pytest.raises(ActionError, match=message + rf" digits, so it would become {becomes}$"):
+        act("rows.fill", df, {"columns": ["V"], "method": "value", "value": value})
+    kept = act("rows.fill", df, {"columns": ["V"], "method": "value", "value": str(becomes)})  # as before: it stays
+    assert int(kept["V"][1]) == becomes
 
 
 def test_a_list_with_a_value_the_column_can_not_hold(act):

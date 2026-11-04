@@ -194,6 +194,11 @@ def fill(df, p, ctx):
                     f"'{p.value}' doesn't fit column '{name}': with it the column holds decimal numbers, which keep "
                     f"about 15 digits, but it has longer whole numbers (e.g. {rounded} would become {int(float(rounded))})"
                 )
+            if (becomes := _rounded_typed(p.value, value, df.schema[name])) is not None:
+                raise ActionError(
+                    f"'{p.value}' doesn't fit column '{name}': with it the column holds decimal numbers, which keep "
+                    f"about 15 digits, so it would become {becomes}"
+                )
             updates.append(column.fill_null(_for_polars(value, df.schema[name])).alias(name))
         else:
             updates.append(column.fill_null(strategy="forward" if p.method == "down" else "backward").alias(name))
@@ -343,6 +348,19 @@ def _rounded_with(values: pl.Series, value: Any) -> int | None:
         return None
     rounded = values.filter(dtypes.float_loses_digits(values))
     return rounded[0] if rounded.len() else None
+
+
+def _rounded_typed(text: str, value: Any, dtype: pl.DataType) -> int | None:
+    """What a typed number ``value`` becomes when it makes a whole-number column decimal numbers
+    (Float64) and they can't keep it, as ``_rounded_with`` checks the column's values:
+    12345678901234567891 becomes 12345678901234567168. None when it stays as it is."""
+    typed = text.strip()
+    if not dtype.is_integer() or not isinstance(value, float) or not abs(value) < float("inf"):
+        return None
+    if not dtypes.float_loses_digits(pl.Series([typed]), _decimal_of(typed))[0]:
+        return None
+    exact = dtypes.parse_decimal(typed, _decimal_of(typed))  # beyond 38 digits float_loses_digits can't tell
+    return int(value) if exact is not None and int(exact) != int(value) else None
 
 
 def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
