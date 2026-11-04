@@ -105,6 +105,8 @@ def change_type(df, p, ctx):
     for c in p.columns:  # one after the other, so a column can be converted twice
         source = df[c.column]
         converted = _convert(source, c.type, c.format.strip(), p.decimal)
+        # fixed names from here: Polars' Series methods would read a name like ^a.*$ as a pattern
+        source, converted = source.alias("value"), converted.alias("value")
         failed = source.is_not_null() & converted.is_null()
         if source.dtype == pl.String:
             failed = failed & (source.str.strip_chars() != "")
@@ -118,18 +120,18 @@ def change_type(df, p, ctx):
                 raise ActionError(message + hint)
             ctx.warn(message + " (now empty)" + hint)
         if c.type == "number":
-            _warn_rounded(source, converted, p.decimal, ctx)
+            _warn_rounded(c.column, source, converted, p.decimal, ctx)
         df = df.with_columns(converted.alias(c.column))
     return df
 
 
-def _warn_rounded(source: pl.Series, converted: pl.Series, decimal: str, ctx) -> None:
+def _warn_rounded(name: str, source: pl.Series, converted: pl.Series, decimal: str, ctx) -> None:
     """A decimal number keeps about 15 digits: say which values lost some."""
     rounded = dtypes.float_loses_digits(source, decimal) & converted.is_not_null()
     if rounded.any():
         examples = ", ".join(f"'{v}'" for v in source.filter(rounded).head(3).to_list())
         ctx.warn(
-            f"{source.name}: {rounded.sum():,} value(s) were rounded, e.g. {examples}: a decimal number keeps "
+            f"{name}: {rounded.sum():,} value(s) were rounded, e.g. {examples}: a decimal number keeps "
             "about 15 digits (Whole number and Text keep them all)"
         )
 
@@ -150,8 +152,8 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
             return dtypes.format_dates(s, fmt or "dd.mm.yyyy hh:mm:ss")
         if source.is_numeric():
             return dtypes.format_numbers(s, fmt, decimal)
-        if source == pl.Binary:  # as hex digits, like SQL Server shows them: 0x0102FF
-            return ("0x" + s.bin.encode("hex").str.to_uppercase()).alias(s.name)
+        if source == pl.Binary:  # as hex digits, like SQL Server shows them: 0x0102FF (a fixed name, as in change_type)
+            return ("0x" + s.alias("value").bin.encode("hex").str.to_uppercase()).alias(s.name)
         return s.cast(pl.String)
     if target in ("number", "integer"):
         if source == pl.String:
@@ -163,7 +165,7 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
         if target == "number":
             return s.cast(pl.Float64)
         if source.is_float() or isinstance(source, pl.Decimal):
-            s = s.round(0, mode="half_away_from_zero")
+            s = s.alias("value").round(0, mode="half_away_from_zero").alias(s.name)  # a fixed name, as in change_type
         return s.cast(pl.Int64, strict=False)
     if target in ("date", "datetime"):
         if source == pl.String:
@@ -174,7 +176,9 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
             parsed = dtypes.excel_serial_to_datetime(s)
         else:
             raise ActionError(f"{s.name}: a {source} column can't become a date")
-        return parsed.dt.date() if target == "date" and parsed.dtype != pl.Date else parsed
+        if target == "date" and parsed.dtype != pl.Date:
+            return parsed.alias("value").dt.date().alias(s.name)  # a fixed name, as in change_type
+        return parsed
     if target == "boolean":
         if source == pl.String:
             return dtypes.parse_booleans(s)

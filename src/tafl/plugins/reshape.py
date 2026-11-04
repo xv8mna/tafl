@@ -79,7 +79,8 @@ def pivot(df, p, ctx):
         ctx.log("The table has no rows, so there are no new columns")
         return df.select(cols(rows))
 
-    distinct = df[p.column].unique(maintain_order=True)  # in the order they first appear
+    # in the order they first appear, under a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
+    distinct = df[p.column].alias("value").unique(maintain_order=True)
     empty = _is_empty(distinct)
     values = distinct.filter(~empty)
     has_empty = values.len() < distinct.len()

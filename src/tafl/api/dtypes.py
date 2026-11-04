@@ -185,10 +185,11 @@ def float_loses_digits(s: pl.Series, decimal: str = ",") -> pl.Series:
     """True for the values whose whole part a decimal number (Float64) can't keep exactly: whole
     numbers beyond 2^53 (9,007,199,254,740,992), as numbers or as text. For exact decimals
     (Decimal), all their decimal places count too."""
+    name, s = s.name, s.alias("value")  # a fixed name, as in _clean_text
     if s.dtype.is_integer() or isinstance(s.dtype, pl.Decimal):
         back = s.cast(pl.Float64).cast(s.dtype, strict=False)  # empty when rounded beyond the type: 2^127 for 2^127 - 1
-        return ((back != s).fill_null(True) & s.is_not_null()).alias(s.name)
-    lost = pl.repeat(False, s.len(), eager=True).alias(s.name)
+        return ((back != s).fill_null(True) & s.is_not_null()).alias(name)
+    lost = pl.repeat(False, s.len(), eager=True).alias(name)
     if s.dtype != pl.String:
         return lost
     rows = (s.str.len_bytes() > 15).fill_null(False).arg_true()  # shorter texts have at most 15 digits
@@ -245,13 +246,14 @@ def parse_times(s: pl.Series) -> pl.Series:
 def parse_booleans(s: pl.Series) -> pl.Series:
     """Text -> Boolean: true/yes/ja/x/1 and false/no/nein/0 (any case). Others become empty."""
     mapping = {w: True for w in TRUE_WORDS} | {w: False for w in FALSE_WORDS}
-    text = s.cast(pl.String).str.strip_chars().str.to_lowercase()
+    text = s.cast(pl.String).alias("text").str.strip_chars().str.to_lowercase()  # a fixed name, as in _clean_text
     return text.replace_strict(mapping, default=None, return_dtype=pl.Boolean).alias(s.name)
 
 
 def excel_serial_to_datetime(s: pl.Series) -> pl.Series:
     """Excel day numbers (45658 = 2025-01-01, fractions = time of day) -> Datetime."""
-    ms = (s.cast(pl.Float64) * 86_400_000).round(0).cast(pl.Int64)
+    rounded = (s.cast(pl.Float64) * 86_400_000).alias("ms").round(0)  # a fixed name, as in _clean_text
+    ms = rounded.alias(s.name).cast(pl.Int64)  # a cast that fails names the column
     return pl.select((pl.lit(_EXCEL_EPOCH) + pl.duration(milliseconds=pl.lit(ms))).alias(s.name)).to_series()
 
 
@@ -450,12 +452,13 @@ def text_sort_key(texts: pl.Expr | pl.Series) -> pl.Expr | pl.Series:
 
 
 def _text_keys(s: pl.Series) -> pl.Series:
+    name, s = s.name, s.alias("text")  # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
     if s.len() > 2 * _SAMPLE:
         sample = s.gather_every(s.len() // _SAMPLE)
         if 2 * sample.n_unique() < sample.len():  # many repeated values: each one is worked out once
             values = s.unique().drop_nulls()
-            return s.replace_strict(values, _keys(values), default=None, return_dtype=pl.String)
-    return _keys(s)
+            return s.replace_strict(values, _keys(values), default=None, return_dtype=pl.String).alias(name)
+    return _keys(s).alias(name)
 
 
 def _keys(s: pl.Series) -> pl.Series:
@@ -503,7 +506,7 @@ def text_key(text: str) -> str:
 
 def format_dates(s: pl.Series, fmt: str) -> pl.Series:
     """Date/Datetime -> text, e.g. ``dd.mm.yyyy``."""
-    return s.dt.strftime(to_strftime(fmt)).alias(s.name)
+    return s.alias("value").dt.strftime(to_strftime(fmt)).alias(s.name)  # a fixed name, as in _clean_text
 
 
 def format_numbers(s: pl.Series, fmt: str = "", decimal: str = ",") -> pl.Series:
@@ -635,7 +638,7 @@ def _plain_float(value: float | Decimal) -> str:
 
 
 def _clean_text(s: pl.Series) -> pl.Series:
-    text = s.cast(pl.String).str.strip_chars()
+    text = s.cast(pl.String).alias("text").str.strip_chars()  # Polars' Series methods would read a name like ^a.*$ as a pattern
     return pl.select(pl.when(pl.lit(text) == "").then(None).otherwise(pl.lit(text)).alias(s.name)).to_series()
 
 

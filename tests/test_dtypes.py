@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import polars as pl
 import pytest
+from polars.testing import assert_series_equal
 
 from tafl.api import ActionError, dtypes
 
@@ -494,3 +495,34 @@ def test_text_expr_of_decimal_numbers_with_an_exponent_is_quick():
     texts = frame.select(dtypes.text_expr(pl.col("v"), pl.Float64))["v"]
     assert not texts.str.contains("e").any() and texts.cast(pl.Float64).equals(numbers)
     assert step < 10 * plain + 0.4, (step, plain)
+
+
+_OF_A_SERIES = [
+    pytest.param(dtypes.parse_numbers, ["1.234,5", None, "x"], id="parse_numbers"),
+    pytest.param(dtypes.parse_integers, ["1.234", None, "12345678901234567890"], id="parse_integers"),
+    pytest.param(dtypes.parse_dates, [" 31.12.2025", None, "x"], id="parse_dates"),
+    pytest.param(lambda s: dtypes.parse_datetimes(s, "dd.mm.yyyy hh:mm"), ["31.12.2025 08:30", None], id="parse_datetimes"),
+    pytest.param(dtypes.parse_times, ["08:30", None, "x"], id="parse_times"),
+    pytest.param(dtypes.parse_booleans, ["ja", "No", None, "x"], id="parse_booleans"),
+    pytest.param(dtypes.excel_serial_to_datetime, [45658, None, 45658.5], id="excel_serial_to_datetime"),
+    pytest.param(lambda s: dtypes.format_dates(s, "dd.mm.yyyy"), [dt.date(2025, 1, 2), None], id="format_dates"),
+    pytest.param(lambda s: dtypes.format_numbers(s, "#,##0.00"), [1234.5, None], id="format_numbers"),
+    pytest.param(dtypes.float_loses_digits, ["12345678901234567890", "1", None], id="float_loses_digits of texts"),
+    pytest.param(dtypes.float_loses_digits, [2**60 + 1, 1, None], id="float_loses_digits of whole numbers"),
+    pytest.param(dtypes.text_sort_key, ["B", "é", None, "a"], id="text_sort_key"),
+    pytest.param(dtypes.text_sort_key, ["B", "é", None, "a"] * 6_000, id="text_sort_key of many repeated values"),
+]
+
+
+@pytest.mark.parametrize("name", ["*", "^a.*$", "^x$"])
+@pytest.mark.parametrize(("function", "values"), _OF_A_SERIES)
+def test_the_functions_of_a_series_work_for_a_name_like_a_pattern(function, values, name):
+    """Polars' own Series methods read a name like ^a.*$ as a pattern (one that finds nothing:
+    they stop with an IndexError). The result keeps the Series' own name."""
+    s = pl.Series("v", values, strict=False)
+    assert_series_equal(function(s.alias(name)), function(s).alias(name))
+
+
+def test_a_conversion_that_fails_names_the_column():
+    with pytest.raises(pl.exceptions.InvalidOperationError, match="in column 'Amount'"):
+        dtypes.excel_serial_to_datetime(pl.Series("Amount", [1.5, math.inf]))

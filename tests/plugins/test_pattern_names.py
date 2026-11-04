@@ -203,9 +203,40 @@ for _mode in ("keep", "remove", "front"):
         lambda r, m=_mode: r.step("columns.select", table(r), {"mode": m, "columns": [r["S"], r["K"]]})
     )
 case("columns.select front x, K behind", "K")(lambda r: r.step("columns.select", table(r), {"mode": "front", "columns": ["x"]}))
-case("columns.change_type K to text", "K", stops=("K",))(
-    lambda r: r.step("columns.change_type", table(r), {"columns": [{"column": r["K"], "type": "text", "format": ""}]})
-)
+
+
+def _for_types(r: Run) -> pl.DataFrame:
+    """Whole numbers (K, Excel day numbers among them), texts (S), decimal numbers (F), dates (D)
+    and binary values (B), each with a value that some types can't take."""
+    frame = pl.DataFrame(
+        {
+            "K": [45658, None, 1, 0],
+            "abc": [1, 2, 3, 4],
+            "x": [5, 6, 7, 8],
+            "S": ["31.12.2025", "12345678901234567,5", None, "ja"],
+            "F": [45658.5, 2.5, None, -0.5],
+            "D": [dt.date(2025, 1, 2), None, dt.date(1999, 12, 31), dt.date(2025, 6, 1)],
+            "B": [b"\x00\xff", None, b"ab", b""],
+        }
+    )
+    return named(frame, r)
+
+
+def _change_type(r: Run, *columns: tuple[str, str, str], on_error: str = "empty"):
+    params = {"columns": [{"column": r[role], "type": target, "format": fmt} for role, target, fmt in columns], "on_error": on_error}
+    return r.step("columns.change_type", _for_types(r), params)
+
+
+for _role in ("K", "S", "F", "D", "B"):
+    for _target in ("text", "integer", "number", "date", "datetime", "boolean"):
+        _refused = (_role == "D" and _target in ("integer", "number", "boolean")) or (_role == "B" and _target != "text")
+        case(f"columns.change_type {_role} to {_target}", _role, refused=_refused)(
+            lambda r, role=_role, target=_target: _change_type(r, (role, target, ""))
+        )
+case("columns.change_type K to text 00000, D to text dd.mm.yy", "K", "D")(lambda r: _change_type(r, ("K", "text", "00000"), ("D", "text", "dd.mm.yy")))
+case("columns.change_type S to date dd.mm.yyyy", "S")(lambda r: _change_type(r, ("S", "date", "dd.mm.yyyy")))
+case("columns.change_type S to integer, stop at a value", "S", refused=True)(lambda r: _change_type(r, ("S", "integer", ""), on_error="fail"))
+case("columns.change_type S to integer, then to text", "S")(lambda r: _change_type(r, ("S", "integer", ""), ("S", "text", "#,##0")))
 
 # calculate
 
@@ -222,7 +253,7 @@ case("calc.enumerate rows per K by F", "K", "F")(
 case("calc.enumerate rows by F descending", "F")(
     lambda r: r.step("calc.enumerate", table(r), {"name": "No", "mode": "rows", "order_by": [{"column": r["F"], "order": "desc"}]})
 )
-case("calc.enumerate rows by text S", "S", stops=("S",))(
+case("calc.enumerate rows by text S", "S")(
     lambda r: r.step("calc.enumerate", table(r), {"name": "No", "mode": "rows", "order_by": [{"column": r["S"], "order": "asc"}]})
 )
 case("calc.enumerate groups by K", "K")(lambda r: r.step("calc.enumerate", table(r), {"name": "No", "mode": "groups", "group_by": [r["K"]]}))
@@ -281,12 +312,38 @@ case("rows.filter S contains a", "S")(
 case("rows.filter_formula K > 1", "K")(lambda r: r.step("rows.filter_formula", table(r), {"condition": f"{in_formula(r['K'])} > 1"}))
 case("rows.sort by K descending", "K")(lambda r: r.step("rows.sort", table(r), {"by": [{"column": r["K"], "order": "desc"}]}))
 case("rows.sort by F", "F")(lambda r: r.step("rows.sort", table(r), {"by": [{"column": r["F"], "order": "asc"}]}))
-case("rows.sort by text S", "S", stops=("S",))(lambda r: r.step("rows.sort", table(r), {"by": [{"column": r["S"], "order": "asc"}]}))
+case("rows.sort by text S", "S")(lambda r: r.step("rows.sort", table(r), {"by": [{"column": r["S"], "order": "asc"}]}))
+
+
+@case("rows.sort by texts S and I", "S", "I")
+def _(r):
+    df = named(pl.DataFrame({"S": ["b", "a", "B", None, "b"], "abc": [1, 2, 3, 4, 5], "I": ["y", "x", "x", "z", "é"], "x": [5, 6, 7, 8, 9]}), r)
+    return r.step("rows.sort", df, {"by": [{"column": r["S"], "order": "desc"}, {"column": r["I"], "order": "asc"}]})
+
+
+case("rows.sort by text S, 30,000 rows of few values", "S")(
+    lambda r: r.step("rows.sort", pl.concat([table(r)] * 5_000), {"by": [{"column": r["S"], "order": "asc"}]})
+)
 case("rows.dedupe K", "K")(lambda r: r.step("rows.dedupe", table(r), {"columns": [r["K"]], "keep": "last"}))
 case("rows.dedupe all columns", "K")(lambda r: r.step("rows.dedupe", pl.concat([table(r), table(r)]), {"columns": []}))
 case("rows.fill K down", "K")(lambda r: r.step("rows.fill", table(r), {"columns": [r["K"]], "method": "down"}))
 case("rows.fill S with z", "S")(lambda r: r.step("rows.fill", table(r), {"columns": [r["S"]], "method": "value", "value": "z"}))
 case("rows.fill F with 0", "F")(lambda r: r.step("rows.fill", table(r), {"columns": [r["F"]], "method": "value", "value": "0"}))
+case("rows.fill K with 2,5", "K")(lambda r: r.step("rows.fill", table(r), {"columns": [r["K"]], "method": "value", "value": "2,5"}))
+
+
+def _nanoseconds(r: Run, below_a_microsecond: bool = True) -> pl.DataFrame:
+    """Date-times with nanoseconds (D): a typed date before 1677 makes the column microseconds."""
+    stamps = [1_735_806_600_000_000_001 if below_a_microsecond else 1_735_806_600_000_000_000, None, 1_735_806_600_000_001_000]
+    return named(pl.DataFrame({"abc": [1, 2, 3], "D": pl.Series(stamps, dtype=pl.Int64).cast(pl.Datetime("ns")), "x": [4, 5, 6]}), r)
+
+
+case("rows.fill D with a date before 1677", "D", refused=True)(
+    lambda r: r.step("rows.fill", _nanoseconds(r), {"columns": [r["D"]], "method": "value", "value": "1500-01-01"})
+)
+case("rows.fill D of whole microseconds with a date before 1677", "D")(
+    lambda r: r.step("rows.fill", _nanoseconds(r, below_a_microsecond=False), {"columns": [r["D"]], "method": "value", "value": "1500-01-01"})
+)
 
 # text
 
@@ -383,9 +440,13 @@ def _(r):
 # reshape
 
 case("reshape.pivot rows K", "K")(lambda r: r.step("reshape.pivot", table(r), {"rows": [r["K"]], "column": "s", "value": "f", "function": "sum"}))
-case("reshape.pivot names from S", "S", stops=("S",))(
+case("reshape.pivot names from S", "S")(
     lambda r: r.step("reshape.pivot", table(r), {"rows": ["x"], "column": r["S"], "value": "f", "function": "sum"})
 )
+case("reshape.pivot names from K, as they first appear", "K")(
+    lambda r: r.step("reshape.pivot", table(r), {"rows": ["x"], "column": r["K"], "value": "f", "function": "sum", "order": "first"})
+)
+case("reshape.pivot names from F", "F")(lambda r: r.step("reshape.pivot", table(r), {"rows": ["x"], "column": r["F"], "value": "abc", "function": "count"}))
 case("reshape.pivot values of F", "F")(lambda r: r.step("reshape.pivot", table(r), {"rows": ["x"], "column": "s", "value": r["F"], "function": "sum"}))
 case("reshape.pivot of no rows, rows K", "K")(
     lambda r: r.step("reshape.pivot", table(r).clear(), {"rows": [r["K"]], "column": "s", "value": "f", "function": "sum"})

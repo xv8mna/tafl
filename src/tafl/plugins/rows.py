@@ -478,7 +478,8 @@ def _cut_with(values: pl.Series, value: Any) -> tuple[str, str] | None:
         return None
     if not isinstance(value, pl.Series) or value.dtype.time_unit == "ns":
         return None
-    cut = values.filter(values.to_physical() % 1000 != 0)
+    # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
+    cut = values.filter(values.alias("value").to_physical() % 1000 != 0)
     if not cut.len():
         return None
     example = cut.head(1)
