@@ -6,7 +6,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from tafl.core import Project
+from tafl.core import Parameter, Project
 
 WINTER, SUMMER = dt.datetime(2026, 1, 15, 12), dt.datetime(2026, 7, 15, 12)  # in UTC
 MOMENTS = [t.replace(tzinfo=dt.UTC) for t in (WINTER, SUMMER, WINTER)]
@@ -47,3 +47,18 @@ def test_the_filter_pane_lists_date_times_with_a_time_zone(window, settle, sessi
     assert listed == {"2026-01-15T13:00:00+01:00": 2, "2026-07-15T14:00:00+02:00": 1}
     listed = {row[2]: row[1] for row in utc.model.rows}
     assert listed == {"2026-01-15T12:00:00+00:00": 2, "2026-07-15T12:00:00+00:00": 1}
+
+
+def test_a_date_time_parameter_in_filter_rows_is_a_moment_of_this_pcs_clock(window, settle, session, tmp_path, registry):
+    """As in formulas, in the window's calculations too: =TIMESTAMPTZ gives this PC's local time,
+    which was read as the local time of the column's zone."""
+    at = pl.Series([dt.datetime(2026, 7, 1, 7, 30), dt.datetime(2026, 7, 1, 8, 30)]).dt.replace_time_zone("UTC")
+    pl.DataFrame({"Name": ["before", "after"], "At": at.dt.convert_time_zone("Pacific/Kiritimati")}).write_parquet(tmp_path / "at.parquet")
+    project = Project(name="Moments", parameters=[Parameter("Cut", "=TIMESTAMPTZ '2026-07-01 08:00:00+00'")])
+    table = project.add_table("Moments")
+    project.add_step(table, registry.actions["parquet.import"], {"file": "at.parquet"})
+    condition = {"column": "At", "operator": "<", "value": "{Cut}"}
+    project.add_step(table, registry.actions["rows.filter"], {"conditions": [condition]})
+    window.open_path(project.save(tmp_path / "moments.tafl"))
+    settle(session)
+    assert session.step_result(table.steps[1]).df["Name"].to_list() == ["before"]

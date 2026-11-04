@@ -10,7 +10,7 @@ from typing import Any
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, col, cols, dtypes, expressions
+from tafl.api import ActionError, P, action, col, cols, dtypes, expressions, parameters
 
 _OPERATORS = [
     ("=", "equals"),
@@ -204,6 +204,11 @@ def fill(df, p, ctx):
                     f"'{p.value}' doesn't fit column '{name}': nanoseconds reach only from 1677 to 2262, so with it the "
                     f"column holds microseconds, but it has values with nanoseconds (e.g. {cut[0]} would become {cut[1]})"
                 )
+            if (year := _year_beyond(value)) is not None:
+                raise ActionError(
+                    f"'{p.value}' doesn't fit column '{name}': in its time zone ({df.schema[name].time_zone}) this moment "
+                    f"is in the year {year}, and date-times reach from the year 1 to 9999"
+                )
             updates.append(column.fill_null(_for_polars(value, df.schema[name])).alias(name))
         else:
             updates.append(column.fill_null(strategy="forward" if p.method == "down" else "backward").alias(name))
@@ -242,6 +247,8 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
 
     if op in ("in", "not_in"):
         items = [item.strip() for item in re.split(r"[;\n]", c.value) if item.strip()]
+        if isinstance(c.value, parameters.DateTimeText):  # a date-time parameter alone: its value goes with it (see _literal)
+            items = [parameters.DateTimeText(items[0], c.value.value)]
         values = [i.lower() if text_column and not case_sensitive else _literal(i, dtype, c.column) for i in items]
         if isinstance(dtype, pl.Decimal):  # values the column can't hold aren't in it
             values = [v for v in (_on_scale(v, dtype.scale) for v in values) if v is not None]
@@ -376,7 +383,11 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
     Series of one value: Python's have no nanoseconds (08:30:00.000000001), and a date-time is in
     the column's time zone and in its unit (Polars compares nanoseconds with microseconds in
     microseconds) when that holds it: nanoseconds reach only from 1677 to 2262, so 9999-12-31
-    stays in microseconds (in nanoseconds it would become a date of another century)."""
+    stays in microseconds (in nanoseconds it would become a date of another century).
+
+    A typed date-time is the local time of the column's zone, as the grid shows its values. A
+    date-time parameter alone (a ``DateTimeText``) is a moment of this PC's clock, as in formulas
+    (``{Now}`` is this moment there too)."""
     value = text.strip()
     if dtype == pl.String:
         return text
@@ -401,6 +412,9 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
             if parsed is None:
                 raise ActionError(f"'{text}' is not a date (column '{column}'); use e.g. 31.12.2025 or 2025-12-31")
             return parsed
+        if dtype.time_zone is not None and isinstance(text, parameters.DateTimeText):
+            moment = expressions.moment(text.value).dt.convert_time_zone(dtype.time_zone)
+            return moment.cast(dtype) if _unit_holds(moment, dtype.time_unit) else moment
         parsed = dtypes.parse_datetimes(pl.Series([value]))  # microseconds reach from the year 1 to 9999
         if parsed.null_count():
             raise ActionError(
@@ -469,6 +483,16 @@ def _cut_with(values: pl.Series, value: Any) -> tuple[str, str] | None:
         return None
     example = cut.head(1)
     return tuple(pl.select(dtypes.text_expr(pl.lit(s), s.dtype)).item() for s in (example, example.cast(value.dtype)))
+
+
+def _year_beyond(value: Any) -> int | None:
+    """The year of a date-time (see ``_literal``) when it is not 1 to 9999, which the grid can't
+    show: 9999-12-31 23:00 of this PC's clock can be in the year 10000 in a column's time zone.
+    None for a year from 1 to 9999."""
+    if not isinstance(value, pl.Series) or not isinstance(value.dtype, pl.Datetime):
+        return None
+    year = value.dt.year()[0]
+    return None if 1 <= year <= 9999 else year
 
 
 def _no_typed_value(column: str) -> str:

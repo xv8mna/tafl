@@ -1,7 +1,9 @@
 """Project parameters: their values, and filling {Name} into texts, formulas and SQL."""
 
+import copy
 import datetime as dt
 import os
+import pickle
 import re
 import sqlite3
 import threading
@@ -13,6 +15,7 @@ import pytest
 
 from tafl.api import ActionError, Cancelled, Context, P, expressions
 from tafl.api.parameters import (
+    DateTimeText,
     Failed,
     Fixed,
     as_text,
@@ -544,6 +547,34 @@ def test_actions_get_only_the_filled_in_settings():
     assert not hasattr(Context(), "parameters")
 
 
+def test_a_text_setting_that_is_only_a_date_time_parameter_has_its_value():
+    """Filter rows takes it as a moment of this PC's clock on a column with a time zone, as
+    formulas do. Its text is the one all other settings get."""
+    stamp = dt.datetime(2026, 7, 1, 10, 0, 0, 500)
+    values = {"Now": stamp, "Day": DAY, "Fixed": fixed("2026-07-01 10:00"), "Text": "x"}
+    params = [
+        P.Text("value", "Value"),
+        P.File("file", "File"),
+        P.Column("column", "Column"),
+        P.Expression("formula", "Formula"),
+        P.Code("code", "Code", language="python"),
+        P.List("conditions", "Conditions", [P.Text("value", "Value")]),
+    ]
+    raw = {"value": " {now} ", "file": "{Now}", "column": "{Now}", "formula": "{Now}", "code": "{Now}", "conditions": [{"value": "{Fixed}"}]}
+    filled = parameters.fill(params, raw, values)
+    assert filled["value"] == " 2026-07-01 10:00:00.000500 " and filled["value"].value == stamp
+    assert type(filled["value"]) is DateTimeText and [type(filled[key]) for key in ("file", "column", "code")] == [str] * 3
+    assert filled["formula"] == "TIMESTAMP '2026-07-01 10:00:00.000500'"
+    condition = P.resolve(params, filled)["conditions"][0]["value"]  # as the action gets it
+    assert condition == "2026-07-01 10:00" and condition.value == dt.datetime(2026, 7, 1, 10, 0)
+    for text in ("{Day}", "{Now} 08:30", "{Text}", "{Now}{Now}", "{Other}"):
+        assert type(parameters.fill(params, {"value": text}, values)["value"]) is str, text
+    for copied in (copy.deepcopy(filled["value"]), pickle.loads(pickle.dumps(filled["value"]))):
+        assert type(copied) is DateTimeText and copied == filled["value"] and copied.value == stamp
+    keyed = parameters.keyed({**filled, "conditions": [{"value": condition}]})  # another cache key than the same text typed
+    assert keyed["conditions"] == [{"value": {"date-time parameter": "2026-07-01 10:00"}}] and keyed["file"] == filled["file"]
+
+
 def test_renaming_writes_the_new_name_everywhere():
     settings = {"file": "a_{day}_{Month}.csv", "columns": [{"formula": "{DAY} + 1"}], "n": 3}
     assert parameters.renamed(settings, {"Day": "Run Day", "Month": "Day"}) == {
@@ -682,6 +713,36 @@ def test_fixed_values_keep_their_text_in_file_names_and_sql_quotes(tmp_path, reg
     assert all(r.ok for r in results.values()), [r.first_error for r in results.values()]
     assert results[orders.id].df.to_dicts() == [{"Id": 1, "Rate": "2.50", "Typed": "2.50", "Value": 2.5}]
     assert (tmp_path / "report_v1.0.csv").is_file()
+
+
+def test_a_date_time_parameter_on_a_column_with_a_time_zone_is_a_moment_of_this_pcs_clock(tmp_path, registry):
+    """A date-time from a formula, such as =NOW(), is this PC's local time: Filter rows and Fill
+    read it as the local time of the column's zone, wrong by the difference, without a word. They
+    now keep what Filter rows by formula keeps, also with a value from `tafl run --set`. The same
+    text typed is the local time of the column's zone, and doesn't get the result from the cache."""
+    moments = [dt.datetime(2026, 7, 1, 7, 30), dt.datetime(2026, 7, 1, 8, 30), None]  # in UTC
+    at = pl.Series(moments, dtype=pl.Datetime("ns")).dt.replace_time_zone("UTC").dt.convert_time_zone("Pacific/Kiritimati")
+    pl.DataFrame({"Name": ["before", "after", "empty"], "At": at}).write_parquet(tmp_path / "times.parquet")
+    project = Project(name="Moments", parameters=[Parameter("Cut", "=TIMESTAMPTZ '2026-07-01 08:00:00+00'")])
+    project.path = tmp_path / "moments.tafl"
+    engine = Engine(project, registry)
+    typed = as_text(engine.parameter_values()["Cut"])  # on this PC's clock
+    steps = {
+        "Typed": ("rows.filter", {"conditions": [{"column": "At", "operator": "<", "value": typed}]}),
+        "Parameter": ("rows.filter", {"conditions": [{"column": "At", "operator": "<", "value": "{Cut}"}]}),
+        "Formula": ("rows.filter_formula", {"condition": "[At] < {Cut}"}),
+        "Filled": ("rows.fill", {"columns": ["At"], "method": "value", "value": "{Cut}"}),
+    }
+    for name, (action, params) in steps.items():
+        table = project.add_table(name)
+        project.add_step(table, "parquet.import", {"file": "times.parquet"})
+        project.add_step(table, action, params)
+    assert engine.evaluate("Typed").df["Name"].to_list() == []  # in Kiritimati, 14 hours ahead of UTC
+    assert engine.evaluate("Parameter").df["Name"].to_list() == ["before"]
+    assert engine.evaluate("Formula").df["Name"].to_list() == ["before"]
+    assert engine.evaluate("Filled").df["At"][2] == dt.datetime(2026, 7, 1, 8, tzinfo=dt.UTC)
+    engine.parameter_overrides = {"Cut": "=TIMESTAMPTZ '2026-07-01 09:00:00+00'"}
+    assert engine.evaluate("Parameter").df["Name"].to_list() == ["before", "after"]
 
 
 def test_the_values_stay_the_same_until_a_reload(project, registry):

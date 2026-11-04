@@ -7,6 +7,9 @@ import polars as pl
 import pytest
 
 from tafl.api import ActionError
+from tafl.api.parameters import DateTimeText
+
+KIRITIMATI = "Pacific/Kiritimati"  # 14 hours ahead of UTC: another zone than this PC's
 
 
 def names(df):
@@ -355,6 +358,47 @@ def test_filling_nanoseconds_with_a_date_time_beyond_them_says_which_would_chang
         act("rows.fill", df, {"columns": ["At"], "method": "value", "value": "31.12.9999"})
     near = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": "31.12.2261"})["At"]  # the nanoseconds stay
     assert near.dtype == pl.Datetime("ns", zone) and near.to_physical()[0] == df["At"].to_physical()[0]
+
+
+@pytest.mark.parametrize("unit", ["ns", "us", "ms"])
+def test_a_date_time_parameter_on_a_column_with_a_time_zone_is_a_moment_of_this_pcs_clock(act, unit):
+    """As in formulas, where {Now} is this moment: it was the local time of the column's zone
+    there, wrong by the difference to this PC's zone, without a word. A typed date-time stays
+    the local time of the column's zone, and other columns get the text as before."""
+    local = dt.datetime(2026, 7, 1, 10, 0)  # on this PC's clock
+    utc = local.astimezone(dt.UTC).replace(tzinfo=None)
+    stamps = pl.Series([utc - dt.timedelta(minutes=30), utc, utc + dt.timedelta(minutes=30), None], dtype=pl.Datetime(unit))
+    df = pl.DataFrame({"Name": list("abcd"), "At": stamps.dt.replace_time_zone("UTC").dt.convert_time_zone(KIRITIMATI)})
+    value = DateTimeText(" 2026-07-01 10:00:00 ", local)  # the setting " {Cut} "
+    assert names(flt(act, df, ("At", "<", value))) == ["a"]
+    assert names(act("rows.filter_formula", df, {"condition": "[At] < TIMESTAMP '2026-07-01 10:00:00'"})) == ["a"]
+    assert names(flt(act, df, ("At", "=", value))) == ["b"]
+    assert names(flt(act, df, ("At", ">=", value))) == ["b", "c"]
+    assert names(flt(act, df, ("At", "in", value))) == ["b"]
+    assert names(flt(act, df, ("At", "not_in", value))) == ["a", "c", "d"]
+    assert names(flt(act, df, ("At", "<", "2026-07-01 10:00:00"))) == []  # typed: 10:00 in Kiritimati
+    filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": value})["At"]
+    assert filled.dtype == pl.Datetime(unit, KIRITIMATI) and filled[3] == utc.replace(tzinfo=dt.UTC)
+    others = pl.DataFrame({"At": [local, None], "Day": [local.date(), None], "Text": ["x", None]})
+    filled = act("rows.fill", others, {"columns": ["At", "Day", "Text"], "method": "value", "value": value})
+    assert filled.row(1) == (local, local.date(), " 2026-07-01 10:00:00 ")
+
+
+def test_a_date_time_parameter_beyond_nanoseconds_on_a_column_with_a_time_zone(act):
+    """The range rule of typed values, and a moment that is in the year 10000 in the column's zone
+    can't be a value of it."""
+    end = DateTimeText("9999-12-31 23:59:59", dt.datetime(9999, 12, 31, 23, 59, 59))
+    stamps = pl.Series([dt.datetime(2024, 1, 1), None], dtype=pl.Datetime("ns")).dt.replace_time_zone("UTC")
+    df = pl.DataFrame({"Name": ["a", "b"], "At": stamps})
+    assert names(flt(act, df, ("At", "<", end))) == ["a"]
+    assert names(flt(act, df.with_columns(pl.col("At").dt.convert_time_zone(KIRITIMATI)), ("At", "<", end))) == ["a"]
+    assert names(flt(act, df, ("At", "in", end))) == []
+    later = DateTimeText("2999-12-31 00:00:00", dt.datetime(2999, 12, 31))
+    filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": later})["At"]
+    assert filled.dtype == pl.Datetime("us", "UTC") and filled[1] == dt.datetime(2999, 12, 31).astimezone(dt.UTC)
+    message = r"^'9999-12-31 23:59:59' doesn't fit column 'At': in its time zone \(Pacific/Kiritimati\) this moment is in"
+    with pytest.raises(ActionError, match=message + r" the year 10000, and date-times reach from the year 1 to 9999$"):
+        act("rows.fill", df.with_columns(pl.col("At").dt.convert_time_zone(KIRITIMATI)), {"columns": ["At"], "method": "value", "value": end})
 
 
 @pytest.mark.parametrize("zone", ["Pacific/Kiritimati", "Pacific/Pago_Pago"])  # 25 hours apart: one has another date than this PC

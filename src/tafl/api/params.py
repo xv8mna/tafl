@@ -112,7 +112,9 @@ class Text(Param):
     kind: ClassVar[str] = "text"
 
     def normalize(self, value: Any) -> Any:
-        return self.initial() if value is None else str(value)
+        if value is None:
+            return self.initial()
+        return value if isinstance(value, str) else str(value)  # a text with more to it (a DateTimeText) stays one
 
 
 @dataclass(frozen=True, kw_only=True)

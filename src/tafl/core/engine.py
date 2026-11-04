@@ -827,7 +827,7 @@ class _Evaluation:
         return None
 
     def _key(self, action: Action, params: Params, prev_key: str, deps: dict[str, TableResult], ctx: Context) -> str:
-        parts = [prev_key, action.id, str(action.version), json.dumps(params, sort_keys=True, default=str)]
+        parts = [prev_key, action.id, str(action.version), json.dumps(parameters.keyed(params), sort_keys=True, default=str)]
         parts += [f"{ref}={deps[ref].key}" for ref in sorted(deps)]
         if action.kind == Kind.SOURCE:
             parts += [f"dir={self.project.directory}", f"reload={self.engine.reload_token}"]

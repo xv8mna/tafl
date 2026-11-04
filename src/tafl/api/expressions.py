@@ -16,6 +16,7 @@ Examples: ``[Price] * [Quantity]``, ``UPPER(TRIM([Name]))``,
 from __future__ import annotations
 
 import atexit
+import datetime as dt
 import difflib
 import itertools
 import json
@@ -425,6 +426,17 @@ def filter_rows(df: pl.DataFrame, condition: str, keep: bool = True) -> pl.DataF
         raise ActionError(_not_a_condition(f"values of type {mask.dtype}"))
     mask = mask.fill_null(False)
     return df.filter(mask if keep else ~mask)
+
+
+def moment(local: dt.datetime) -> pl.Series:
+    """A date-time of this PC's clock (NOW() and date-time parameters give such values) as the
+    moment it is, read as formulas read it: a Series of one date-time in UTC. Of a time that a
+    clock change repeats it is the later one; a time that the change skips is moved on by it."""
+    try:
+        micros = _connection().execute("SELECT epoch_us(CAST(? AS TIMESTAMPTZ))", [local]).fetchone()[0]
+    except duckdb.Error as e:  # e.g. stopped
+        raise ActionError(_first_line(e)) from None
+    return pl.Series([micros], dtype=pl.Int64).cast(pl.Datetime("us", "UTC"))
 
 
 def is_panic(error: BaseException) -> bool:

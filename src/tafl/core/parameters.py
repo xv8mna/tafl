@@ -16,9 +16,11 @@ from tafl.api import ActionError, Cancelled, P, expressions
 from tafl.api.parameters import (
     NAME,
     PLACE,
+    DateTimeText,
     Failed,
     as_text,
     fill_formula,
+    fill_setting,
     fill_sql,
     fill_text,
     fixed,
@@ -125,6 +127,18 @@ def fill(params: Sequence[Param], raw: Mapping[str, Any], values: Mapping[str, A
         if param.key in filled and is_visible(param, shown):
             filled[param.key] = _fill_value(param, filled[param.key], values, sql)
     return filled
+
+
+def keyed(value: Any) -> Any:
+    """Filled-in settings as the cache key of a step takes them: a date-time parameter's value (a
+    ``DateTimeText``) is another value than the same text typed."""
+    if isinstance(value, DateTimeText):
+        return {"date-time parameter": str(value)}
+    if isinstance(value, dict):
+        return {key: keyed(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [keyed(item) for item in value]
+    return value
 
 
 def unknown_names(
@@ -235,6 +249,8 @@ def _fill_value(param: Param, value: Any, values: Mapping[str, Any], sql: SqlFil
         return fill_formula(value, values)
     if isinstance(param, P.Code) and param.language == "sql":
         return sql(value, values)
+    if isinstance(param, P.Text) and not isinstance(param, P.Code):  # a date-time parameter alone has its value too
+        return fill_setting(value, values)
     if isinstance(param, _TEXTS):
         return fill_text(value, values)
     return value

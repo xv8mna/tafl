@@ -11,7 +11,9 @@ a formula, but ``2.50`` in a file name. Actions get their settings with ``{Name}
 
 Where ``{Name}`` is filled in decides how:
 
-- in texts, paths and names: the value as text (dates as ``2026-10-01``);
+- in texts, paths and names: the value as text (dates as ``2026-10-01``); a text setting that
+  is only a date-time parameter has the value too (``DateTimeText``), for a column with a time
+  zone;
 - in formulas: a typed value (``DATE '2026-10-01'``, ``500``, ``(-5)``, ``'text'``); inside a
   formula's own quotes (``'Report {Month}'``), column names (``[Sales {Year}]``) and "names" the
   text, with the closing character doubled; in comments and $$texts$$ nothing;
@@ -82,6 +84,24 @@ class Fixed:
 
     value: Any
     text: str
+
+
+class DateTimeText(str):
+    """A text setting of a step that is only ``{Name}`` of a date-time parameter, filled in (see
+    ``fill_setting``): the value as text, as ``as_text`` writes it, with the value itself as
+    ``value``, a date-time of this PC's clock (as NOW() gives it). Filter rows and Fill empty
+    values take it as that moment on a date-time column with a time zone, as formulas do
+    (``expressions.moment``); everywhere else it is the text."""
+
+    value: dt.datetime
+
+    def __new__(cls, text: str, value: dt.datetime) -> DateTimeText:
+        self = super().__new__(cls, text)
+        self.value = value
+        return self
+
+    def __reduce__(self) -> tuple[Any, ...]:  # a copy keeps the value
+        return DateTimeText, (str(self), self.value)
 
 
 def typed(text: str) -> Any:
@@ -176,6 +196,19 @@ def sql_literal(value: Any) -> str:
 def fill_text(text: str, values: Mapping[str, Any]) -> str:
     """``{Name}`` in a text, a path or a name: the value as text."""
     return PLACE.sub(lambda m: _found(m, values, as_text), text)
+
+
+def fill_setting(text: str, values: Mapping[str, Any]) -> str:
+    """``fill_text`` for a text setting of a step. A setting that is only ``{Name}`` of a
+    date-time parameter (spaces around it don't matter) is a ``DateTimeText``, which has the value
+    too; ``{Day} 08:30`` is text, and so is a date."""
+    filled = fill_text(text, values)
+    place = PLACE.fullmatch(text.strip())
+    if place is None:
+        return filled
+    name = place[1].strip().lower()
+    value = next((plain(v) for key, v in values.items() if key.strip().lower() == name), None)
+    return DateTimeText(filled, value) if isinstance(value, dt.datetime) else filled
 
 
 def fill_formula(formula: str, values: Mapping[str, Any]) -> str:
