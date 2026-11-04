@@ -107,10 +107,13 @@ def number_form(registry, start):
     return form
 
 
-@pytest.mark.parametrize("number", [2_100_000_000, 2**31, 3_000_000_000, -3_000_000_000, 2**63 - 1])
+@pytest.mark.parametrize(
+    "number", [2_100_000_000, 2**31, 3_000_000_000, -3_000_000_000, 2**63 - 1, 2**63, 10**30, -(2**63) - 1]
+)
 def test_a_whole_number_beyond_the_field_shows_and_stays(qtbot, registry, number):
     """From a project file written by hand: the field holds numbers up to 2,000,000,000 (Qt's end
-    at 2**31). It shows the number, which stays until the field is changed."""
+    at 2**31). It shows the number, which stays until the field is changed; also beyond 2**63,
+    which no number of Qt holds."""
     form = number_form(registry, number)
     spin = form.editor("start")._spin
     assert spin.text() == str(number) and form.values()["start"] == number
@@ -142,17 +145,18 @@ def test_an_infinite_whole_number_shows_0(qapp, registry):
     assert number_form(registry, float("inf")).values()["start"] == 0
 
 
-def test_a_project_with_a_whole_number_beyond_the_field_opens(window, session, registry, tmp_path):
+@pytest.mark.parametrize("number", [3_000_000_000, 2**64])
+def test_a_project_with_a_whole_number_beyond_the_field_opens(window, session, registry, tmp_path, number):
     """The step is selected when the project opens: its settings show, and the number stays when
     another setting changes."""
     project = Project(name="Big number")
     table = project.add_table("A")
-    project.add_step(table, registry.actions["calc.enumerate"], {"start": 3_000_000_000})
+    project.add_step(table, registry.actions["calc.enumerate"], {"start": number})
     assert window.open_path(project.save(tmp_path / "big.tafl"))
     form = window.settings_panel.form
-    assert session.step.action == "calc.enumerate" and form.values()["start"] == 3_000_000_000
+    assert session.step.action == "calc.enumerate" and form.values()["start"] == number
     form.editor("step")._spin.setValue(2)
-    assert session.step.params["step"] == 2 and session.step.params["start"] == 3_000_000_000
+    assert session.step.params["step"] == 2 and session.step.params["start"] == number
 
 
 def test_missing_columns_are_kept(qapp, registry):
@@ -292,6 +296,19 @@ def test_another_setting_of_the_step_keeps_a_long_list(qtbot, registry, few_edit
     with qtbot.waitSignal(form.changed) as signal:
         form.editor("how")._combo.setCurrentIndex(1)
     assert signal.args[0]["match"] == rows
+
+
+def test_the_settings_a_form_sends_are_a_copy(qtbot, registry, few_editors):
+    """The step shares no list or row with the form, also not the rows of a long list that the
+    form keeps as they are: a change of the step's settings doesn't change the form."""
+    action = registry.actions["table.merge"]
+    rows = [{"column": f"c{number}", "other_column": "x"} for number in range(MAX_LIST_ROWS + 1)]
+    form = ParamForm(action.params, FormContext(tables=[("t2", "Other")]))
+    form.set_values(json_ready(action.resolve({"other": "t2", "match": rows})))
+    with qtbot.waitSignal(form.changed) as signal:
+        form.editor("how")._combo.setCurrentIndex(1)
+    signal.args[0]["match"][0]["column"] = "other"
+    assert form.values()["match"] == rows
 
 
 def test_a_project_with_a_very_long_list_opens_unchanged(window, session, registry, tmp_path, few_editors, protected_view):

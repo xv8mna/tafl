@@ -6,6 +6,7 @@ Every parameter kind has an editor widget. Editors report a change once a value 
 
 from __future__ import annotations
 
+import copy
 import html
 import os
 import weakref
@@ -1368,7 +1369,9 @@ def create_editor(param: Param, ctx: FormContext, parent: QWidget | None = None)
 class ParamForm(QWidget):
     """All parameters of an action, label above field, in declaration order."""
 
-    changed = Signal(dict)
+    # Not Signal(dict): Qt would convert the settings to a map of its own, where a whole number
+    # beyond 2**63 (from a project file written by hand) doesn't fit
+    changed = Signal(object)
 
     def __init__(self, spec: Sequence[Param], ctx: FormContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1441,7 +1444,7 @@ class ParamForm(QWidget):
         self._update_visibility(values)
         for _, _, editor, _ in self._rows:
             editor.refresh(self.ctx, values)
-        self.changed.emit(values)
+        self.changed.emit(copy.deepcopy(values))  # a copy, as Qt's map was: the step shares no list with the form
 
     def _update_visibility(self, values: dict[str, Any]) -> None:
         for param, label, editor, hint in self._rows:
