@@ -631,29 +631,22 @@ def test_a_change_of_what_a_table_does_during_a_run_leaves_no_result_of_the_run(
     assert session.results[slow.id] is not reported[0][slow.id] and not session._recheck
 
 
-@pytest.mark.parametrize("new", [False, True], ids=["undone", "new"])
-def test_a_step_that_finds_its_table_during_a_run_leaves_no_old_status(running, settle, new):
-    """The run gave a step an error, as its table isn't there, and that table is there by now:
-    Undo brought it back, or a new table has the id that the step names."""
+def test_a_step_that_finds_its_table_during_a_run_leaves_no_old_status(running, settle):
+    """The run gave a step an error, as its table isn't there, and Undo brought that table back by
+    now (a new table never gets the id that a step names)."""
     session = running.session
     quick, slow, last = session.project.tables
     RELEASE.set()
     settle(session)
     session.select_table(slow.id)
-    if new:
-        session.set_params(last.steps[0].id, {"table": session.project._new_id("t")})  # the id of the next table
-    else:
-        session.set_params(last.steps[0].id, {"table": quick.id})
-        session.delete_tables([quick.id])
+    session.set_params(last.steps[0].id, {"table": quick.id})
+    session.delete_tables([quick.id])
     settle(session)
     STARTED.clear()
     RELEASE.clear()
     session.run_project()
     assert STARTED.wait(10)
-    if new:
-        session.duplicate_table(slow.id)
-    else:
-        session.undo()
+    session.undo()
     session.select_table(slow.id)  # a table that changes while it is selected tells its users by itself
     RELEASE.set()
     settle(session)

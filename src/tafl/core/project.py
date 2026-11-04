@@ -8,6 +8,7 @@ import math
 import os
 import re
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -261,6 +262,8 @@ class Project:
 
     def _new_id(self, prefix: str) -> str:
         used = {t.id for t in self.tables} | {s.id for t in self.tables for s in t.steps} | {g.id for g in self.groups}
+        if prefix == "t":  # nor the id of a deleted table that a step still names: the step would use the new table
+            used |= {text for t in self.tables for s in t.steps for text in _texts(s.params)}
         numbers = [int(m.group(1)) for u in used if (m := re.fullmatch(rf"{prefix}(\d+)", u))]
         return f"{prefix}{max(numbers, default=0) + 1}"
 
@@ -383,6 +386,20 @@ class Project:
             for step in table.steps:
                 if not step.id:
                     step.id = new_id("s")
+
+
+def _texts(value: Any) -> Iterator[str]:
+    """The texts in the settings of a step, also in lists and their rows: a step names a table by its
+    id there. Also in a setting that is hidden now, and in the settings of an action whose plugin
+    isn't installed, which ``Action.table_refs`` doesn't see."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for part in value.values():
+            yield from _texts(part)
+    elif isinstance(value, (list, tuple)):
+        for part in value:
+            yield from _texts(part)
 
 
 _SURROGATE = re.compile(r"[\ud800-\udfff]")  # half of a character; a Python text holds only lone ones

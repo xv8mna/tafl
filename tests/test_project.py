@@ -88,6 +88,26 @@ def test_a_lookup_by_id_only_finds_no_table_by_its_name():
     assert project.find_table(named.id, by_name=False) is named
 
 
+@pytest.mark.parametrize(
+    ("action", "params"),
+    [
+        ("table.derive", {"table": "t2"}),
+        ("table.append", {"tables": ["t1", "t2"]}),
+        ("flow.skip_if_empty", {"which": "this", "table": "t2"}),  # hidden until "which" is "other"
+        ("missing.plugin", {"rows": [{"other": "t2"}]}),  # an action that no plugin here provides
+    ],
+)
+def test_a_new_table_never_gets_the_id_of_a_deleted_table_that_a_step_names(action, params):
+    """A step whose table was deleted says that the table doesn't exist. A new table with that id
+    (New table, Duplicate, a sheet, New table from this one) would be used by it without a word."""
+    project = Project()
+    first, deleted = project.add_table("First"), project.add_table("Deleted")
+    project.add_step(first, action, params)
+    project.tables.remove(deleted)
+    assert project.add_table("New").id == "t3"
+    assert project.add_table("Next").id == "t4"
+
+
 def test_duplicate_or_missing_ids_are_repaired():
     data = sample_project().to_dict()
     data["tables"][1]["id"] = "t1"
