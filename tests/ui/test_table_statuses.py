@@ -485,6 +485,18 @@ def test_turning_off_or_deleting_a_used_table_refreshes_the_tables_that_use_it(w
     assert session.table_status(revenue.id) == "error"
 
 
+def test_deleted_tables_keep_no_mark_to_be_checked_again(window, settle, session, demo):
+    """A table that uses a deleted one is checked again, unless it is deleted too."""
+    window.open_path(demo)
+    customers, orders, revenue = session.project.tables
+    for table in (revenue, customers):
+        session.select_table(table.id)
+        settle(session)
+    session.delete_tables([orders.id, revenue.id])  # Revenue by customer starts from Orders
+    settle(session)
+    assert session._recheck == set()
+
+
 def test_undo_refreshes_a_table_outside_the_selection(window, settle, session, demo):
     window.open_path(demo)
     customers, _orders, revenue = session.project.tables

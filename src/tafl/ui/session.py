@@ -705,6 +705,7 @@ class Session(QObject):
             return
         self._checkpoint()
         self._recheck |= self.users(doomed) & set(self.results)  # their steps use a table that is gone
+        self._recheck -= doomed
         first = min(i for i, t in enumerate(self.project.tables) if t.id in doomed)
         self.project.tables = [t for t in self.project.tables if t.id not in doomed]
         for table_id in doomed:
