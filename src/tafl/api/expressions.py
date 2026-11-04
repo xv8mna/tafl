@@ -773,6 +773,13 @@ def _clean_error(error: Exception, formula: str, columns: Sequence[str] = ()) ->
             f"Formula error: the whole number {int(too_big.group(1)):,} is too big (at most {2**127 - 1:,}). For a decimal "
             f"number write CAST(... AS DOUBLE)\nFormula: {formula}"
         )
+    # e.g. a result beyond Int64 (an exact decimal) times itself: DuckDB's hint, a cast to a decimal
+    # with a smaller scale, doesn't help a whole number
+    if re.search(r"Overflow in (\w+ of (DECIMAL\(\d+\)|INT128)|HUGEINT \w+)", text):
+        return (
+            "Formula error: the result has more than 38 digits, more than an exact number holds. For a decimal "
+            f"number (about 15 digits) write CAST(... AS DOUBLE)\nFormula: {formula}"
+        )
     if "+(" in text and "VARCHAR" in text:
         text += " — to join text use || or CONCAT()"
     return f"Formula error: {text}\nFormula: {formula}"

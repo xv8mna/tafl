@@ -564,6 +564,30 @@ def test_whole_numbers_beyond_int64_keep_their_digits():
     assert expressions.evaluate(df, "[n] * 1.5").dtype == pl.Float64  # as before: decimal numbers
 
 
+def test_a_result_beyond_38_digits_says_how_to_get_a_decimal_number():
+    """A result beyond Int64 is an exact decimal: a next formula that made it longer than 38 digits
+    stopped with DuckDB's hint to cast it to a decimal with a smaller scale, which doesn't help."""
+    df = pl.DataFrame({"Cents": [9_000_000_000_000_000_000, 9_000_000_000_000_000_000, 7]})
+    total = ("Total", "SUM([Cents]) OVER ()")  # 18,000,000,000,000,000,007
+    nines = "9" * 38
+    for name, formula in [
+        ("Square", "[Total] * [Total]"),
+        ("Scaled", "[Total] * 1.5 * 10000000000000000000"),
+        ("Plus", f"CAST('{nines}' AS DECIMAL(38, 0)) + [Total]"),
+        ("Minus", f"-CAST('{nines}' AS DECIMAL(38, 0)) - [Total]"),
+        ("Sum", f"SUM(CAST('{nines}' AS DECIMAL(38, 0))) OVER ()"),
+        ("Whole", "SUM([Cents]) OVER () * SUM([Cents]) OVER ()"),  # whole numbers of 128 bits
+    ]:
+        with pytest.raises(ActionError) as raised:
+            expressions.add_columns(df, [total, (name, formula)])
+        assert str(raised.value) == (
+            f"Formula error in [{name}]: the result has more than 38 digits, more than an exact number holds. "
+            f"For a decimal number (about 15 digits) write CAST(... AS DOUBLE)\nFormula: {formula}"
+        )
+    out = expressions.add_columns(df, [total, ("Square", "CAST([Total] AS DOUBLE) * [Total]")])
+    assert out["Square"].to_list() == [pytest.approx(3.24e38)] * 3
+
+
 def test_a_table_left_behind_by_an_interrupt_is_dropped():
     df = pl.DataFrame({"a": [1, 2]})
     con = expressions._connection()
