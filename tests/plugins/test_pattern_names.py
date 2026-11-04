@@ -93,6 +93,12 @@ def test_the_excel_export_writes_the_lists_and_texts_of_their_own_columns(act, t
     assert cells == [["abc", "^a.*$", "^Code$"], [10, "['red', 'blue']", "A1"], [20, "['green']", "B2"]]
 
 
+def test_unpivot_writes_the_decimal_numbers_of_their_own_column_as_text(act):
+    df = pl.DataFrame({"Region": ["N", "S"], "^Q1$": [1e16, -1.5e-7], "Note": ["ok", "late"]})
+    out = act("reshape.unpivot", df, {"mode": "others", "columns": ["Region"], "name": "Field", "value": "Value"})
+    assert out.rows() == [("N", "^Q1$", "10000000000000000"), ("N", "Note", "ok"), ("S", "^Q1$", "-0.00000015"), ("S", "Note", "late")]
+
+
 def test_aggregate_keeps_the_group_values_beside_a_result_named_like_a_pattern(act):
     df = pl.DataFrame({"group": ["a", "a", "b"], "gx": [1.5, 2.5, 3.5], "big": [2**62, 2**62 - 5, 1]})
     calculation = {"function": "sum", "column": "big", "name": "^g.*$"}  # added up wider, then cast back
@@ -287,6 +293,11 @@ case("text.split S into rows", "S")(lambda r: r.step("text.split", table(r), {"c
 case("text.split K into columns", "K")(
     lambda r: r.step("text.split", table(r), {"column": r["K"], "into": "columns", "separator": ",", "parts": [{"name": "p1"}, {"name": "p2"}]})
 )
+case("text.split decimal numbers F into columns", "F")(
+    lambda r: r.step(
+        "text.split", table(r), {"column": r["F"], "into": "columns", "separator": "other", "other": ".", "parts": [{"name": "p1"}, {"name": "p2"}]}
+    )
+)
 case("text.split into N", "N")(
     lambda r: r.step("text.split", table(r), {"column": "s", "into": "columns", "separator": "space", "parts": [{"name": r["N"]}, {"name": "p2"}]})
 )
@@ -397,6 +408,9 @@ case("reshape.unpivot F, K stays", "K")(
 )
 case("reshape.unpivot K and S as text", "K")(
     lambda r: r.step("reshape.unpivot", table(r), {"mode": "these", "columns": [r["K"], r["S"]], "name": "Column", "value": "Value"})
+)
+case("reshape.unpivot F and S as text", "F")(
+    lambda r: r.step("reshape.unpivot", table(r), {"mode": "these", "columns": [r["F"], r["S"]], "name": "Column", "value": "Value"})
 )
 case("reshape.unpivot into N", "N")(
     lambda r: r.step("reshape.unpivot", table(r), {"mode": "these", "columns": ["f", "abc"], "name": r["N"], "value": "Value"})

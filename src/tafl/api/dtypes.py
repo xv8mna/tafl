@@ -374,7 +374,7 @@ def _float_texts(s: pl.Series) -> pl.Series:
     back as the number (a Float32 value with its own digits: 0.1, not 0.10000000149011612); those
     with an exponent are written again with the same digits, without it: -1.5e-7 is -0.00000015,
     1e+16 is 10000000000000000."""
-    text = s.cast(pl.String)
+    text = s.cast(pl.String).alias("text")  # Polars' Series methods would read a name like ^a.*$ as a pattern
     rows = text.str.contains("e", literal=True).fill_null(False).arg_true()  # NaN and inf have no "e"
     if rows.len():
         number = text.gather(rows).str.split_exact("e", 1).struct.rename_fields(["mantissa", "exponent"])
@@ -387,7 +387,7 @@ def _float_texts(s: pl.Series) -> pl.Series:
         sign = pl.when(mantissa.str.starts_with("-")).then(pl.lit("-")).otherwise(pl.lit(""))
         written = pl.concat_str(sign, digits.str.slice(0, point), pl.lit("."), digits.str.slice(point))
         text = text.scatter(rows, number.struct.unnest().select(written.str.strip_chars_end(".")).to_series())
-    return text.str.strip_suffix(".0").replace("-0", "0")
+    return text.str.strip_suffix(".0").replace("-0", "0").alias(s.name)
 
 
 def bytes_are_text(values: pl.Series) -> bool:
