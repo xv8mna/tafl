@@ -405,6 +405,34 @@ def test_the_result_of_an_earlier_edit_does_not_settle_a_later_one(gated, settle
     assert session.table_status(edited.id) == "ok"
 
 
+@pytest.mark.parametrize("run", ["edited", "user"])
+def test_run_this_table_just_after_an_edit_leaves_no_old_status(gated, settle, tmp_path, run):
+    """The run ends before the calculation of the edit, with the new result of the edited table:
+    the calculation after the run finds no change. User and Second use that table, and Second
+    is not in the run (nor User, when the run is of the edited table)."""
+    session, actions = gated, gated.registry.actions
+    project = Project()
+    edited = project.add_table("Edited")
+    project.add_step(edited, actions["csv.import"], {"file": "a.csv"})
+    project.add_step(edited, actions["test.gate"], {"fail": "no"})
+    for name in ("User", "Second"):
+        project.add_step(project.add_table(name), actions["table.derive"], {"table": edited.id})
+    session.open_project(project.save(tmp_path / "p.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    edited, user, second = session.project.tables
+    assert session.table_id == edited.id and session.table_status(second.id) == "ok"
+    session._timer.setInterval(2_000)  # the run surely ends during the timer of the edit
+    during = []
+    session.run_finished.connect(lambda _results: during.append(session._timer.isActive()))
+    session.set_params(edited.steps[1].id, {"fail": "yes"})
+    session.run_project([edited.id if run == "edited" else user.id])
+    settle(session)
+    assert during == [True]
+    assert [session.table_status(t.id) for t in (edited, user, second)] == ["error"] * 3
+
+
 def add_merge_to_orders(window, settle, session, demo):
     """Revenue by customer starts from Orders; Orders gets a Merge step that isn't filled in."""
     window.open_path(demo)

@@ -608,8 +608,12 @@ class Session(QObject):
             reloaded = self.engine.reload_token > reload_token  # during the run: its results are older
             self.engine.reload_token = max(self.engine.reload_token, reload_token)  # previews reuse the run
             changed = self._changed_since_run() | (set(results) if reloaded else set())
+            moved = [t for t, r in results.items() if t not in changed and _signature(self.results.get(t)) != _signature(r)]
             self._update_results({t: r for t, r in results.items() if t not in changed})
             self._recheck |= changed
+            # As after a preview: the tables that use a table whose result changed, and that were not
+            # in the run, show old results now (the preview after a run of an edit finds no change)
+            self._recheck |= (self.users(moved) & set(self.results)) - set(results)
             self.results_changed.emit()
         self.run_finished.emit(results)
         self._run_done = {}  # its frames: nothing else needs them, and no limit counts them
