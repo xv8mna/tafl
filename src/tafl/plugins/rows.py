@@ -409,7 +409,9 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
         moment = parsed if dtype.time_zone is None else _in_zone(parsed, text, column, dtype.time_zone)
         if dtype.time_unit == "us" or not _unit_holds(moment, dtype.time_unit):
             return moment
-        exact = dtypes.parse_datetimes(pl.Series([value]), time_unit=dtype.time_unit)  # with its nanoseconds
+        if dtype.time_unit == "ms" or not re.search(r"\.[0-9]{7}", value):  # no digits below a microsecond
+            return moment.cast(dtype)
+        exact = dtypes.parse_datetimes(pl.Series([value]), time_unit="ns")  # with its nanoseconds
         return exact if dtype.time_zone is None else _in_zone(exact, text, column, dtype.time_zone)
     if dtype == pl.Time:
         parsed = dtypes.parse_times(pl.Series([value]))
