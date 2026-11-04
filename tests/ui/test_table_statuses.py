@@ -9,7 +9,7 @@ import types
 import pytest
 
 from tafl.api import ActionError, Mode, P, action
-from tafl.core import Connection, Parameter, Project, Registry, Status, StepResult, TableResult
+from tafl.core import Connection, Engine, Parameter, Project, Registry, Status, StepResult, TableResult
 from tafl.ui import theme
 from tafl.ui.labels import tooltip_text
 from tafl.ui.session import Session
@@ -603,10 +603,18 @@ def test_reload_data_refreshes_every_table(window, settle, session, two_inputs):
     assert "1 row" in table_item(window, "Folder").toolTip(0)
 
 
+def fresh_statuses(session):
+    """What a fresh calculation of the open project gives each table: "ok" or "error"."""
+    project = Project.from_dict(session.project.to_dict(), path=session.project.path)
+    results = Engine(project, session.registry).run(mode=Mode.PREVIEW)
+    return ["ok" if results[t.id].ok else "error" for t in project.tables]
+
+
 @pytest.mark.parametrize("change", ["parameter", "connection"])
 def test_new_parameters_or_connections_refresh_the_tables_not_selected(session, settle, registry, tmp_path, change):
     """Any table can use a parameter or a connection, not only the selected one: Read imports
-    {Name}.csv, or from the connection Shop, and User starts from Read."""
+    {Name}.csv, or from the connection Shop, and User starts from Read. Undo and Redo of the
+    change refresh them too."""
     (tmp_path / "a.csv").write_text("A\n1\n", encoding="utf-8")
     with sqlite3.connect(tmp_path / "shop.db") as database:
         database.execute("CREATE TABLE items (id INTEGER)")
@@ -636,6 +644,11 @@ def test_new_parameters_or_connections_refresh_the_tables_not_selected(session, 
         session.set_connections([Connection("Shop", "sqlite", {"file": "gone.db"})])
     settle(session)
     assert [session.table_status(t.id) for t in (read, user, other)] == ["error", "error", "ok"]
+    for again, statuses in ((session.undo, ["ok"] * 3), (session.redo, ["error", "error", "ok"]), (session.undo, ["ok"] * 3)):
+        again()
+        settle(session)
+        assert session.table_id == other.id
+        assert [session.table_status(t.id) for t in session.project.tables] == statuses == fresh_statuses(session)
 
 
 def test_selecting_a_table_calculates_nothing_else_again(window, settle, session, two_inputs, monkeypatch):

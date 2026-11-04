@@ -1256,6 +1256,8 @@ class Session(QObject):
         restored = Project.from_dict(state["project"], path=self.project.path)
         filters = {t.id: t.filters for t in self.project.tables}  # undo is for edits, not for filters
         before = {t.id: t.to_dict() for t in self.project.tables}
+        same_parameters = [p.to_dict() for p in self.project.parameters] == [p.to_dict() for p in restored.parameters]
+        same_connections = [c.to_dict() for c in self.project.connections] == [c.to_dict() for c in restored.connections]
         for table in restored.tables:
             table.filters = filters.get(table.id, table.filters)
         self.project = restored
@@ -1265,6 +1267,8 @@ class Session(QObject):
         after = {t.id: t.to_dict() for t in restored.tables}
         changed = {id_ for id_ in before.keys() | after.keys() if before.get(id_) != after.get(id_)}
         self._recheck |= (self.users(changed) | changed) & set(self.results)  # no table keeps an old status
+        if not (same_parameters and same_connections):  # any table can use them, as after set_parameters
+            self._recheck |= set(self.results)
         self._waiting.clear()
         self._set_dirty(True)
         self.structure_changed.emit()
