@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, cols, dtypes
+from tafl.api import ActionError, P, action, cols, dtypes, selector
 
 _TYPES = [
     ("text", "Text"),
@@ -63,8 +63,8 @@ def select(df, p, ctx):
     the front while keeping all others behind them."""
     if p.mode == "keep":
         return df.select(cols(p.columns))
-    if p.mode == "remove":
-        return df.drop(cols(p.columns))
+    if p.mode == "remove":  # one selector: Polars nests a list of columns here, and thousands overflow its stack
+        return df.drop(selector(p.columns))
     return df.select(cols([*p.columns, *(c for c in df.columns if c not in p.columns)]))
 
 

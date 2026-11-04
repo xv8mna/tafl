@@ -1,4 +1,6 @@
 import datetime as dt
+import subprocess
+import sys
 from decimal import Decimal as D
 
 import polars as pl
@@ -21,6 +23,33 @@ def test_rename(act, people):
 )
 def test_select_columns(act, people, mode, expected):
     assert act("columns.select", people, {"mode": mode, "columns": ["Age", "Name"]}).columns == expected
+
+
+def test_removing_missing_and_repeated_columns(act, people):
+    with pytest.raises(pl.exceptions.ColumnNotFoundError, match='"Region" not found'):
+        act("columns.select", people, {"mode": "remove", "columns": ["Age", "Region"]})
+    assert act("columns.select", people, {"mode": "remove", "columns": ["Age", "Age"]}).columns == ["Name", "City", "Score"]
+
+
+_REMOVE_WIDE = """
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+df = pl.DataFrame({f"Day {i}": [i, i + 1] for i in range(4001)})
+out = registry.actions["columns.select"](df, {"mode": "remove", "columns": df.columns[1:]}, StubContext())
+assert out.rows() == [(0,), (1,)] and out.columns == ["Day 0"], out
+"""
+
+
+def test_remove_columns_of_a_wide_table():
+    """4,000 columns at once: Polars nests a list of columns given to drop, and so many ended the
+    process (a stack overflow), also the app with unsaved edits. In a process of its own, so that
+    such an end shows as a failed test."""
+    done = subprocess.run([sys.executable, "-c", _REMOVE_WIDE], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-500:]}"
 
 
 def change(act, df, column, type_, fmt="", ctx=None, **options):

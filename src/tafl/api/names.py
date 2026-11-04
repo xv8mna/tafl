@@ -11,7 +11,9 @@ file, a value ``*`` that Pivot makes a column name) and from settings, so take t
     df.with_columns(col(p.column).str.to_uppercase())
     df.select(cols(p.columns))
 
-``selector`` is for a method that needs one selector of several columns: ``unpivot(on=...)``.
+``selector`` is for a method that needs one selector of several columns: ``unpivot(on=...)``,
+and ``drop``, which nests a list of expressions: a few thousand of them overflow the stack, and
+the process ends.
 
 Polars reads names as patterns even then in ``DataFrame.cast({name: type})``: write
 ``with_columns(col(name).cast(type))``. The methods of a Series find the Series by its name too:
@@ -42,6 +44,8 @@ def cols(names: Iterable[str]) -> list[pl.Expr]:
 def selector(names: Iterable[str]) -> cs.Selector:
     """The columns ``names`` as one selector, by their exact names, in this order, for a method
     that needs a selector: ``unpivot(on=...)`` keeps the order of a selector, but takes a list of
-    expressions in the order of the table. A name given twice counts once, and ``over`` refuses a
-    selector of several columns: give it ``cols``."""
+    expressions in the order of the table. ``drop``, ``unpivot`` and ``pivot(index=...)`` nest a
+    list of expressions, and a few thousand of them overflow the stack: give them one selector.
+    A name given twice counts once, and ``over`` refuses a selector of several columns: give it
+    ``cols``."""
     return cs.by_name(*names)

@@ -65,7 +65,7 @@ def test_the_methods_the_actions_use_take_exact_names():
     """The Polars methods that read names as text take these expressions instead: a later Polars
     that changes that makes this test fail."""
     df = pl.DataFrame({"*": [2, 1, 2, None], "^a.*$": ["p", "q", "p", "r"], "abc": [1, 1, 1, 1], "x": [9, 8, 7, 6]})
-    assert df.drop(cols(["*"])).columns == ["^a.*$", "abc", "x"]
+    assert df.drop(selector(["*"])).columns == ["^a.*$", "abc", "x"]
     assert df.sort(cols(["*", "^a.*$"]), descending=[True, False], nulls_last=True)["x"].to_list() == [9, 7, 8, 6]
     assert df.unique(subset=cols(["*"]), keep="first", maintain_order=True)["x"].to_list() == [9, 8, 6]
     grouped = df.group_by(cols(["^a.*$"]), maintain_order=True).agg(col("x").sum())
