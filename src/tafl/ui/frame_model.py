@@ -53,6 +53,8 @@ class DisplayFormat:
             return lambda v: "true" if v else "false"
         if dtype == pl.Decimal:  # every digit, with the decimal separator of the PC
             return lambda v: format(v, "f").replace(".", self.decimal)
+        if dtype == pl.Object:  # values of a plugin's own type
+            return _text_of
         return str
 
     def number(self, value: float) -> str:
@@ -118,7 +120,7 @@ class FrameModel(QAbstractTableModel):
                 elif isinstance(value, list | dict):  # the part that a tooltip shows
                     tip = _start_of_text(value, _TIP_TEXT)
                 else:
-                    tip = str(value)
+                    tip = _text_of(value)
                 return tooltip_text(tip, LONG_TIP_LINES) if len(tip) > 40 else None
             return text
         if role == Qt.ItemDataRole.TextAlignmentRole:
@@ -173,6 +175,14 @@ class FrameModel(QAbstractTableModel):
             return ["" if value is None else show(value) for value in column.to_list()]
 
         return texts
+
+
+def _text_of(value: Any) -> str:
+    """``str(value)``; "(no text)" for a value whose text fails (only plugins make such values)."""
+    try:
+        return str(value)
+    except Exception:
+        return "(no text)"
 
 
 def _start_of_text(value: Any, most: int = _MAX_TEXT) -> str:

@@ -150,6 +150,25 @@ def test_the_tooltip_of_a_list_takes_only_the_part_that_it_shows(qapp, monkeypat
     assert tip == tooltip_text(str(frame["L"][0].to_list()), LONG_TIP_LINES) and 100 * LONG_TIP_LINES in parts
 
 
+class NoText:
+    """A value of a plugin's own type whose text fails."""
+
+    def __str__(self):
+        raise ValueError("no text")
+
+    __repr__ = __str__
+
+
+def test_a_value_without_a_text_shows_and_copies_a_short_text(qapp):
+    """Only plugins make Object columns, with values of any type."""
+    model = FrameModel()
+    model.set_frame(pl.DataFrame([pl.Series("O", [NoText(), 5], dtype=pl.Object)]))
+    assert [model.data(model.index(row, 0)) for row in (0, 1)] == ["(no text)", "5"]
+    assert model.data(model.index(0, 0), Qt.ItemDataRole.ToolTipRole) is None
+    assert model.text(0, 0) == "(no text)"  # e.g. for the menu of the cell
+    assert model.copier()(model.frame["O"]) == ["(no text)", "5"]
+
+
 def test_large_frames_are_read_in_blocks(qapp):
     model = FrameModel()
     model.set_frame(pl.DataFrame({"n": range(100_000)}))
