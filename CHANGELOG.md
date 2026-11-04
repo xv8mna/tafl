@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.6.3 – 2026-11-04
 
 This version fixes wrong results and errors with unusual data: columns named `*` or like `^…$`, very long
 whole numbers, nanoseconds, time zones, binary values and values of a plugin's own type. Table
