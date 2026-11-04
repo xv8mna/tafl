@@ -379,6 +379,8 @@ class Session(QObject):
         failed = first_error(result)
         if result is None or result.error is not None or failed is None or not failed[1].inherited:
             return None
+        if self.project.find_table(table_id, by_name=False) is None:  # gone: the map shows its box a moment longer
+            return None
         seen.add(table_id)
         for link in self.engine.links(table_id):
             used = self.results.get(link.source)

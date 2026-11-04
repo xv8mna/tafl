@@ -218,6 +218,42 @@ def test_a_check_of_all_tables_that_reports_during_the_timer_of_an_edit_leaves_n
     assert session.table_status(user.id) == ("skipped" if edit == "off" else "error")
 
 
+@pytest.mark.parametrize("how", ["undo", "delete"])
+def test_the_status_of_a_table_that_is_gone_is_no_error_box(gated, settle, qtbot, tmp_path, how):
+    """The map shows the box of a table that is gone until it is built again, a moment later, and
+    the table can still have a result: after Undo of a Duplicate, or from a check of all tables
+    that began before the delete. Its status must not stop with "There is no table"."""
+    session, actions = gated, gated.registry.actions
+    project = Project()
+    broken = project.add_table("Broken")
+    project.add_step(broken, actions["csv.import"], {"file": "gone.csv"})
+    user = project.add_table("User")
+    project.add_step(user, actions["table.derive"], {"table": broken.id})
+    other = project.add_table("Other")
+    project.add_step(other, actions["csv.import"], {"file": "a.csv"})
+    project.add_step(other, actions["test.gate"], {"fail": "no"})
+    session.open_project(project.save(tmp_path / "p.tafl"), trusted=True)
+    settle(session)
+    broken, user, other = session.project.tables
+    if how == "undo":
+        gone = session.duplicate_table(user.id)
+        settle(session)
+        session.undo()
+    else:
+        gone = user
+        session._timer.setInterval(2_000)  # the report surely comes during the timer
+        HOLD.set()
+        session.calculate_all(True)
+        qtbot.waitUntil(ENTERED.is_set, timeout=10_000)  # the check of all tables waits in the gate
+        session.delete_tables([user.id])
+        with qtbot.waitSignal(session.results_changed, timeout=10_000):
+            GO.set()
+        HOLD.clear()
+    assert gone.id in session.results and session.project.find_table(gone.id) is None
+    assert session.table_status(gone.id) == "error" and session.waits_for(gone.id) is None
+    settle(session)
+
+
 def test_the_check_of_the_selected_table_that_reports_during_the_timer_of_a_redo_leaves_no_old_status(
     gated, settle, qtbot, tmp_path
 ):
