@@ -428,6 +428,11 @@ class Session(QObject):
     # --- calculating -------------------------------------------------------------------------
 
     def recalculate(self) -> None:
+        left = self._unsettled
+        if left is not None and left != self.table_id and self.project.find_table(left, by_name=False) is not None:
+            # An edit selected another table (Duplicate, New table, an arrow, ...) before an edit
+            # of the table selected then was calculated: as a click, it stops that calculation
+            self._recheck |= ({left} | self.users({left})) & set(self.results)
         self._unsettled = self.table_id
         self._timer.start()
 

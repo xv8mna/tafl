@@ -100,6 +100,51 @@ def test_an_edit_just_before_a_click_on_another_table_leaves_no_old_status(gated
     assert session.table_status(other.id) == "ok"
 
 
+@pytest.mark.parametrize("edit", ["duplicate", "duplicate itself", "new table", "arrow", "derived"])
+@pytest.mark.parametrize("when", ["waiting", "calculating"])
+def test_an_edit_that_selects_another_table_leaves_no_old_status(gated, settle, qtbot, tmp_path, when, edit):
+    """Duplicate, New table, an arrow on the map and New table from this one select a table, as a
+    click does: they stop the timer of an edit just before, or the calculation it started."""
+    session, actions = gated, gated.registry.actions
+    project = Project()
+    edited = project.add_table("Edited")
+    project.add_step(edited, actions["csv.import"], {"file": "a.csv"})
+    project.add_step(edited, actions["test.gate"], {"fail": "no"})
+    user = project.add_table("User")
+    project.add_step(user, actions["table.derive"], {"table": edited.id})
+    for name in ("Other", "Lone"):
+        project.add_step(project.add_table(name), actions["csv.import"], {"file": "a.csv"})
+    session.open_project(project.save(tmp_path / "p.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    edited, user, other, lone = session.project.tables
+    assert session.table_id == edited.id and session.table_status(user.id) == "ok"
+    if when == "calculating":
+        HOLD.set()
+    session.set_params(edited.steps[1].id, {"fail": "yes"})
+    if when == "calculating":
+        qtbot.waitUntil(ENTERED.is_set, timeout=10_000)
+        assert session.busy and not session._timer.isActive()
+    if edit == "duplicate":
+        session.duplicate_table(other.id)
+    elif edit == "duplicate itself":
+        session.duplicate_table(edited.id)
+    elif edit == "new table":
+        session.add_table(actions["csv.import"])
+    elif edit == "arrow":
+        session.add_link(other.id, lone.id, "append")
+    else:
+        session.add_derived_table(other.id)
+    assert session.table_id not in (edited.id, user.id)
+    if when == "calculating":  # the timer starts the calculation of the new selection: it stops the one in the gate
+        qtbot.waitUntil(lambda: not session._timer.isActive(), timeout=10_000)
+    HOLD.clear()
+    GO.set()
+    settle(session)
+    assert [session.table_status(t.id) for t in (edited, user)] == ["error", "error"]
+
+
 @pytest.mark.parametrize("edit", ["off", "delete"])
 def test_a_check_that_reports_during_the_timer_of_an_edit_leaves_no_old_status(gated, settle, qtbot, tmp_path, edit):
     """Reload data checks the other tables after the selected one. An edit while that check runs:
