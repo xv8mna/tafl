@@ -188,6 +188,32 @@ def test_sums_beyond_the_whole_numbers_stop_the_step(act):
     assert pivot(act, on_the_way, column="O", value="V").rows() == [(7,)]
 
 
+def test_sums_beyond_the_digits_of_exact_decimals_stop_the_step(act):
+    """Polars adds up exact decimals in their own 38 digits: beyond them it gave a wrong number with
+    row keys (-1.40E+38), and its own error without them, also when only a part of the sum was
+    beyond."""
+    big, minus = D("9" * 36 + ".25"), D("-" + "9" * 36 + ".25")  # 38 digits (- would round them to 28)
+    back = D("-" + "9" * 36 + ".18")  # 0.07 - big
+    exact = pl.Decimal(38, 2)
+    df = pl.DataFrame({"K": [1, 1, 2, 2], "O": ["x", "x", "x", "y"], "V": pl.Series([big, big, D(5), None], dtype=exact)})
+    with pytest.raises(ActionError) as raised:
+        pivot(act, df, rows=["K"], column="O", value="V")
+    assert str(raised.value) == (
+        "The sum of “V” in “x” is 1,999,999,999,999,999,999,999,999,999,999,999,998.50: too many digits for an "
+        "exact decimal (at most 38). Change “V” to a decimal number before this step."
+    )
+    with pytest.raises(ActionError, match=r"in “x” is -2,000,.*,003\.50: too many digits for an exact decimal"):
+        pivot(act, df.with_columns(-pl.col("V")), column="O", value="V")  # without row keys
+    values = [big, big, big, back, None]
+    fits = pl.DataFrame({"K": [1, 1, 2, 2, 3], "O": ["x", "y", "x", "x", "y"], "V": pl.Series(values, dtype=exact)})
+    out = pivot(act, fits, rows=["K"], column="O", value="V")
+    assert out.rows() == [(1, big, big), (2, D("0.07"), None), (3, None, None)]
+    assert out.schema == pl.Schema({"K": pl.Int64, "x": exact, "y": exact})
+    on_the_way = pl.DataFrame({"O": ["x"] * 4, "V": pl.Series([big, big, minus, back], dtype=exact)})
+    out = pivot(act, on_the_way, column="O", value="V")
+    assert out.rows() == [(D("0.07"),)] and out.schema["x"] == exact
+
+
 def test_sums_of_durations_beyond_292_years_stop_the_step(act):
     """A duration in nanoseconds (as Parquet files often have them) holds up to 292 years; Polars
     lets a longer sum overflow, like one of whole numbers."""

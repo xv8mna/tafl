@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import polars as pl
 
 from tafl.api import ActionError, P, action, dtypes, expressions
 
 _ROW = "__etl_row__"
+_EXACT = 10**38  # the units of an exact decimal (its digits without the point) are below this
+_PART = 10**19  # a sum of exact decimals is added up in two parts: see _decimal_parts
 _ORDER = [("asc", "Ascending"), ("desc", "Descending")]
 _FUNCTIONS = [
     ("sum", "Sum"),
@@ -147,7 +151,7 @@ def aggregate(df, p, ctx):
     """Groups rows with equal values in the group columns and calculates one result row per
     group, like GROUP BY in SQL. Groups appear in the order they first occur."""
     aggregations = []
-    wide = []  # sums of whole numbers (durations) that might be beyond Int64: added up as Int128, checked below
+    wide = []  # sums that might be beyond the type of their values: added up wider, checked below
     for calc in p.calculations:
         if calc.function != "count_rows" and not calc.column:
             raise ActionError(f"Choose a column for '{_FUNCTION_LABELS[calc.function]}'")
@@ -158,6 +162,9 @@ def aggregate(df, p, ctx):
         if calc.function == "sum" and dtype in (pl.Int64, pl.UInt64, pl.Duration) and _sums_may_overflow(df[calc.column]):
             aggregation = pl.col(calc.column).to_physical().cast(pl.Int128).sum()
             wide.append((_result_name(calc), calc.column, dtype))
+        elif calc.function == "sum" and isinstance(dtype, pl.Decimal) and _sums_may_overflow(df[calc.column]):
+            aggregation = _decimal_parts(pl.col(calc.column))
+            wide.append((_result_name(calc), calc.column, dtype))
         aggregations.append(aggregation.alias(_result_name(calc)))
     names = [*p.group_by, *(a.meta.output_name() for a in aggregations)]
     if duplicates := sorted({n for n in names if names.count(n) > 1}):
@@ -166,11 +173,22 @@ def aggregate(df, p, ctx):
         out = df.group_by(p.group_by, maintain_order=True).agg(aggregations)
     else:
         out = df.select(aggregations)
+    where = " in a group" if p.group_by else ""
     for name, column, dtype in wide:
+        if isinstance(dtype, pl.Decimal):
+            units = _decimal_units(out[name])
+            total = next((u for u in units if abs(u) >= _EXACT), None)
+            if total is not None:  # a wrong number would be worse
+                raise ActionError(
+                    f"“{name}” is {Decimal(f'{total}E-{dtype.scale}'):,}{where}: too many digits for an exact decimal "
+                    f"(at most 38). Change “{column}” to a decimal number before this step."
+                )
+            out = out.with_columns(_from_units(pl.lit(pl.Series(units, dtype=pl.Int128)), dtype.scale).alias(name))
+            continue
         low, high = (0, 2**64 - 1) if dtype == pl.UInt64 else (-(2**63), 2**63 - 1)
         beyond = out[name].filter((out[name] < low) | (out[name] > high))
         if beyond.len():  # a wrong number would be worse
-            total, where = beyond[0], " in a group" if p.group_by else ""
+            total = beyond[0]
             if dtype == pl.Duration:
                 per_day = {"ns": 10**9, "us": 10**6, "ms": 10**3}[dtype.time_unit] * 86_400
                 raise ActionError(
@@ -187,11 +205,32 @@ def aggregate(df, p, ctx):
 
 
 def _sums_may_overflow(s: pl.Series) -> bool:
-    """Whether a sum of these whole numbers (or durations) might be beyond Int64 (Polars would let it
-    overflow)."""
+    """Whether a sum of these whole numbers (or durations) might be beyond Int64, or one of exact
+    decimals beyond 38 digits (Polars would let it overflow)."""
+    limit = _EXACT - 1 if isinstance(s.dtype, pl.Decimal) else 2**63 - 1
     s = s.to_physical()
     low, high = s.min(), s.max()
-    return low is not None and max(-low, high) * s.len() > 2**63 - 1
+    return low is not None and max(-low, high) * s.len() > limit
+
+
+def _decimal_parts(column: pl.Expr) -> pl.Expr:
+    """A sum of exact decimals as two sums that can't overflow. Polars adds them up in their own
+    type, and beyond its 38 digits it gives a wrong number in a group, else an error (also when
+    only a part of the sum is beyond): their units (the digits without the point) are split at 19
+    digits, and each part is added up as Int128."""
+    units = column.to_physical()
+    high = units // pl.lit(_PART, pl.Int128)
+    return pl.struct(high.sum().alias("high"), (units - high * pl.lit(_PART, pl.Int128)).sum().alias("low"))
+
+
+def _decimal_units(parts: pl.Series) -> list[int]:
+    """The units of each sum from ``_decimal_parts`` (Python's whole numbers have no limit)."""
+    return [high * _PART + low for high, low in zip(parts.struct.field("high"), parts.struct.field("low"), strict=True)]
+
+
+def _from_units(units: pl.Expr, scale: int) -> pl.Expr:
+    """Exact decimals of this scale from their units (Int128, within 38 digits)."""
+    return units.cast(pl.Decimal(38, 0)) * pl.lit(Decimal(1).scaleb(-scale))
 
 
 def _check_type(calc, dtype: pl.DataType | None) -> None:

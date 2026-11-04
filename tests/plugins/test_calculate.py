@@ -1,4 +1,5 @@
 import datetime as dt
+from decimal import Decimal as D
 
 import polars as pl
 import pytest
@@ -161,6 +162,31 @@ def test_aggregate_sums_beyond_the_whole_numbers_stop_the_step(act):
     assert fits.rows() == [("b", 7, 2)] and fits.schema == pl.Schema({"K": pl.String, "Sum of V": pl.Int64, "Count": pl.Int64})
     small = act("calc.aggregate", pl.DataFrame({"V": [1, 2, None]}), sums)  # as before
     assert small.rows() == [(3, 3)] and small.schema["Sum of V"] == pl.Int64
+
+
+def test_aggregate_sums_beyond_the_digits_of_exact_decimals_stop_the_step(act):
+    """Polars adds up exact decimals in their own 38 digits: beyond them it gave a wrong number in a
+    group (-1.40E+38), and its own error for the total row, also when only a part of the sum was
+    beyond."""
+    big, minus = D("9" * 36 + ".25"), D("-" + "9" * 36 + ".25")  # 38 digits (- would round them to 28)
+    back = D("-" + "9" * 36 + ".18")  # 0.07 - big
+    df = pl.DataFrame({"K": ["a", "a", "b", "b"], "V": pl.Series([big, big, big, back], dtype=pl.Decimal(38, 2))})
+    sums = {"calculations": [{"function": "sum", "column": "V"}, {"function": "count_rows"}]}
+    with pytest.raises(ActionError) as raised:
+        act("calc.aggregate", df, {"group_by": ["K"], **sums})
+    assert str(raised.value) == (
+        "“Sum of V” is 1,999,999,999,999,999,999,999,999,999,999,999,998.50 in a group: too many digits for an exact "
+        "decimal (at most 38). Change “V” to a decimal number before this step."
+    )
+    with pytest.raises(ActionError, match=r"^“Total” is -1,999,.*,998\.50: too many digits for an exact decimal"):
+        act("calc.aggregate", df.head(2).select(-pl.col("V")), {"calculations": [{"function": "sum", "column": "V", "name": "Total"}]})
+    fits = act("calc.aggregate", df.filter(pl.col("K") == "b"), {"group_by": ["K"], **sums})
+    assert fits.rows() == [("b", D("0.07"), 2)]
+    assert fits.schema == pl.Schema({"K": pl.String, "Sum of V": pl.Decimal(38, 2), "Count": pl.Int64})
+    on_the_way = act("calc.aggregate", df.with_columns(pl.col("V").shift(-1).fill_null(minus)), sums)  # big, big, back, minus
+    assert on_the_way.rows() == [(D("0.07"), 4)] and on_the_way.schema["Sum of V"] == pl.Decimal(38, 2)
+    small = act("calc.aggregate", pl.DataFrame({"V": pl.Series([D("1.5"), None], dtype=pl.Decimal(10, 1))}), sums)  # as before
+    assert small.rows() == [(D("1.5"), 2)] and small.schema["Sum of V"] == pl.Decimal(38, 1)
 
 
 def test_aggregate_minimum_and_maximum_of_lists_stop_the_step(act):

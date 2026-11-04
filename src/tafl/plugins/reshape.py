@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import polars as pl
 
 from tafl.api import ActionError, P, action, dtypes
@@ -29,6 +31,8 @@ _PIVOT_PIECE = 32
 _MAX_LONG_CELLS = 250_000_000
 _PIECE = 2**18  # Unpivot puts this many result rows at a time in order (all at once needs twice the memory)
 _NARROW = (pl.Int8, pl.Int16, pl.Int32, pl.UInt8, pl.UInt16, pl.UInt32, pl.Boolean)  # summed as Int64
+_EXACT = 10**38  # the units of an exact decimal (its digits without the point) are below this
+_PART = 10**19  # a sum of exact decimals is checked in two parts: see _decimal_parts
 _UNITS = ("ns", "us", "ms")  # of date-times and durations, the finest first
 _PER_DAY = {"ns": 86_400 * 10**9, "us": 86_400 * 10**6, "ms": 86_400 * 10**3}  # durations
 
@@ -124,8 +128,12 @@ def pivot(df, p, ctx):
         pl.col(p.column).replace_strict(old, new, return_dtype=pl.UInt32).alias("name"),
         _prepared(pl.col(p.value), p.function, value_type).alias("value"),
     )
-    if p.function == "sum" and work.schema["value"] in (pl.Int64, pl.UInt64, pl.Duration):
-        _check_sums(work, names, p.value)
+    summed, exact = work.schema["value"], None
+    if p.function == "sum" and (summed in (pl.Int64, pl.UInt64, pl.Duration) or isinstance(summed, pl.Decimal)):
+        if _check_sums(work, names, p.value) and isinstance(summed, pl.Decimal):
+            # Polars stops at a sum beyond 38 digits, also on the way to one that fits: their units
+            # (Int128) add up without stopping, and every sum fits
+            exact, work = summed, work.with_columns(pl.col("value").to_physical())
     pieces = [
         work.pivot(
             on="name",
@@ -138,6 +146,8 @@ def pivot(df, p, ctx):
         for start in range(0, len(places), _PIVOT_PIECE)
     ]
     out = pl.concat([pieces[0], *(piece.drop(keys) for piece in pieces[1:])], how="horizontal")  # same rows, same order
+    if exact is not None:
+        out = out.with_columns(_from_units(pl.col(out.columns[len(keys) :]), exact.scale))
     out.columns = [*rows, *names]
     return out
 
@@ -179,20 +189,33 @@ def _prepared(column: pl.Expr, function: str, dtype: pl.DataType) -> pl.Expr:
 
 
 def _sums_may_overflow(s: pl.Series) -> bool:
-    """Whether a sum of these whole numbers (or durations) might be beyond Int64."""
+    """Whether a sum of these whole numbers (or durations) might be beyond Int64, or one of exact
+    decimals beyond 38 digits."""
+    limit = _EXACT - 1 if isinstance(s.dtype, pl.Decimal) else 2**63 - 1
     s = s.to_physical()
     low, high = s.min(), s.max()
-    return low is not None and max(-low, high) * s.len() > 2**63 - 1
+    return low is not None and max(-low, high) * s.len() > limit
 
 
-def _check_sums(work: pl.DataFrame, names: list[str], value: str) -> None:
-    """Polars lets a sum of whole numbers or durations overflow (it gives a wrong number). So when
-    that might be, the sum of each cell is worked out as Int128 first, and one beyond the type of
-    the values stops the step. ``work`` has the row keys, the place of the new column ("name") and
-    the values ("value")."""
+def _check_sums(work: pl.DataFrame, names: list[str], value: str) -> bool:
+    """Polars lets a sum of whole numbers or durations overflow (it gives a wrong number), and one
+    of exact decimals beyond 38 digits too. So when that might be, the sum of each cell is worked
+    out wider first (as Int128, or in two parts), and one beyond the type of the values stops the
+    step. ``work`` has the row keys, the place of the new column ("name") and the values
+    ("value"). Returns whether the sums were checked."""
     if not _sums_may_overflow(work["value"]):
-        return
+        return False
     dtype = work.schema["value"]
+    if isinstance(dtype, pl.Decimal):
+        sums = work.group_by(pl.exclude("value"), maintain_order=True).agg(_decimal_parts(pl.col("value")).alias("value"))
+        cells = zip(sums["name"], _decimal_units(sums["value"]), strict=True)
+        if beyond := [(place, total) for place, total in cells if abs(total) >= _EXACT]:
+            place, total = min(beyond, key=lambda cell: cell[0])  # in the first new column
+            raise ActionError(
+                f"The sum of “{value}” in “{names[place]}” is {Decimal(f'{total}E-{dtype.scale}'):,}: too many digits "
+                f"for an exact decimal (at most 38). Change “{value}” to a decimal number before this step."
+            )
+        return True
     exact = pl.col("value").to_physical().cast(pl.Int128).sum()
     sums = work.group_by(pl.exclude("value"), maintain_order=True).agg(exact)
     low, high = (0, 2**64 - 1) if dtype == pl.UInt64 else (-(2**63), 2**63 - 1)
@@ -212,6 +235,25 @@ def _check_sums(work: pl.DataFrame, names: list[str], value: str) -> None:
             f"The sum of “{value}” in “{name}” is {total:,}: too {limit}. "
             f"Change “{value}” to a decimal number before this step."
         )
+    return True
+
+
+def _decimal_parts(column: pl.Expr) -> pl.Expr:
+    """A sum of exact decimals as two sums that can't overflow: their units (the digits without
+    the point) are split at 19 digits, and each part is added up as Int128."""
+    units = column.to_physical()
+    high = units // pl.lit(_PART, pl.Int128)
+    return pl.struct(high.sum().alias("high"), (units - high * pl.lit(_PART, pl.Int128)).sum().alias("low"))
+
+
+def _decimal_units(parts: pl.Series) -> list[int]:
+    """The units of each sum from ``_decimal_parts`` (Python's whole numbers have no limit)."""
+    return [high * _PART + low for high, low in zip(parts.struct.field("high"), parts.struct.field("low"), strict=True)]
+
+
+def _from_units(units: pl.Expr, scale: int) -> pl.Expr:
+    """Exact decimals of this scale from their units (Int128, within 38 digits)."""
+    return units.cast(pl.Decimal(38, 0)) * pl.lit(Decimal(1).scaleb(-scale))
 
 
 def _apart_by_spaces(names: list[str]) -> list[tuple[str, str]]:
