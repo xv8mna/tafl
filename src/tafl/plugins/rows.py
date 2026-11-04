@@ -234,7 +234,7 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
             low, high = _limits(dtype)
             values = [v for v in values if isinstance(v, int) and low <= v <= high]
         listed = pl.Series(values, dtype=dtype).implode() if dtype.is_integer() else values
-        if dtype == pl.Time and values:  # Series of one time each (see _literal)
+        if dtype in (pl.Time, pl.Datetime) and values:  # Series of one value each (see _literal)
             listed = pl.concat(values).implode()
         found = column.is_in(listed) if values else pl.lit(False)
         return found if op == "in" else (~found).fill_null(True)
@@ -332,8 +332,9 @@ def _too_big_with(values: pl.Series, value: int) -> tuple[int, int] | None:
 
 
 def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
-    """A value typed by the user, converted to the column's type. A time is a Series of one value:
-    Python's time has no nanoseconds (08:30:00.000000001)."""
+    """A value typed by the user, converted to the column's type. A time or a date-time is a
+    Series of one value: Python's have no nanoseconds (08:30:00.000000001), and a date-time is in
+    the column's unit (Polars compares nanoseconds with microseconds in microseconds)."""
     value = text.strip()
     if dtype == pl.String:
         return text
@@ -351,16 +352,16 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
     if dtype == pl.Date or dtype == pl.Datetime:
         if value.lower() in ("today", "heute"):
             day = dt.date.today()
-            return day if dtype == pl.Date else dt.datetime.combine(day, dt.time())
+            return day if dtype == pl.Date else pl.Series([dt.datetime.combine(day, dt.time())], dtype=pl.Datetime(dtype.time_unit))
         if value.lower() in ("now", "jetzt") and dtype == pl.Datetime:
-            return dt.datetime.now()
+            return pl.Series([dt.datetime.now()], dtype=pl.Datetime(dtype.time_unit))
         if dtype == pl.Date:
             parsed = dtypes.parse_dates(pl.Series([value]))[0]
             if parsed is None:
                 raise ActionError(f"'{text}' is not a date (column '{column}'); use e.g. 31.12.2025 or 2025-12-31")
             return parsed
-        parsed = dtypes.parse_datetimes(pl.Series([value]))[0]
-        if parsed is None:
+        parsed = dtypes.parse_datetimes(pl.Series([value]), time_unit=dtype.time_unit)
+        if parsed.null_count():
             raise ActionError(
                 f"'{text}' is not a date-time (column '{column}'); use e.g. 31.12.2025 08:30 or 2025-12-31 08:30"
             )

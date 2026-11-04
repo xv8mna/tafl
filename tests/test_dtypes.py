@@ -273,6 +273,17 @@ def test_two_digit_years_like_excel():
     assert dtypes.parse_datetimes(pl.Series(["31.12.45 08:15"]), "dd.mm.yy hh:mm").to_list() == [dt.datetime(1945, 12, 31, 8, 15)]
 
 
+def test_date_times_with_nanoseconds():
+    s = pl.Series(["2025-12-31 08:30:00.000000001", "2025-12-31T08:30:00.5", "31.12.25 08:30", "2025-12-31", None])
+    stamps = dtypes.parse_datetimes(s, time_unit="ns")
+    assert stamps.dtype == pl.Datetime("ns")
+    assert stamps.dt.to_string("%Y-%m-%d %H:%M:%S%.f").to_list() == [
+        "2025-12-31 08:30:00.000000001", "2025-12-31 08:30:00.500", "2025-12-31 08:30:00", "2025-12-31 00:00:00", None
+    ]  # fmt: skip
+    assert dtypes.parse_datetimes(s).to_list()[:2] == [dt.datetime(2025, 12, 31, 8, 30), dt.datetime(2025, 12, 31, 8, 30, 0, 500000)]
+    assert dtypes.parse_datetimes(pl.Series(["31.12.2025 08:30"]), "dd.mm.yyyy hh:mm", time_unit="ns").dtype == pl.Datetime("ns")
+
+
 def test_date_times_with_two_digit_years():
     s = pl.Series(["31.12.25 08:30", "1.1.45 23:59:30", "29.02.24 0:00", "31.12.25 25:00", None])
     expected = [

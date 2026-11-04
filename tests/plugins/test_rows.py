@@ -257,6 +257,29 @@ def test_typed_times_keep_their_nanoseconds(act):
     assert filled.schema["Start"] == pl.Time and filled["Start"].to_physical().to_list() == [eight, eight + 1, eight + 1000, eight + 2]
 
 
+def test_typed_date_times_keep_their_nanoseconds(act):
+    """A date-time with nanoseconds (Parquet files of other programs often have them) and a typed
+    one: Polars compared it with Python's date-time in microseconds, so 08:30:00 found
+    08:30:00.000000001 too, and a fill made the whole column microseconds."""
+    start = dt.datetime(2025, 1, 1, 8, 30)
+    stamps = pl.Series([start] * 3 + [None], dtype=pl.Datetime("ns")) + pl.Series([0, 1, 1000, 0], dtype=pl.Duration("ns"))
+    df = pl.DataFrame({"Name": list("abcd"), "At": stamps})
+    assert names(flt(act, df, ("At", "=", "2025-01-01 08:30:00"))) == ["a"]
+    assert names(flt(act, df, ("At", "=", "01.01.2025 08:30"))) == ["a"]
+    assert names(flt(act, df, ("At", "=", "2025-01-01 08:30:00.000000001"))) == ["b"]
+    assert names(flt(act, df, ("At", "!=", "2025-01-01 08:30:00"))) == ["b", "c", "d"]
+    assert names(flt(act, df, ("At", ">", "2025-01-01 08:30"))) == ["b", "c"]
+    assert names(flt(act, df, ("At", "<=", "2025-01-01 08:30:00.000000999"))) == ["a", "b"]
+    assert names(flt(act, df, ("At", "in", "2025-01-01 08:30:00.000000001; 2025-01-01 08:30:00.000001"))) == ["b", "c"]
+    assert names(flt(act, df, ("At", "not_in", "2025-01-01 08:30:00"))) == ["b", "c", "d"]
+    assert names(flt(act, df, ("At", "<", "today"))) == ["a", "b", "c"]
+    filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": "2025-01-01 08:30:00.000000002"})
+    first = stamps.to_physical()[0]
+    assert filled.schema["At"] == pl.Datetime("ns") and filled["At"].to_physical().to_list() == [first, first + 1, first + 1000, first + 2]
+    now = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": "now"})["At"]
+    assert now.dtype == pl.Datetime("ns") and now.to_physical().to_list()[:3] == [first, first + 1, first + 1000]
+
+
 @pytest.mark.parametrize("operator", ["=", "in", "not_in"])
 @pytest.mark.parametrize("value", ["soon", "25:00", "24:00:00", "0800"])
 def test_a_typed_value_that_is_no_time(act, operator, value):

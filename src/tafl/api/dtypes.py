@@ -220,18 +220,18 @@ def parse_dates(s: pl.Series, fmt: str = "") -> pl.Series:
     return _apply(_clean_text(s), parsed)
 
 
-def parse_datetimes(s: pl.Series, fmt: str = "") -> pl.Series:
+def parse_datetimes(s: pl.Series, fmt: str = "", *, time_unit: str = "us") -> pl.Series:
     """Text -> Datetime. Without a format, the common formats are recognized (see
-    ``parse_dates``)."""
+    ``parse_dates``). ``time_unit`` "ns" keeps nanoseconds (2025-12-31 08:30:00.000000001)."""
     text = _VALUE
     if fmt:
         code = to_strftime(fmt)
-        parsed = _datetime_expr(text, code) if _has_time(code) else _date_expr(text, code).cast(pl.Datetime("us"))
+        parsed = _datetime_expr(text, code, time_unit) if _has_time(code) else _date_expr(text, code).cast(pl.Datetime(time_unit))
     else:
         parsed = pl.coalesce(
-            [pl.when(text.str.contains(pattern)).then(_datetime_expr(text, f)) for f, pattern in _DATETIME_PATTERNS]
+            [pl.when(text.str.contains(pattern)).then(_datetime_expr(text, f, time_unit)) for f, pattern in _DATETIME_PATTERNS]
             + [
-                pl.when(text.str.contains(pattern)).then(_date_expr(text, f).cast(pl.Datetime("us")))
+                pl.when(text.str.contains(pattern)).then(_date_expr(text, f).cast(pl.Datetime(time_unit)))
                 for f, pattern in _DATE_PATTERNS
             ]
         )
@@ -671,8 +671,8 @@ def _date_expr(text: pl.Expr, code: str) -> pl.Expr:
     return _excel_years(parsed) if "%y" in code else parsed
 
 
-def _datetime_expr(text: pl.Expr, code: str) -> pl.Expr:
-    parsed = text.str.to_datetime(code, strict=False, time_unit="us")
+def _datetime_expr(text: pl.Expr, code: str, time_unit: str = "us") -> pl.Expr:
+    parsed = text.str.to_datetime(code, strict=False, time_unit=time_unit)
     return _excel_years(parsed) if "%y" in code else parsed
 
 
