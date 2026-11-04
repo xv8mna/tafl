@@ -348,7 +348,8 @@ def _rounded_with(values: pl.Series, value: Any) -> int | None:
 def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
     """A value typed by the user, converted to the column's type. A time or a date-time is a
     Series of one value: Python's have no nanoseconds (08:30:00.000000001), and a date-time is in
-    the column's unit (Polars compares nanoseconds with microseconds in microseconds)."""
+    the column's unit (Polars compares nanoseconds with microseconds in microseconds) and time
+    zone."""
     value = text.strip()
     if dtype == pl.String:
         return text
@@ -365,10 +366,9 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
         return number
     if dtype == pl.Date or dtype == pl.Datetime:
         if value.lower() in ("today", "heute"):
-            day = dt.date.today()
-            return day if dtype == pl.Date else pl.Series([dt.datetime.combine(day, dt.time())], dtype=pl.Datetime(dtype.time_unit))
+            return dt.date.today() if dtype == pl.Date else _now(dtype).dt.truncate("1d")  # the start of the local day
         if value.lower() in ("now", "jetzt") and dtype == pl.Datetime:
-            return pl.Series([dt.datetime.now()], dtype=pl.Datetime(dtype.time_unit))
+            return _now(dtype)
         if dtype == pl.Date:
             parsed = dtypes.parse_dates(pl.Series([value]))[0]
             if parsed is None:
@@ -379,7 +379,7 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
             raise ActionError(
                 f"'{text}' is not a date-time (column '{column}'); use e.g. 31.12.2025 08:30 or 2025-12-31 08:30"
             )
-        return parsed
+        return parsed if dtype.time_zone is None else _in_zone(parsed, text, column, dtype.time_zone)
     if dtype == pl.Time:
         parsed = dtypes.parse_times(pl.Series([value]))
         if parsed.null_count():
@@ -395,6 +395,25 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
     if dtype == pl.Binary:
         return pl.select(pl.lit(text).cast(pl.Binary)).item()
     return text
+
+
+def _now(dtype: pl.DataType) -> pl.Series:
+    """This moment as a value of a date-time column (see ``_literal``): the local time of the
+    column's time zone, or of this PC for a column without one."""
+    if dtype.time_zone is None:
+        return pl.Series([dt.datetime.now()], dtype=pl.Datetime(dtype.time_unit))
+    return pl.Series([dt.datetime.now(dt.UTC)]).dt.convert_time_zone(dtype.time_zone).dt.cast_time_unit(dtype.time_unit)
+
+
+def _in_zone(parsed: pl.Series, text: str, column: str, zone: str) -> pl.Series:
+    """A typed date-time as the local time of a column's time zone, as the grid shows its values.
+    A time that a clock change skips or repeats there is not one moment: it stops the step."""
+    moment = parsed.dt.replace_time_zone(zone, ambiguous="null", non_existent="null")
+    if moment.null_count():
+        if parsed.dt.replace_time_zone(zone, ambiguous="earliest", non_existent="null").null_count():
+            raise ActionError(f"'{text}' doesn't happen in the time zone of column '{column}' ({zone}): a clock change skips it")
+        raise ActionError(f"'{text}' happens twice in the time zone of column '{column}' ({zone}): a clock change repeats it")
+    return moment
 
 
 def _no_typed_value(column: str) -> str:

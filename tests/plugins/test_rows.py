@@ -1,5 +1,6 @@
 import datetime as dt
 from decimal import Decimal as D
+from zoneinfo import ZoneInfo
 
 import polars as pl
 import pytest
@@ -278,6 +279,60 @@ def test_typed_date_times_keep_their_nanoseconds(act):
     assert filled.schema["At"] == pl.Datetime("ns") and filled["At"].to_physical().to_list() == [first, first + 1, first + 1000, first + 2]
     now = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": "now"})["At"]
     assert now.dtype == pl.Datetime("ns") and now.to_physical().to_list()[:3] == [first, first + 1, first + 1000]
+
+
+def test_typed_date_times_with_a_time_zone_are_its_local_time(act):
+    """As the grid shows them (Parquet files can have such columns). Before, Polars stopped with
+    "could not evaluate comparison between series 'At' of dtype: Datetime('ns', 'Europe/Berlin') and ..."."""
+    utc = pl.Series([dt.datetime(2025, 1, 1, 7, 30)] * 3 + [None], dtype=pl.Datetime("ns")).dt.replace_time_zone("UTC")
+    utc = utc + pl.Series([0, 1, 3600 * 10**9, 0], dtype=pl.Duration("ns"))  # 07:30, a nanosecond later, 08:30
+    df = pl.DataFrame({"Name": list("abcd"), "Berlin": utc.dt.convert_time_zone("Europe/Berlin"), "UTC": utc.dt.cast_time_unit("us")})
+    assert names(flt(act, df, ("Berlin", "=", "2025-01-01 08:30"))) == ["a"]  # 07:30 in UTC
+    assert names(flt(act, df, ("UTC", "=", "01.01.2025 08:30"))) == ["c"]
+    assert names(flt(act, df, ("Berlin", "=", "2025-01-01 08:30:00.000000001"))) == ["b"]
+    assert names(flt(act, df, ("Berlin", "!=", "2025-01-01 08:30"))) == ["b", "c", "d"]
+    assert names(flt(act, df, ("Berlin", ">", "2025-01-01 08:30"))) == ["b", "c"]
+    assert names(flt(act, df, ("Berlin", "<", "2025-01-01 09:30"))) == ["a", "b"]
+    assert names(flt(act, df, ("Berlin", "in", "2025-01-01 09:30; 2025-01-01 08:30"))) == ["a", "c"]
+    assert names(flt(act, df, ("Berlin", "not_in", "2025-01-01 09:30"))) == ["a", "b", "d"]
+    assert names(flt(act, df, ("UTC", "in", "2025-03-30 02:30; 2025-10-26 02:30"))) == []  # no clock changes in UTC
+    filled = act("rows.fill", df, {"columns": ["Berlin", "UTC"], "method": "value", "value": "2025-07-01 08:30:00.000000002"})
+    assert filled.schema["Berlin"] == pl.Datetime("ns", "Europe/Berlin") and filled.schema["UTC"] == pl.Datetime("us", "UTC")
+    summer = int(dt.datetime(2025, 7, 1, 6, 30, tzinfo=dt.UTC).timestamp()) * 10**9  # 08:30 in Berlin
+    assert filled["Berlin"].to_physical()[3] == summer + 2 and filled["UTC"].to_physical()[3] == (summer + 2 * 3600 * 10**9) // 1000
+
+
+@pytest.mark.parametrize("operator", ["=", ">=", "in", "not_in", "fill"])
+@pytest.mark.parametrize(
+    ("value", "happens"),
+    [("2025-03-30 02:30", "doesn't happen"), ("2025-03-30 02:59:59.999999999", "doesn't happen"), ("26.10.2025 02:00", "happens twice")],
+)
+def test_a_typed_time_that_a_clock_change_skips_or_repeats_says_so(act, operator, value, happens):
+    df = pl.DataFrame({"At": pl.Series([dt.datetime(2025, 1, 1)], dtype=pl.Datetime("ns")).dt.replace_time_zone("Europe/Berlin")})
+    change = "skips" if happens == "doesn't happen" else "repeats"
+    message = rf"^'{value}' {happens} in the time zone of column 'At' \(Europe/Berlin\): a clock change {change} it$"
+    with pytest.raises(ActionError, match=message):
+        if operator == "fill":
+            act("rows.fill", df, {"columns": ["At"], "method": "value", "value": value})
+        else:
+            flt(act, df, ("At", operator, f"2025-01-01; {value}" if "in" in operator else value))
+
+
+@pytest.mark.parametrize("zone", ["Pacific/Kiritimati", "Pacific/Pago_Pago"])  # 25 hours apart: one has another date than this PC
+def test_today_and_now_are_the_local_date_and_time_of_a_columns_time_zone(act, zone):
+    now = dt.datetime.now(dt.UTC)
+    start = dt.datetime.combine(now.astimezone(ZoneInfo(zone)).date(), dt.time(), tzinfo=ZoneInfo(zone)).astimezone(dt.UTC)
+    hour, tick = dt.timedelta(hours=1), dt.timedelta(microseconds=1)
+    moments = [start - tick, start, start + dt.timedelta(days=1) - tick, now - hour, now + hour]
+    utc = pl.Series([t.replace(tzinfo=None) for t in moments], dtype=pl.Datetime("ns")).dt.replace_time_zone("UTC")
+    df = pl.DataFrame({"Name": list("abcde"), "At": utc.dt.convert_time_zone(zone)})
+    assert names(flt(act, df.head(3), ("At", "=", "today"))) == ["b"]
+    assert names(flt(act, df.head(3), ("At", "<", "today"))) == ["a"]
+    assert names(flt(act, df.tail(2), ("At", "<", "now"))) == ["d"]
+    assert names(flt(act, df.tail(2), ("At", "in", "today; now"))) == []
+    empty = df.with_columns(pl.lit(None, dtype=pl.Datetime("ns", zone)).alias("At"))
+    filled = act("rows.fill", empty, {"columns": ["At"], "method": "value", "value": "now"})["At"]
+    assert filled.dtype == pl.Datetime("ns", zone) and abs(filled[0] - dt.datetime.now(dt.UTC)) < hour
 
 
 @pytest.mark.parametrize("operator", ["=", "in", "not_in"])
