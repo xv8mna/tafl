@@ -8,15 +8,18 @@ of ``etl_tool.api``, and the base class ``EtlError`` is ``TaflError`` now.
 
 A minimal plugin::
 
-    import polars as pl
-    from tafl.api import P, action
+    from tafl.api import P, action, col
 
     @action("example.upper", "Upper-case a column", category="Text",
             params=[P.Column("column", "Column")],
             summary="Upper-case {column}")
     def upper(df, p, ctx):
         \"\"\"Turns all text in the column into capital letters.\"\"\"
-        return df.with_columns(pl.col(p.column).str.to_uppercase())
+        return df.with_columns(col(p.column).str.to_uppercase())
+
+An action takes the columns that settings or the data name with ``col(name)`` or
+``cols(names)``, never with ``pl.col(name)`` or as names in text: Polars reads ``*`` as all
+columns and a name that starts with ``^`` and ends with ``$`` as a pattern (see ``names``).
 
 An action raises ``ActionError("...")`` for a problem the user can fix: the step shows the
 message as an error. To end its table at this step without an error, e.g. when there is nothing
@@ -54,6 +57,7 @@ from .files import (
     source_summary,
     sources_fingerprint,
 )
+from .names import col, cols, selector
 from .params import Params, ValidationContext
 
 API_VERSION = 1
@@ -76,6 +80,8 @@ __all__ = [
     "TaflError",
     "ValidationContext",
     "action",
+    "col",
+    "cols",
     "combine",
     "all_results",
     "connector",
@@ -89,6 +95,7 @@ __all__ = [
     "frame_from_cursor",
     "make_series",
     "parameters",
+    "selector",
     "source_endpoints",
     "source_files",
     "source_params",

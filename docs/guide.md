@@ -2745,7 +2745,7 @@ plugin folder:
 
 ```python
 import polars as pl
-from tafl.api import P, action
+from tafl.api import P, action, col
 
 
 @action(
@@ -2761,7 +2761,7 @@ from tafl.api import P, action
 def add_prefix(df, p, ctx):
     """Puts a text in front of every value. (Shown as help in the app.)"""
     return df.with_columns(
-        (pl.lit(p.prefix) + pl.col(c).cast(pl.String)).alias(c) for c in p.columns
+        (pl.lit(p.prefix) + col(c).cast(pl.String)).alias(c) for c in p.columns
     )
 ```
 
@@ -2774,6 +2774,9 @@ category that Tafl doesn't have gets a submenu of its own.
 ### Rules for plugins
 
 - Import only from `tafl.api` (and other libraries), never from other plugins.
+- Take the columns that settings or the data name with `col(name)` or `cols(names)` from
+  `tafl.api`, as the example does, never with `pl.col(name)` or as names in text: Polars reads `*`
+  as all columns and a name that starts with `^` and ends with `$` as a pattern.
 - When an action's settings change, raise `version=` and add `migrate=`, a function that converts
   the settings older projects saved, so they keep working.
 - Exports and commands (`kind="export"` or `kind="command"`) run only when the project runs.

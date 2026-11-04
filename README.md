@@ -674,7 +674,7 @@ Python package is called `tafl`.
 
 ```python
 import polars as pl
-from tafl.api import P, action
+from tafl.api import P, action, col
 
 
 @action(
@@ -690,7 +690,7 @@ from tafl.api import P, action
 def add_prefix(df, p, ctx):
     """Puts a text in front of every value. (Shown as help in the app.)"""
     return df.with_columns(
-        (pl.lit(p.prefix) + pl.col(c).cast(pl.String)).alias(c) for c in p.columns
+        (pl.lit(p.prefix) + col(c).cast(pl.String)).alias(c) for c in p.columns
     )
 ```
 
@@ -698,6 +698,11 @@ The settings form is built from `params`. Rules for plugins:
 
 - Import only from `tafl.api` (and third-party libraries), never from other plugins. The
   Windows download includes only the libraries Tafl itself uses (Polars, DuckDB, …).
+- Take the columns that settings or the data name with `col(name)` or `cols(names)` from
+  `tafl.api`, never with `pl.col(name)` or as names in text (`df.select(p.columns)`): Polars reads
+  `*` as all columns and a name that starts with `^` and ends with `$` as a pattern, and such names
+  come with data, e.g. a CSV header `*`. Where a method needs one selector of several columns, as
+  `unpivot(on=...)` does, use `selector(names)`.
 - When an action's settings (`params`) change, raise `version=` and add `migrate=`: a function
   `(params, old_version) -> params` that converts settings saved by older versions, so old
   projects keep working.
