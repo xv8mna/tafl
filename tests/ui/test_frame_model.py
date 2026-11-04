@@ -169,6 +169,16 @@ def test_a_value_without_a_text_shows_and_copies_a_short_text(qapp):
     assert model.copier()(model.frame["O"]) == ["(no text)", "5"]
 
 
+def test_copied_categories_with_a_tab_or_a_line_break_are_in_quotes(qapp):
+    """As texts are: else Excel splits the cell."""
+    texts = ["a\tb", 'c "d"\ne', "f"]
+    frame = pl.DataFrame([pl.Series("C", texts, dtype=pl.Categorical), pl.Series("E", texts, dtype=pl.Enum(texts))])
+    model = FrameModel()
+    model.set_frame(frame)
+    for name in ("C", "E"):
+        assert model.copier()(frame[name]) == ['"a\tb"', '"c ""d""\ne"', "f"]
+
+
 def test_large_frames_are_read_in_blocks(qapp):
     model = FrameModel()
     model.set_frame(pl.DataFrame({"n": range(100_000)}))

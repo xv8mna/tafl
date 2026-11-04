@@ -164,7 +164,7 @@ class FrameModel(QAbstractTableModel):
             return None
 
         def whole(dtype: pl.DataType) -> Callable[[Any], str]:
-            if dtype == pl.String:
+            if dtype in (pl.String, pl.Categorical) or isinstance(dtype, pl.Enum):  # texts, also as categories
                 return excel_text
             return str if dtype == pl.Binary or dtype.is_nested() else self.display.formatter(dtype)
 
