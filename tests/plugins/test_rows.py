@@ -318,6 +318,15 @@ def test_the_limits_of_wide_whole_numbers(act):
     assert act("rows.fill", highest, {"columns": ["V"], "method": "value", "value": str(2**127 + 6)})["V"][2] == 2**127 + 6
 
 
+@pytest.mark.parametrize("value", ["-1", "-9223372036854775808", "7-"])
+def test_a_number_below_0_is_below_all_values_of_an_unsigned_column(act, value):
+    """Polars compares a UInt128 column with -1 as Int128 numbers: > and >= left out its values
+    from 2^127 up."""
+    df = pl.DataFrame({"Name": list("abcd"), "V": pl.Series([2**128 - 1, 2**127, 5, None], dtype=pl.UInt128)})
+    for operator, expected in {">": "abc", ">=": "abc", "<": "", "<=": "", "=": "", "!=": "abcd"}.items():
+        assert names(flt(act, df, ("V", operator, value))) == list(expected), operator
+
+
 @pytest.mark.parametrize("dtype", [pl.Int8, pl.Int64, pl.UInt64, pl.Int128, pl.UInt128])
 @pytest.mark.parametrize("value", ["1e39", "1e300", "-1e39", str(2**128), str(2**200)])
 def test_whole_numbers_beyond_every_column(act, dtype, value):

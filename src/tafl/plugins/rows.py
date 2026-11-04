@@ -243,7 +243,7 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
         value: Any = c.value if case_sensitive else c.value.lower()
     else:
         value = _literal(c.value, dtype, c.column)
-        if dtype.is_integer() and isinstance(value, float):  # no whole number the column holds: with all its digits
+        if dtype.is_integer() and not _holds(dtype, value):  # no whole number the column holds: with all its digits
             exact = dtypes.parse_decimal(c.value.strip(), _decimal_of(c.value.strip()))
             if exact is not None:
                 compared = _whole_comparison(column, op, exact, dtype)
@@ -401,6 +401,13 @@ def _whole(value: str, dtype: pl.DataType) -> int | None:
 def _limits(dtype: pl.DataType) -> tuple[int, int]:
     """The lowest and the highest value of a whole-number column."""
     return pl.select(low=dtype.min(), high=dtype.max()).row(0)
+
+
+def _holds(dtype: pl.DataType, value: Any) -> bool:
+    """Whether a whole-number column can hold a typed value. Polars compares a UInt128 column with
+    -1 as Int128 numbers, in which its values from 2^127 up are empty."""
+    low, high = _limits(dtype)
+    return isinstance(value, int) and low <= value <= high
 
 
 def _decimal_of(value: str) -> str:
