@@ -551,7 +551,7 @@ def text_length(series: pl.Series) -> int:
     (50, 100, 255, 1000 or 4000 characters; 0 when longer, for "as long as needed"). A
     character outside the Basic Multilingual Plane, such as an emoji, counts twice: SQL Server
     counts the UTF-16 code units."""
-    texts = series.cast(pl.String)
+    texts = series.cast(pl.String).alias("text")  # Polars' Series methods would read a name like ^a.*$ as a pattern
     longest = (texts.str.len_chars() + texts.str.count_matches(r"[\x{10000}-\x{10FFFF}]")).max() or 0
     for size in (50, 100, 255, 1000, 4000):
         if longest <= size:

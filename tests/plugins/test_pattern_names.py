@@ -30,10 +30,10 @@ import pytest
 import xlsxwriter
 from polars.testing import assert_frame_equal
 
-from tafl.api import ActionError
+from tafl.api import ActionError, text_length
 from tafl.api.testing import StubContext
 from tafl.core import Registry, formula_preview
-from tafl.plugins import reshape
+from tafl.plugins import databases, reshape
 from tafl.ui import filters
 
 # --- examples --------------------------------------------------------------------------------
@@ -736,4 +736,90 @@ def test_the_sqlserver_export_fits_the_values_of_their_own_columns(registry, rol
         (1, stamp, 5, dt.datetime(2026, 1, 2, 8, 30, 15), stamp),
         (2, stamp, 6, dt.datetime(2026, 1, 2, 9, 30, 15), stamp),
     ]
+    assert exported({role: pattern}) == expected
+
+
+@pytest.mark.parametrize("name", [*PATTERNS, "Amount"])
+def test_the_sqlserver_export_checks_and_fits_the_values_of_their_own_columns(registry, name):
+    """Without a server: what the SQL Server export does with the values before it writes them,
+    for a column beside abc (which ^a.*$ would find). Polars' Series methods can't find a Series
+    named ^...$: these stopped with an IndexError."""
+    connector = registry.connectors["sqlserver"]
+
+    def frame(*values, dtype=None) -> pl.DataFrame:
+        return pl.DataFrame([pl.Series("abc", [1] * len(values)), pl.Series(name, values, dtype=dtype)])
+
+    def fitted(df: pl.DataFrame, kind: str, finding: tuple[str, ...] = ()) -> list:
+        return databases._fit_lengths(df, {"abc": "abc", name: name}, {name: kind}, "t", list(finding))[name].to_list()
+
+    exact = frame(Decimal("1.005"), Decimal("-2.665"), dtype=pl.Decimal(10, 3))  # rounded as SQL Server rounds
+    assert connector.fit_frame(exact, {name: "decimal(10,2)"})[name].to_list() == [Decimal("1.01"), Decimal("-2.67")]
+    assert connector.prepare_frame(frame(1.5, float("nan")))[name].to_list() == [1.5, None]
+    with pytest.raises(ActionError, match="has an infinite value"):
+        connector.prepare_frame(frame(1.5, float("inf")))
+    databases._check_whole_numbers(frame(1.0, 2.0), {"abc": "abc", name: name}, {name: "int"}, "t")
+    with pytest.raises(ActionError, match=r"holds whole numbers \(int\), but .* has decimals \(e\.g\. 2\.5\)"):
+        databases._check_whole_numbers(frame(1.0, 2.5), {"abc": "abc", name: name}, {name: "int"}, "t")
+    assert fitted(frame("AB  ", "CD", None), "nvarchar(3)") == ["AB ", "CD", None]  # spaces cut as SQL Server cuts them
+    assert fitted(frame("ABCD", "AB"), "nvarchar(3)", finding=(name,)) == ["AB"]  # a key that finds no row
+    with pytest.raises(ActionError, match="holds texts of up to 3 characters"):
+        fitted(frame("ABCD"), "nvarchar(3)")
+    with pytest.raises(ActionError, match="holds values of up to 1 bytes"):
+        fitted(frame(b"\x01\x02"), "varbinary(1)")
+    texts = frame("a" * 60)[name]
+    assert text_length(texts) == 100 and connector.sql_type(texts) == "NVARCHAR(100)"
+    pyodbc = pytest.importorskip("pyodbc")  # a temporary table: texts for an int column, binary values of another type
+    assert connector.input_sizes(frame("5"), {"abc": "INT", name: "INT"}, temporary=True)[1] == (pyodbc.SQL_WVARCHAR, 50, 0)
+    assert connector.input_sizes(frame(b"\x01", b"\x02\x03"), {"abc": "INT"}, temporary=True)[1] == (pyodbc.SQL_VARBINARY, 2, 0)
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+@pytest.mark.parametrize("pattern", PATTERNS)
+@pytest.mark.parametrize("role", ["F", "E", "S", "B", "W"])
+def test_the_sqlserver_export_writes_the_values_of_their_own_columns(registry, role, pattern):
+    """Decimal numbers for a float column (F), exact decimals with more decimal places than their
+    column (E), texts with spaces at the end for an nvarchar(3) column (S), binary values (B) and
+    whole decimal numbers for an int column (W): into a table, into a new table and by key."""
+    connector = registry.connectors["sqlserver"]
+    ctx = StubContext(mode="run", connections={"server": (connector, {"server": os.environ["TAFL_TEST_SQLSERVER"], "database": "tempdb"})})
+    frame = pl.DataFrame(
+        {
+            "K": [1, 2],
+            "abc": ["p", "q"],
+            "x": [5, 6],
+            "F": [1.5, 2.25],
+            "E": pl.Series([Decimal("1.005"), Decimal("-2.665")], dtype=pl.Decimal(10, 3)),
+            "S": ["AB  ", "CD"],
+            "B": [b"\x01", b"\x02\x03"],
+            "W": [3.0, 4.0],
+        }
+    )
+    types = {"K": "int", "abc": "nvarchar(max)", "x": "int", "F": "float", "E": "decimal(10,2)", "S": "nvarchar(3)", "B": "varbinary(10)", "W": "int"}
+
+    def exported(names: dict[str, str]) -> list[list[tuple]]:
+        data = frame.rename(names)
+        quoted = {c: "[" + names.get(c, c).replace("]", "]]") + "]" for c in frame.columns}
+        tables = []
+        for mode in ("insert", "create", "update"):
+            table = f"dbo.tafl_test_{uuid.uuid4().hex[:8]}"
+            try:
+                params = {"connection": "server", "table": table}
+                if mode != "create":
+                    with ctx.database("server") as db:
+                        db.execute(f"CREATE TABLE {table} ({', '.join(f'{quoted[c]} {types[c]}' for c in frame.columns)})")
+                if mode == "update":  # first the values of the other row
+                    registry.actions["db.export"](data.with_columns(K=pl.Series([2, 1])), params, ctx)
+                    params |= {"mode": "update", "key_columns": ["K"]}
+                registry.actions["db.export"](data, params, ctx)
+                with ctx.database("server") as db:
+                    tables.append(db.read(f"SELECT * FROM {table} ORDER BY K").rows())
+            finally:
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")
+        return tables
+
+    expected = exported({})  # the import reads decimals of 15 digits or fewer as decimal numbers
+    fitted = [(1, "p", 5, 1.5, 1.01, "AB ", b"\x01", 3), (2, "q", 6, 2.25, -2.67, "CD", b"\x02\x03", 4)]
+    assert expected[0] == expected[2] == fitted
+    assert expected[1] == [(1, "p", 5, 1.5, 1.005, "AB  ", b"\x01", 3.0), (2, "q", 6, 2.25, -2.665, "CD", b"\x02\x03", 4.0)]
     assert exported({role: pattern}) == expected

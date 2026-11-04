@@ -406,7 +406,7 @@ class SqlServer(Connector):
         for a datetimeoffset column; infinite numbers are refused."""
         df = super().prepare_frame(df)
         for name, dtype in df.schema.items():
-            if dtype.is_float() and df[name].is_infinite().any():
+            if dtype.is_float() and df[name].alias("value").is_infinite().any():  # a fixed name, as in _round_half_away
                 raise ActionError(
                     f"The column {name} has an infinite value (e.g. from a division by zero), which SQL Server can't store. "
                     f"Replace it first, e.g. with IIF(ISINF([{name}]), NULL, [{name}])."
@@ -544,8 +544,9 @@ def _binding(sql_type: str) -> tuple[int, int, int] | None:
 def _round_half_away(series: pl.Series, scale: int) -> pl.Series:
     """Decimals rounded to ``scale`` decimal places, half away from zero, as SQL Server rounds
     them for a decimal column (1.005 is 1.01, -0.005 is -0.01; a cast would round half to even)."""
-    try:
-        return series.round(scale, mode="half_away_from_zero").cast(pl.Decimal(38, scale))
+    try:  # under a fixed name: Polars' Series methods read a name like ^a.*$ as a pattern that finds nothing
+        rounded = series.alias("value").round(scale, mode="half_away_from_zero")
+        return rounded.cast(pl.Decimal(38, scale)).alias(series.name)
     except pl.exceptions.ComputeError:  # 38 digits that a carry would make 39 before the cast
         exact = decimal.Context(prec=100, rounding=decimal.ROUND_HALF_UP)  # ties away from zero
         step = decimal.Decimal(1).scaleb(-scale, context=exact)
@@ -576,7 +577,7 @@ def _data_binding(series: pl.Series) -> tuple[int, int, int]:
     if dtype == pl.Time:
         return pyodbc.SQL_SS_TIME2, 16, 7
     if dtype == pl.Binary:
-        longest = series.bin.size().max() or 1
+        longest = series.alias("value").bin.size().max() or 1  # a fixed name, as in _round_half_away
         return pyodbc.SQL_VARBINARY, longest if longest <= 8000 else 0, 0  # 0: as long as needed
     return pyodbc.SQL_WVARCHAR, text_length(series), 0
 
@@ -1241,7 +1242,7 @@ def _check_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[st
     a word: refuse instead."""
     kinds = {name.lower(): kind for name, kind in types.items()}
     for source, target in names.items():
-        column = df[source]
+        column = df[source].alias("value")  # a fixed name, as in _round_half_away
         if column.dtype.is_float() and kinds.get(target.lower()) in _WHOLE_NUMBER_TYPES:
             values = column.drop_nulls().drop_nans()
             if values.len() and (values != values.round(0)).any():
@@ -1270,7 +1271,7 @@ def _fit_lengths(
     kinds = {name.lower(): kind for name, kind in types.items()}
     changes, unmatched = [], pl.repeat(False, df.height, eager=True)
     for source in sorted(df.columns, key=lambda c: names[c] not in finding):  # the rows left out first
-        target, column = names[source], df[source]
+        target, column = names[source], df[source].alias("value")  # a fixed name, as in _round_half_away
         kind = kinds.get(target.lower(), "")
         text, binary = _TEXT_TYPE.fullmatch(kind), _BINARY_TYPE.fullmatch(kind)
         if text and column.dtype == pl.String:
@@ -1281,7 +1282,7 @@ def _fit_lengths(
             if cut.any():  # the whole text and as many spaces as fit (a space takes one)
                 keep = (column.str.len_chars().cast(pl.Int64) - (lengths.cast(pl.Int64) - size)).clip(0)
                 column = column.str.slice(0, keep).zip_with(cut, column)
-                changes.append(column)
+                changes.append(column.alias(source))
                 lengths = _text_lengths(column, wide, utf8)
             unit = "bytes" if utf8 else "characters"
         elif binary and column.dtype == pl.Binary:
