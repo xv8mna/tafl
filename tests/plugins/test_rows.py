@@ -319,6 +319,44 @@ def test_a_typed_time_that_a_clock_change_skips_or_repeats_says_so(act, operator
             flt(act, df, ("At", operator, f"2025-01-01; {value}" if "in" in operator else value))
 
 
+@pytest.mark.parametrize("zone", [None, "UTC", "Europe/Berlin"])
+def test_typed_date_times_beyond_nanoseconds_stay_what_they_are(act, zone):
+    """Nanoseconds reach only from 1677 to 2262: 31.12.9999 23:59:59 became 1816-03-30 05:56:07
+    without a word, and 31.12.9999 stopped with "conversion from `date` to `datetime[ns]` failed".
+    Such a value stays in microseconds, in which Polars then compares, as in 0.6.2."""
+    stamps = pl.Series([dt.datetime(2024, 1, 1), None, dt.datetime(2025, 6, 30, 12)], dtype=pl.Datetime("ns"))
+    df = pl.DataFrame({"Name": list("abc"), "At": stamps.dt.replace_time_zone(zone)})
+    for value in ("31.12.9999 23:59:59", "31.12.9999", "2300-01-01", "2262-04-12 00:00", "2262-04-11 23:47:16.8547759"):
+        assert names(flt(act, df, ("At", "<", value))) == ["a", "c"], value
+        assert names(flt(act, df, ("At", ">=", value))) == [], value
+        assert names(flt(act, df, ("At", "!=", value))) == ["a", "b", "c"], value
+    for value in ("01.01.1600 00:00", "0001-01-01", "1677-09-21 00:00"):
+        assert names(flt(act, df, ("At", ">", value))) == ["a", "c"], value
+        assert names(flt(act, df, ("At", "<=", value))) == [], value
+    assert names(flt(act, df, ("At", "in", "31.12.9999 23:59:59; 01.01.2024 00:00"))) == ["a"]
+    assert names(flt(act, df, ("At", "not_in", "01.01.2024; 01.01.1600"))) == ["b", "c"]
+    assert names(flt(act, df, ("At", "in", "31.12.9999; 01.01.1600"))) == []
+    for value, cell in [("31.12.9999 23:59:59", dt.datetime(9999, 12, 31, 23, 59, 59)), ("01.01.1600", dt.datetime(1600, 1, 1))]:
+        filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": value})["At"]
+        assert filled.dtype == pl.Datetime("us", zone)  # as in 0.6.2
+        assert filled.dt.replace_time_zone(None).to_list() == [dt.datetime(2024, 1, 1), cell, dt.datetime(2025, 6, 30, 12)]
+    millis = act("rows.fill", df.with_columns(pl.col("At").dt.cast_time_unit("ms")), {"columns": ["At"], "method": "value", "value": "31.12.9999"})
+    assert millis.schema["At"] == pl.Datetime("ms", zone) and millis["At"].dt.replace_time_zone(None)[1] == dt.datetime(9999, 12, 31)
+
+
+@pytest.mark.parametrize("zone", [None, "Europe/Berlin"])
+def test_filling_nanoseconds_with_a_date_time_beyond_them_says_which_would_change(act, zone):
+    """With such a value the column holds microseconds, which cut its nanoseconds."""
+    stamps = pl.Series([dt.datetime(2025, 6, 30, 12), None], dtype=pl.Datetime("ns")) + pl.Series([1, 0], dtype=pl.Duration("ns"))
+    df = pl.DataFrame({"At": stamps.dt.replace_time_zone(zone)})
+    message = r"^'31\.12\.9999' doesn't fit column 'At': nanoseconds reach only from 1677 to 2262, so with it the column holds"
+    cut = r"\(e\.g\. 2025-06-30 12:00:00\.000000001 would become 2025-06-30 12:00:00\)$"
+    with pytest.raises(ActionError, match=message + " microseconds, but it has values with nanoseconds " + cut):
+        act("rows.fill", df, {"columns": ["At"], "method": "value", "value": "31.12.9999"})
+    near = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": "31.12.2261"})["At"]  # the nanoseconds stay
+    assert near.dtype == pl.Datetime("ns", zone) and near.to_physical()[0] == df["At"].to_physical()[0]
+
+
 @pytest.mark.parametrize("zone", ["Pacific/Kiritimati", "Pacific/Pago_Pago"])  # 25 hours apart: one has another date than this PC
 def test_today_and_now_are_the_local_date_and_time_of_a_columns_time_zone(act, zone):
     now = dt.datetime.now(dt.UTC)

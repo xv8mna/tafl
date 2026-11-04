@@ -199,6 +199,11 @@ def fill(df, p, ctx):
                     f"'{p.value}' doesn't fit column '{name}': with it the column holds decimal numbers, which keep "
                     f"about 15 digits, so it would become {becomes}"
                 )
+            if (cut := _cut_with(df[name], value)) is not None:
+                raise ActionError(
+                    f"'{p.value}' doesn't fit column '{name}': nanoseconds reach only from 1677 to 2262, so with it the "
+                    f"column holds microseconds, but it has values with nanoseconds (e.g. {cut[0]} would become {cut[1]})"
+                )
             updates.append(column.fill_null(_for_polars(value, df.schema[name])).alias(name))
         else:
             updates.append(column.fill_null(strategy="forward" if p.method == "down" else "backward").alias(name))
@@ -245,7 +250,8 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
             values = [v for v in values if isinstance(v, int) and low <= v <= high]
         listed = pl.Series(values, dtype=dtype).implode() if dtype.is_integer() else values
         if dtype in (pl.Time, pl.Datetime) and values:  # Series of one value each (see _literal)
-            listed = pl.concat(values).implode()
+            # in the column's unit: a value it can't hold (9999-12-31 in nanoseconds) isn't in the column
+            listed = pl.concat([v.cast(dtype, strict=False) for v in values]).drop_nulls().implode()
         found = column.is_in(listed) if values else pl.lit(False)
         return found if op == "in" else (~found).fill_null(True)
 
@@ -366,8 +372,9 @@ def _rounded_typed(text: str, value: Any, dtype: pl.DataType) -> int | None:
 def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
     """A value typed by the user, converted to the column's type. A time or a date-time is a
     Series of one value: Python's have no nanoseconds (08:30:00.000000001), and a date-time is in
-    the column's unit (Polars compares nanoseconds with microseconds in microseconds) and time
-    zone."""
+    the column's time zone and in its unit (Polars compares nanoseconds with microseconds in
+    microseconds) when that holds it: nanoseconds reach only from 1677 to 2262, so 9999-12-31
+    stays in microseconds (in nanoseconds it would become a date of another century)."""
     value = text.strip()
     if dtype == pl.String:
         return text
@@ -392,12 +399,16 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
             if parsed is None:
                 raise ActionError(f"'{text}' is not a date (column '{column}'); use e.g. 31.12.2025 or 2025-12-31")
             return parsed
-        parsed = dtypes.parse_datetimes(pl.Series([value]), time_unit=dtype.time_unit)
+        parsed = dtypes.parse_datetimes(pl.Series([value]))  # microseconds reach from the year 1 to 9999
         if parsed.null_count():
             raise ActionError(
                 f"'{text}' is not a date-time (column '{column}'); use e.g. 31.12.2025 08:30 or 2025-12-31 08:30"
             )
-        return parsed if dtype.time_zone is None else _in_zone(parsed, text, column, dtype.time_zone)
+        moment = parsed if dtype.time_zone is None else _in_zone(parsed, text, column, dtype.time_zone)
+        if dtype.time_unit == "us" or not _unit_holds(moment, dtype.time_unit):
+            return moment
+        exact = dtypes.parse_datetimes(pl.Series([value]), time_unit=dtype.time_unit)  # with its nanoseconds
+        return exact if dtype.time_zone is None else _in_zone(exact, text, column, dtype.time_zone)
     if dtype == pl.Time:
         parsed = dtypes.parse_times(pl.Series([value]))
         if parsed.null_count():
@@ -432,6 +443,28 @@ def _in_zone(parsed: pl.Series, text: str, column: str, zone: str) -> pl.Series:
             raise ActionError(f"'{text}' doesn't happen in the time zone of column '{column}' ({zone}): a clock change skips it")
         raise ActionError(f"'{text}' happens twice in the time zone of column '{column}' ({zone}): a clock change repeats it")
     return moment
+
+
+def _unit_holds(moment: pl.Series, unit: str) -> bool:
+    """Whether date-times in ``unit`` hold a typed one, ``moment`` in microseconds, also with
+    digits below a microsecond: nanoseconds reach only from 1677 to 2262."""
+    around = pl.concat([moment - dt.timedelta(microseconds=1), moment + dt.timedelta(microseconds=1)])
+    return not around.cast(pl.Datetime(unit, moment.dtype.time_zone), strict=False).null_count()
+
+
+def _cut_with(values: pl.Series, value: Any) -> tuple[str, str] | None:
+    """A date-time of ``values`` (in nanoseconds) with digits below a microsecond, which it loses
+    when ``value``, a date-time beyond the nanoseconds' range (see ``_literal``), makes the column
+    microseconds: as text, and as it would become; or None."""
+    if not isinstance(values.dtype, pl.Datetime) or values.dtype.time_unit != "ns":
+        return None
+    if not isinstance(value, pl.Series) or value.dtype.time_unit == "ns":
+        return None
+    cut = values.filter(values.to_physical() % 1000 != 0)
+    if not cut.len():
+        return None
+    example = cut.head(1)
+    return tuple(pl.select(dtypes.text_expr(pl.lit(s), s.dtype)).item() for s in (example, example.cast(value.dtype)))
 
 
 def _no_typed_value(column: str) -> str:
