@@ -764,7 +764,9 @@ data ([chapter 10](#10-data-sheets)).
   newer action versions; save to keep this".
 
 A `.tafl` file is a text file (JSON): you can open it in a text editor to see what it does. If
-you change it there, Tafl takes it for another file and opens it in protected view.
+you change it there, Tafl takes it for another file and opens it in protected view. A step
+writes each table it uses as the table's id (`t1`, `t2`, …). In a file that you write yourself,
+a step can name the table instead, in any case; a text like `t3` is always read as an id.
 
 ### Projects from other people
 
@@ -931,7 +933,10 @@ Excel list that names each region only at its first store:
 
 Fill down on Region writes North next to Lübeck and South next to Passau, so you can filter and
 add up by region. A fixed value must fit the column: `none` in a number column stops the step
-with "'none' is not a number (column 'Net')".
+with "'none' is not a number (column 'Net')". A value that would round long whole numbers (with
+more than 15 digits) stops the step too, and the message names a number that would change. So
+does a value with decimal places in a whole-number column when a decimal number can't keep it:
+`1234567890123456.78` would become `1234567890123456.8`.
 
 **Filter rows** keeps or removes the rows that match conditions.
 
@@ -946,7 +951,12 @@ with "'none' is not a number (column 'Net')".
 Values are compared with the column's type: `1.000,00` and `1000` are numbers in a number column;
 `31.12.2025`, `2025-12-31` and `today` are dates in a date column. With the 200 demo orders:
 Status *does not equal* `storniert` keeps 156 rows, Net *is greater than* `1.000,00` keeps 116,
-Date *is greater than or equal to* `01.09.2026` keeps 20.
+Date *is greater than or equal to* `01.09.2026` keeps 20. In a date-time column with a time zone
+(a Parquet file can have one, for example UTC), a typed date-time, `today` and `now` are the local
+time of that zone, as the grid shows it; a date-time parameter alone, such as `{Now}`, is that
+moment of this PC's clock, as in formulas. In a column of binary values that are no text,
+*contains*, *starts with* and *ends with* look at the hex digits that **Join texts** writes, such
+as `0xFF00`.
 
 Tip: empty cells never equal a value, but they count for *does not equal* and *does not
 contain*. To find empty cells, use *is empty*.
@@ -1589,6 +1599,10 @@ you mean [Net]?)".
   a window function such as SUM([Amount]) OVER ()."
 - `[Net] * 2` as a condition: "The condition must be true or false for every row, e.g. [Amount] >
   100 (this formula gives a number)".
+- `[Total] * [Total]`, where Total is a sum beyond 9,223,372,036,854,775,807: "the result has more
+  than 38 digits, more than an exact number holds. For a decimal number (about 15 digits) write
+  CAST(... AS DOUBLE)". Such a sum keeps all its digits as an exact decimal; write
+  `CAST([Total] AS DOUBLE) * [Total]`.
 
 ## 6. The project map and groups
 
@@ -1833,7 +1847,9 @@ take no parameters.
 the sheet `2026-03`. The step list keeps showing `{Month}`; the run's message has the real name.
 Windows file names can't contain `:`, so take a time without colons, as `=STRFTIME(NOW(),
 '%Y-%m-%d %H-%M')` above. A value in **Filter rows** works too: Date **is greater than or equal
-to** `{Day}`.
+to** `{Day}`. A date-time parameter alone in such a value, such as `{Now}`, is that moment of this
+PC's clock, also in a column with a time zone, as in formulas; inside other text, such as
+`{Day} 08:30`, it is read like a typed value.
 
 ![A parameter in a file name: output/orders {Month}.xlsx](guide/parameter-in-file-name.png)
 
@@ -2776,7 +2792,11 @@ category that Tafl doesn't have gets a submenu of its own.
 - Import only from `tafl.api` (and other libraries), never from other plugins.
 - Take the columns that settings or the data name with `col(name)` or `cols(names)` from
   `tafl.api`, as the example does, never with `pl.col(name)` or as names in text: Polars reads `*`
-  as all columns and a name that starts with `^` and ends with `$` as a pattern.
+  as all columns and a name that starts with `^` and ends with `$` as a pattern. Import them by
+  name (`from tafl.api import P, action, col`): `from tafl.api import *` leaves them out. Polars'
+  own Series methods (`s.str.…`, `s.dt.…`) look a Series up by its name too, and stop with
+  "IndexError" for such a name: work on `s.alias("value")` and give the result its name back with
+  `.alias(s.name)`. The functions of `tafl.api.dtypes` take a Series of any name.
 - When an action's settings change, raise `version=` and add `migrate=`, a function that converts
   the settings older projects saved, so they keep working.
 - Exports and commands (`kind="export"` or `kind="command"`) run only when the project runs.

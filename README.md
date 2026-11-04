@@ -588,7 +588,8 @@ for a part of a name there (in file names and texts it can: `sales_{Month}.xlsx`
 `5-{Offset}` with -5 becomes `5- -5`, not `5--5`, the start of a comment.
 
 A fixed date-time with a time zone, `2026-10-01 08:30+02:00`, is that moment in the local time
-of the computer in formulas and SQL, as `NOW()` is.
+of the computer in formulas and SQL, as `NOW()` is. In Filter rows and Fill empty values, a
+date-time parameter alone (`{Name}`) is that moment too, also on a column with a time zone.
 
 Only names of parameters are filled in: other braces, e.g. `\d{3}` in a pattern, stay as they
 are. A `{Name}` that is no parameter stays as it is: in a formula, outside quotes and column
@@ -702,7 +703,10 @@ The settings form is built from `params`. Rules for plugins:
   `tafl.api`, never with `pl.col(name)` or as names in text (`df.select(p.columns)`): Polars reads
   `*` as all columns and a name that starts with `^` and ends with `$` as a pattern, and such names
   come with data, e.g. a CSV header `*`. Where a method needs one selector of several columns, as
-  `unpivot(on=...)` does, use `selector(names)`.
+  `unpivot(on=...)` and `drop` do, use `selector(names)`. Import these three by name, as the
+  example does: `from tafl.api import *` leaves them out. Polars' own Series methods look a Series
+  up by its name too and stop with "IndexError" for a name like `^a.*$`: work on
+  `s.alias("value")` and give the result its name back with `.alias(s.name)`.
 - When an action's settings (`params`) change, raise `version=` and add `migrate=`: a function
   `(params, old_version) -> params` that converts settings saved by older versions, so old
   projects keep working.

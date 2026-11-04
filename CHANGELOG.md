@@ -1,5 +1,137 @@
 # Changes
 
+## Unreleased
+
+This version fixes wrong results with unusual data: columns named `*` or like `^…$`, very long
+whole numbers, nanoseconds, time zones, binary values and values of a plugin's own type. Table
+statuses stay right after more kinds of edits, and more errors are plain messages.
+
+- **Column names `*` and `^…$`**: a column named `*` (a rating, a flag or a footnote star, also one
+  that **Pivot** makes from such a value), or with a name that starts with `^` and ends with `$`,
+  is now taken by its own name in every step, import, export, filter and data sheet. Before, Tafl
+  read such a name as all columns or as a pattern (`^a.*$` is the column `abc`), without a
+  message: **Remove columns** `*` removed every column, **Sort** and **Number rows** sorted by all
+  columns or by another one, **Remove duplicates**, **Aggregate** and **Merge** compared other
+  columns, **Fill empty values**, **Replace**, **Clean text** and the Excel export could write the
+  values of another column into it (also into a column of lists or records), and **Rename files**
+  could rename the files listed in another column. Many other steps stopped with an unclear error,
+  such as "IndexError: index 0 is out of bounds": the imports that detect types, **Sort** by a
+  text column, **Pivot**, **Change type**, sums in **Aggregate**, **Append**, **Unpivot**,
+  **Split column**, the CSV, Excel and database exports, and data sheets.
+- **Import from database**: date-times, date-times with a time zone and time spans of a column
+  whose name starts with `^` and ends with `$` keep their type. Before, they became text.
+- A change in **Parameters** or **Connections** checks every table again, and so do **Undo** and
+  **Redo** of that change: a table that reads `{Name}.csv` or a database of the connection, and
+  the tables that use it, no longer keep their old status until they are selected.
+- An edit followed at once by **Duplicate**, **New table**, **New table from this one** or an arrow
+  on the map no longer leaves the edited table and the tables that use it with their old status.
+  The same for **Run this table** just after a change of that table (for example Shift+F5 while you
+  type a setting): the tables that use it, and were not in the run, show their new status too.
+- A step whose table was deleted no longer uses another table whose name looks like the deleted
+  table's id (such as *T3* for `t3`), and a new table no longer gets the id of a deleted table
+  that a step still names. The step says that its table doesn't exist, in the window and in
+  `tafl run`, and the map draws no arrow for it. In a project file that you write yourself, a step
+  can name its table instead of giving its id, in any case (`customers` for *Customers*); a text
+  such as `t3` is always an id.
+- The project map no longer shows an error box ("There is no table …") when a table is deleted,
+  or removed by **Undo**, while tables are being calculated.
+- After a run that stopped with an unexpected error, the status bar no longer says "Running the
+  project…". If you closed the window during that run and then clicked **Cancel** at the question
+  about unsaved changes, it no longer says that the window closes.
+- **Import from database** keeps every digit of long whole numbers: whole numbers of more than 15
+  digits beside decimal numbers in a SQLite column, and whole numbers beyond
+  9,223,372,036,854,775,807 that the database driver of a plugin gives (for example for a 128-bit
+  column). They become exact decimals, or text beyond 38 digits or beside a very small decimal
+  number such as `6.62607015e-34`. Before, they were rounded, or a value beyond about 1.7 × 10^38
+  became empty, without a message.
+- **Import from database**: a column with exact decimals beside text (possible with the database
+  driver of a plugin) becomes text, as other mixes do. Before, the import stopped with a technical
+  error.
+- **Import Parquet files** reads whole numbers of 128 bits (a data sheet of such a table writes
+  them, and so can other programs): as whole numbers when they fit, else as exact decimals, or as
+  text with a warning beyond 38 digits. Before, a value beyond 9,223,372,036,854,775,807 stopped
+  the step with a technical message.
+- **Formulas** work on whole numbers of more than 64 bits. Before, every formula on such a column
+  stopped with a technical error. A result above
+  170,141,183,460,469,231,731,687,303,715,884,105,727 stops the formula with a plain message,
+  instead of giving a wrong negative number.
+- **Formulas**: a whole number beyond 9,223,372,036,854,775,807 that a formula gives, such as a big
+  sum, keeps all its digits, as an exact decimal (up to 38 digits), and a parameter's formula keeps
+  it as a whole number. Before, it became a decimal number, rounded to about 15 digits, without a
+  message. A formula whose result has more than 38 digits, such as `[Total] * [Total]` on such a
+  sum, stops with a plain message: write `CAST([Total] AS DOUBLE) * [Total]` for a decimal number.
+- **Aggregate** and **Pivot**: a sum of exact decimals beyond 38 digits stops the step with a plain
+  message. Before, it gave a wrong number in a group, and a technical error for a total row, also
+  when only a partial sum was that long.
+- **Filter rows** and **Fill empty values** work on date-times with a time zone (a Parquet file can
+  have them, for example in UTC). Before, the step stopped with a technical message. A typed
+  date-time is the local time of the column's time zone, as the grid shows it, and `today` and
+  `now` are the date and the time in that zone. A time that a clock change skips or repeats in
+  that zone stops the step with a message that says so. A value that is only a date-time
+  parameter, such as `{Now}` with `=NOW()` (also from `tafl run --set`), is that moment of this
+  PC's clock, as in **Filter rows by formula**. A fill that would put a moment after the year 9999
+  in the column's zone stops with a message.
+- **Filter rows** and **Fill empty values**: a typed time or date-time keeps its nanoseconds
+  (`08:30:00.000000001`) on a column that has them (Parquet files of other programs often do).
+  Before, it was cut to microseconds: `2025-01-01 08:30:00` also found `08:30:00.000000001`, and a
+  fill made the whole column lose its nanoseconds. A date-time before 1677 or after 2262, such as
+  `31.12.9999`, is beyond nanoseconds: **Filter rows** compares it in microseconds, and a fill
+  makes the column microseconds, as before. When the column has nanoseconds that this would cut,
+  the fill stops and names one.
+- **Filter rows** (contains, does not contain, starts with, ends with) and **Merge** (a binary key
+  against a key of another type) work on binary values that are no text: such a column is used as
+  hex digits (`0xFF00`), as **Join texts** writes it, and bytes that are all text stay text.
+  Before, the step stopped with "invalid utf8".
+- **Filter rows**: a whole number below 0 is below all values of a column of very wide unsigned
+  whole numbers (UInt128, for example from a plugin). Before, "is greater than" left out the
+  values from 2^127 up.
+- **Fill empty values** no longer changes long whole numbers without a message. A fixed value with
+  decimal places, or a whole number too big for the column's type, stops the step when decimal
+  numbers would change the column's numbers or the typed number, and the message names a number
+  that would change (9223372036854775807 would become 9223372036854775808; a typed
+  `1234567890123456.78` would become `1234567890123456.8`). Before, the column became decimal
+  numbers, and a fill with `12345678901234567891` wrote `12345678901234567168`.
+  **Change type** to a decimal number warns about rounded 128-bit whole numbers, where it stopped
+  with a technical message.
+- **Fill empty values**: a number below 0 in a column of unsigned whole numbers that holds values
+  too big for a column with numbers below 0 now says so, and names the highest number the column
+  could hold. Before, the step stopped with a technical message.
+- **Instant filters**: **Add as step** of a filter by week keeps the same rows for years before
+  1000: the week of 1 January 0001 is now `0001-W01`, as the step writes it. Before, the step kept
+  no row. A filter by week that 0.6.2 saved for such a year keeps its rows.
+- A column of a plugin's own values has no filter in the menus of the grid or in **+ Filter**,
+  because such values can't be compared. Before, **Show only rows where …** hid all rows and the
+  project couldn't be saved, or an error came up. A filter made where the column holds texts is
+  not used where it holds such values.
+- **Grid**: a value of a plugin's own type that has no text shows "(no text)", and Ctrl+C copies
+  that. Before, an error box came. Ctrl+C puts category values, and values of a plugin's own type,
+  that have a tab or a line break in quotes, as it does with texts, so that Excel keeps each one in
+  one cell.
+- **Step settings**: a whole number that is too big for its field, from a project file written by
+  hand (above 2,000,000,000 in a number field, or beyond 9,223,372,036,854,775,807 in any setting,
+  also in a choice such as **Delimiter** or in a row of a list), shows and stays until you change
+  it, also when another setting of the step changes, and the step says what is wrong with it.
+  Before, an error box came or the change was lost, and in some settings the number became `-1`.
+- **Import CSV / text files**: with the delimiter **Detect automatically**, a file whose column
+  names have a line break in quotes (a header cell of two lines) is read. Before, it said `could
+  not parse`, or it read the file as one column. A quoted value that holds a line end converted
+  twice (`\r\r\n`) stays as it is when no line end outside quotes was converted twice, for example
+  in a file that Tafl or a data sheet writes. A file with such line ends outside quotes is read
+  with normal line ends, as before, also when only some rows have them (for example after a
+  header written with other line ends).
+- **Export to Excel** writes values of a plugin's own type as text. Before, such a column stopped
+  the export with a technical error. A list or record whose text is longer than a cell holds is
+  cut with the same warning as a long text; before, it was cut without one.
+- Plugins: `col(name)`, `cols(names)` and `selector(names)` from `tafl.api` take columns by their
+  exact names. Use them for the columns that settings or the data name, instead of `pl.col(name)`
+  or names as text (see **Writing a plugin** in the README). Import them by name
+  (`from tafl.api import P, action, col`): `from tafl.api import *` leaves them out, so that it
+  doesn't replace Polars' own `col`. A text setting that is only a date-time parameter is a
+  `tafl.api.parameters.DateTimeText`, a text that has the value too (`.value`), and
+  `tafl.api.expressions.moment` reads such a value as formulas do. The functions of
+  `tafl.api.dtypes` work on a Series of any name, also one named like `^a.*$`. The plugin API
+  stays at version 1. `tafl.api.dtypes.parse_datetimes` has a new keyword, `time_unit`.
+
 ## 0.6.2 – 2026-11-03
 
 - A table that uses a changed table no longer keeps its old status when Tafl finishes checking the
