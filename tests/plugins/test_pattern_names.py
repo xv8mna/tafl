@@ -699,6 +699,22 @@ for _role in ("K", "S", "F", "D", "T"):
     case(f"excel.import header {_role}", _role)(lambda r: r.step("excel.import", None, {"file": str(_workbook(r))}))
 
 
+@case("parquet.import whole numbers of 128 bits beyond 38 digits in K and K2", "K", "K2")
+def _(r):
+    """K (Int128) and K2 (UInt128) each have a number of more than 38 digits: they become text, with a warning."""
+    path = r.folder / "in.parquet"
+    frame = pl.DataFrame(
+        {
+            "K": pl.Series([5, -(2**127), None], dtype=pl.Int128),
+            "abc": [1.5, 2.5, 3.0],
+            "x": ["a", "b", "c"],
+            "K2": pl.Series([2**128 - 1, None, 7], dtype=pl.UInt128),
+        }
+    )
+    named(frame, r).write_parquet(path)
+    return r.step("parquet.import", None, {"file": str(path)})
+
+
 @case("csv.import K of 2,100 numbers like 12, then 0,500", "K")
 def _(r):
     """The decimal separator of K shows only after the first 2,000 rows."""
