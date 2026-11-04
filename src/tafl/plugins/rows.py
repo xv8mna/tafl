@@ -356,17 +356,19 @@ def _rounded_with(values: pl.Series, value: Any) -> int | None:
     return rounded[0] if rounded.len() else None
 
 
-def _rounded_typed(text: str, value: Any, dtype: pl.DataType) -> int | None:
+def _rounded_typed(text: str, value: Any, dtype: pl.DataType) -> int | str | None:
     """What a typed number ``value`` becomes when it makes a whole-number column decimal numbers
     (Float64) and they can't keep it, as ``_rounded_with`` checks the column's values:
-    12345678901234567891 becomes 12345678901234567168. None when it stays as it is."""
+    12345678901234567891 becomes 12345678901234567168, 1234567890123456.78 becomes
+    1234567890123456.8 (as the cell shows it). None when it stays as it is, also when the cell
+    shows it as it was typed (0.1, 10 followed by 37 zeros)."""
     typed = text.strip()
     if not dtype.is_integer() or not isinstance(value, float) or not abs(value) < float("inf"):
         return None
-    if not dtypes.float_loses_digits(pl.Series([typed]), _decimal_of(typed))[0]:
+    exact = dtypes.parse_decimal(typed, _decimal_of(typed))
+    if exact is None or exact in (Decimal(value), Decimal(repr(value))):
         return None
-    exact = dtypes.parse_decimal(typed, _decimal_of(typed))  # beyond 38 digits float_loses_digits can't tell
-    return int(value) if exact is not None and int(exact) != int(value) else None
+    return int(value) if value.is_integer() else pl.select(dtypes.text_expr(pl.lit(value), pl.Float64)).item()
 
 
 def _literal(text: str, dtype: pl.DataType, column: str) -> Any:

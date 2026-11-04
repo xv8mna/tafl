@@ -526,6 +526,43 @@ def test_filling_whole_numbers_with_a_typed_number_that_decimal_numbers_round_sa
     assert int(kept["V"][1]) == becomes
 
 
+@pytest.mark.parametrize(
+    ("value", "becomes"),
+    [
+        ("1234567890123456.78", "1234567890123456.8"),
+        ("123456789,123456789", "123456789.12345679"),
+        ("-0.1234567890123456789", "-0.12345678901234568"),
+        ("0.0000123456789012345678", "0.000012345678901234568"),
+    ],
+)
+def test_filling_whole_numbers_with_decimal_places_that_decimal_numbers_round_says_so(act, value, becomes):
+    """Only the whole part was checked: 1234567890123456.78 became 1234567890123456.8 without a word."""
+    df = pl.DataFrame({"V": pl.Series([1, None], dtype=pl.Int64)})
+    message = rf"^'{re.escape(value)}' doesn't fit column 'V': with it the column holds decimal numbers, which keep about 15"
+    with pytest.raises(ActionError, match=message + rf" digits, so it would become {re.escape(becomes)}$"):
+        act("rows.fill", df, {"columns": ["V"], "method": "value", "value": value})
+
+
+@pytest.mark.parametrize(
+    ("value", "cell"),
+    [
+        ("0.1", 0.1),
+        ("1,5", 1.5),
+        ("2.50", 2.5),
+        ("1.234,56", 1234.56),
+        ("-0.5", -0.5),
+        ("1,234,567.25", 1234567.25),
+        ("1.234.567,25 €", 1234567.25),
+        ("1e-5", 0.00001),
+        ("1" + "0" * 37, 1e37),  # stopped: the cell shows the typed number
+    ],
+)
+def test_filling_whole_numbers_with_a_number_that_decimal_numbers_keep(act, value, cell):
+    df = pl.DataFrame({"V": pl.Series([1, None], dtype=pl.Int64)})
+    filled = act("rows.fill", df, {"columns": ["V"], "method": "value", "value": value})
+    assert filled.schema["V"] == pl.Float64 and filled["V"].to_list() == [1.0, cell]
+
+
 def test_a_list_with_a_value_the_column_can_not_hold(act):
     df = pl.DataFrame({"Name": ["a", "b"], "Qty": pl.Series([1, 2], dtype=pl.Int8)})
     assert names(flt(act, df, ("Qty", "in", "1; 300; -1"))) == ["a"]
