@@ -344,14 +344,16 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     _check_names(formula, df.columns)
     con = _connection()
     order = "rowid" if table else _ROW
+    frame, columns = _readable(df if table else _with_row_number(df, formula))
+    view = not table and columns != "*"  # a view that gives columns their own types back
     try:
         try:
-            if table:
-                _register(con, df, _FRAME)
+            if table or view:
+                _register(con, frame, _FRAME)
                 _clear(con, _VIEW)
-                con.execute(f'CREATE TEMP TABLE "{_VIEW}" AS SELECT * FROM "{_FRAME}"')
+                con.execute(f'CREATE TEMP {"TABLE" if table else "VIEW"} "{_VIEW}" AS SELECT {columns} FROM "{_FRAME}"')
             else:
-                _register(con, _with_row_number(df, formula), _VIEW)
+                _register(con, frame, _VIEW)
         except duckdb.Error as e:  # e.g. interrupted
             raise ActionError(_clean_error(e, formula, df.columns)) from None
         try:
@@ -361,6 +363,9 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
             if result_type.startswith("TIMESTAMP WITH TIME ZONE"):  # local time: the grid shows no zones
                 relation = _query(con, f"SELECT CAST((\n{body}\n) AS TIMESTAMP) AS value FROM {_VIEW} ORDER BY {order}", formula)
                 result_type = "TIMESTAMP"
+            elif result_type == "UHUGEINT":  # Arrow would take it for a signed number: from 2^127 on, a negative one
+                relation = _query(con, f"SELECT CAST((\n{body}\n) AS HUGEINT) AS value FROM {_VIEW} ORDER BY {order}", formula)
+                result_type = "HUGEINT"
         except duckdb.Error as e:
             raise ActionError(_clean_error(e, formula, df.columns)) from None
         problem = _unusable_result(result_type)
@@ -384,7 +389,7 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
                 con.unregister(name)
             except duckdb.Error:  # interrupted (the view may be left: the next formula drops it)
                 pass
-        if table:
+        if table or view:
             _clear(con, _VIEW)
     if result.height != df.height:
         raise ActionError(
@@ -506,6 +511,22 @@ def _same_reading(sql: str) -> bool:
         while token.kind == "operator" and index < len(theirs) and theirs[index][0] < places[token.end]:
             index += 1
     return index == len(theirs)
+
+
+def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, str]:
+    """``frame`` in types that Arrow, which hands it over to DuckDB, has, and what to select from it
+    for the columns in their own types: 128-bit whole numbers go as text and become HUGEINT and
+    UHUGEINT again."""
+    wide = {
+        name: "HUGEINT" if dtype == pl.Int128 else "UHUGEINT"
+        for name, dtype in frame.schema.items()
+        if dtype in (pl.Int128, pl.UInt128)
+    }
+    if not wide:
+        return frame, "*"
+    quoted = {name: '"' + name.replace('"', '""') + '"' for name in wide}
+    casts = ", ".join(f"CAST({quoted[name]} AS {kind}) AS {quoted[name]}" for name, kind in wide.items())
+    return frame.with_columns(frame[name].cast(pl.String) for name in wide), f"* REPLACE ({casts})"
 
 
 def _register(con: duckdb.DuckDBPyConnection, frame: pl.DataFrame, name: str) -> None:
@@ -746,6 +767,12 @@ def _clean_error(error: Exception, formula: str, columns: Sequence[str] = ()) ->
     kind = re.search(r'Type with name "?([\w.]+)"? (?:does not exist|is not in the catalog)', text)
     if kind:
         return f"Formula error: there is no type {kind.group(1)} (e.g. VARCHAR, BIGINT, DOUBLE, DATE, TIMESTAMP)\nFormula: {formula}"
+    too_big = re.search(r"Type UINT128 with value (\d+) can't be cast because the value is out of range for the destination type INT128", text)
+    if too_big:  # a result of UHUGEINT goes as HUGEINT (see evaluate)
+        return (
+            f"Formula error: the whole number {int(too_big.group(1)):,} is too big (at most {2**127 - 1:,}). For a decimal "
+            f"number write CAST(... AS DOUBLE)\nFormula: {formula}"
+        )
     if "+(" in text and "VARCHAR" in text:
         text += " — to join text use || or CONCAT()"
     return f"Formula error: {text}\nFormula: {formula}"

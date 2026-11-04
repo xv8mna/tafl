@@ -521,6 +521,33 @@ def test_a_column_duckdb_cant_read_only_matters_to_formulas_that_use_it():
     assert expressions.evaluate(df, "[a] + 1").to_list() == [2, 3]
 
 
+def test_whole_numbers_of_128_bits():
+    """Arrow, which hands the columns over to DuckDB, has no such numbers: they go as text and
+    become HUGEINT and UHUGEINT again (an exact decimal would divide 5 // 2 into 2.5). A result
+    of UHUGEINT from 2^127 on would come back negative from Arrow: it stops the formula."""
+    df = pl.DataFrame({
+        "id": pl.Series([2**127 - 1, -(2**127), None, 5], dtype=pl.Int128),
+        "u": pl.Series([2**128 - 1, 0, None, 7], dtype=pl.UInt128),
+        'a "b"': pl.Series([1, 2, 3, 4], dtype=pl.Int128),
+    })  # fmt: skip
+    assert expressions.filter_rows(df, "[id] > 0 AND [u] > 6")['a "b"'].to_list() == [1, 4]
+    assert expressions.evaluate(df, "TYPEOF([id]) || ' ' || TYPEOF([u])").to_list() == ["HUGEINT UHUGEINT"] * 4
+    assert expressions.evaluate(df.tail(2), "[id] // 2 + [u]").to_list() == [None, 9]
+    assert expressions.evaluate(df, "COLUMNS('^i') = 5").to_list() == [False, False, None, True]  # on a table
+    assert expressions.evaluate(df, '(SELECT MAX([a "b"]) FROM __input) + [a "b"]').to_list() == [5, 6, 7, 8]
+    assert expressions.evaluate(df.tail(2), "[u]").to_list() == [None, 7]
+    with pytest.raises(ActionError) as raised:
+        expressions.evaluate(df, "[u]")
+    assert str(raised.value) == (
+        "Formula error: the whole number 340,282,366,920,938,463,463,374,607,431,768,211,455 is too big (at most "
+        "170,141,183,460,469,231,731,687,303,715,884,105,727). For a decimal number write CAST(... AS DOUBLE)\nFormula: [u]"
+    )
+    assert expressions.evaluate(df, "CAST([u] AS DOUBLE)").to_list() == [2.0**128, 0.0, None, 7.0]
+    con = expressions._connection()
+    assert con.execute("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
+    assert con.execute("SELECT table_name FROM duckdb_tables()").fetchall() == []
+
+
 def test_a_table_left_behind_by_an_interrupt_is_dropped():
     df = pl.DataFrame({"a": [1, 2]})
     con = expressions._connection()
