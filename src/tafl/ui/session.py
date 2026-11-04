@@ -1178,6 +1178,7 @@ class Session(QObject):
                     if param.kind == "connection" and isinstance(value, str) and value in renames:
                         # New settings, not changed in place: the undo step holds the old ones
                         step.params = {**step.params, param.key: renames[value]}
+        self._recheck |= set(self.results)  # any table can use a connection, not only the selected one
         self._edited(structure=True)
 
     def set_parameters(self, new: list[Parameter], renames: dict[str, str] | None = None) -> None:
@@ -1201,6 +1202,7 @@ class Session(QObject):
             before, now = files_before[step.id], self._file_or_none(step)
             if before is None or now is None or not _same_path(before, now):  # as in ``set_params``
                 step.params = {key: value for key, value in step.params.items() if key != files.SHEET_KEY}
+        self._recheck |= set(self.results)  # any table can use a parameter, not only the selected one
         self._edited(structure=True)
 
     def _file_or_none(self, step: Step) -> Path | None:

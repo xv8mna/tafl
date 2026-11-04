@@ -2,13 +2,14 @@
 not red), Undo and Reload data refresh the tables that aren't selected, the map shows a table
 whose rest was skipped, and a run reports its own duration and real errors only."""
 
+import sqlite3
 import threading
 import types
 
 import pytest
 
 from tafl.api import ActionError, Mode, P, action
-from tafl.core import Project, Registry, Status, StepResult, TableResult
+from tafl.core import Connection, Parameter, Project, Registry, Status, StepResult, TableResult
 from tafl.ui import theme
 from tafl.ui.labels import tooltip_text
 from tafl.ui.session import Session
@@ -479,6 +480,41 @@ def test_reload_data_refreshes_every_table(window, settle, session, two_inputs):
     settle(session)
     assert session.table_status(folder.id) == "ok" and session.table_status(orders.id) == "ok"
     assert "1 row" in table_item(window, "Folder").toolTip(0)
+
+
+@pytest.mark.parametrize("change", ["parameter", "connection"])
+def test_new_parameters_or_connections_refresh_the_tables_not_selected(session, settle, registry, tmp_path, change):
+    """Any table can use a parameter or a connection, not only the selected one: Read imports
+    {Name}.csv, or from the connection Shop, and User starts from Read."""
+    (tmp_path / "a.csv").write_text("A\n1\n", encoding="utf-8")
+    with sqlite3.connect(tmp_path / "shop.db") as database:
+        database.execute("CREATE TABLE items (id INTEGER)")
+    project = Project()
+    project.parameters = [Parameter("Name", "a")]
+    project.add_connection("Shop", "sqlite", file="shop.db")
+    read = project.add_table("Read")
+    if change == "parameter":
+        project.add_step(read, registry.actions["csv.import"], {"file": "{Name}.csv"})
+    else:
+        project.add_step(read, registry.actions["db.import"], {"connection": "Shop", "table": "items"})
+    user = project.add_table("User")
+    project.add_step(user, registry.actions["table.derive"], {"table": read.id})
+    other = project.add_table("Other")
+    project.add_step(other, registry.actions["csv.import"], {"file": "a.csv"})
+    session.open_project(project.save(tmp_path / "p.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    read, user, other = session.project.tables
+    session.select_table(other.id)
+    settle(session)
+    assert [session.table_status(t.id) for t in (read, user)] == ["ok", "ok"]
+    if change == "parameter":
+        session.set_parameters([Parameter("Name", "gone")])
+    else:
+        session.set_connections([Connection("Shop", "sqlite", {"file": "gone.db"})])
+    settle(session)
+    assert [session.table_status(t.id) for t in (read, user, other)] == ["error", "error", "ok"]
 
 
 def test_selecting_a_table_calculates_nothing_else_again(window, settle, session, two_inputs, monkeypatch):
