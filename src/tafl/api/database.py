@@ -464,16 +464,16 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
     (when ``dtype`` is Int64 or a Decimal without decimal places) become Int64 when every value
     fits, other decimals Float64 when it keeps every value as it is; else they stay Decimal
     (``dtype`` when it is one), or text beyond its 38 digits. Columns holding several kinds of
-    values (possible in SQLite) become text instead of losing values, with a blob as hex digits.
-    A value that is an ``ActionError`` (what a driver's output converter gives for a value it
-    can't read) stops the reading with its message, where ``{column}`` stands for the column's
-    name.
+    values (possible in SQLite), also decimals beside text, become text instead of losing values,
+    with a blob as hex digits. A value that is an ``ActionError`` (what a driver's output
+    converter gives for a value it can't read) stops the reading with its message, where
+    ``{column}`` stands for the column's name.
     """
     kinds = {type(v) for v in values if v is not None}
     if any(issubclass(kind, ActionError) for kind in kinds):
         problem = next(v for v in values if isinstance(v, ActionError))
         raise ActionError(str(problem).replace("{column}", name))
-    if decimal.Decimal in kinds:
+    if decimal.Decimal in kinds and kinds <= _NUMBERS:  # beside other kinds of values: text, below
         return _decimals(name, values, dtype)
     if kinds and kinds <= set(_BLOBS):
         values = [None if v is None else bytes(v) for v in values]
@@ -491,6 +491,7 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
 
 
 _NATIVE = {str, int, float, bool, dt.date, dt.datetime, dt.time, dt.timedelta}
+_NUMBERS = {decimal.Decimal, int, float}  # what _decimals takes
 _BLOBS = (bytes, bytearray, memoryview)
 
 

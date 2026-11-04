@@ -1320,6 +1320,18 @@ def test_decimals_keep_their_digits():
     assert huge.to_list() == ["1" * 40, "1.5"]
 
 
+def test_decimals_beside_other_kinds_of_values_become_text():
+    """As any other mix of kinds of values, which the driver of a database without column types
+    can give: decimals as they are, a blob as hex digits."""
+    from tafl.api import make_series
+
+    D = decimal.Decimal
+    mixed = make_series("Value", [D("1.50"), "abc", None, b"\x01\xff", True, dt.date(2025, 1, 31), 7, 2.5])
+    assert mixed.dtype == pl.String
+    assert mixed.to_list() == ["1.50", "abc", None, "0x01FF", "True", "2025-01-31", "7", "2.5"]
+    assert make_series("Value", [D("12.30"), "n/a"], pl.Decimal(10, 2)).to_list() == ["12.30", "n/a"]
+
+
 def test_sqlserver_fits_values_to_their_columns(registry):
     """As the driver does with date-times: times cut to their column's digits, date-times for a
     date column their date, offsets for datetimeoffset in the driver's form, decimals rounded."""
