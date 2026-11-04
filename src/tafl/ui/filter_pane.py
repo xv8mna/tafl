@@ -676,7 +676,8 @@ class FilterPane(QWidget):
     def _fill_add_menu(self) -> None:
         self.add_menu.clear()
         used = {f.column for f in self.filters()}
-        columns = self.df.columns if self.df is not None else []
+        # Not the columns of a plugin's own values (Object): they can't be filtered
+        columns = [name for name, dtype in self.df.schema.items() if dtype != pl.Object] if self.df is not None else []
         for column in columns:  # a second filter for a column can group it differently
             text = f"{column}  (another filter)" if column in used else column
             self.add_menu.addAction(text, lambda c=column: self.add_filter(c, again=True))

@@ -139,6 +139,8 @@ def unusable(f: Filter, schema: pl.Schema) -> str | None:
         return "there is no such column yet (or any more)"
     if schema[f.column].is_nested():
         return "a column of lists or records can't be filtered"
+    if schema[f.column] == pl.Object:  # e.g. a filter made at a step where the column holds texts
+        return "a column of a plugin's own values can't be filtered"
     if f.facet not in facets_for(schema[f.column]):
         return _NEEDS[f.facet]
     if f.facet == "regex" and (error := pattern_error(str(f.options.get("pattern") or ""))):

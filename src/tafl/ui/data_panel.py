@@ -297,7 +297,8 @@ class DataPanel(QWidget):
         menu.addAction(self.copy_action)
         index = self.view.indexAt(pos)
         frame = self.model.frame
-        if index.isValid() and frame is not None:
+        # No filter for a column of a plugin's own values (Object): they can't be compared or stored
+        if index.isValid() and frame is not None and frame.dtypes[index.column()] != pl.Object:
             column = frame.columns[index.column()]
             value = self.model.value(index.row(), index.column())
             text = "(empty)" if value is None else self.model.text(index.row(), index.column())
@@ -311,7 +312,7 @@ class DataPanel(QWidget):
         header = self.view.horizontalHeader()
         section = header.logicalIndexAt(pos)
         frame = self.model.frame
-        if section < 0 or frame is None:
+        if section < 0 or frame is None or frame.dtypes[section] == pl.Object:  # no filter, as in the cell menu
             return
         column = frame.columns[section]
         menu = QMenu(self)

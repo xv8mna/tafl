@@ -8,12 +8,13 @@ from decimal import Decimal as D
 
 import polars as pl
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QWidget
 
 from tafl.api.testing import StubContext
 from tafl.core import Project
-from tafl.ui import app, filter_pane
+from tafl.ui import app, data_panel, filter_pane
+from tafl.ui.data_panel import DataPanel
 from tafl.ui.filter_pane import MAX_CARDS, FilterPane
 from tafl.ui.filters import (
     Filter,
@@ -697,6 +698,58 @@ def test_a_column_of_lists_or_records_is_not_filtered(session, qtbot):
         (card,) = pane.cards
         assert card.status.text() == "Not used at this step: a column of lists or records can't be filtered."
         assert unusable(Filter(column), df.schema) and apply(df, [Filter(column, [[1]])]) is df
+
+
+class Note:
+    """A value of a plugin's own type: only plugins make Object columns."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def __str__(self):
+        return self.text
+
+
+def test_the_menus_offer_no_filter_for_a_column_of_a_plugins_own_values(session, qtbot, monkeypatch):
+    """Its values can't be compared, and a filter that holds one can't be saved: before, the
+    filter of a cell kept no row, or stopped the refresh with an error."""
+    shown = []
+
+    class Menu(QMenu):
+        def exec(self, *args):  # instead of showing it
+            shown.append([action.text() for action in self.actions() if not action.isSeparator()])
+
+    monkeypatch.setattr(data_panel, "QMenu", Menu)
+    df = pl.DataFrame([pl.Series("Own", [Note("a\tb"), None], dtype=pl.Object), pl.Series("City", ["x", None])])
+    panel = DataPanel(session)
+    qtbot.addWidget(panel)
+    panel.model.set_frame(df)
+    panel.stack.setCurrentWidget(panel.view)
+    panel.show()
+    QApplication.processEvents()
+    header = panel.view.horizontalHeader()
+    for column in (0, 1):
+        panel._cell_menu(panel.view.visualRect(panel.model.index(0, column)).center())
+        panel._header_menu(QPoint(header.sectionViewportPosition(column) + 5, 5))
+    assert shown == [["Copy"], ["Copy", "Show only rows where City is “x”", "Filter by City"], ["Filter by City"]]
+    panel.filter_pane.show_data(session.project.add_table("T").id, df)
+    panel.filter_pane._fill_add_menu()
+    assert [action.text() for action in panel.filter_pane.add_menu.actions()] == ["City"]
+
+
+@pytest.mark.parametrize("values", [[Note("a"), Note("b"), None], [{"a"}, {"b"}, None]], ids=["values", "unhashable"])
+def test_a_filter_is_not_used_where_its_column_holds_a_plugins_own_values(session, qtbot, values):
+    """E.g. a filter made at a step where the column holds texts. Before, it kept no row there, or
+    each refresh stopped: Polars can't look up such values."""
+    df = pl.DataFrame([pl.Series("Own", values, dtype=pl.Object), pl.Series("Nr", [1, 2, 3])])
+    table = session.project.add_table("T")
+    session.set_filters(table.id, [{"column": "Own", "values": ["a"]}])
+    pane = FilterPane(session)
+    qtbot.addWidget(pane)
+    pane.show_data(table.id, df)
+    (card,) = pane.cards
+    assert card.status.text() == "Not used at this step: a column of a plugin's own values can't be filtered."
+    assert apply(df, [Filter("Own", ["a"])]) is df
 
 
 def saved_project_of(window, settle, session, registry, tmp_path, df):
