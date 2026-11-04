@@ -239,9 +239,18 @@ case("calc.aggregate sum of F", "F")(
 case("calc.aggregate join texts of S", "S")(
     lambda r: r.step("calc.aggregate", table(r), {"group_by": ["x"], "calculations": [{"function": "join", "column": r["S"], "name": "all"}]})
 )
+case("calc.aggregate sum of K", "K")(
+    lambda r: r.step("calc.aggregate", table(r), {"group_by": ["x"], "calculations": [{"function": "sum", "column": r["K"], "name": "total"}]})
+)
 
 
-@case("calc.aggregate wide sums of K into N", "K", "N", stops=("K",))
+@case("calc.aggregate sum of time spans in D", "D")
+def _(r):
+    df = named(pl.DataFrame({"g": [1, 1, 2], "abc": [1, 2, 3], "D": [dt.timedelta(hours=1), dt.timedelta(days=2), None]}), r)
+    return r.step("calc.aggregate", df, {"group_by": ["g"], "calculations": [{"function": "sum", "column": r["D"], "name": "total"}]})
+
+
+@case("calc.aggregate wide sums of K into N", "K", "N")
 def _(r):
     """Group columns of decimal numbers beside a sum of whole numbers that is added up wider."""
     df = named(pl.DataFrame({"g": [1.5, 1.5, 2.5], "abc": [0.5, 0.5, 0.25], "x": [5.5, 5.5, 7.5], "K": [2**62, 2**62 - 5, 1]}), r)
@@ -249,12 +258,15 @@ def _(r):
     return r.step("calc.aggregate", df, {"group_by": ["g", "abc", "x"], "calculations": calculations})
 
 
-@case("calc.aggregate exact sum of F", "F", stops=("F",))
-def _(r):
-    big = Decimal(4 * 10**37)
-    exact = pl.Series([big, -big + 7, Decimal(1)], dtype=pl.Decimal(38, 0))
-    df = named(pl.DataFrame({"g": [1, 1, 2], "abc": [1, 2, 3], "x": [5, 6, 7], "F": exact}), r)
-    return r.step("calc.aggregate", df, {"group_by": ["g"], "calculations": [{"function": "sum", "column": r["F"], "name": "total"}]})
+for _too_big in (False, True):
+
+    @case(f"calc.aggregate exact sum of F into N{', too many digits' if _too_big else ''}", "F", "N", refused=_too_big)
+    def _(r, too_big=_too_big):
+        """Exact decimals whose sums are added up in two parts (the result N), and checked."""
+        big = Decimal(6 * 10**37)
+        exact = pl.Series([big, big if too_big else -big + 7, Decimal(1)], dtype=pl.Decimal(38, 0))
+        df = named(pl.DataFrame({"g": [1, 1, 2], "abc": [1, 2, 3], "x": [5, 6, 7], "F": exact}), r)
+        return r.step("calc.aggregate", df, {"group_by": ["g"], "calculations": [{"function": "sum", "column": r["F"], "name": r["N"]}]})
 
 
 # rows
@@ -490,7 +502,7 @@ for _role in ("F", "D", "B"):
         _, ctx = r.step("excel.export", _for_export(r), {"file": str(path), "sheet": "S"}, StubContext(mode="run"))
         return _cells(path), ctx
 
-    @case(f"csv.export {_role}", _role, stops=("F",) if _role == "F" else ())
+    @case(f"csv.export {_role}", _role)
     def _(r):
         path = r.folder / "out.csv"
         params = {"file": str(path), "delimiter": ";", "encoding": "utf-8", "decimal": "."}

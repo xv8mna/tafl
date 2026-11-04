@@ -305,14 +305,15 @@ def _fifteen_digits(s: pl.Series) -> pl.Series:
     too (0.37 * 3 * 1e16 is 11100000000000000, not 11099999999999998); whole numbers (Int) and
     exact decimals keep all their digits. A Float32 value keeps the digits it shows (0.1, not
     0.10000000149011612); infinite and not-a-number values become empty."""
+    name = s.name  # the work has a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
     if s.dtype != pl.Float64:
         s = s.cast(pl.String).cast(pl.Float64)
-    s = pl.select(pl.when(pl.lit(s).is_finite()).then(pl.lit(s)).alias(s.name)).to_series()
+    s = pl.select(pl.when(pl.lit(s).is_finite()).then(pl.lit(s)).alias("value")).to_series()
     long = s.cast(pl.String).str.len_bytes() > 16  # shorter texts have at most 15 digits: they stay as they are
     rows = long.fill_null(False).arg_true()
     if rows.len():
         s = s.scatter(rows, [_fifteen(v) for v in s.gather(rows).to_list()])
-    return s
+    return s.alias(name)
 
 
 def _fifteen(value: float) -> float:

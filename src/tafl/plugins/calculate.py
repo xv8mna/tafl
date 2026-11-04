@@ -208,7 +208,7 @@ def _sums_may_overflow(s: pl.Series) -> bool:
     """Whether a sum of these whole numbers (or durations) might be beyond Int64, or one of exact
     decimals beyond 38 digits (Polars would let it overflow)."""
     limit = _EXACT - 1 if isinstance(s.dtype, pl.Decimal) else 2**63 - 1
-    s = s.to_physical()
+    s = s.alias("value").to_physical()  # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
     low, high = s.min(), s.max()
     return low is not None and max(-low, high) * s.len() > limit
 
@@ -225,6 +225,7 @@ def _decimal_parts(column: pl.Expr) -> pl.Expr:
 
 def _decimal_units(parts: pl.Series) -> list[int]:
     """The units of each sum from ``_decimal_parts`` (Python's whole numbers have no limit)."""
+    parts = parts.alias("parts")  # a fixed name, as in _sums_may_overflow: the result can be named like ^a.*$
     return [high * _PART + low for high, low in zip(parts.struct.field("high"), parts.struct.field("low"), strict=True)]
 
 
