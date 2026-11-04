@@ -280,7 +280,11 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
 
 def _for_polars(value: Any, dtype: pl.DataType) -> Any:
     """A typed value as Polars takes it: a Python number only below 2^127, so a higher one (only
-    ``_whole`` gives those, for a UInt128 column) needs the column's type."""
+    ``_whole`` gives those, for a UInt128 column) needs the column's type. A date-time beyond the
+    nanoseconds of the column (see ``_literal``) goes by its number: a Python date-time can't be in
+    the year 10000 (31.12.9999 23:59 in New York, in UTC), and its summer times in 2300 aren't Polars'."""
+    if isinstance(value, pl.Series) and value.dtype != dtype:  # a far date-time in microseconds
+        return pl.lit(value.to_physical()[0], dtype=value.dtype)  # one value, so that Polars doesn't convert the column
     return pl.lit(value, dtype=dtype) if isinstance(value, int) and value >= 2**127 else value
 
 

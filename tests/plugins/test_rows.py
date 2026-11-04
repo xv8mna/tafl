@@ -1,6 +1,7 @@
 import datetime as dt
 import re
 from decimal import Decimal as D
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import polars as pl
@@ -345,6 +346,40 @@ def test_typed_date_times_beyond_nanoseconds_stay_what_they_are(act, zone):
         assert filled.dt.replace_time_zone(None).to_list() == [dt.datetime(2024, 1, 1), cell, dt.datetime(2025, 6, 30, 12)]
     millis = act("rows.fill", df.with_columns(pl.col("At").dt.cast_time_unit("ms")), {"columns": ["At"], "method": "value", "value": "31.12.9999"})
     assert millis.schema["At"] == pl.Datetime("ms", zone) and millis["At"].dt.replace_time_zone(None)[1] == dt.datetime(9999, 12, 31)
+
+
+@pytest.mark.parametrize("zone", [None, "UTC", "America/New_York"])  # in UTC, 31.12.9999 23:59:59 in New York is in the year 10000
+def test_a_date_time_beyond_nanoseconds_is_compared_without_converting_the_column(act, zone):
+    """Such a value was a Series of one value: Polars made all values of the nanosecond column
+    microseconds to compare them with it, and Filter rows took up to 8 times as long as in 0.6.2.
+    Polars now plans the condition as for 0.6.2's Python date-time: no value of the column reaches it."""
+    from tafl.plugins.rows import _condition
+
+    stamps = pl.Series([dt.datetime(2024, 1, 1), None, dt.datetime(2025, 6, 30, 12)], dtype=pl.Datetime("ns"))
+    df = pl.DataFrame({"Name": list("abc"), "At": stamps.dt.replace_time_zone(zone)})
+    far = SimpleNamespace(column="At", operator="<", value="31.12.9999 23:59:59")
+    mask = pl.all_horizontal([_condition(df, far, False)]).fill_null(False)  # as Filter rows makes it
+    python = pl.all_horizontal([pl.col("At") < dt.datetime(9999, 12, 31, 23, 59, 59)]).fill_null(False)
+    naive = df.with_columns(pl.col("At").dt.replace_time_zone(None))
+    assert df.lazy().filter(mask).explain() == naive.lazy().filter(python).explain()
+    assert names(flt(act, df, ("At", "<", "31.12.9999 23:59:59"))) == ["a", "c"]
+    assert names(flt(act, df, ("At", "<=", "31.12.9999 23:59:59"))) == ["a", "c"]
+    assert names(flt(act, df, ("At", "=", "31.12.9999 23:59:59"))) == []
+    assert names(flt(act, df, ("At", "!=", "31.12.9999 23:59:59"))) == ["a", "b", "c"]
+    assert names(flt(act, df, ("At", ">", "31.12.9999 23:59:59"))) == []
+    assert names(flt(act, df, ("At", "<", "31.12.9999 23:59:59"), ("At", ">", "01.01.1600"), keep="remove")) == ["b"]
+
+
+@pytest.mark.parametrize("zone", ["Europe/Berlin", "America/New_York"])
+def test_filling_with_a_date_time_beyond_nanoseconds_keeps_the_typed_time(act, zone):
+    """In the column's time zone, as Polars and the grid show it: Python's rules have summer time
+    in 2300 there, Polars' don't, so 12:00 would become 13:00 through a Python date-time. And
+    31.12.9999 23:59:59 in New York is in the year 10000 in UTC, which a Python date-time can't be."""
+    stamps = pl.Series([dt.datetime(2025, 1, 1), None], dtype=pl.Datetime("ns")).dt.replace_time_zone(zone)
+    for value, cell in [("01.07.2300 12:00", dt.datetime(2300, 7, 1, 12)), ("31.12.9999 23:59:59", dt.datetime(9999, 12, 31, 23, 59, 59))]:
+        filled = act("rows.fill", pl.DataFrame({"At": stamps}), {"columns": ["At"], "method": "value", "value": value})["At"]
+        assert filled.dtype == pl.Datetime("us", zone)
+        assert filled.dt.replace_time_zone(None).to_list() == [dt.datetime(2025, 1, 1), cell], value
 
 
 @pytest.mark.parametrize("zone", [None, "Europe/Berlin"])
