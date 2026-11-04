@@ -464,11 +464,11 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
     (when ``dtype`` is Int64 or a Decimal without decimal places) become Int64 when every value
     fits, other decimals Float64 when it keeps every value as it is; else they stay Decimal
     (``dtype`` when it is one), or text beyond its 38 digits. Whole numbers beside decimal
-    numbers (possible in SQLite) follow the same rules. Columns holding several kinds of
-    values, also decimals beside text, become text instead of losing values, with a blob as hex
-    digits. A value that is an ``ActionError`` (what a driver's output converter gives for a
-    value it can't read) stops the reading with its message, where ``{column}`` stands for the
-    column's name.
+    numbers (possible in SQLite) follow the same rules, and so do whole numbers beyond Int64
+    (Python's have no limit). Columns holding several kinds of values, also decimals beside
+    text, become text instead of losing values, with a blob as hex digits. A value that is an
+    ``ActionError`` (what a driver's output converter gives for a value it can't read) stops the
+    reading with its message, where ``{column}`` stands for the column's name.
     """
     kinds = {type(v) for v in values if v is not None}
     if any(issubclass(kind, ActionError) for kind in kinds):
@@ -488,9 +488,14 @@ def make_series(name: str, values: list[Any], dtype: pl.DataType | None = None) 
         values = [None if v is None else str(v) for v in values]  # e.g. UUID
         dtype = pl.String
     try:
-        return pl.Series(name, values, dtype=dtype, strict=False)
+        series = pl.Series(name, values, dtype=dtype, strict=False)
     except Exception:
         return pl.Series(name, [None if v is None else str(v) for v in values], dtype=pl.String)
+    # Whole numbers beyond Int64 as decimals: Polars would make them UInt64 or Int128, and empty
+    # those beyond Int128
+    if kinds == {int} and dtype in (None, pl.Int64) and (series.dtype != pl.Int64 or series.null_count() > values.count(None)):
+        return _decimals(name, values, pl.Int64)
+    return series
 
 
 _NATIVE = {str, int, float, bool, dt.date, dt.datetime, dt.time, dt.timedelta}
@@ -505,7 +510,7 @@ def _text(value: Any) -> str:
 
 def _decimals(name: str, values: list[Any], dtype: pl.DataType | None) -> pl.Series:
     """``make_series`` for decimal values (and the numbers among them), or for whole numbers
-    beside decimal numbers."""
+    beside decimal numbers or beyond Int64."""
     numbers = [v if v is None or isinstance(v, decimal.Decimal) else decimal.Decimal(str(v)) for v in values]
     exact = dtype if isinstance(dtype, pl.Decimal) else None
     if dtype == pl.Int64 or (exact is not None and exact.scale == 0):

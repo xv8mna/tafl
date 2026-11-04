@@ -1343,6 +1343,23 @@ def test_decimals_keep_their_digits():
     assert make_series("Id", [D("1" * 20), D("NaN")]).to_list() == ["1" * 20, "NaN"]
 
 
+def test_whole_numbers_beyond_int64_follow_the_rules_of_decimals():
+    """A driver can give Python's whole numbers, which have no limit (e.g. for a HUGEINT column).
+    Polars made them UInt64 or Int128, which are no standard types, and emptied those beyond
+    Int128 without a word. Now they become exact decimals, or text beyond 38 digits."""
+    from tafl.api import make_series
+
+    D = decimal.Decimal
+    for values in ([2**63, 1, None], [-(2**63) - 1, 5], [1] * 200 + [2**100], [10**38 - 1, -(10**38) + 1]):
+        exact = make_series("Id", values)
+        assert exact.dtype == pl.Decimal(38, 0) and exact.to_list() == [None if v is None else D(v) for v in values]
+    for values in ([2**127, 1], [2**128, 1, None], [-(2**127) - 1, 1], [1] * 200 + [2**200], [10**38, 1]):
+        assert make_series("Id", values).to_list() == [None if v is None else str(v) for v in values]
+    told = make_series("Id", [2**64, 1], pl.Int64)  # a driver that says Int64
+    assert told.dtype == pl.Decimal(38, 0) and told.to_list() == [D(2**64), D(1)]
+    assert make_series("Id", [2**63 - 1, -(2**63), None]).dtype == pl.Int64  # as before
+
+
 def test_decimals_beside_other_kinds_of_values_become_text():
     """As any other mix of kinds of values, which the driver of a database without column types
     can give: decimals as they are, a blob as hex digits."""
