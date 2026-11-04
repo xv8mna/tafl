@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from decimal import Decimal
 from typing import Any
 
 import polars as pl
@@ -313,4 +314,5 @@ def _calculated(formula: str, limit: float) -> Any:
         timer.cancel()
         with lock:
             running = False
-    return result[0]
+    value = result[0]
+    return int(value) if isinstance(value, Decimal) else value  # a whole number beyond Int64: an int, as a typed one

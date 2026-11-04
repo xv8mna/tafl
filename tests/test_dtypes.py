@@ -116,7 +116,22 @@ def test_normalize_can_keep_every_digit_of_decimals():
     assert dtypes.normalize(counts, exact=True).dtype == pl.Int64
     assert dtypes.normalize(counts, exact=True).to_list() == [2**63 - 1, None]
     assert dtypes.normalize(pl.Series([1, 2], dtype=pl.UInt8), exact=True).dtype == pl.Int64
-    assert dtypes.normalize(ids).dtype == pl.Float64  # formulas: as before
+    assert dtypes.normalize(ids).equals(ids, check_dtypes=True)  # formulas too: whole numbers keep their digits
+    assert dtypes.normalize(amounts).dtype == pl.Float64  # formulas: the others as before
+
+
+@pytest.mark.parametrize("exact", [True, False])
+def test_normalize_keeps_every_digit_of_whole_numbers_of_128_bits(exact):
+    """In a Parquet file from Polars: beyond Int64 the import stopped with "conversion from `i128`
+    to `i64` failed". They follow the rules of decimals: exact decimals, or text beyond 38 digits."""
+    nines = 10**38 - 1  # the most an exact decimal holds
+    for values, dtype in [([2**64, -5, None], pl.Int128), ([2**64, 5, None], pl.UInt128), ([nines, -nines], pl.Int128)]:
+        out = dtypes.normalize(pl.Series("Id", values, dtype=dtype), exact=exact)
+        assert out.dtype == pl.Decimal(38, 0) and out.to_list() == [None if v is None else Decimal(v) for v in values]
+    for values, dtype in [([2**127 - 1, -(2**127), None], pl.Int128), ([2**128 - 1, 5], pl.UInt128), ([10**38, 5], pl.Int128)]:
+        out = dtypes.normalize(pl.Series("Id", values, dtype=dtype), exact=exact)
+        assert out.to_list() == [None if v is None else str(v) for v in values]
+    assert dtypes.normalize(pl.Series([2**63 - 1, None], dtype=pl.UInt128), exact=exact).dtype == pl.Int64  # as before
 
 
 def test_decimals_that_lose_digits_as_decimal_numbers():

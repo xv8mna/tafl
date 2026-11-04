@@ -4,6 +4,7 @@ import random
 import re
 import threading
 import time
+from decimal import Decimal
 
 import duckdb
 import polars as pl
@@ -546,6 +547,21 @@ def test_whole_numbers_of_128_bits():
     con = expressions._connection()
     assert con.execute("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
     assert con.execute("SELECT table_name FROM duckdb_tables()").fetchall() == []
+
+
+def test_whole_numbers_beyond_int64_keep_their_digits():
+    """DuckDB gives them (HUGEINT, DECIMAL(38,0)) as decimals of 38 digits: they became decimal
+    numbers, rounded beyond 15 digits. They are exact decimals now, or text beyond 38 digits (a
+    HUGEINT can have 39). Results with decimal places stay decimal numbers."""
+    df = pl.DataFrame({"id": pl.Series([2**64, 5, None], dtype=pl.Int128), "n": [1, 2, None]})
+    beyond = expressions.evaluate(df, "CAST(9223372036854775807 AS HUGEINT) + [n]")
+    assert beyond.dtype == pl.Decimal(38, 0) and beyond.to_list() == [Decimal(2**63), Decimal(2**63 + 1), None]
+    assert expressions.evaluate(df, "[id] + 1").to_list() == [Decimal(2**64 + 1), Decimal(6), None]
+    assert expressions.evaluate(df, "SUM([id]) OVER ()").to_list() == [Decimal(2**64 + 5)] * 3
+    top = expressions.evaluate(df, "CAST('170141183460469231731687303715884105727' AS HUGEINT) - [n]")
+    assert top.to_list() == ["170141183460469231731687303715884105726", "170141183460469231731687303715884105725", None]
+    assert expressions.evaluate(df, "CAST(5 AS HUGEINT) + [n]").dtype == pl.Int64  # as before: they fit
+    assert expressions.evaluate(df, "[n] * 1.5").dtype == pl.Float64  # as before: decimal numbers
 
 
 def test_a_table_left_behind_by_an_interrupt_is_dropped():

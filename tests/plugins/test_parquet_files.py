@@ -101,6 +101,24 @@ def test_numbers_of_more_than_38_digits_become_text(act, tmp_path):
     assert ctx.warnings == [f"Long becomes text: its numbers are too long to be kept exactly, e.g. '{long}'"]
 
 
+def test_whole_numbers_of_128_bits_follow_the_rules_of_decimals(act, tmp_path):
+    """Polars writes them. Beyond Int64 the import stopped with "conversion from `i128` to `i64`
+    failed": they become exact decimals now, or text beyond 38 digits."""
+    pl.DataFrame(
+        {
+            "Small": pl.Series([2**40, None], dtype=pl.Int128),
+            "Id": pl.Series([2**64, -5], dtype=pl.Int128),
+            "Unsigned": pl.Series([2**64, 5], dtype=pl.UInt128),
+            "Top": pl.Series([2**128 - 1, 5], dtype=pl.UInt128),
+        }
+    ).write_parquet(tmp_path / "wide.parquet")
+    ctx = StubContext()
+    df = act("parquet.import", None, {"file": str(tmp_path / "wide.parquet")}, ctx)
+    assert df.schema == {"Small": pl.Int64, "Id": pl.Decimal(38, 0), "Unsigned": pl.Decimal(38, 0), "Top": pl.String}
+    assert df.rows() == [(2**40, D(2**64), D(2**64), str(2**128 - 1)), (None, D(-5), D(5), "5")]
+    assert ctx.warnings == [f"Top becomes text: its numbers are too long to be kept exactly, e.g. '{2**128 - 1}'"]
+
+
 @pytest.mark.parametrize("name", ["x[1]/data.parquet", "Data [old]/data.parquet", "x[1].parquet", "a[b.parquet"])
 def test_a_bracket_in_a_path_is_part_of_the_name(act, tmp_path, name):
     path = tmp_path / name

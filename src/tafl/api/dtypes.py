@@ -406,16 +406,18 @@ def bytes_are_text(values: pl.Series) -> bool:
 def normalize(s: pl.Series, *, exact: bool = False) -> pl.Series:
     """Map other types to the app's standard ones (Decimal -> Int64/Float64, Int32 -> Int64, ...).
 
-    With ``exact``, decimals (Decimal) keep all their digits: those without decimal places
-    become Int64 when every value fits, the others stay Decimal."""
+    Whole numbers, also decimals (Decimal) without decimal places, become Int64 when every value
+    fits; else they keep all their digits as exact decimals (Decimal), or as text beyond their 38
+    digits. With ``exact``, the other decimals keep all their digits too (they stay Decimal);
+    without it they become Float64 (a formula's 1.5 * 2)."""
     dtype = s.dtype
-    if isinstance(dtype, pl.Decimal):
-        if dtype.scale == 0:
-            try:
-                return s.cast(pl.Int64)
-            except Exception:  # does not fit into Int64
-                pass
+    if isinstance(dtype, pl.Decimal) and dtype.scale:
         return s if exact else s.cast(pl.Float64)
+    if isinstance(dtype, pl.Decimal) or dtype in (pl.Int128, pl.UInt128):
+        try:
+            return s.cast(pl.Int64)
+        except Exception:  # does not fit into Int64
+            return _exact_whole_numbers(s)
     if dtype.is_integer() and dtype not in (pl.Int64, pl.UInt64):
         return s.cast(pl.Int64)
     if dtype == pl.Float32:
@@ -423,6 +425,15 @@ def normalize(s: pl.Series, *, exact: bool = False) -> pl.Series:
     if dtype in (pl.Null, pl.Categorical) or isinstance(dtype, pl.Enum):
         return s.cast(pl.String)
     return s
+
+
+def _exact_whole_numbers(s: pl.Series) -> pl.Series:
+    """Whole numbers beyond Int64 as exact decimals, or as text when one has more than their 38
+    digits (a Decimal from DuckDB's HUGEINT can hold 39)."""
+    exact = (s.cast(pl.Int128) if isinstance(s.dtype, pl.Decimal) else s).cast(pl.Decimal(38, 0), strict=False)
+    if exact.null_count() > s.null_count():
+        return s.cast(pl.String)
+    return s if isinstance(s.dtype, pl.Decimal) else exact
 
 
 # --- sorting ---------------------------------------------------------------------------------

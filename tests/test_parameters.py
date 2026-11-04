@@ -343,6 +343,14 @@ def test_values_in_order_formulas_use_the_ones_above():
     assert parameters.values(_project(("Version", " 1.0 "), ("File", "='v{Version}_' || {Version}")))["File"] == "v1.0_1.0"
 
 
+def test_a_formula_with_a_whole_number_beyond_int64_keeps_its_digits():
+    """Formulas give such a number as an exact decimal: the parameter has it as a whole number, as
+    a typed one, so that it goes into formulas and SQL as a number."""
+    found = parameters.values(_project(("Big", "=CAST(9223372036854775807 AS HUGEINT) + 2"), ("Next", "={Big} + 1")))
+    assert found == {"Big": 2**63 + 1, "Next": 2**63 + 2} and type(found["Next"]) is int
+    assert parameters.value_label(found["Big"]) == "whole number"
+
+
 def test_a_formula_with_an_error():
     found = parameters.values(_project(("Bad", "=1 +"), ("Later", "={Bad} + 1"), ("Below", "={Later2}")))
     assert isinstance(found["Bad"], Failed) and found["Bad"].message.startswith("the formula ends too early")

@@ -49,7 +49,8 @@ def import_parquet(df, p, ctx):
     Databricks, pandas, DuckDB, ...); column types are stored in the file, so nothing has to
     be detected. Decimal columns keep all their digits: those without decimal places become
     whole numbers when every value fits, the others stay exact decimals; numbers of more than
-    38 digits become text. Files are matched by column names."""
+    38 digits become text. Whole numbers of 128 bits follow the same rules. Files are matched by
+    column names."""
     files, folder = source_files(p, ctx)
     parts = []
     for path in files:
@@ -57,11 +58,19 @@ def import_parquet(df, p, ctx):
         parts.append((path, None, _read(path, ctx.warn)))
     if len(files) > 1:
         ctx.log(f"{len(files)} files")
-    return combine(parts, p, folder, prepare=_standard_types)
+    return combine(parts, p, folder, prepare=lambda data: _standard_types(data, ctx.warn))
 
 
-def _standard_types(data: pl.DataFrame) -> pl.DataFrame:
-    return data.with_columns([dtypes.normalize(data[name], exact=True) for name in data.columns])
+def _standard_types(data: pl.DataFrame, warn) -> pl.DataFrame:
+    columns = [dtypes.normalize(data[name], exact=True) for name in data.columns]
+    for column in columns:  # whole numbers of 128 bits with more than 38 digits
+        if column.dtype == pl.String and data.schema[column.name].is_integer():
+            warn(_too_long(column.name, column[column.str.len_chars().arg_max()]))
+    return data.with_columns(columns)
+
+
+def _too_long(name: str, longest: str) -> str:
+    return f"{name} becomes text: its numbers are too long to be kept exactly, e.g. '{longest}'"
 
 
 def _read(path: Path, warn) -> pl.DataFrame:
@@ -86,6 +95,6 @@ def _read(path: Path, warn) -> pl.DataFrame:
         except (pa.ArrowInvalid, ValueError):
             column = column.cast(pa.string())
             longest = max((v for v in column.to_pylist() if v is not None), key=len, default="")
-            warn(f"{name} becomes text: its numbers are too long to be kept exactly, e.g. '{longest}'")
+            warn(_too_long(name, longest))
         table = table.set_column(i, name, column)
     return pl.from_arrow(table)
