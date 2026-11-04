@@ -183,11 +183,15 @@ class Project:
 
     # --- lookup ---------------------------------------------------------------------------
 
-    def find_table(self, ref: str) -> Table | None:
-        """Table by id, or else by name (case-insensitive)."""
+    def find_table(self, ref: str, *, by_name: bool = True) -> Table | None:
+        """Table by id, or else by name (case-insensitive). Without ``by_name`` by id only: a
+        step's setting holds the id of the table it uses, and when that table is gone, the step
+        must not use another one whose name looks like the id (ids are t1, t2, ...)."""
         for table in self.tables:
             if table.id == ref:
                 return table
+        if not by_name:
+            return None
         lowered = ref.lower()
         for table in self.tables:
             if table.name.lower() == lowered:

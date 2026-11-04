@@ -78,6 +78,16 @@ def test_ids_are_unique_and_tables_found_by_id_or_name():
         project.add_table("ORDERS")
 
 
+def test_a_lookup_by_id_only_finds_no_table_by_its_name():
+    """What a step holds is an id: a table whose name looks like an id is found by that name
+    only where a person types a name."""
+    project = sample_project()
+    named = project.add_table("T7")
+    assert project.find_table("t7") is named
+    assert project.find_table("t7", by_name=False) is None and project.find_table("Summary", by_name=False) is None
+    assert project.find_table(named.id, by_name=False) is named
+
+
 def test_duplicate_or_missing_ids_are_repaired():
     data = sample_project().to_dict()
     data["tables"][1]["id"] = "t1"

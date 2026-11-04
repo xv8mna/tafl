@@ -206,6 +206,19 @@ def test_dependencies_and_order(project, registry):
     assert engine.describe(customers.steps[0]) == "Start from Orders"
 
 
+def test_a_step_uses_a_table_by_its_id_only(project, registry):
+    """Ids are t1, t2, ... and a name can look like one. A step whose table is gone must not use
+    a table named like its id: it has an error, as in a fresh window, and the map no arrow."""
+    other = project.add_table("Other")
+    step = project.add_step(other, "table.derive", {"table": "t1"})
+    named = project.add_table("T1")  # a name, not the id of Orders
+    project.add_step(named, "csv.import", {"file": "orders.csv"})
+    project.tables.remove(project.table("Orders"))
+    engine = Engine(project, registry)
+    assert engine.links(other.id) == [] and engine.describe(step) == "Start from t1"
+    assert engine.evaluate(other.id).steps[0].error == "Table 't1' does not exist"
+
+
 def test_referenced_table_errors_are_reported(project, registry):
     project.tables[0].steps[1].params["condition"] = "nonsense ("
     other = project.add_table("Other")
