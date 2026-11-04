@@ -88,6 +88,18 @@ def test_a_lookup_by_id_only_finds_no_table_by_its_name():
     assert project.find_table(named.id, by_name=False) is named
 
 
+def test_a_step_finds_its_table_by_the_id_or_by_a_name_not_shaped_like_an_id():
+    """A step holds the id of the table it uses; a file written by hand may hold its name. A text
+    shaped like an id is taken as an id: when that table is gone, a table named like the id is
+    not used in its place."""
+    project = sample_project()
+    named = project.add_table("t7")
+    assert project.used_table(named.id) is named and project.used_table("t1").name == "Orders"
+    assert project.used_table("t7") is None and project.used_table("t07") is None
+    assert project.used_table("summary").name == "Summary" and project.used_table("T7") is named
+    assert project.used_table("Gone") is None
+
+
 @pytest.mark.parametrize(
     ("action", "params"),
     [

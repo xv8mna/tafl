@@ -219,6 +219,38 @@ def test_a_step_uses_a_table_by_its_id_only(project, registry):
     assert engine.evaluate(other.id).steps[0].error == "Table 't1' does not exist"
 
 
+def test_a_step_finds_a_table_by_its_name_from_a_file_written_by_hand(project, registry, tmp_path):
+    """The app stores the id of the table that a step uses; a project file written by hand may
+    hold the table's name, in any case. The step uses that table, the map draws the arrow and
+    the summary names it. A text shaped like an id finds no table by its name (see above)."""
+    (tmp_path / "customers.csv").write_text("Customer;Name\nA;Anna\nB;Ben\n", encoding="utf-8")
+    customers = project.add_table("Customers")
+    project.add_step(customers, "csv.import", {"file": "customers.csv"})
+    summary = project.add_table("Summary")
+    merge = {"other": "customers", "match": [{"column": "Customer", "other_column": "Customer"}]}
+    steps = [
+        project.add_step(summary, "table.derive", {"table": "Orders"}),
+        project.add_step(summary, "table.merge", merge, version=2),
+        project.add_step(summary, "table.append", {"tables": ["ORDERS"]}),
+        project.add_step(summary, "flow.skip_if_empty", {"which": "other", "table": "Customers"}),
+    ]
+    engine = Engine(project, registry)
+    assert [(link.source, link.index) for link in engine.links(summary.id)] == [
+        ("t1", 0),
+        (customers.id, 1),
+        ("t1", 2),
+        (customers.id, 3),
+    ]
+    assert [engine.describe(step) for step in steps] == [
+        "Start from Orders",
+        "Lookup Customers on Customer",
+        "Append Orders",
+        "Skip the rest if Customers is empty",
+    ]
+    result = engine.evaluate(summary.id)
+    assert result.ok and result.df["Name"].to_list() == ["Anna", "Ben", None, None]
+
+
 def test_referenced_table_errors_are_reported(project, registry):
     project.tables[0].steps[1].params["condition"] = "nonsense ("
     other = project.add_table("Other")

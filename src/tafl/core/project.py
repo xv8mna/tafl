@@ -20,6 +20,7 @@ FORMAT = "tafl-project"
 FORMAT_VERSION = 1
 EXTENSION = ".tafl"
 _MAX_NESTING = 100  # a project needs a few levels; a copy of it recurses, and stops at some hundred
+_TABLE_ID = re.compile(r"t[0-9]+")  # the ids the app gives tables: t1, t2, ...
 
 
 class ProjectError(Exception):
@@ -185,9 +186,9 @@ class Project:
     # --- lookup ---------------------------------------------------------------------------
 
     def find_table(self, ref: str, *, by_name: bool = True) -> Table | None:
-        """Table by id, or else by name (case-insensitive). Without ``by_name`` by id only: a
-        step's setting holds the id of the table it uses, and when that table is gone, the step
-        must not use another one whose name looks like the id (ids are t1, t2, ...)."""
+        """Table by id, or else by name (case-insensitive). Without ``by_name`` by id only: when
+        the table with that id is gone, another one whose name looks like the id is not it (ids
+        are t1, t2, ...). For the table that a step's setting names, see ``used_table``."""
         for table in self.tables:
             if table.id == ref:
                 return table
@@ -198,6 +199,12 @@ class Project:
             if table.name.lower() == lowered:
                 return table
         return None
+
+    def used_table(self, ref: str) -> Table | None:
+        """The table that a step's setting names. The app stores the table's id there; a project
+        file written by hand may hold its name. A text shaped like an id finds no table by its
+        name: when the table with that id is gone, the step must not use one named like the id."""
+        return self.find_table(ref, by_name=_TABLE_ID.fullmatch(ref) is None)
 
     def table(self, ref: str) -> Table:
         table = self.find_table(ref)

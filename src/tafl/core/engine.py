@@ -472,7 +472,7 @@ class Engine:
                     _stop_if(self.cancel)
                     continue
                 for ref in action.table_refs(params):
-                    if (source := self.project.find_table(ref, by_name=False)) is not None:
+                    if (source := self.project.used_table(ref)) is not None:
                         result.append(Link(source.id, target.id, step.id, index, step.enabled))
         return result
 
@@ -551,7 +551,7 @@ class Engine:
             return action.name
 
     def table_name(self, ref: str) -> str:
-        table = self.project.find_table(ref, by_name=False)
+        table = self.project.used_table(ref)
         return table.name if table else ref
 
 
@@ -694,7 +694,7 @@ class _Evaluation:
         # Tables this step uses are calculated first.
         deps: dict[str, TableResult] = {}
         for ref in action.table_refs(params):
-            found = self.project.find_table(ref, by_name=False)
+            found = self.project.used_table(ref)
             if found is None:
                 return _error(step, f"Table '{ref}' does not exist")
             dependency = self.table(found.id)
@@ -879,6 +879,7 @@ class _Evaluation:
             return result.df.columns if result is not None and result.df is not None else None
 
         tables = {t.id: t.name for t in self.project.tables} | {t.name: t.name for t in self.project.tables}
+        tables |= {ref: self.engine.table_name(ref) for ref in deps}  # as the step found them, e.g. a name in other case
         return ValidationContext(
             columns=df.columns if df is not None else None,
             table_columns=table_columns,
