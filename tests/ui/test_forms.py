@@ -159,6 +159,60 @@ def test_a_project_with_a_whole_number_beyond_the_field_opens(window, session, r
     assert session.step.params["step"] == 2 and session.step.params["start"] == number
 
 
+def choice_form(registry, delimiter):
+    action = registry.actions["csv.import"]
+    form = ParamForm(action.params, FormContext())
+    form.set_values(json_ready(action.resolve({"delimiter": delimiter})))
+    return form
+
+
+@pytest.mark.parametrize("value", [7, 2**63 - 1, 2**63, 2**64, -(2**63) - 1, [2**64]])
+def test_a_choice_that_is_no_option_shows_and_stays(qtbot, registry, value):
+    """From a project file written by hand, also a whole number beyond 2**63, which no number of Qt
+    holds (also in a list): the choice shows it, and it stays when another setting changes and when
+    the settings show again, with one item for it."""
+    form = choice_form(registry, value)
+    combo = form.editor("delimiter")._combo
+    items = combo.count()
+    assert combo.currentText() == f"{value} (unknown)" and form.values()["delimiter"] == value
+    with qtbot.waitSignal(form.changed) as signal:  # another setting
+        form.editor("header")._box.setChecked(False)
+    assert signal.args[0]["delimiter"] == value
+    form.set_values(signal.args[0])
+    assert combo.count() == items and form.values()["delimiter"] == value
+    with qtbot.waitSignal(form.changed) as signal:  # an option, and back
+        combo.setCurrentIndex(0)
+    assert signal.args[0]["delimiter"] == "auto"
+    combo.setCurrentIndex(items - 1)
+    assert form.values()["delimiter"] == value
+
+
+def test_a_choice_in_a_row_of_a_list_keeps_a_whole_number_beyond_2_63(qtbot, registry):
+    rows = [{"column": "a", "order": 2**64}, {"column": "b", "order": "desc"}]
+    form = sort_form(registry, rows)
+    by = form.editor("by")
+    assert by.row_editor(1, "order")._combo.currentText() == f"{2**64} (unknown)" and form.values()["by"] == rows
+    with qtbot.waitSignal(form.changed) as signal:  # the rows are built again
+        by._add_clicked()
+    assert signal.args[0]["by"] == [*rows, {"column": "", "order": "asc"}]
+
+
+@pytest.mark.parametrize("value", [2**64, [2**64]])
+def test_a_project_with_a_choice_beyond_2_63_opens(window, session, registry, settle, tmp_path, value):
+    """The step is selected when the project opens: its settings show, the value stays when
+    another setting changes, and the step's check reports it."""
+    project = Project(name="Big choice")
+    table = project.add_table("A")
+    project.add_step(table, registry.actions["csv.import"], {"file": "a.csv", "delimiter": value})
+    assert window.open_path(project.save(tmp_path / "big.tafl"))
+    form = window.settings_panel.form
+    assert session.step.action == "csv.import" and form.values()["delimiter"] == value
+    form.editor("header")._box.setChecked(False)
+    assert session.step.params["header"] is False and session.step.params["delimiter"] == value
+    settle(session)
+    assert window.settings_panel.error.text().startswith(f"Delimiter: '{value}' is not one of: auto, ")
+
+
 def test_missing_columns_are_kept(qapp, registry):
     """A column that disappeared upstream stays selected (and is marked), so nothing is lost."""
     action = registry.actions["rows.dedupe"]

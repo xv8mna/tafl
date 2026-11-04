@@ -768,20 +768,26 @@ class ChoiceEditor(Editor):
         self._combo = _Combo(self)
         self._combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self._combo.setMinimumContentsLength(8)
+        # The value of each item, kept here: Qt can't hold every value of a project file written by
+        # hand (a whole number beyond 2**63, also in a list)
+        self._values: list[Any] = []
         for value, label in getattr(param, "options", ()):
             self._combo.addItem(label, value)
+            self._values.append(value)
         self._combo.currentIndexChanged.connect(self.changed)
         self.setLayout(_row(self._combo))
 
     def value(self) -> Any:
-        return self._combo.currentData()
+        index = self._combo.currentIndex()
+        return self._values[index] if index >= 0 else None
 
     def set_value(self, value: Any) -> None:
         self._combo.blockSignals(True)
-        index = self._combo.findData(value)
+        index = self._values.index(value) if value in self._values else -1  # compared as the step's check compares
         if index < 0 and value is not None:
-            self._combo.addItem(f"{value} (unknown)", value)
-            index = self._combo.count() - 1
+            self._combo.addItem(f"{value} (unknown)")
+            self._values.append(value)
+            index = len(self._values) - 1
         self._combo.setCurrentIndex(max(index, 0))
         self._combo.blockSignals(False)
         self._combo.updateGeometry()  # a narrow one is as wide as its text
