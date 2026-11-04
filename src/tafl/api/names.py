@@ -18,7 +18,8 @@ the process ends.
 Polars reads names as patterns even then in ``DataFrame.cast({name: type})``: write
 ``with_columns(col(name).cast(type))``. The methods of a Series find the Series by its name too:
 many of them stop with an IndexError for a Series whose name starts with ``^`` and ends with
-``$`` (they change no value).
+``$`` (they change no value). Give such a Series a fixed name first, and its own name back on
+the result: ``series.alias("text").str.to_uppercase().alias(series.name)``.
 """
 
 from __future__ import annotations

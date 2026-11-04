@@ -131,6 +131,30 @@ def test_export_binary_values_decimals_and_long_texts(act, tmp_path):
     assert ctx.warnings == ["1 text was cut to 32,767 characters, the most an Excel cell holds"]
 
 
+class _Point:
+    """A value of a plugin's own type."""
+
+    def __str__(self) -> str:
+        return "POINT (8.5 47.4)"
+
+
+def test_export_lists_records_and_values_of_a_plugins_own_type_as_text(act, tmp_path):
+    df = pl.DataFrame(
+        [
+            pl.Series("tags", [["red", "blue"], None, ["ab"] * 6_000]),
+            pl.Series("size", [{"w": 1, "h": 2}, None, None]),
+            pl.Series("place", [_Point(), None, None], dtype=pl.Object),
+        ]
+    )
+    ctx = StubContext()
+    path = tmp_path / "out.xlsx"
+    act("excel.export", df, {"file": str(path)}, ctx)
+    rows = [[cell.value for cell in row] for row in openpyxl.load_workbook(path).active.iter_rows()]
+    assert rows[:3] == [["tags", "size", "place"], ["['red', 'blue']", "{'w': 1, 'h': 2}", "POINT (8.5 47.4)"], [None, None, None]]
+    assert rows[3][0] == str(["ab"] * 6_000)[:32_767]
+    assert ctx.warnings == ["1 text was cut to 32,767 characters, the most an Excel cell holds"]
+
+
 def test_export_more_rows_than_a_sheet_holds(act, tmp_path):
     with pytest.raises(ActionError, match=r"The table has 1,048,576 rows, but an Excel sheet holds at most 1,048,575"):
         act("excel.export", pl.DataFrame({"a": range(1_048_576)}), {"file": str(tmp_path / "big.xlsx")})

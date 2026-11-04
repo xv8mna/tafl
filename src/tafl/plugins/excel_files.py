@@ -331,7 +331,8 @@ def export_excel(df, p, ctx):
         )
     data = _excel_values(df)
     texts = [c for c, t in data.schema.items() if t == pl.String or isinstance(t, (pl.Categorical, pl.Enum))]
-    long = sum(int((data[c].cast(pl.String).str.len_chars() > xlsx.MAX_TEXT).sum()) for c in texts)
+    # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
+    long = sum(int((data[c].alias("text").cast(pl.String).str.len_chars() > xlsx.MAX_TEXT).sum()) for c in texts)
     rows = f"{df.height:,} row{'s' if df.height != 1 else ''}"
     if into_sheet:
         replaced = xlsx.replace_sheet(path, sheet, lambda book: _write(data, book, sheet, p), ctx.warn)
@@ -354,12 +355,21 @@ def export_excel(df, p, ctx):
 def _excel_values(df: pl.DataFrame) -> pl.DataFrame:
     """Not-a-number and infinite values become empty cells (in Excel they would be errors that
     break every sum). Date-times lose their time zone (Excel has none) and keep the local time.
-    Binary values become hex text (0x0102FF)."""
+    Binary values become hex text (0x0102FF). Lists, records and values of a plugin's own type
+    become their text here (['red', 'blue']), as Polars' write_excel would write them: it takes
+    such a column by a name that it reads as a pattern (^a.*$ would get the values of abc), and
+    it stops at values of a plugin's own type."""
     return df.with_columns(
         *(pl.when(col(c).is_finite()).then(col(c)).alias(c) for c, t in df.schema.items() if t.is_float()),
         *(col(c).dt.replace_time_zone(None) for c, t in df.schema.items() if isinstance(t, pl.Datetime) and t.time_zone),
         *((pl.lit("0x") + col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
+        *(_as_texts(df[c]) for c, t in df.schema.items() if t.is_nested() or t.is_object()),
     )
+
+
+def _as_texts(series: pl.Series) -> pl.Series:
+    """The values as Python writes them, under the column's own name."""
+    return pl.Series(series.name, [None if v is None else str(v) for v in series.to_list()], dtype=pl.String)
 
 
 def _write(df: pl.DataFrame, workbook, sheet: str, p) -> None:

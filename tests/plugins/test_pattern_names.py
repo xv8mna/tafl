@@ -85,6 +85,14 @@ def test_the_excel_export_writes_the_values_of_its_own_column(act, tmp_path):
     assert [[cell.value for cell in row] for row in sheet.iter_rows()] == [["abc", "^a.*$"], [1.25, 10.5], [2.5, None]]
 
 
+def test_the_excel_export_writes_the_lists_and_texts_of_their_own_columns(act, tmp_path):
+    df = pl.DataFrame({"abc": [10, 20], "^a.*$": [["red", "blue"], ["green"]], "^Code$": ["A1", "B2"]})
+    path = tmp_path / "out.xlsx"
+    act("excel.export", df, {"file": str(path), "sheet": "S"}, StubContext(mode="run"))
+    cells = [[cell.value for cell in row] for row in openpyxl.load_workbook(path)["S"].iter_rows()]
+    assert cells == [["abc", "^a.*$", "^Code$"], [10, "['red', 'blue']", "A1"], [20, "['green']", "B2"]]
+
+
 def test_aggregate_keeps_the_group_values_beside_a_result_named_like_a_pattern(act):
     df = pl.DataFrame({"group": ["a", "a", "b"], "gx": [1.5, 2.5, 3.5], "big": [2**62, 2**62 - 5, 1]})
     calculation = {"function": "sum", "column": "big", "name": "^g.*$"}  # added up wider, then cast back
@@ -101,7 +109,7 @@ def test_clean_text_of_all_text_columns_leaves_each_column_its_own_values(act):
 
 # --- the same result with such names ---------------------------------------------------------
 
-ORDINARY = {"K": "k", "K2": "k2", "S": "s", "F": "f", "I": "info", "N": "new", "D": "d", "B": "b"}
+ORDINARY = {"K": "k", "K2": "k2", "S": "s", "F": "f", "I": "info", "N": "new", "D": "d", "B": "b", "L": "l", "R": "r", "O": "o"}
 PATTERNS = ("*", "^a.*$", "^x$")
 
 
@@ -413,9 +421,35 @@ def _cells(path: Path, formats: bool = False) -> pl.DataFrame:
     return pl.DataFrame(shown, schema=[f"column {i}" for i in range(len(shown[0]))], orient="row")
 
 
+@dataclass(frozen=True)
+class _Own:
+    """A value of a plugin's own type."""
+
+    text: str
+
+    def __str__(self) -> str:
+        return f"own {self.text}"
+
+
+def _for_excel(r: Run) -> pl.DataFrame:
+    """Texts (S), lists (L), records (R) and values of a plugin's own type (O): Polars' write_excel
+    takes the last three by their names."""
+    frame = pl.DataFrame(
+        [
+            pl.Series("abc", [10, 20]),
+            pl.Series("x", [30, 40]),
+            pl.Series("S", ["A1", None]),
+            pl.Series("L", [["red", "blue"], None]),
+            pl.Series("R", [{"size": 1}, {"size": 2}]),
+            pl.Series("O", [_Own("a"), None], dtype=pl.Object),
+        ]
+    )
+    return named(frame, r)
+
+
 for _role in ("F", "D", "B"):
 
-    @case(f"excel.export {_role}", _role, stops=("B",) if _role == "B" else ())
+    @case(f"excel.export {_role}", _role)
     def _(r):
         path = r.folder / "out.xlsx"
         _, ctx = r.step("excel.export", _for_export(r), {"file": str(path), "sheet": "S"}, StubContext(mode="run"))
@@ -436,6 +470,15 @@ def _(r):
     params = {"file": str(path), "sheet": "S", "column_formats": [{"column": r["F"], "format": "0.000"}]}
     _, ctx = r.step("excel.export", df, params, StubContext(mode="run"))
     return _cells(path, formats=True), ctx
+
+
+for _role in ("S", "L", "R", "O"):
+
+    @case(f"excel.export {_role} beside lists and records", _role)
+    def _(r):
+        path = r.folder / "out.xlsx"
+        _, ctx = r.step("excel.export", _for_excel(r), {"file": str(path), "sheet": "S"}, StubContext(mode="run"))
+        return _cells(path), ctx
 
 
 def _database(r: Run, *exports: tuple[pl.DataFrame, dict]) -> tuple[pl.DataFrame, StubContext]:
