@@ -231,6 +231,16 @@ def test_line_ends_converted_twice(act, tmp_path):
     assert act("csv.import", None, {"file": str(tmp_path / "many.csv")}).to_dict(as_series=False) == {"a": [1, 2], "b": ["x\ry", "z"]}
 
 
+def test_a_line_end_converted_twice_in_a_value_stays(act, tmp_path):
+    """In a file with other line ends, as Tafl writes them, it is part of the value. The first line
+    end outside quotes tells how the line ends of the file are."""
+    (tmp_path / "v.csv").write_bytes(b'A;B\r\n"x\r\r\ny";1\r\nz;2\r\n')
+    assert act("csv.import", None, {"file": str(tmp_path / "v.csv")})["A"].to_list() == ["x\r\r\ny", "z"]
+    (tmp_path / "h.csv").write_bytes(b'"Net\r\namount";B\r\r\n1;"x\r\r\ny"\r\r\n')  # converted twice; a name with a line break
+    out = act("csv.import", None, {"file": str(tmp_path / "h.csv"), "delimiter": ";"})
+    assert out.to_dict(as_series=False) == {"Net\r\namount": [1], "B": ["x\r\ny"]}
+
+
 def test_a_long_run_of_carriage_returns_takes_no_long_time(act, tmp_path):
     """Each carriage return of the run started the search again, with the Python lock held: the
     time grew with the square of the run, and 160 KB took 16 s without any way to stop it."""

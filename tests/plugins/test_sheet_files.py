@@ -223,7 +223,7 @@ def test_a_file_opens_in_a_sheet_as_it_was_written(registry, tmp_path, suffix):
 @all_formats
 def test_a_cell_with_a_carriage_return_in_a_file_stays(registry, tmp_path, suffix):
     """Such a cell can't be pasted, but a file can hold it."""
-    frame = text_frame({"a": ["x\ry", "x\r\ny", "z"]})
+    frame = text_frame({"a": ["x\ry", "x\r\ny", "x\r\r\ny", "z"]})
     assert_frame_equal(read_back(registry, frame, tmp_path, suffix), frame)
 
 
