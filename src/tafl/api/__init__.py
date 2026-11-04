@@ -20,6 +20,8 @@ A minimal plugin::
 An action takes the columns that settings or the data name with ``col(name)`` or
 ``cols(names)``, never with ``pl.col(name)`` or as names in text: Polars reads ``*`` as all
 columns and a name that starts with ``^`` and ends with ``$`` as a pattern (see ``names``).
+Import ``col``, ``cols`` and ``selector`` by name, as above: ``from tafl.api import *`` leaves
+them out, so that it doesn't replace Polars' ``col`` in a plugin that imported that first.
 
 An action raises ``ActionError("...")`` for a problem the user can fix: the step shows the
 message as an error. To end its table at this step without an error, e.g. when there is nothing
@@ -57,7 +59,7 @@ from .files import (
     source_summary,
     sources_fingerprint,
 )
-from .names import col, cols, selector
+from .names import col, cols, selector  # noqa: F401 (by name only, not in __all__: see above)
 from .params import Params, ValidationContext
 
 API_VERSION = 1
@@ -80,8 +82,6 @@ __all__ = [
     "TaflError",
     "ValidationContext",
     "action",
-    "col",
-    "cols",
     "combine",
     "all_results",
     "connector",
@@ -95,7 +95,6 @@ __all__ = [
     "frame_from_cursor",
     "make_series",
     "parameters",
-    "selector",
     "source_endpoints",
     "source_files",
     "source_params",

@@ -82,8 +82,30 @@ def test_the_methods_the_actions_use_take_exact_names():
 
 
 def test_the_helpers_are_part_of_the_plugin_api():
-    assert {"col", "cols", "selector"} <= set(tafl.api.__all__)
+    assert all(hasattr(tafl.api, name) for name in ("col", "cols", "selector"))
+    assert not {"col", "cols", "selector"} & set(tafl.api.__all__)  # imported by name, see below
     assert tafl.api.API_VERSION == 1  # an addition: plugins for version 1 keep working
+
+
+def test_a_star_import_of_the_plugin_api_keeps_the_col_of_polars(tmp_path):
+    """A plugin written for an earlier version may import col from Polars and then everything
+    from tafl.api: its col stays Polars' own, for a type and a pattern."""
+    plugin = '''
+        import polars as pl
+        from polars import col
+        from tafl.api import *
+
+
+        @action("my.round_all", "Round all decimal numbers", params=[P.Int("places", "Places", default=2)])
+        def round_all(df, p, ctx):
+            return df.with_columns(col(pl.Float64).round(p.places), col("^t.*$").str.to_uppercase())
+    '''
+    (tmp_path / "rounding.py").write_text(textwrap.dedent(plugin), encoding="utf-8")
+    registry = Registry()
+    registry.load_folder(tmp_path)
+    assert not registry.errors, registry.errors
+    df = pl.DataFrame({"a": [1.2345, 2.5], "text": ["x", "y"], "n": [1, 2]})
+    assert registry.actions["my.round_all"](df, {"places": 2}, StubContext()).rows() == [(1.23, "X", 1), (2.5, "Y", 2)]
 
 
 def _docstring_example() -> str:
