@@ -648,8 +648,14 @@ class MainWindow(QMainWindow):
         if running:
             self.statusBar().showMessage("Running the project…")
             return
-        # A run that finished or stopped says so next; one that failed only in its error box
-        for message in ("Running the project…", "Stopping after the current step…"):
+        # A run that finished or stopped says so next; one that failed only in its error box. A
+        # closing that waited for the run goes on now, and a Cancel there keeps the window open
+        for message in (
+            "Running the project…",
+            "Stopping after the current step…",
+            "Stopping after the current step…  The window closes then.",
+            "The window closes when the run is finished…",
+        ):
             self._update_message(message, "")
         if self._close_after_run:
             QTimer.singleShot(0, self, self.go_on_closing)  # after the results are shown

@@ -84,6 +84,45 @@ def test_a_run_that_fails_leaves_no_message_that_it_runs(window, session, qtbot,
     assert window.statusBar().currentMessage() == "" and window.run_action.isEnabled()
 
 
+@pytest.mark.parametrize(
+    ("answer", "closing"),
+    [
+        ("wait", "The window closes when the run is finished…"),
+        ("stop", "Stopping after the current step…  The window closes then."),
+    ],
+    ids=["wait", "stop"],
+)
+def test_a_closing_cancelled_after_a_run_that_failed_leaves_no_message_that_it_closes(
+    window, session, qtbot, monkeypatch, answer, closing
+):
+    """Closing during a run waits for the run, or stops it, and then asks about unsaved changes.
+    After a run that failed (a fault, shown in a box) and a Cancel there, the window stays open:
+    the status bar must not say that it closes."""
+    session.error.disconnect(window._show_error)  # the box
+    entered, leave = threading.Event(), threading.Event()
+
+    def failing(self, tables=None, **kwargs):
+        entered.set()
+        leave.wait(10)
+        raise RuntimeError("Unexpected on purpose")
+
+    asked = []
+    monkeypatch.setattr(Engine, "run", failing)
+    monkeypatch.setattr(window, "ask_close_while_running", lambda: answer)
+    monkeypatch.setattr(window, "ask_save", lambda reason: asked.append(reason) or "cancel")
+    session.project.add_table("Orders")
+    session._set_dirty(True)
+    window.show()
+    window.run_project()
+    assert entered.wait(10) and not window.close()
+    assert window.statusBar().currentMessage() == closing
+    with qtbot.waitSignal(session.error, timeout=10_000):
+        leave.set()
+    qtbot.waitUntil(lambda: asked == ["before closing"], timeout=10_000)
+    assert window.isVisible() and not session.running
+    assert window.statusBar().currentMessage() == ""
+
+
 def test_about_names_the_licenses_of_qt_and_pyside(window, monkeypatch, tmp_path):
     shown = []
     monkeypatch.setattr(QMessageBox, "about", lambda parent, title, text: shown.append(text))
