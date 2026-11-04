@@ -189,6 +189,11 @@ def fill(df, p, ctx):
                     f"'{p.value}' doesn't fit column '{name}': with numbers below 0 the column holds whole numbers "
                     f"up to {too_big[1]}, but it has bigger ones (e.g. {too_big[0]})"
                 )
+            if (rounded := _rounded_with(df[name], value)) is not None:
+                raise ActionError(
+                    f"'{p.value}' doesn't fit column '{name}': with it the column holds decimal numbers, which keep "
+                    f"about 15 digits, but it has longer whole numbers (e.g. {rounded} would become {int(float(rounded))})"
+                )
             updates.append(column.fill_null(_for_polars(value, df.schema[name])).alias(name))
         else:
             updates.append(column.fill_null(strategy="forward" if p.method == "down" else "backward").alias(name))
@@ -329,6 +334,15 @@ def _too_big_with(values: pl.Series, value: int) -> tuple[int, int] | None:
     high = _limits(pl.Int64 if values.dtype == pl.UInt64 else pl.Int128)[1]
     top = values.max()
     return (top, high) if top is not None and top > high else None
+
+
+def _rounded_with(values: pl.Series, value: Any) -> int | None:
+    """A whole number of ``values`` that changes when ``value`` makes the column decimal numbers
+    (Float64: a value with decimal places, or beyond the column's type), or None."""
+    if not values.dtype.is_integer() or not isinstance(value, float):
+        return None
+    rounded = values.filter(dtypes.float_loses_digits(values))
+    return rounded[0] if rounded.len() else None
 
 
 def _literal(text: str, dtype: pl.DataType, column: str) -> Any:

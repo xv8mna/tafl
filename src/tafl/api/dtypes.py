@@ -185,10 +185,8 @@ def float_loses_digits(s: pl.Series, decimal: str = ",") -> pl.Series:
     """True for the values whose whole part a decimal number (Float64) can't keep exactly: whole
     numbers beyond 2^53 (9,007,199,254,740,992), as numbers or as text. For exact decimals
     (Decimal), all their decimal places count too."""
-    if s.dtype.is_integer():
-        return (s.cast(pl.Float64).cast(pl.Int128, strict=False) != s.cast(pl.Int128)).fill_null(False)
-    if isinstance(s.dtype, pl.Decimal):
-        back = s.cast(pl.Float64).cast(s.dtype, strict=False)
+    if s.dtype.is_integer() or isinstance(s.dtype, pl.Decimal):
+        back = s.cast(pl.Float64).cast(s.dtype, strict=False)  # empty when rounded beyond the type: 2^127 for 2^127 - 1
         return ((back != s).fill_null(True) & s.is_not_null()).alias(s.name)
     lost = pl.repeat(False, s.len(), eager=True).alias(s.name)
     if s.dtype != pl.String:

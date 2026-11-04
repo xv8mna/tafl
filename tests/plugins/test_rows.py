@@ -394,6 +394,21 @@ def test_filling_unsigned_whole_numbers_with_a_number_below_0_says_what_does_not
     assert act("rows.fill", fits, {"columns": ["V"], "method": "value", "value": "-1"})["V"].to_list() == [high, -1]
 
 
+@pytest.mark.parametrize("dtype", [pl.Int64, pl.UInt64, pl.Int128, pl.UInt128])
+@pytest.mark.parametrize("value", ["1,5", str(2**200)], ids=["decimal places", "beyond the type"])
+def test_filling_whole_numbers_with_a_decimal_number_says_which_would_change(act, dtype, value):
+    """The column becomes decimal numbers, which keep about 15 digits: its long whole numbers
+    changed without a word (9223372036854775807 became 9223372036854775808)."""
+    top = pl.select(dtype.max()).item()
+    df = pl.DataFrame({"V": pl.Series([2**60, top, None], dtype=dtype)})
+    message = rf"^'{value}' doesn't fit column 'V': with it the column holds decimal numbers, which keep about 15 digits,"
+    with pytest.raises(ActionError, match=message + rf" but it has longer whole numbers \(e\.g\. {top} would become {int(float(top))}\)$"):
+        act("rows.fill", df, {"columns": ["V"], "method": "value", "value": value})
+    fits = pl.DataFrame({"V": pl.Series([2**60, None], dtype=dtype)})  # as before: a decimal number keeps it
+    filled = act("rows.fill", fits, {"columns": ["V"], "method": "value", "value": value})
+    assert filled.schema["V"] == pl.Float64 and filled["V"][0] == 2**60
+
+
 def test_a_list_with_a_value_the_column_can_not_hold(act):
     df = pl.DataFrame({"Name": ["a", "b"], "Qty": pl.Series([1, 2], dtype=pl.Int8)})
     assert names(flt(act, df, ("Qty", "in", "1; 300; -1"))) == ["a"]

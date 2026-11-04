@@ -258,6 +258,12 @@ def test_float_loses_digits():
     numbers = pl.Series([2**53, 2**53 + 1, -5, None])
     assert dtypes.float_loses_digits(numbers).to_list() == [False, True, False, False]
     assert not dtypes.float_loses_digits(pl.Series([1.5])).any()
+    # Rounded beyond the type: 2^127 - 1 counted as kept, and a UInt128 column stopped with
+    # "conversion from `u128` to `i128` failed"
+    wide = pl.Series([2**127 - 1, 2**127 - 2**74, -(2**127), None], dtype=pl.Int128)
+    assert dtypes.float_loses_digits(wide).to_list() == [True, False, False, False]
+    top = pl.Series([2**128 - 1, 2**127, 2**64 - 1, None], dtype=pl.UInt128)
+    assert dtypes.float_loses_digits(top).to_list() == [True, False, True, False]
 
 
 def test_two_digit_years_like_excel():
