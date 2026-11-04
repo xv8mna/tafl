@@ -566,7 +566,14 @@ def test_whole_numbers_beyond_int64_keep_their_digits():
 
 def test_a_result_beyond_38_digits_says_how_to_get_a_decimal_number():
     """A result beyond Int64 is an exact decimal: a next formula that made it longer than 38 digits
-    stopped with DuckDB's hint to cast it to a decimal with a smaller scale, which doesn't help."""
+    stopped with DuckDB's hint to cast it to a decimal with a smaller scale, which doesn't help.
+    The decimal places count too: 12.5 * 10 of two decimals with 18 decimal places (as Spark writes
+    them) needs 36 of them. DuckDB's own text stays for decimals of 18 digits, such as amounts of
+    money: there its hint, a bigger decimal, helps."""
+    needs = (
+        "the result needs more than 38 digits, decimal places included, more than an exact number holds. "
+        "For a decimal number (about 15 digits) write CAST(... AS DOUBLE)"
+    )
     df = pl.DataFrame({"Cents": [9_000_000_000_000_000_000, 9_000_000_000_000_000_000, 7]})
     total = ("Total", "SUM([Cents]) OVER ()")  # 18,000,000,000,000,000,007
     nines = "9" * 38
@@ -580,12 +587,21 @@ def test_a_result_beyond_38_digits_says_how_to_get_a_decimal_number():
     ]:
         with pytest.raises(ActionError) as raised:
             expressions.add_columns(df, [total, (name, formula)])
-        assert str(raised.value) == (
-            f"Formula error in [{name}]: the result has more than 38 digits, more than an exact number holds. "
-            f"For a decimal number (about 15 digits) write CAST(... AS DOUBLE)\nFormula: {formula}"
-        )
+        assert str(raised.value) == f"Formula error in [{name}]: {needs}\nFormula: {formula}"
     out = expressions.add_columns(df, [total, ("Square", "CAST([Total] AS DOUBLE) * [Total]")])
     assert out["Square"].to_list() == [pytest.approx(3.24e38)] * 3
+
+    spark = pl.DataFrame({"Price": [Decimal("12.5")], "Quantity": [Decimal(10)]}, schema={"Price": pl.Decimal(38, 18), "Quantity": pl.Decimal(38, 18)})
+    with pytest.raises(ActionError) as raised:
+        expressions.add_columns(spark, [("Total", "[Price] * [Quantity]")])
+    assert str(raised.value) == f"Formula error in [Total]: {needs}\nFormula: [Price] * [Quantity]"
+    assert expressions.add_columns(spark, [("Total", "CAST([Price] AS DOUBLE) * [Quantity]")])["Total"].to_list() == [125.0]
+
+    money = pl.DataFrame({"Amount": [Decimal(10_000_000)], "Rate": [Decimal(10_000_000)]}, schema={"Amount": pl.Decimal(18, 2), "Rate": pl.Decimal(18, 2)})
+    with pytest.raises(ActionError) as raised:
+        expressions.add_columns(money, [("Total", "[Amount] * [Rate]")])
+    assert re.fullmatch(r"Formula error in \[Total\]: Overflow in multiplication of DECIMAL\(18\) \(.*\)\. .* a bigger decimal\.\nFormula: \[Amount\] \* \[Rate\]", str(raised.value))
+    assert expressions.add_columns(money, [("Total", "CAST([Amount] AS DECIMAL(38, 2)) * [Rate]")])["Total"].to_list() == [1e14]
 
 
 def test_a_table_left_behind_by_an_interrupt_is_dropped():
