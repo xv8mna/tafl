@@ -288,7 +288,7 @@ def _free_names(names: Sequence[str], taken: set[str]) -> list[str]:
 def detect_delimiter(sample: str, skip_lines: int = 0) -> str:
     """The delimiter of the first line that splits most lines the same way. Without any in the
     first line, the file has one column (its values can still have commas, as in 12,50)."""
-    lines = [line for line in sample.splitlines()[skip_lines : skip_lines + 50] if line.strip()][:20]
+    lines = [line for line in _csv_lines(sample, skip_lines, 50) if line.strip()][:20]
     candidates = (";", ",", "\t", "|")
     if lines and not any(count_outside_quotes(lines[0], candidate) for candidate in candidates):
         return ONE_COLUMN
@@ -302,6 +302,24 @@ def detect_delimiter(sample: str, skip_lines: int = 0) -> str:
         if score > best_score:
             best, best_score = candidate, score
     return best
+
+
+def _csv_lines(text: str, skip: int, most: int) -> list[str]:
+    """Up to ``most`` lines of CSV text after the first ``skip`` lines. A line break in quotes is
+    part of the value, as in a column name of two lines; the lines skipped are counted as Polars
+    skips them, also in quotes."""
+    lines: list[str] = []
+    pending: list[str] = []  # a line whose quoted value goes on in the next one
+    quoted = False
+    for part in text.split("\n")[skip:]:
+        pending.append(part)
+        quoted ^= part.count('"') % 2 == 1
+        if not quoted:
+            lines.append("\n".join(pending))
+            pending = []
+            if len(lines) == most:
+                return lines
+    return [*lines, "\n".join(pending)] if pending else lines
 
 
 def count_outside_quotes(line: str, char: str) -> int:

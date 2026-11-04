@@ -241,6 +241,19 @@ def test_a_line_end_converted_twice_in_a_value_stays(act, tmp_path):
     assert out.to_dict(as_series=False) == {"Net\r\namount": [1], "B": ["x\r\ny"]}
 
 
+@pytest.mark.parametrize("delimiter", [";", ",", "\t", "|"])
+def test_the_delimiter_is_detected_beside_column_names_of_two_lines(act, tmp_path, delimiter):
+    """A line break in quotes is part of its line. The first line was "Net without a delimiter:
+    the file had one column, and Polars couldn't read it."""
+    d = delimiter
+    (tmp_path / "h.csv").write_bytes(f'"Net\r\namount"{d}"A\nB"{d}C\r\n1{d}"x\ny"{d}z\r\n2{d}w{d}v\r\n'.encode())
+    out = act("csv.import", None, {"file": str(tmp_path / "h.csv")})
+    assert out.to_dict(as_series=False) == {"Net\r\namount": [1, 2], "A\nB": ["x\ny", "w"], "C": ["z", "v"]}
+    (tmp_path / "s.csv").write_bytes(f'"Report of\n"Net\namount"{d}B\n1{d}x\n'.encode())  # Polars skips lines also in quotes
+    out = act("csv.import", None, {"file": str(tmp_path / "s.csv"), "skip_lines": 1})
+    assert out.to_dict(as_series=False) == {"Net\namount": [1], "B": ["x"]}
+
+
 def test_a_long_run_of_carriage_returns_takes_no_long_time(act, tmp_path):
     """Each carriage return of the run started the search again, with the Python lock held: the
     time grew with the square of the run, and 160 KB took 16 s without any way to stop it."""
