@@ -386,6 +386,30 @@ def test_full_join_of_dates_times_and_true_false_with_text_keys(act, dtype, this
     assert out.schema == {"A": pl.String, "N": pl.String} and out.rows() == [(texts[0], "x"), ("x", "y")]
 
 
+@pytest.mark.parametrize(
+    ("how", "expected"),
+    [
+        ("lookup", [(b"abc", None), (b"\x00\xff", "y"), (None, None)]),
+        ("left", [(b"abc", None), (b"\x00\xff", "y"), (None, None)]),
+        ("inner", [(b"\x00\xff", "y")]),
+        ("full", [("0x616263", None), ("0x00FF", "y"), (None, None), ("abc", "x"), ("zz", "z")]),  # "abc" is no hex
+        ("matching", [(b"\x00\xff",)]),
+        ("non_matching", [(b"abc",), (None,)]),
+    ],
+)
+def test_binary_keys_with_bytes_that_are_no_text_are_compared_with_text_as_hex_digits(act, how, expected):
+    """As Join texts writes such a column (0x00FF). Before, Polars stopped with "invalid utf8"."""
+    params = {"other": "other", "match": [{"column": "V", "other_column": "K"}], "how": how}
+    ctx = StubContext(tables={"other": pl.DataFrame({"K": ["abc", "0x00FF", "zz"], "N": ["x", "y", "z"]})})
+    assert act("table.merge", pl.DataFrame({"V": [b"abc", b"\x00\xff", None]}), params, ctx).rows() == expected
+    assert ctx.warnings == ["'V' (Binary) and 'K' (String) are compared as text (the binary values as hex digits, 0xFF00)"]
+    swapped = {**params, "match": [{"column": "K", "other_column": "V"}], "how": "lookup"}
+    other = StubContext(tables={"other": pl.DataFrame({"V": [b"abc", b"\x00\xff"], "N": ["a", "b"]})})
+    assert act("table.merge", ctx.tables["other"], swapped, other)["N (2)"].to_list() == [None, "b", None]
+    text = StubContext(tables={"other": pl.DataFrame({"V": [b"abc", "ä".encode()], "N": ["a", "b"]})})  # all text: as text
+    assert act("table.merge", ctx.tables["other"], swapped, text)["N (2)"].to_list() == ["a", None, None]
+
+
 @pytest.mark.parametrize("how", ["lookup", "left", "inner", "full", "matching", "non_matching"])
 def test_keys_that_cant_be_compared_stop_with_a_message(act, how):
     """Polars can't cast a duration to text, or a time to a date-time: a message instead of its error."""

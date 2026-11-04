@@ -392,6 +392,17 @@ def _float_texts(s: pl.Series) -> pl.Series:
     return text.str.strip_suffix(".0").replace("-0", "0")
 
 
+def bytes_are_text(values: pl.Series) -> bool:
+    """Whether all these binary values are UTF-8 text. Where binary values are used as text, a
+    column with bytes that are no text gives hex digits instead (0xFF00, as ``text_expr`` writes
+    them)."""
+    try:
+        values.cast(pl.String)
+    except pl.exceptions.ComputeError:
+        return False
+    return True
+
+
 def normalize(s: pl.Series, *, exact: bool = False) -> pl.Series:
     """Map other types to the app's standard ones (Decimal -> Int64/Float64, Int32 -> Int64, ...).
 

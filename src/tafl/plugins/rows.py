@@ -206,6 +206,8 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
         if dtype == pl.Duration:
             raise ActionError(_no_typed_value(c.column))
         text, needle = column.cast(pl.String), c.value
+        if dtype == pl.Binary and not dtypes.bytes_are_text(df[c.column]):  # as hex digits, as Join texts writes them
+            text = dtypes.text_expr(column, dtype)
         if not case_sensitive:
             text, needle = text.str.to_lowercase(), needle.lower()
         if op == "starts":

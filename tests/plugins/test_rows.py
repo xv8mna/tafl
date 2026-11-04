@@ -395,3 +395,22 @@ def test_binary_data_can_be_filled_with_the_bytes_of_a_typed_value(act):
     filled = act("rows.fill", BINARY, {"columns": ["V"], "method": "value", "value": "x"})
     assert filled.schema["V"] == pl.Binary
     assert filled["V"].to_list() == [b"abc", b"\x00\xff", b"x", b"", b"0x41"]
+
+
+@pytest.mark.parametrize(
+    "operator, value, expected",
+    [
+        ("contains", "ff", ["b"]),
+        ("contains", "abc", []),  # b"abc" is 0x616263
+        ("contains", "0x41", []),  # the text 0x41 is 0x30783431
+        ("not_contains", "FF", ["a", "c", "d", "e"]),
+        ("starts", "0X00", ["b"]),
+        ("ends", "0x", ["d"]),  # no bytes
+    ],
+)
+def test_binary_data_with_bytes_that_are_no_text_is_searched_in_its_hex_digits(act, operator, value, expected):
+    """As Join texts writes such a column (0x00FF). Before, Polars stopped with "invalid utf8"."""
+    assert names(flt(act, BINARY, ("V", operator, value))) == expected
+    assert names(flt(act, BINARY, ("V", "contains", "ff"), case_sensitive=True)) == []
+    text = pl.DataFrame({"Name": ["a", "b", "c"], "V": [b"abc", "ä".encode(), None]})  # bytes that are all text stay text
+    assert names(flt(act, text, ("V", "contains", "Ä"))) == ["b"]

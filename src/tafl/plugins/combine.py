@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import polars as pl
 
-from tafl.api import ActionError, P, action
+from tafl.api import ActionError, P, action, dtypes
 
 _NUMBERED = re.compile(r"(.*\()(\d+)(\)\s*)")  # a suffix like " (2)"
 _HOW = [
@@ -169,12 +169,13 @@ def merge(df, p, ctx):
     out = out.drop(markers)
     if p.how == "full":  # rows only in the other table get its key, in this table's type if it fits
         for name, other_name, key in compared:
+            as_hex = _as_hex(df[name])
             back = _cast_fitting(pl.col(key), out.schema[key], df.schema[name])
-            same = (_cast_key(back, df.schema[name], out.schema[key]) == pl.col(key)).fill_null(False)
+            same = (_cast_key(back, df.schema[name], out.schema[key], as_hex) == pl.col(key)).fill_null(False)
             if out.select((pl.col(name).is_not_null() | pl.col(key).is_null() | same).all()).item():
                 out = out.with_columns(pl.coalesce(name, back).alias(name))
             else:
-                wide = _cast_key(pl.col(name), df.schema[name], out.schema[key])
+                wide = _cast_key(pl.col(name), df.schema[name], out.schema[key], as_hex)
                 if out.select((pl.col(name).is_not_null() & wide.is_null()).any()).item():
                     raise ActionError(_no_common_type(df, name, other, other_name, out.schema[key]))
                 out = out.with_columns(pl.coalesce(wide, key).alias(name))
@@ -261,16 +262,18 @@ def _compared_keys(left, right, left_on, right_on, ctx):
             target = pl.Datetime("us")
         else:
             target = pl.String
+        left_hex, right_hex = _as_hex(left[left_name]), _as_hex(right[right_name])
         try:
-            left = left.with_columns(_cast_key(pl.col(left_name), left_type, target).alias(key))
-            right = right.with_columns(_cast_key(pl.col(right_name), right_type, target).alias(key))
+            left = left.with_columns(_cast_key(pl.col(left_name), left_type, target, left_hex).alias(key))
+            right = right.with_columns(_cast_key(pl.col(right_name), right_type, target, right_hex).alias(key))
         except pl.exceptions.InvalidOperationError:  # Polars has no such cast: a duration as text, a time as a date-time
             raise ActionError(
                 f"'{left_name}' ({left_type}) and '{right_name}' ({right_type}) can't be compared: choose other "
                 f"key columns, or first make one of them text with a formula such as CAST([{left_name}] AS VARCHAR)"
             ) from None
         if target == pl.String:
-            ctx.warn(f"'{left_name}' ({left_type}) and '{right_name}' ({right_type}) are compared as text")
+            how = " (the binary values as hex digits, 0xFF00)" if left_hex or right_hex else ""
+            ctx.warn(f"'{left_name}' ({left_type}) and '{right_name}' ({right_type}) are compared as text{how}")
         left_keys[index] = right_keys[index] = key
         compared.append((left_name, right_name, key))
     return left, right, left_keys, right_keys, compared
@@ -288,13 +291,21 @@ def _number_type(left: pl.DataType, right: pl.DataType) -> pl.DataType:
     return pl.Decimal(38, max(_scale(left), _scale(right)))
 
 
-def _cast_key(column: pl.Expr, dtype: pl.DataType, target: pl.DataType) -> pl.Expr:
+def _cast_key(column: pl.Expr, dtype: pl.DataType, target: pl.DataType, as_hex: bool = False) -> pl.Expr:
     """``column`` (of type ``dtype``) as ``target``, to compare keys, empty where a value doesn't
     fit. A time keeps its fractions of a second as text ("08:00:00", "08:00:00.500"): Polars' cast
-    to text leaves them out."""
+    to text leaves them out. Binary values are hex digits as text with ``as_hex`` (see ``_as_hex``)."""
     if dtype == pl.Time and target == pl.String:
         return column.dt.strftime("%H:%M:%S%.f")
+    if as_hex and target == pl.String:
+        return dtypes.text_expr(column, dtype)
     return column.cast(target, strict=False)
+
+
+def _as_hex(values: pl.Series) -> bool:
+    """Whether binary keys are compared with text as hex digits (0xFF00), as Join texts writes
+    them: when some of them are no text. Bytes that are all text are compared as text."""
+    return values.dtype == pl.Binary and not dtypes.bytes_are_text(values)
 
 
 def _cast_fitting(column: pl.Expr, dtype: pl.DataType, target: pl.DataType) -> pl.Expr:

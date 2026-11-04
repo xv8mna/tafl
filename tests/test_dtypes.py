@@ -396,6 +396,13 @@ def test_text_expr_writes_values_the_same_on_every_pc():
     assert _texts([b"\x01\xff"]) == ["0x01FF"]
 
 
+def test_bytes_are_text():
+    assert dtypes.bytes_are_text(pl.Series([b"abc", "ä".encode(), b"", b"\x00", None]))
+    assert dtypes.bytes_are_text(pl.Series([None], dtype=pl.Binary))
+    assert not dtypes.bytes_are_text(pl.Series([b"abc", b"\x00\xff"]))
+    assert not dtypes.bytes_are_text(pl.Series(["ä".encode()[:1]]))  # half of a character
+
+
 def test_text_expr_writes_decimal_numbers_with_all_their_digits_and_no_exponent():
     values = [2.0, 1.5, -0.0, 0.1 + 0.2, 1 / 3, 1e16, -1e20, 1e-7, 2.5e-8, 123456789012345.0, 2.0**53, 2.0**53 + 2]
     assert _texts(values) == [
