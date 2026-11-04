@@ -407,10 +407,11 @@ def _guess_decimal(df: pl.DataFrame, separator: str) -> tuple[str, dict[str, str
     for name, dtype in df.schema.items():
         if dtype != pl.String:
             continue
-        commas, points = _shown_decimals(sample[name])
+        column = sample[name].alias("value")  # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
+        commas, points = _shown_decimals(column)
         comma, point = comma + commas, point + points
-        if not commas and not points and df.height > sample.height and sample[name].str.contains(_EITHER).all():
-            rest = df[name].slice(sample.height)  # numbers like 12 or 1.250 so far: also 0.500 after them?
+        if not commas and not points and df.height > sample.height and column.str.contains(_EITHER).all():
+            rest = df[name].slice(sample.height).alias("value")  # numbers like 12 or 1.250 so far: also 0.500 after them?
             commas, points = _shown_decimals(rest.filter(~rest.str.contains(_EITHER)))
         if commas or points:
             columns[name] = "." if points else ","
@@ -447,14 +448,15 @@ def _detect_types(data: pl.DataFrame, decimals: dict[str, str], warn: Callable[[
         number, gap = _SPACED[decimal], f"{_SPACES}*"
         whole, percent = _WHOLE[decimal], f"^[+-]?{gap}{number}{gap}%$"
         amount = f"^[{_CURRENCY}]?{gap}[+-]?{gap}{number}{gap}-?{gap}[{_CURRENCY}]?$"
-        sample = _clean(data[name].drop_nulls().head(1000)).drop_nulls()  # most columns end here, quickly
+        column = data[name].alias("value")  # a fixed name, as in _guess_decimal
+        sample = _clean(column.drop_nulls().head(1000)).drop_nulls()  # most columns end here, quickly
         if kind == pl.Float64 or _fit(sample, whole):  # text: numbers too long for a decimal number
             pattern = whole
         else:
             pattern = percent if _fit(sample, percent) else amount
         if not _fit(sample, pattern) or (pattern == amount and not _amounts(sample)):
             continue
-        text = _clean(data[name])
+        text = _clean(column)
         values = text.drop_nulls()
         if not values.str.contains(pattern).all():
             continue
@@ -463,7 +465,7 @@ def _detect_types(data: pl.DataFrame, decimals: dict[str, str], warn: Callable[[
                 continue  # codes like 0815
             integers = dtypes.parse_integers(text, decimal)
             if integers.null_count() == text.null_count():  # else beyond Int64: the text stays
-                updates.append(integers)
+                updates.append(integers.alias(name))
                 notes.pop(name, None)
             continue
         lost = dtypes.float_loses_digits(_bare(values), decimal)
@@ -474,7 +476,7 @@ def _detect_types(data: pl.DataFrame, decimals: dict[str, str], warn: Callable[[
         elif _amounts(values):
             parsed = dtypes.parse_numbers(text, decimal)
             if parsed.null_count() == text.null_count():
-                updates.append(parsed)
+                updates.append(parsed.alias(name))
     for messages in notes.values():
         for message in messages:
             warn(message)

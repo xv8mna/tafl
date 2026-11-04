@@ -381,7 +381,8 @@ def _used_rows(columns: Iterable[pl.Series]) -> int:
     used = 0
     for column in columns:
         if column.null_count() < column.len() and column.len() > used:
-            used = max(used, int(column.is_not_null().arg_true()[-1]) + 1)
+            cells = column.alias("cells")  # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
+            used = max(used, int(cells.is_not_null().arg_true()[-1]) + 1)
     return used
 
 
@@ -825,7 +826,8 @@ def format_problem(frame: pl.DataFrame, suffix: str) -> str | None:
     if frame.width > _XLSX_COLUMNS:
         return f"An Excel sheet holds at most {_XLSX_COLUMNS:,} columns, and this sheet has {frame.width:,}. Choose CSV, TXT or Parquet."
     long = sum(len(name) > _XLSX_TEXT for name in frame.columns)
-    long += sum(int((frame[name].str.len_chars() > _XLSX_TEXT).sum()) for name in frame.columns)
+    # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
+    long += sum(int((frame[name].alias("text").str.len_chars() > _XLSX_TEXT).sum()) for name in frame.columns)
     if long:
         cells = "1 cell has" if long == 1 else f"{long:,} cells have"
         return f"{cells} more than {_XLSX_TEXT:,} characters, the most an Excel cell holds. Choose CSV, TXT or Parquet."
@@ -918,7 +920,7 @@ def _write_xlsx(
 def _big_xml(frame: pl.DataFrame) -> bool:
     """Whether the sheet in the file may pass the size that a plain zip file holds. The tags of
     the cells count for more than the text."""
-    text = sum(int(frame[name].str.len_bytes().sum() or 0) for name in frame.columns)
+    text = sum(int(frame[name].alias("text").str.len_bytes().sum() or 0) for name in frame.columns)  # as in format_problem
     cells = frame.height * frame.width - sum(frame.null_count().row(0))
     return text + cells * _XLSX_CELL_BYTES + frame.height * _XLSX_ROW_BYTES > _XLSX_BIG
 

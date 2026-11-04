@@ -8,9 +8,9 @@ of them (K, S, F, ...) renamed to such a name, beside the columns abc and x that
 match: with the names mapped back, the table and the messages are the same (or the message of a
 step that refuses the data).
 
-Polars' own Series methods can't find a Series whose name starts with ^ and ends with $: some
-steps stop there with an IndexError and change no value. Those cases are marked as expected to
-stop; a column named * works in them."""
+Polars' own Series methods look a Series up by its name, which they read as a pattern too (one
+that finds nothing: they stop with an IndexError): the steps work on such a Series under a fixed
+name."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from polars.testing import assert_frame_equal
 from tafl.api import ActionError, text_length
 from tafl.api.testing import StubContext
 from tafl.core import Registry, formula_preview
+from tafl.core.sheet import FORMATS, Sheet, read_file, write_file
 from tafl.plugins import databases, reshape
 from tafl.ui import filters
 
@@ -115,7 +116,7 @@ def test_clean_text_of_all_text_columns_leaves_each_column_its_own_values(act):
 
 # --- the same result with such names ---------------------------------------------------------
 
-ORDINARY = {"K": "k", "K2": "k2", "S": "s", "F": "f", "I": "info", "N": "new", "D": "d", "B": "b", "L": "l", "R": "r", "O": "o"}
+ORDINARY = {"K": "k", "K2": "k2", "S": "s", "F": "f", "I": "info", "N": "new", "D": "d", "T": "t", "B": "b", "L": "l", "R": "r", "O": "o"}
 PATTERNS = ("*", "^a.*$", "^x$")
 
 
@@ -143,22 +144,19 @@ class Run:
 class Case:
     run: Callable[[Run], tuple[pl.DataFrame, StubContext]]
     roles: tuple[tuple[str, ...], ...]
-    stops: frozenset[tuple[str, ...]]
     refused: bool
 
 
 CASES: dict[str, Case] = {}
 
 
-def case(label: str, *roles: str, stops: tuple[str, ...] = (), refused: bool = False):
+def case(label: str, *roles: str, refused: bool = False):
     """A case for the roles (columns) it renames: "K", or "K+K2" for two columns with one name.
-    ``stops``: roles whose names ^...$ stop in Polars' Series methods (IndexError). ``refused``:
-    the step stops with a message (an ActionError), which must be the same."""
+    ``refused``: the step stops with a message (an ActionError), which must be the same."""
 
     def register(run):
         assert label not in CASES
-        split = tuple(tuple(r.split("+")) for r in roles)
-        CASES[label] = Case(run, split, frozenset(tuple(r.split("+")) for r in stops), refused)
+        CASES[label] = Case(run, tuple(tuple(r.split("+")) for r in roles), refused)
         return run
 
     return register
@@ -643,14 +641,19 @@ def _csv(r: Run) -> Path:
 
 
 def _workbook(r: Run) -> Path:
+    """Whole numbers (K), texts (S), date-times (F), date-times at midnight (D) and times (T)."""
     path = r.folder / "in.xlsx"
     book = xlsxwriter.Workbook(str(path))
     sheet, stamp = book.add_worksheet("Sheet1"), book.add_format({"num_format": "yyyy-mm-dd hh:mm"})
-    sheet.write_row(0, 0, [r["K"], "abc", "x", r["S"], r["F"]])
-    rows = [(1, 1.5, "a", "p", dt.datetime(2025, 1, 1, 8)), (2, 2.5, "b", None, None), (2, 3.0, "c", "q", dt.datetime(2025, 6, 1, 8, 30))]
+    sheet.write_row(0, 0, [r["K"], "abc", "x", r["S"], r["F"], r["D"], r["T"]])
+    rows = [
+        (1, 1.5, "a", "p", dt.datetime(2025, 1, 1, 8), dt.datetime(2025, 1, 2), dt.time(8, 30)),
+        (2, 2.5, "b", None, None, None, None),
+        (2, 3.0, "c", "q", dt.datetime(2025, 6, 1, 8, 30), dt.datetime(2025, 1, 3), dt.time(9)),
+    ]
     for number, values in enumerate(rows, 1):
         for column, value in enumerate(values):
-            if isinstance(value, dt.datetime):
+            if isinstance(value, (dt.datetime, dt.time)):
                 sheet.write_datetime(number, column, value, stamp)
             elif value is not None:
                 sheet.write(number, column, value)
@@ -687,15 +690,49 @@ def _sqlite_table(r: Run) -> Path:
 
 
 for _role in ("K", "S", "F"):
-    case(f"csv.import header {_role}", _role, stops=(_role,))(lambda r: r.step("csv.import", None, {"file": str(_csv(r))}))
-    case(f"excel.import header {_role}", _role, stops=("K", "F"))(lambda r: r.step("excel.import", None, {"file": str(_workbook(r))}))
+    case(f"csv.import header {_role}", _role)(lambda r: r.step("csv.import", None, {"file": str(_csv(r))}))
     case(f"parquet.import column {_role}", _role)(lambda r: r.step("parquet.import", None, {"file": str(_parquet(r))}))
-    case(f"db.import column {_role} with detected types", _role, stops=("S",))(
+    case(f"db.import column {_role} with detected types", _role)(
         lambda r: r.step("db.import", None, {"connection": "db", "mode": "table", "table": "t", "detect_types": True}, r.sqlite(_sqlite_table(r)))
     )
+for _role in ("K", "S", "F", "D", "T"):
+    case(f"excel.import header {_role}", _role)(lambda r: r.step("excel.import", None, {"file": str(_workbook(r))}))
+
+
+@case("csv.import K of 2,100 numbers like 12, then 0,500", "K")
+def _(r):
+    """The decimal separator of K shows only after the first 2,000 rows."""
+    path = r.folder / "in.csv"
+    path.write_text("\n".join([f"{r['K']};abc", *(f"{i % 50};{i}" for i in range(2_100)), "0,500;1"]) + "\n", encoding="utf-8")
+    return r.step("csv.import", None, {"file": str(path)})
+
+
 case("csv.import without detected types", "K", "S", "F")(lambda r: r.step("csv.import", None, {"file": str(_csv(r)), "detect_types": False}))
 case("db.import without detected types", "K", "S", "F")(
     lambda r: r.step("db.import", None, {"connection": "db", "mode": "table", "table": "t"}, r.sqlite(_sqlite_table(r)))
+)
+
+# data sheets
+
+
+def _sheet(r: Run) -> Sheet:
+    """A data sheet whose last two rows are empty: they are no part of its table."""
+    frame = pl.DataFrame({"K": ["1", "2", None, None], "abc": ["10", None, None, None], "S": [None, " b ", None, None], "x": [None] * 4})
+    return Sheet.from_frame(named(frame, r).cast(pl.String))
+
+
+case("data sheet of a table with K", "K")(lambda r: (_sheet(r).frame(), StubContext()))
+for _suffix in FORMATS:
+
+    @case(f"data sheet with S saved as {_suffix}", "S")
+    def _(r, suffix=_suffix):
+        path = r.folder / f"sheet{suffix}"
+        write_file(_sheet(r).frame(), path, suffix)
+        return read_file(path, FORMATS[suffix], r.registry.actions[FORMATS[suffix].action]), StubContext()
+
+
+case("data sheet with a text in S too long for .xlsx", "S", refused=True)(
+    lambda r: write_file(named(pl.DataFrame({"abc": ["1"], "S": ["y" * 32_768]}), r), r.folder / "sheet.xlsx", ".xlsx")
 )
 
 # instant filters and the formula check of the window
@@ -773,11 +810,7 @@ def _cases():
     for label, found in CASES.items():
         for role in found.roles:
             for pattern in PATTERNS:
-                marks = ()
-                if role in found.stops and pattern != "*":
-                    reason = "Polars' Series methods can't find a Series named ^...$: the step stops, no value changes"
-                    marks = (pytest.mark.xfail(raises=IndexError, strict=False, reason=reason),)
-                yield pytest.param(label, role, pattern, marks=marks, id=f"{label} | {'+'.join(role)}={pattern}")
+                yield pytest.param(label, role, pattern, id=f"{label} | {'+'.join(role)}={pattern}")
 
 
 _ORDINARY_OUTCOMES: dict[tuple[str, tuple[str, ...]], Done | Refused] = {}
@@ -792,7 +825,7 @@ def test_a_name_like_a_pattern_gives_the_same_result(act, registry, tmp_path, la
         run = Run(ORDINARY | {r: ordinary for r in role}, tmp_path / "ordinary", act, registry)
         try:
             _ORDINARY_OUTCOMES[key] = _outcome(found, run)
-        except Exception as error:  # the case itself must work: an expected stop must not hide that
+        except Exception as error:  # the case itself must work with ordinary names
             pytest.fail(f"With ordinary names: {type(error).__name__}: {error}")
     expected = _ORDINARY_OUTCOMES[key]
     assert isinstance(expected, Refused) == found.refused

@@ -271,7 +271,7 @@ def infer_series(s: pl.Series, decimal: str = ",", warn: Callable[[str], None] |
     if s.dtype != pl.String:
         return s
     text = _clean_text(s)
-    values = text.drop_nulls()
+    values = text.alias("value").drop_nulls()  # a fixed name, as in _clean_text
     if values.len() == 0 or values.str.contains(_LEADING_ZERO).any():
         return s
     if values.str.contains(_INTEGER).all():
@@ -295,7 +295,7 @@ def infer_series(s: pl.Series, decimal: str = ",", warn: Callable[[str], None] |
             if parsed.null_count() == text.null_count():
                 return parsed
     if values.str.to_lowercase().is_in(["true", "false"]).all():
-        return text.str.to_lowercase() == "true"
+        return _apply(text, _VALUE.str.to_lowercase() == "true")
     return s
 
 
@@ -304,7 +304,7 @@ def whole_numbers_to_int(df: pl.DataFrame) -> pl.DataFrame:
     updates = []
     for name, dtype in df.schema.items():
         if dtype.is_float():
-            values = df[name].drop_nulls()
+            values = df[name].alias("value").drop_nulls()  # a fixed name, as in _clean_text
             if (
                 values.len()
                 and not values.is_nan().any()
@@ -320,9 +320,10 @@ def midnight_to_date(df: pl.DataFrame) -> pl.DataFrame:
     updates = []
     for name, dtype in df.schema.items():
         if dtype == pl.Datetime:
-            values = df[name].drop_nulls()
+            column = df[name].alias("value")  # a fixed name, as in _clean_text
+            values = column.drop_nulls()
             if values.len() and (values.dt.truncate("1d") == values).all():
-                updates.append(df[name].dt.date())
+                updates.append(column.dt.date().alias(name))
     return df.with_columns(updates)
 
 

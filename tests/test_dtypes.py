@@ -509,6 +509,12 @@ _OF_A_SERIES = [
     pytest.param(lambda s: dtypes.format_numbers(s, "#,##0.00"), [1234.5, None], id="format_numbers"),
     pytest.param(dtypes.float_loses_digits, ["12345678901234567890", "1", None], id="float_loses_digits of texts"),
     pytest.param(dtypes.float_loses_digits, [2**60 + 1, 1, None], id="float_loses_digits of whole numbers"),
+    pytest.param(dtypes.infer_series, ["1", " 2", None], id="infer_series of whole numbers"),
+    pytest.param(dtypes.infer_series, ["31.12.2025", None], id="infer_series of dates"),
+    pytest.param(dtypes.infer_series, ["true", "False", None], id="infer_series of true/false"),
+    pytest.param(dtypes.infer_series, ["0815", None], id="infer_series of codes"),
+    pytest.param(lambda s: dtypes.whole_numbers_to_int(s.to_frame()).to_series(), [1.0, None, 3.0], id="whole_numbers_to_int"),
+    pytest.param(lambda s: dtypes.midnight_to_date(s.to_frame()).to_series(), [dt.datetime(2025, 1, 2), None], id="midnight_to_date"),
     pytest.param(dtypes.text_sort_key, ["B", "é", None, "a"], id="text_sort_key"),
     pytest.param(dtypes.text_sort_key, ["B", "é", None, "a"] * 6_000, id="text_sort_key of many repeated values"),
 ]

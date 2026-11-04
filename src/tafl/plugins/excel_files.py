@@ -224,8 +224,9 @@ def _read_sheet(reader, sheet: str, p, path: Path, warn) -> pl.DataFrame:
 
 def _time_only(s: pl.Series) -> pl.Series:
     """Date-times that are all on Excel's day 0 were cells with only a time: they become times."""
-    if s.dtype == pl.Datetime and s.null_count() < len(s) and s.dt.date().is_in(_DAY_ZERO).all():
-        return s.dt.time()
+    stamps = s.alias("value")  # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
+    if s.dtype == pl.Datetime and s.null_count() < len(s) and stamps.dt.date().is_in(_DAY_ZERO).all():
+        return stamps.dt.time().alias(s.name)
     return s
 
 
