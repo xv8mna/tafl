@@ -334,6 +334,19 @@ def test_filling_a_whole_number_column(act):
         assert filled.schema["V"] == dtype and filled["V"][1] == cell
 
 
+@pytest.mark.parametrize("dtype", [pl.UInt64, pl.UInt128])
+def test_filling_unsigned_whole_numbers_with_a_number_below_0_says_what_does_not_fit(act, dtype):
+    """With a number below 0 the column gets a type with a sign, which doesn't hold its highest
+    values. Before, Polars stopped with "conversion from `u64` to `i64` failed"."""
+    top, high = (2**64 - 1, 2**63 - 1) if dtype == pl.UInt64 else (2**128 - 1, 2**127 - 1)
+    df = pl.DataFrame({"V": pl.Series([top, None], dtype=dtype)})
+    message = rf"^'-1' doesn't fit column 'V': with numbers below 0 the column holds whole numbers up to {high}, but"
+    with pytest.raises(ActionError, match=message + rf" it has bigger ones \(e\.g\. {top}\)$"):
+        act("rows.fill", df, {"columns": ["V"], "method": "value", "value": "-1"})
+    fits = pl.DataFrame({"V": pl.Series([high, None], dtype=dtype)})  # as before: the type with a sign holds it
+    assert act("rows.fill", fits, {"columns": ["V"], "method": "value", "value": "-1"})["V"].to_list() == [high, -1]
+
+
 def test_a_list_with_a_value_the_column_can_not_hold(act):
     df = pl.DataFrame({"Name": ["a", "b"], "Qty": pl.Series([1, 2], dtype=pl.Int8)})
     assert names(flt(act, df, ("Qty", "in", "1; 300; -1"))) == ["a"]

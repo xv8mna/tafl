@@ -184,6 +184,11 @@ def fill(df, p, ctx):
                     f"'{p.value}' has too many decimal places for the values of column '{name}' (e.g. {example}): "
                     f"an exact decimal holds {_DECIMAL_DIGITS} digits, decimal places included"
                 )
+            if isinstance(value, int) and (too_big := _too_big_with(df[name], value)) is not None:
+                raise ActionError(
+                    f"'{p.value}' doesn't fit column '{name}': with numbers below 0 the column holds whole numbers "
+                    f"up to {too_big[1]}, but it has bigger ones (e.g. {too_big[0]})"
+                )
             updates.append(column.fill_null(_for_polars(value, df.schema[name])).alias(name))
         else:
             updates.append(column.fill_null(strategy="forward" if p.method == "down" else "backward").alias(name))
@@ -311,6 +316,17 @@ def _too_long_with(values: pl.Series, value: Decimal) -> Decimal | None:
     extremes = [v for v in (values.min(), values.max()) if v is not None]
     longest = max(extremes, key=abs, default=None)
     return longest if longest is not None and abs(longest) >= Decimal(1).scaleb(_DECIMAL_DIGITS - places) else None
+
+
+def _too_big_with(values: pl.Series, value: int) -> tuple[int, int] | None:
+    """The highest of the whole numbers ``values`` and the highest number the column can hold when
+    it takes ``value`` too, if that is lower; else None. For a number below 0 Polars makes a UInt64
+    column Int64 and a UInt128 column Int128."""
+    if value >= 0 or values.dtype not in (pl.UInt64, pl.UInt128):
+        return None
+    high = _limits(pl.Int64 if values.dtype == pl.UInt64 else pl.Int128)[1]
+    top = values.max()
+    return (top, high) if top is not None and top > high else None
 
 
 def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
