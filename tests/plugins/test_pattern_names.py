@@ -336,6 +336,27 @@ case("table.append all columns", "K")(
 )
 
 
+def _other_types(r: Run) -> dict[str, pl.DataFrame]:
+    """Tables whose column K has decimal numbers (o) and texts (p): K gets a type that fits all."""
+    return {"o": named(pl.DataFrame({"K": [4.5], "x": [9]}), r), "p": named(pl.DataFrame({"K": ["n/a"], "abc": [7]}), r)}
+
+
+for _tables in (["o"], ["o", "p"]):
+    for _columns in ("all", "this"):
+        case(f"table.append {'+'.join(_tables)} ({_columns} columns), K of other types", "K")(
+            lambda r, t=_tables, c=_columns: r.step(
+                "table.append", table(r), {"tables": t, "columns": c}, StubContext(tables=_other_types(r))
+            )
+        )
+
+
+@case("parquet.import of a folder, K of other types in the files", "K")
+def _(r):
+    named(pl.DataFrame({"K": [1, 2], "abc": [1.5, 2.5]}), r).write_parquet(r.folder / "a.parquet")
+    named(pl.DataFrame({"K": ["n/a"], "x": ["b"]}), r).write_parquet(r.folder / "b.parquet")
+    return r.step("parquet.import", None, {"source": "folder", "folder": str(r.folder), "file_column": True})
+
+
 # reshape
 
 case("reshape.pivot rows K", "K")(lambda r: r.step("reshape.pivot", table(r), {"rows": [r["K"]], "column": "s", "value": "f", "function": "sum"}))

@@ -202,8 +202,20 @@ def append(df, p, ctx):
     """Adds the rows of other tables below the rows of this table. Columns are matched by
     name; if a column has different types in different tables, it becomes text."""
     frames = [df, *(ctx.table(t) for t in p.tables)]
-    out = pl.concat(frames, how="diagonal_relaxed")
+    out = _stacked(frames)
     return out.select(cols(df.columns)) if p.columns == "this" else out
+
+
+def _stacked(frames: list[pl.DataFrame]) -> pl.DataFrame:
+    """The frames one below the other, each column in a type that fits all its values. Polars casts
+    a column to that type by its name, which it reads as a pattern (* is all columns): with such a
+    name, the columns get working names for that, and their own names back after it."""
+    if not any(c == "*" or c.startswith("^") and c.endswith("$") for f in frames for c in f.columns):
+        return pl.concat(frames, how="diagonal_relaxed")
+    names = list(dict.fromkeys(c for f in frames for c in f.columns))
+    working = {name: f"column {i}" for i, name in enumerate(names)}
+    out = pl.concat([f.rename({c: working[c] for c in f.columns}) for f in frames], how="diagonal_relaxed")
+    return out.rename(dict(zip(working.values(), names)))
 
 
 def _free_name(name: str, suffix: str, taken: set[str]) -> str:
