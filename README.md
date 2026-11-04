@@ -479,8 +479,8 @@ date-times with a time zone are written in that zone's local time. Text stays te
 is, in the cells and in the column names, however the file is written: `=1+1` is no formula, and
 a column of web addresses is not clickable in the file. A sheet holds 1,048,575 rows
 below its header: a bigger table stops the export (filter it, or export to CSV). A cell holds
-32,767 characters: longer texts are cut, with a warning, and a longer list, record or column name
-is cut with no warning. Column names must differ in more than
+32,767 characters: longer texts, lists and records are cut, with a warning, and a longer column
+name is cut with no warning. Column names must differ in more than
 upper and lower case, as an Excel table can't tell `Name` from `NAME`: the export stops before it
 changes a file. If the file exists:
 
@@ -702,9 +702,10 @@ The settings form is built from `params`. Rules for plugins:
 - Take the columns that settings or the data name with `col(name)` or `cols(names)` from
   `tafl.api`, never with `pl.col(name)` or as names in text (`df.select(p.columns)`): Polars reads
   `*` as all columns and a name that starts with `^` and ends with `$` as a pattern, and such names
-  come with data, e.g. a CSV header `*`. Where a method needs one selector of several columns, as
-  `unpivot(on=...)` and `drop` do, use `selector(names)`. Import these three by name, as the
-  example does: `from tafl.api import *` leaves them out. Polars' own Series methods look a Series
+  come with data, e.g. a CSV header `*`. Give `drop` and `unpivot(on=...)` one `selector(names)`:
+  Polars nests a list of `col()`, and thousands of them can end the program (and `unpivot` keeps
+  the order of a selector, not of a list). Import these three by
+  name, as the example does: `from tafl.api import *` leaves them out. Polars' own Series methods look a Series
   up by its name too and stop with "IndexError" for a name like `^a.*$`: work on
   `s.alias("value")` and give the result its name back with `.alias(s.name)`.
 - When an action's settings (`params`) change, raise `version=` and add `migrate=`: a function

@@ -953,8 +953,9 @@ Values are compared with the column's type: `1.000,00` and `1000` are numbers in
 Status *does not equal* `storniert` keeps 156 rows, Net *is greater than* `1.000,00` keeps 116,
 Date *is greater than or equal to* `01.09.2026` keeps 20. In a date-time column with a time zone
 (a Parquet file can have one, for example UTC), a typed date-time, `today` and `now` are the local
-time of that zone, as the grid shows it; a date-time parameter alone, such as `{Now}`, is that
-moment of this PC's clock, as in formulas. In a column of binary values that are no text,
+time of that zone, as the grid shows it. A date-time parameter alone, such as `{Now}` with
+`=NOW()`, is that moment of this PC's clock, as in formulas. In a column of binary values that
+are no text,
 *contains*, *starts with* and *ends with* look at the hex digits that **Join texts** writes, such
 as `0xFF00`.
 
@@ -1599,9 +1600,10 @@ you mean [Net]?)".
   a window function such as SUM([Amount]) OVER ()."
 - `[Net] * 2` as a condition: "The condition must be true or false for every row, e.g. [Amount] >
   100 (this formula gives a number)".
-- `[Total] * [Total]`, where Total is a sum beyond 9,223,372,036,854,775,807: "the result has more
-  than 38 digits, more than an exact number holds. For a decimal number (about 15 digits) write
-  CAST(... AS DOUBLE)". Such a sum keeps all its digits as an exact decimal; write
+- `[Total] * [Total]`, where Total is a sum of 20 digits or more, such as
+  18,000,000,000,000,000,007: "the result needs more than 38 digits, decimal places included, more
+  than an exact number holds. For a decimal number (about 15 digits) write CAST(... AS DOUBLE)".
+  Such a sum keeps all its digits as an exact decimal. For a decimal number, write
   `CAST([Total] AS DOUBLE) * [Total]`.
 
 ## 6. The project map and groups
@@ -1847,9 +1849,9 @@ take no parameters.
 the sheet `2026-03`. The step list keeps showing `{Month}`; the run's message has the real name.
 Windows file names can't contain `:`, so take a time without colons, as `=STRFTIME(NOW(),
 '%Y-%m-%d %H-%M')` above. A value in **Filter rows** works too: Date **is greater than or equal
-to** `{Day}`. A date-time parameter alone in such a value, such as `{Now}`, is that moment of this
-PC's clock, also in a column with a time zone, as in formulas; inside other text, such as
-`{Day} 08:30`, it is read like a typed value.
+to** `{Day}`. A date-time parameter alone in such a value, such as `{Now}` with the formula
+`=NOW()`, is that moment of this PC's clock, as in formulas, also in a column with a time zone. A
+parameter inside other text, such as `{Day} 08:30`, is read like a typed value.
 
 ![A parameter in a file name: output/orders {Month}.xlsx](guide/parameter-in-file-name.png)
 
@@ -2092,8 +2094,8 @@ way:
 - The new file replaces the old one only when it is complete: if an export fails, the old file
   stays as it was. A missing folder is created.
 - A sheet holds 1,048,575 rows below its header: a bigger table stops the export (filter it, or
-  export to CSV). Texts longer than 32,767 characters are cut, with a warning. A longer list,
-  record or column name is cut with no warning.
+  export to CSV). Texts, lists and records longer than 32,767 characters are cut, with a warning.
+  A longer column name is cut with no warning.
 - A sheet name has at most 31 characters, without `[ ] : * ? / \`, and it can't start or end with
   `'`.
 - An Excel table can't tell `Name` from `NAME`: with two such column names, the export stops
