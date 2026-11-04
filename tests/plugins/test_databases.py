@@ -611,6 +611,29 @@ def test_whole_numbers_beside_decimal_numbers_keep_their_digits(project, registr
     assert make_series("Id", [10**18 + 1, float("inf")]).to_list() == ["1000000000000000001", "Infinity"]
 
 
+def test_a_tiny_decimal_number_beside_a_long_whole_number_makes_text(project, registry, tmp_path):
+    """The exact form of a tiny decimal number (6.62607015E-34) can have more decimal places than the
+    38 an exact decimal holds: Polars stopped the import with an error of its own. Such a column
+    becomes text, as one with more than 38 digits."""
+    con = sqlite3.connect(tmp_path / "data.db")
+    con.execute("CREATE TABLE tiny (id INTEGER, value)")
+    con.executemany("INSERT INTO tiny VALUES (?, ?)", [(1, 12345678901234567), (2, 6.62607015e-34), (3, None)])
+    con.commit()
+    con.close()
+    result = import_table(project, registry, table="tiny")
+    assert result.ok, result.first_error
+    assert result.df["value"].to_list() == ["12345678901234567", "6.62607015E-34", None]
+    from tafl.api import make_series
+
+    assert make_series("Id", [10**18 + 1, 1e-39]).to_list() == ["1000000000000000001", "1E-39"]
+    assert make_series("Id", [2**56, 1e-40, None]).to_list() == ["72057594037927936", "1E-40", None]
+    D = decimal.Decimal
+    assert make_series("Id", [D(12345678901234567), D("-1E-39")]).to_list() == ["12345678901234567", "-1E-39"]
+    assert make_series("Id", [10**18 + 1, 1e-38]).to_list() == ["1000000000000000001", "1E-38"]  # 38 places, as before
+    assert make_series("Id", [D("0." + "1" * 38)]).dtype == pl.Decimal(38, 38)  # 38 places fit
+    assert make_series("Id", [10**18 + 1, 0.5]).to_list() == [D("1000000000000000001.0"), D("0.5")]
+
+
 def test_a_column_of_blobs_stays_binary(project, registry, tmp_path):
     con = sqlite3.connect(tmp_path / "data.db")
     con.execute("CREATE TABLE blobs (value)")

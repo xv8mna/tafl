@@ -526,7 +526,9 @@ def _decimals(name: str, values: list[Any], dtype: pl.DataType | None) -> pl.Ser
         if short or all(_float_keeps(v, f) for v, f in zip(numbers, floats)):
             return pl.Series(name, floats, dtype=pl.Float64)
     series = None
-    if all(v is None or v.is_finite() for v in numbers):  # a Decimal has no NaN or infinity
+    # A Decimal has no NaN or infinity, and Polars stops at more than 38 decimal places (1e-39 from
+    # SQLite has 39): text, below. The decimals of a driver's own type (SQL Server's) have no more.
+    if all(v is None or (v.is_finite() and (exact is not None or v.as_tuple().exponent >= -38)) for v in numbers):
         try:
             series = pl.Series(values=numbers, dtype=exact).alias(name)  # named afterwards, as in make_series
         except Exception:  # more than the 38 digits a Decimal holds
