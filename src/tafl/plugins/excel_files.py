@@ -133,6 +133,14 @@ def import_excel(df, p, ctx):
     program may have none (the column stays empty): open it in Excel and save it.
     """
     paths, folder = source_files(p, ctx)
+
+    def convert(data: pl.DataFrame) -> pl.DataFrame:  # each sheet on its own, as the setting says
+        if p.whole_numbers:
+            data = dtypes.whole_numbers_to_int(data)
+        if p.dates_without_time:
+            data = dtypes.midnight_to_date(data)
+        return data
+
     parts = []
     for path in paths:
         try:
@@ -143,20 +151,13 @@ def import_excel(df, p, ctx):
             raise ActionError(f"Could not open {path.name}: {e}") from None
         for sheet in _chosen_sheets(list(reader.sheet_names), p, path, several_files=folder is not None):
             ctx.check_cancelled()
-            parts.append((path, sheet, _read_sheet(reader, sheet, p, path, ctx.warn)))
+            parts.append((path, sheet, convert(_read_sheet(reader, sheet, p, path, ctx.warn))))
     if not parts and paths:
         raise ActionError(f"No sheet named {p.sheet_pattern} in {len(paths)} file{'s' if len(paths) != 1 else ''}")
     if folder is not None:  # the files the import read: a workbook without a chosen sheet isn't one
         ctx.imported_files = tuple(dict.fromkeys(path for path, _, _ in parts))
 
-    def convert(data: pl.DataFrame) -> pl.DataFrame:
-        if p.whole_numbers:
-            data = dtypes.whole_numbers_to_int(data)
-        if p.dates_without_time:
-            data = dtypes.midnight_to_date(data)
-        return data
-
-    out = combine(parts, p, folder, sheet_column=p.sheets in _SEVERAL_SHEETS and p.sheet_column, prepare=convert, warn=ctx.warn)
+    out = combine(parts, p, folder, sheet_column=p.sheets in _SEVERAL_SHEETS and p.sheet_column, warn=ctx.warn)
     if len(parts) == 1:
         ctx.log(f"Sheet '{parts[0][1]}'")
     elif parts:

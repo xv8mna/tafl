@@ -118,6 +118,31 @@ def test_all_sheets_of_one_excel_file(act, workbooks):
     assert one.columns == ["Total"]
 
 
+def test_each_sheet_is_converted_before_the_sheets_are_put_together(act, tmp_path):
+    """"Whole numbers as integers" and "Date-times at midnight as dates" looked at all sheets
+    together, after they were put one below the other: a sheet of dates beside a sheet of numbers
+    gave the text 2025-01-31 00:00:00. Each sheet is converted on its own now."""
+    path = tmp_path / "book.xlsx"
+    book = xlsxwriter.Workbook(str(path))
+    day = book.add_format({"num_format": "dd.mm.yyyy"})
+    for name, cells in (("Dates", [dt.datetime(2025, 1, 31)]), ("Numbers", [45658.5]), ("Whole", [1, 2]), ("Decimals", [2.5])):
+        sheet = book.add_worksheet(name)
+        sheet.write(0, 0, "x" if name in ("Dates", "Numbers") else "n")
+        for row, value in enumerate(cells, 1):
+            if isinstance(value, dt.datetime):
+                sheet.write_datetime(row, 0, value, day)
+            else:
+                sheet.write(row, 0, value)
+    book.close()
+    ctx = StubContext()
+    out = act("excel.import", None, {"file": str(path), "sheets": "all"}, ctx)
+    assert out["x"].to_list() == ["2025-01-31", "45658.5", None, None, None]
+    assert ctx.warnings == ["“x” is text: it has different types in the sheets (date, number)"]
+    assert out.schema["n"] == pl.Float64 and out["n"].to_list() == [None, None, 1.0, 2.0, 2.5]  # as before
+    whole = act("excel.import", None, {"file": str(path), "sheets": "matching", "sheet_pattern": "Whole;Dates"})
+    assert whole.schema["n"] == pl.Int64 and whole.schema["x"] == pl.Date  # each sheet as it is
+
+
 def test_a_sheet_missing_in_one_file_of_a_folder(act, workbooks):
     with pytest.raises(ActionError, match="Sheet '2025-01' not found in b.xlsx"):
         act("excel.import", None, folder(workbooks, sheet="2025-01"))
@@ -184,7 +209,8 @@ def test_excel_sheets_whose_column_has_other_types(act, tmp_path):
     ctx = StubContext()
     out = act("excel.import", None, {"file": str(tmp_path / "mixed.xlsx"), "sheets": "all"}, ctx)
     assert out.rows() == [("A", "5", 1.5), ("B", "n/a", 2.0)] and out.schema["Nr"] == pl.String
-    assert ctx.warnings == ["“Nr” is text: it has different types in the sheets (number, text)"]
+    # each sheet is converted first: 5 is a whole number there
+    assert ctx.warnings == ["“Nr” is text: it has different types in the sheets (integer, text)"]
 
 
 def test_files_in_a_folder(act, lake):
