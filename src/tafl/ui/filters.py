@@ -66,9 +66,7 @@ _DAY_US = 86_400_000_000  # microseconds of a day
 _FIRST_DAY = -96_465_292  # -262143-01-01: Polars' calendar begins there (days since 1970)
 _END_DAY = 95_026_237  # +262143-01-01: Polars' calendar ends with +262142-12-31
 _HOUR_US = 3_600_000_000  # microseconds of an hour
-_FEW_RANGES = 4  # more ranges of moments of periods: their local days (see _local_days_sql)
-_MANY_DAYS = 100_000  # more local days of periods: ranges of moments again
-_LONG_SPAN = 146_097  # days of 400 years: periods further apart stay ranges of moments
+_FEW_RANGES = 4  # more runs of periods: the number of the period of a moment's local day (see _local_periods_sql)
 _CHECKED_VALUES = 1_000  # Add as step checks the rows of a step of at most so many picked values (see _may_differ)
 _PERIOD_TEXTS = {  # the periods of the card (Polars): a year before 0 has a -, one after 9999 a + (not in a week)
     "year": re.compile(r"([-+]?[0-9]+)"),
@@ -706,14 +704,14 @@ def _formula(f: Filter, dtype: pl.DataType, data: pl.Series | None) -> str:
         test = f"regexp_matches({name}, {_sql(_step_pattern(str(f.options.get('pattern') or '')))})"
         parts += [test if value == MATCH else f"NOT {test}" for value in values if value in (MATCH, NO_MATCH)]
     elif values and f.facet == "period" and dtype == pl.Datetime and _zone(dtype) is not None:
-        # From when to when the periods are, by Polars' rules of the zone, as the card has them: DuckDB's
-        # rules of a zone can differ (America/Vancouver from 2026-11-01)
+        # The periods by Polars' rules of the zone, as the card has them: DuckDB's rules of a zone can
+        # differ (America/Vancouver from 2026-11-01)
         by, zone = f.options.get("by", "month"), _zone(dtype)
         days = [found for period in values if (found := _period_days(period, by)) is not None]
-        ranges = _joined(_period_moments(days, zone))
-        if len(ranges) > _FEW_RANGES and (local := _local_days_sql(name, days, zone)) is not None:
-            parts.append(local)
-        elif ranges:
+        runs = _joined(days)  # periods that meet as one: 122 years with 5 left out are 6 runs
+        if len(runs) > _FEW_RANGES:
+            parts.append(_local_periods_sql(name, by, days, runs, zone))
+        elif runs and (ranges := _joined(_period_moments(runs, zone))):
             parts.append(_ranges_sql(name, ranges))
     elif values:
         kind = key_type(f, dtype)
@@ -774,39 +772,104 @@ def _range_condition(name: str, start: float, end: float) -> str:
     return " AND ".join(bounds) or f"{name} IS NOT NULL"
 
 
-def _local_days_sql(name: str, days: list[tuple[int, int]], zone: str) -> str | None:
-    """Many periods of a column with a time zone (``days``: see _period_days): whether the local day
-    of a moment is one of the days of the periods. DuckDB looks the day up (IN) and finds the
-    offset of the moment from UTC with a binary search of the clock changes of the zone, by
-    Polars' rules (CASE). On a million rows 3,000 dates apart take 0.2 seconds and 170 MB; as
-    ranges of moments they took 1.9 seconds and 1 GB. None for more than 100,000 days, or for
-    periods more than 400 years apart: there the ranges stay."""
-    if sum(end - start for start, end in days) > _MANY_DAYS:
-        return None
-    picked = sorted({day for start, end in days for day in range(start, end)})
-    if not picked or picked[-1] - picked[0] > _LONG_SPAN:
-        return None
-    origin, stop = picked[0] - 2, picked[-1] + 3  # beyond these, no offset of a moment reaches a picked day
-    offset, changes = _clock_changes(origin * _DAY_US, stop * _DAY_US, zone)
+def _local_periods_sql(name: str, by: str, days: list[tuple[int, int]], runs: list[tuple[int, int]], zone: str) -> str:
+    """More than four runs of periods of a column with a time zone (``days``: the periods, see
+    _period_days; ``runs``: those that meet, joined): whether the period of the local day of a
+    moment is one of them, by its number (IN, which DuckDB looks up): the day itself, its ISO week,
+    or its month, quarter or year (DuckDB's date_diff by months from a 1 January). The local day
+    takes the offset of the moment from UTC, which a binary search (CASE) finds among the clock
+    changes that Polars knows near the ends of the runs (see _boundary_offsets). On a million rows,
+    3,000 dates apart take 0.2 seconds and 170 MB, as ranges of moments 1.9 seconds and 1 GB; the
+    text of 122 years in 6 runs has 1 KB."""
+    first = runs[0][0] - 10  # earlier by more than any offset: no picked period has this day, nor those before it
+    if by == "week":
+        origin = first - (first + 3) % 7  # a Monday (1970-01-01 was a Thursday)
+    elif by == "date":
+        origin = first
+    else:
+        origin = _days(_civil(first)[0] - 1, 1, 1)  # 1 January of the year before
+    offset, changes = _boundary_offsets(runs, zone)
     moment = f"epoch_us({name})"
+    if abs(origin) > 9_000_000:  # 25,000 years from 1970: a moment at the other end of the calendar is 2^63 µs away
+        moment = f"CAST({moment} AS HUGEINT)"
     local = f"({moment} + {_offset_sql(moment, offset, changes)} - ({origin * _DAY_US})) // {_DAY_US}"  # >= 0 from origin on
-    return f"{local} IN ({', '.join(str(day - origin) for day in picked)})"
+    starts = sorted({start for start, _ in days})
+    if by == "date":
+        index, picked = local, [start - origin for start in starts]
+    elif by == "week":
+        index, picked = f"{local} // 7", [(start - origin) // 7 for start in starts]
+    else:  # DuckDB's date_diff by quarters is wrong before the year 0; by months it is right in all years
+        size = {"quarter": 3, "year": 12}.get(by, 1)
+        date = _date_text(origin)
+        months = f"date_diff('month', DATE '{date}', DATE '{date}' + CAST({local} AS INTEGER))"
+        index = months if size == 1 else f"{months} // {size}"
+        year = _civil(origin)[0]
+        picked = [((civil := _civil(start))[0] - year) * 12 + civil[1] - 1 for start in starts]
+        picked = [months_from // size for months_from in picked]
+    return f"{index} IN ({', '.join(str(number) for number in sorted(set(picked)))})"
 
 
-def _clock_changes(start: int, stop: int, zone: str) -> tuple[int, list[tuple[int, int]]]:
-    """The offset from UTC of ``zone`` at ``start``, and the changes of its clocks until ``stop``
-    (microseconds since 1970): the moment of each and the offset from then on, by Polars' rules.
-    Polars looks at each hour, and at each second of an hour with a change (the rules change the
-    clocks at whole seconds)."""
-    hours = pl.int_range(start // _HOUR_US, stop // _HOUR_US + 1, eager=True, dtype=pl.Int64) * _HOUR_US
-    offsets = _offsets(hours, zone)
-    changes: list[tuple[int, int]] = []
-    for index in (offsets != offsets.shift(1)).fill_null(False).arg_true().to_list():
-        seconds = pl.int_range(hours[index - 1] // 1_000_000 + 1, hours[index] // 1_000_000 + 1, eager=True, dtype=pl.Int64)
-        within = _offsets(seconds * 1_000_000, zone)
-        changed = (within != within.shift(1, fill_value=offsets[index - 1])).arg_true().to_list()
-        changes += [(seconds[k] * 1_000_000, within[k]) for k in changed]
-    return offsets[0], changes
+def _boundary_offsets(runs: list[tuple[int, int]], zone: str) -> tuple[int, list[tuple[int, int]]]:
+    """The offset of ``zone`` from UTC and its changes (see _clock_changes) where the local day of a
+    moment decides whether it is in a run of periods: within five days of an end of a run. Further
+    away a moment is more than three local days from every end, and with any offset of the zone
+    (they differ by 26 hours at most) its local day stays in its run or gap: 122 years of periods in
+    6 runs need no clock change of the zone, as none is near a 1 January."""
+    low, high = (_FIRST_DAY + 2) * _DAY_US, (_END_DAY - 2) * _DAY_US  # where Polars knows the local time
+    windows: list[tuple[int, int]] = []
+    for day in sorted({end for run in runs for end in run}):
+        start, stop = max(low, (day - 5) * _DAY_US), min(high, (day + 5) * _DAY_US)
+        if start >= stop:
+            continue
+        if windows and start <= windows[-1][1]:
+            windows[-1] = (windows[-1][0], max(windows[-1][1], stop))
+        else:
+            windows.append((start, stop))
+    if not windows:
+        return 0, []
+    offsets = _offsets(pl.Series([start for start, _ in windows], dtype=pl.Int64), zone).to_list()
+    days = [(start, start + ((stop - start) // _DAY_US + 1) * _DAY_US, offset) for (start, stop), offset in zip(windows, offsets, strict=True)]
+    entries: list[tuple[int, int]] = []
+    for (start, _), offset, changes in zip(windows, offsets, _clock_changes(days, zone, _DAY_US), strict=True):
+        entries += [(start, offset), *changes]
+    first, kept = entries[0][1], []
+    for moment, after in entries[1:]:
+        if after != (kept[-1][1] if kept else first):
+            kept.append((moment, after))
+    return first, kept
+
+
+def _clock_changes(spans: list[tuple[int, int, int]], zone: str, step: int) -> list[list[tuple[int, int]]]:
+    """For each span (start, stop, the offset at start; microseconds since 1970, ``stop - start`` a
+    multiple of ``step``): the changes of the clocks of ``zone`` after start until stop, as the
+    moment of each and the offset from then on, by Polars' rules. Polars looks at each step of all
+    spans at once (a day), then at each hour of the days with a change and at each second of the
+    hours with a change: the rules change the clocks at whole seconds, and never twice within a day
+    (all zones, 1850 to 2100)."""
+    counts = [(stop - start) // step for start, stop, _ in spans]
+    moments = [start + k * step for (start, _, _), count in zip(spans, counts, strict=True) for k in range(1, count + 1)]
+    offsets = _offsets(pl.Series(moments, dtype=pl.Int64), zone).to_list() if moments else []
+    found: list[list[tuple[int, int]]] = []
+    finer: list[tuple[int, int, int]] = []  # the steps with a change, for the next pass
+    owners: list[int] = []
+    index = 0
+    for number, ((start, _, offset), count) in enumerate(zip(spans, counts, strict=True)):
+        changes: list[tuple[int, int]] = []
+        before_moment, before = start, offset
+        for moment, after in zip(moments[index : index + count], offsets[index : index + count], strict=True):
+            if after != before:
+                if step == 1_000_000:
+                    changes.append((moment, after))
+                else:
+                    finer.append((before_moment, moment, before))
+                    owners.append(number)
+            before_moment, before = moment, after
+        index += count
+        found.append(changes)
+    if finer:
+        for owner, changes in zip(owners, _clock_changes(finer, zone, _HOUR_US if step == _DAY_US else 1_000_000), strict=True):
+            found[owner] += changes
+    return found
 
 
 def _offsets(moments: pl.Series, zone: str) -> pl.Series:
@@ -901,6 +964,11 @@ def _period_text(by: str, year: int, *more: int) -> str:
         return f"{str(year).zfill(4)}-W{more[0]:02d}"
     text = f"{year:04d}" if 0 <= year <= 9999 else (f"+{year}" if year > 9999 else f"-{-year:04d}")
     return text + "".join(f"-{part:02d}" for part in more)
+
+
+def _date_text(day: int) -> str:
+    """A day (since 1970) as DuckDB reads a DATE, in any year (see _timestamp_text)."""
+    return _timestamp_text(day * _DAY_US * 1000).split(" ")[0]
 
 
 def _days(year: int, month: int, day: int) -> int:

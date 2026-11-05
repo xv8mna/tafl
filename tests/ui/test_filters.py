@@ -1119,6 +1119,26 @@ def test_many_periods_of_a_column_with_a_time_zone_as_a_step(act):
     assert step.startswith("(epoch_us([When]) + CASE WHEN epoch_us([When]) < ") and step.count("TIMESTAMPTZ") == 0
 
 
+def test_long_periods_of_a_column_with_a_time_zone_stay_a_short_step(act):
+    """More than four runs of periods listed every local day: 122 years in 6 runs made a step of
+    318 KB, which took 2 seconds per calculation on a million rows, and Add as step and selecting
+    the step took 5 seconds in the window. The step now has the number of the period of the local
+    day (the year, quarter, month, ISO week or day), and the zone's clock changes only near the
+    ends of the runs."""
+    moments = pl.datetime_range(dt.datetime(1890, 1, 1), dt.datetime(2035, 1, 1), "29h", eager=True, time_unit="us")
+    df = pl.DataFrame({"id": range(len(moments)), "When": moments.dt.replace_time_zone("UTC").dt.convert_time_zone("America/New_York")})
+    years = [str(year) for year in range(1900, 2027) if year not in (1918, 1945, 1990, 2001, 2020)]
+    for by, picked, longest in (
+        ("year", years, 1_000),
+        ("month", [f"{year}-{month:02d}" for year in range(1980, 2026) for month in range(1, 12)], 3_000),
+        ("quarter", [f"{year} Q{quarter}" for year in range(1976, 2026) for quarter in (1, 3)], 12_000),  # a clock change a year
+        ("week", [f"{year}-W{week:02d}" for year in range(2016, 2026) for week in range(1, 53, 2)], 4_000),
+    ):
+        for excluded in (False, True):
+            same_rows(act, df, Filter("When", picked, "period", {"by": by}, excluded=excluded))
+        assert len(formula(Filter("When", picked, "period", {"by": by}), df.schema["When"])) < longest, by
+
+
 @pytest.mark.parametrize("zone", ["Asia/Tokyo", "America/New_York", "UTC"])
 def test_periods_at_the_ends_of_polars_calendar_as_a_step(act, zone):
     """Polars' calendar goes from -262143-01-01 to +262142-12-31; periods of the years 262,072 and
