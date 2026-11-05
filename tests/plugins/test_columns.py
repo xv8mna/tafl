@@ -216,6 +216,21 @@ def test_long_numbers_keep_all_their_digits(act):
     assert change(act, numbers, "n", "text", "0").to_list() == ["9223372036854775807", "9007199254740993"]
 
 
+def test_whole_numbers_from_text_read_each_text_once(act, monkeypatch):
+    """Reading the number of a text is the slow part: the rounding warning read every text a
+    second time (1.5 to 1.7 times as slow as 0.6.3 for a million texts)."""
+    from tafl.api import dtypes
+
+    readings = []
+    reading = dtypes._number_text
+    monkeypatch.setattr(dtypes, "_number_text", lambda *args: readings.append(args) or reading(*args))
+    ctx = StubContext()
+    assert change(act, pl.DataFrame({"n": ["1.000,5", "7", "12.345"]}), "n", "integer", ctx=ctx).to_list() == [1001, 7, 12345]
+    assert len(readings) == 1 and ctx.warnings == [
+        "n: 1 value(s) were rounded, e.g. '1.000,5': a whole number has no decimal places (Decimal number and Text keep them)"
+    ]
+
+
 def test_whole_numbers_say_which_values_were_rounded(act):
     """Values with decimal places are rounded half away from zero, as in Excel, and now the step
     says so, as Decimal number does for the digits it can't keep. Before, there was no warning."""

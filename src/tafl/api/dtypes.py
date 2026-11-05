@@ -170,6 +170,22 @@ def parse_integers(s: pl.Series, decimal: str = ",") -> pl.Series:
     return _apply(_apply(s, _number_text(_VALUE, decimal)), _integer(_VALUE))
 
 
+def parse_whole_numbers(s: pl.Series, decimal: str = ",") -> tuple[pl.Series, pl.Series]:
+    """Text -> Int64 as ``parse_integers``, and which values were rounded (as ``rounded_to_whole``
+    says), from one reading of the texts: that reading is the slow part."""
+    text = _apply(s, _number_text(_VALUE, decimal)).alias("value")
+    out = text.to_frame().select(_integer(_VALUE).alias("whole"), _has_fraction(_VALUE).alias("rounded"))
+    rounded = out["rounded"] & out["whole"].is_not_null()  # fixed names: see _clean_text
+    return out["whole"].alias(s.name), rounded.alias(s.name)
+
+
+def _has_fraction(text: pl.Expr) -> pl.Expr:
+    """For text from ``_number_text``: whether the number has decimal places other than zeros."""
+    number = text.cast(pl.Float64, strict=False)  # e.g. 1.5e0
+    plain = text.str.contains(_PLAIN_NUMBER)
+    return pl.when(plain).then(text.str.contains(r"\.[0-9]*[1-9]")).otherwise(number.round(0) != number).fill_null(False)
+
+
 def _integer(text: pl.Expr) -> pl.Expr:
     """``parse_integers`` for text from ``_number_text``."""
     negative = text.str.starts_with("-")
@@ -215,10 +231,7 @@ def rounded_to_whole(s: pl.Series, decimal: str = ",") -> pl.Series:
         rows = s.str.contains_any([".", ",", "e", "E"]).fill_null(False).arg_true()  # the others have no decimal places
         if rows.len():
             text = _apply(s.gather(rows), _number_text(_VALUE, decimal))  # once: the slow part
-            number = _VALUE.cast(pl.Float64, strict=False)  # e.g. 1.5e0
-            plain = _VALUE.str.contains(_PLAIN_NUMBER)
-            fraction = pl.when(plain).then(_VALUE.str.contains(r"\.[0-9]*[1-9]")).otherwise(number.round(0) != number)
-            rounded = rounded.scatter(rows, _apply(text, fraction.fill_null(False)))
+            rounded = rounded.scatter(rows, _apply(text, _has_fraction(_VALUE)))
         return rounded
     if s.dtype.is_float() or isinstance(s.dtype, pl.Decimal):
         return (s.round(0) != s).fill_null(False).alias(name)  # NaN and infinity are equal to themselves here

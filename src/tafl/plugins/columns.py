@@ -104,8 +104,11 @@ def change_type(df, p, ctx):
     9,223,372,036,854,775,807); decimal numbers keep about 15.
     """
     for c in p.columns:  # one after the other, so a column can be converted twice
-        source = df[c.column]
-        converted = _convert(source, c.type, c.format.strip(), p.decimal)
+        source, rounded = df[c.column], None
+        if c.type == "integer" and source.dtype == pl.String:  # the numbers and the rounded values from one reading
+            converted, rounded = dtypes.parse_whole_numbers(source, p.decimal)
+        else:
+            converted = _convert(source, c.type, c.format.strip(), p.decimal)
         # fixed names from here: Polars' Series methods would read a name like ^a.*$ as a pattern
         source, converted = source.alias("value"), converted.alias("value")
         failed = source.is_not_null() & converted.is_null()
@@ -125,7 +128,7 @@ def change_type(df, p, ctx):
         if c.type == "number":
             _warn_rounded(c.column, source, converted, p.decimal, ctx)
         elif c.type == "integer":
-            _warn_whole(c.column, source, converted, p.decimal, ctx)
+            _warn_whole(c.column, source, converted, p.decimal, ctx, rounded)
         df = df.with_columns(converted.alias(c.column))
     return df
 
@@ -149,9 +152,10 @@ def _warn_rounded(name: str, source: pl.Series, converted: pl.Series, decimal: s
         )
 
 
-def _warn_whole(name: str, source: pl.Series, converted: pl.Series, decimal: str, ctx) -> None:
-    """A whole number has no decimal places: say which values were rounded (half away from zero)."""
-    rounded = dtypes.rounded_to_whole(source, decimal) & converted.is_not_null()
+def _warn_whole(name: str, source: pl.Series, converted: pl.Series, decimal: str, ctx, rounded: pl.Series | None) -> None:
+    """A whole number has no decimal places: say which values were rounded (half away from zero).
+    ``rounded``: those values, when the conversion gave them already (from text)."""
+    rounded = (dtypes.rounded_to_whole(source, decimal) if rounded is None else rounded) & converted.is_not_null()
     if rounded.any():
         examples = ", ".join(f"'{v}'" for v in source.filter(rounded).head(3).to_list())
         ctx.warn(
