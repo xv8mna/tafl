@@ -1571,7 +1571,9 @@ def _fit_lengths(
         target, column = names[source], df[source].alias("value")  # a fixed name, as in _round_half_away
         kind = kinds.get(target.lower(), "")
         text, binary = _TEXT_TYPE.fullmatch(kind), _BINARY_TYPE.fullmatch(kind)
-        if text and column.dtype == pl.String:
+        if text and source in hexed:  # hex digits: one character each (a byte, a UTF-16 unit), no spaces
+            size, lengths, unit = int(text[2]), column.str.len_bytes(), "characters"
+        elif text and column.dtype == pl.String:
             size, wide, utf8 = int(text[2]), bool(text[1]), bool(text[3])
             lengths = _text_lengths(column, wide, utf8)
             kept = _text_lengths(column.str.strip_chars_end(" "), wide, utf8)
