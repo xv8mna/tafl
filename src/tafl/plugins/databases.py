@@ -1068,6 +1068,15 @@ def _read_only_uri(path: Path) -> str:
     return f"file://{quote(name if name.startswith('/') else '/' + name)}?mode=ro"
 
 
+def _migrate_import(params: dict, from_version: int) -> dict:
+    """Version 1 detected numbers with a decimal point only, and no amounts or percentages: a step
+    saved by it keeps that (Point), so that it gives the same results as before, also to steps
+    after it that changed such texts themselves."""
+    if from_version < 2:
+        params.setdefault("decimal", ".")
+    return params
+
+
 def _import_endpoints(p) -> list[Endpoint]:
     if p.mode == "table":
         found = Endpoint(endpoints.IN, endpoints.DATABASE, place=p.connection, name=p.table, setting="table")
@@ -1087,7 +1096,17 @@ def _import_endpoints(p) -> list[Endpoint]:
         P.Text("table", "Table", required=True, placeholder="dbo.Orders", visible_if={"mode": "table"}),
         P.Code("query", "SQL query", required=True, visible_if={"mode": "query"}),
         P.Bool("detect_types", "Detect numbers and dates in text columns", default=False),
+        P.Choice(
+            "decimal",
+            "Decimal separator",
+            [("auto", "Detect automatically"), (".", "Point: 1,234.56"), (",", "Comma: 1.234,56")],
+            visible_if={"detect_types": True},
+            help="Detect automatically: each column's own, as the CSV import detects it, also in amounts (1.234,50 €) "
+            "and percentages (12,5%). Point or Comma: numbers and dates with that separator, no amounts or percentages.",
+        ),
     ],
+    version=2,
+    migrate=_migrate_import,
     summary=lambda p: f"Import {p.table if p.mode == 'table' else 'SQL query'} from {p.connection}",
     endpoints=_import_endpoints,
 )
@@ -1098,7 +1117,10 @@ def import_database(df, p, ctx):
     changes in SQL Server is rolled back (a query that commits by itself keeps its changes).
     Numbers keep all their digits: a column with numbers of more digits than a decimal number
     keeps (about 15), or with whole numbers too big for a whole-number column, stays a column of
-    exact decimals."""
+    exact decimals. "Detect numbers and dates in text columns" finds them in text, with the
+    decimal separator of each column as the CSV import does (also in amounts and percentages),
+    or only numbers and dates with a chosen one; steps saved before it could be chosen use the
+    point, as they did."""
 
     def between():  # there may be no end of rows: a view can make them up
         ctx.check_cancelled()
@@ -1110,7 +1132,11 @@ def import_database(df, p, ctx):
         finally:
             with contextlib.suppress(Exception):  # e.g. a driver in autocommit mode: nothing to roll back
                 db.rollback()
-    return _detect_types(out, ctx) if p.detect_types else out
+    if not p.detect_types:
+        return out
+    if p.decimal == "auto":
+        return _detect_types(out, ctx)
+    return dtypes.infer_types(out, decimal=p.decimal, warn=ctx.warn)  # only numbers and dates, as version 1 with a point
 
 
 def _detect_types(df: pl.DataFrame, ctx) -> pl.DataFrame:

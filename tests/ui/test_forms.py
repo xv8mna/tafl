@@ -76,6 +76,22 @@ def test_choices_show_and_hide_fields(qapp, registry):
     assert not form.editor("table").isVisibleTo(form) and form.editor("query").isVisibleTo(form)
 
 
+def test_the_decimal_separator_of_a_database_import_shows_only_with_detection(qapp, registry):
+    """The decimal separator only matters when numbers and dates are detected: it shows with that
+    setting, with Detect automatically for a new step and Point for one saved before it existed."""
+    action = registry.actions["db.import"]
+    form = ParamForm(action.params, FormContext(connections=["db"]))
+    form.set_values(json_ready(action.resolve({})))
+    assert not form.editor("decimal").isVisibleTo(form) and form.values()["decimal"] == "auto"
+    form.editor("detect_types")._box.setChecked(True)
+    assert form.editor("decimal").isVisibleTo(form)
+    form.editor("detect_types")._box.setChecked(False)
+    assert not form.editor("decimal").isVisibleTo(form)
+    old = action.resolve(action.upgrade({"connection": "db", "table": "prices", "detect_types": True}, 1))
+    form.set_values(json_ready(old))
+    assert form.editor("decimal").isVisibleTo(form) and form.values()["decimal"] == "."
+
+
 def test_list_rows_can_be_added_moved_and_removed(qtbot, registry):
     action = registry.actions["rows.sort"]
     form = ParamForm(action.params, FormContext(columns=lambda source, v: ["A", "B"]))

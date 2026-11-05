@@ -1,5 +1,6 @@
 import datetime as dt
 import decimal
+import json
 import os
 import random
 import shutil
@@ -17,7 +18,7 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
-from tafl import crash
+from tafl import cli, crash
 from tafl.api import ActionError, Cancelled, Connector, Context, P, frame_from_cursor, unique_names
 from tafl.api import database as api_database
 from tafl.api.parameters import Fixed
@@ -567,15 +568,25 @@ def test_detect_types_says_why_long_numbers_stay_text(project, registry):
     ]
 
 
+def import_new(project, registry, **params):
+    """``import_table`` with a step of this version of the action (``import_table`` makes one of
+    version 1, as projects saved before 0.6.4 have it)."""
+    table = project.add_table(f"T{len(project.tables) + 1}")
+    project.add_step(table, registry.actions["db.import"], {"connection": "db", **params})
+    return Engine(project, registry).evaluate(table.id)
+
+
 def test_detect_types_reads_a_decimal_comma_as_the_csv_import_does(project, registry, tmp_path):
-    """123,40 stayed text: only a decimal point was read. A column whose values show a decimal
-    comma has one, amounts and percentages become numbers, as in the CSV import; the log names
-    the columns. A column of values like 1.000, which fit both, keeps the decimal point."""
+    """123,40 stayed text: only a decimal point was read. With "Detect automatically", the choice
+    of a new step, a column whose values show a decimal comma has one, amounts and percentages
+    become numbers, as in the CSV import; the log names the columns. A column of values like
+    1.000, which fit both, keeps the decimal point."""
     rows = [("123,40", "1.5", "1.234,50 €", "12,5%", "1.000", "0815", "1.234.567"), ("7,00", "2.25", "3,00 €", "1%", "2.000", None, "12")]
     with closing(sqlite3.connect(tmp_path / "data.db")) as con, con:
         con.execute("CREATE TABLE prices (comma TEXT, point TEXT, amount TEXT, share TEXT, either TEXT, code TEXT, big TEXT)")
         con.executemany("INSERT INTO prices VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
-    result = import_table(project, registry, table="prices", detect_types=True)
+    assert registry.actions["db.import"].resolve({})["decimal"] == "auto"
+    result = import_new(project, registry, table="prices", detect_types=True)
     assert result.df.to_dict(as_series=False) == {
         "comma": [123.4, 7.0], "point": [1.5, 2.25], "amount": [1234.5, 3.0], "share": [0.125, 0.01],
         "either": [1.0, 2.0], "code": ["0815", None], "big": [1234567, 12],
@@ -586,6 +597,81 @@ def test_detect_types_reads_a_decimal_comma_as_the_csv_import_does(project, regi
     csv.write_text("\n".join(["comma;point;amount;share;code;big", *lines]) + "\n", encoding="utf-8")
     from_csv = registry.actions["csv.import"](None, {"file": str(csv)}, StubContext())
     assert from_csv.select(pl.exclude("code")).rows() == result.df.select("comma", "point", "amount", "share", "big").rows()
+
+
+_PRICES = {  # as text in a database, and what a step saved before 0.6.4 (version 1) gives
+    "comma": (["123,40", "7,00"], ["123,40", "7,00"]),
+    "point": (["1.5", "2.25"], [1.5, 2.25]),
+    "thousands": (["1,000", "2,500"], [1000.0, 2500.0]),
+    "either": (["1.000", "2.000"], [1.0, 2.0]),
+    "amount": (["1.234,50 €", "3,00 €"], ["1.234,50 €", "3,00 €"]),
+    "share": (["12,5%", "1%"], ["12,5%", "1%"]),
+    "code": (["0815", "0816"], ["0815", "0816"]),
+    "day": (["2025-01-31", "2025-02-01"], [dt.date(2025, 1, 31), dt.date(2025, 2, 1)]),
+}
+
+
+def _prices(path: Path) -> None:
+    with closing(sqlite3.connect(path)) as con, con:
+        con.execute(f"CREATE TABLE prices ({', '.join(f'{c} TEXT' for c in _PRICES)})")
+        con.executemany(f"INSERT INTO prices VALUES ({', '.join('?' for _ in _PRICES)})", zip(*(t for t, _ in _PRICES.values())))
+
+
+def test_a_step_saved_before_the_decimal_separator_detects_as_before(project, registry, tmp_path):
+    """A step of version 1, as 0.6.3 saved it, also in a file without the step's version, gets
+    "Point": it reads only numbers and dates with a decimal point, as it did, so that steps after it
+    that turn such texts into numbers themselves (Replace, Change type) give the same results."""
+    _prices(tmp_path / "data.db")
+    action = registry.actions["db.import"]
+    assert action.version == 2 and action.upgrade({"detect_types": True}, 1) == {"detect_types": True, "decimal": "."}
+    before = {name: values for name, (_text, values) in _PRICES.items()}
+    types = {"comma": pl.String, "point": pl.Float64, "thousands": pl.Float64, "either": pl.Float64}  # 1,000: not Int64
+    old = import_table(project, registry, table="prices", detect_types=True).df
+    assert old.to_dict(as_series=False) == before and {name: old.schema[name] for name in types} == types
+    path = project.save(tmp_path / "old.tafl")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for table in data["tables"]:
+        for step in table["steps"]:
+            step.pop("version", None)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    loaded = Project.load(path)
+    again = Engine(loaded, registry).evaluate(loaded.tables[-1].id).df
+    assert again.to_dict(as_series=False) == before and again.schema == old.schema
+
+
+def test_point_and_comma_can_be_chosen(project, registry, tmp_path):
+    """Point or Comma: numbers and dates with that decimal separator in every column, as a step of
+    version 1 read them with the point; no amounts or percentages."""
+    _prices(tmp_path / "data.db")
+    point = import_new(project, registry, table="prices", detect_types=True, decimal=".").df
+    assert point.to_dict(as_series=False) == {name: values for name, (_text, values) in _PRICES.items()}
+    comma = import_new(project, registry, table="prices", detect_types=True, decimal=",").df
+    assert comma.select("comma", "point", "thousands", "either", "amount").to_dict(as_series=False) == {
+        "comma": [123.4, 7.0], "point": ["1.5", "2.25"], "thousands": [1.0, 2.5], "either": [1000.0, 2000.0],
+        "amount": ["1.234,50 €", "3,00 €"],
+    }  # fmt: skip
+
+
+def test_tafl_run_of_an_old_project_is_unchanged(registry, tmp_path, capsys):
+    """An old project that turned German amounts into numbers itself (Replace, then Change type)
+    gives what 0.6.3 gave. With Detect automatically, its import would give numbers already, and the
+    Replace would remove the decimal point of 1234.5."""
+    _prices(tmp_path / "data.db")
+    project = Project(name="Old")
+    project.add_connection("db", "sqlite", file="data.db")
+    table = project.add_table("Prices")
+    project.add_step(table, "db.import", {"connection": "db", "mode": "table", "table": "prices", "detect_types": True}, version=1)
+    replace = {"columns": ["amount", "comma"], "match": "contains", "replacements": [{"find": ".", "replace": ""}, {"find": " €", "replace": ""}]}
+    project.add_step(table, registry.actions["text.replace"], replace)
+    numbers = [{"column": "amount", "type": "number", "format": ""}, {"column": "comma", "type": "number", "format": ""}]
+    project.add_step(table, registry.actions["columns.change_type"], {"columns": numbers, "decimal": ","})
+    project.add_step(table, registry.actions["csv.export"], {"file": "out.csv"})
+    assert cli.main(["run", str(project.save(tmp_path / "old.tafl"))]) == 0
+    assert (tmp_path / "out.csv").read_text(encoding="utf-8-sig").splitlines() == [  # as 0.6.3 wrote it
+        "comma;point;thousands;either;amount;share;code;day",
+        "123,4;1,5;1000;1;1234,5;12,5%;0815;31.01.2025",
+        "7;2,25;2500;2;3;1%;0816;01.02.2025",
+    ]
 
 
 def test_detect_types_keeps_nanoseconds(project, registry, tmp_path):
