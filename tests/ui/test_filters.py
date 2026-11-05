@@ -1118,6 +1118,23 @@ def test_many_periods_of_a_column_with_a_time_zone_as_a_step(act):
     assert step.startswith("(epoch_us([When]) + CASE WHEN epoch_us([When]) < ") and step.count("TIMESTAMPTZ") == 0
 
 
+def test_a_period_text_that_the_card_never_writes_is_no_period():
+    """A project file can hold 02026, +2026, 26 or 26-03: no value has such a period, but a step read
+    them as the year 2026 or 26 and kept rows, also where the check of its rows doesn't look (more
+    than 1,000 values)."""
+    moments = pl.Series("When", [dt.datetime(2026, 1, 5), dt.datetime(2026, 7, 1), dt.datetime(26, 3, 1)])
+    zoned = moments.dt.replace_time_zone("UTC").dt.convert_time_zone("Europe/Berlin")
+    df = pl.DataFrame({"id": [0, 1, 2], "When": zoned})
+    filler = [f"{year}-W01" for year in range(3000, 4002)]  # more than 1,000 values, none in the data
+    for by, odd in (("year", "02026"), ("year", "+2026"), ("year", "26"), ("year", "+0026"), ("month", "26-03"), ("month", "02026-01"), ("date", "+2026-01-05")):
+        for values in ([odd], [odd, *filler] if by == "week" else [odd]):
+            chosen = Filter("When", values, "period", {"by": by})
+            assert apply(df, [chosen])["id"].to_list() == []
+            step = formula(chosen, df.schema["When"], df["When"])
+            assert step == "FALSE", (odd, step)
+    assert formula(Filter("When", ["0026-03-01"], "period", {"by": "date"}), df.schema["When"]) != "FALSE"  # as the card writes it
+
+
 @pytest.mark.parametrize(
     "zone, middle",
     [

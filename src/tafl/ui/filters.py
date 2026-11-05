@@ -860,11 +860,14 @@ def _period_days(period: str, by: str) -> tuple[int, int] | None:
 
 
 def _calendar_days(period: str, by: str) -> tuple[int, int] | None:
-    """``_period_days`` in all years."""
+    """``_period_days`` in all years. Only for a text as the card writes it: a project file can hold
+    02026 or 26-03, which no value of a column has as its period, but the year 2026 or 26 does."""
     found = _PERIOD_TEXTS.get(by, _PERIOD_TEXTS["month"]).fullmatch(period)
     if found is None:
         return None
     year, *more = map(int, found.groups())
+    if period != _period_text(by, year, *more):
+        return None
     if by == "year":
         return _days(year, 1, 1), _days(year + 1, 1, 1)
     if by == "quarter":
@@ -880,6 +883,17 @@ def _calendar_days(period: str, by: str) -> tuple[int, int] | None:
         start = _days(year, month, more[1])
         return (start, start + 1) if _civil(start) == (year, month, more[1]) else None
     return _days(year, month, 1), _days(year + month // 12, month % 12 + 1, 1)
+
+
+def _period_text(by: str, year: int, *more: int) -> str:
+    """A period as the card writes it (Polars): the year 2026, 0026, -0001, +10000; 2026 Q4, 26 Q1;
+    2026-W05, -001-W52; 2026-11; 2026-11-30."""
+    if by == "quarter":
+        return f"{year} Q{more[0]}"
+    if by == "week":
+        return f"{str(year).zfill(4)}-W{more[0]:02d}"
+    text = f"{year:04d}" if 0 <= year <= 9999 else (f"+{year}" if year > 9999 else f"-{-year:04d}")
+    return text + "".join(f"-{part:02d}" for part in more)
 
 
 def _days(year: int, month: int, day: int) -> int:
