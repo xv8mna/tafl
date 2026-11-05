@@ -57,6 +57,22 @@ _NEEDS = {
     "length": "text length needs a text column",
     "regex": "a pattern needs a text column",
 }
+# Polars' \w, \d and \s are those of Unicode, RE2's (in DuckDB) those of ASCII: what to write for
+# them in a step. RE2 has no class for Unicode's Alphabetic: Polars' \w is the letters, the marks,
+# Nd, Nl, Pc, the two joiners, and the letters in a circle or a square (Ⓐ, 🄰).
+_WORD_CHARS = (
+    r"\p{L}\p{Nl}\p{M}\p{Nd}\p{Pc}\x{200C}\x{200D}\x{24B6}-\x{24E9}\x{1F130}-\x{1F149}\x{1F150}-\x{1F169}\x{1F170}-\x{1F189}"
+)
+_SPACE_CHARS = r"\t\n\x0B\f\r \x{85}\x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}"
+_CLASSES = {
+    "d": r"\p{Nd}",
+    "D": r"\P{Nd}",
+    "s": f"[{_SPACE_CHARS}]",
+    "S": f"[^{_SPACE_CHARS}]",
+    "w": f"[{_WORD_CHARS}]",
+    "W": f"[^{_WORD_CHARS}]",
+}
+_IN_CLASS = {"d": r"\p{Nd}", "D": r"\P{Nd}", "s": _SPACE_CHARS, "w": _WORD_CHARS}  # \S and \W can't be part of a [...]
 
 
 class NotAStep(ValueError):
@@ -405,7 +421,7 @@ def formula(f: Filter, dtype: pl.DataType) -> str:
         for index in sorted(v for v in values if 0 <= v <= len(limits)):
             parts.append(_range_sql(column, limits, index, inclusive))
     elif values and f.facet == "regex":
-        test = f"regexp_matches({name}, {_sql(str(f.options.get('pattern') or ''))})"
+        test = f"regexp_matches({name}, {_sql(_step_pattern(str(f.options.get('pattern') or '')))})"
         parts += [test if value == MATCH else f"NOT {test}" for value in values if value in (MATCH, NO_MATCH)]
     elif values:
         parts.append(f"{_picked_sql(f, name, dtype)} IN ({', '.join(_sql(v) for v in values)})")
@@ -445,6 +461,67 @@ def _local_time(name: str, dtype: pl.DataType) -> str:
     if (problem := _duckdb_problem(f"timezone({_sql(zone)}, TIMESTAMPTZ '2000-01-01 00:00:00+00:00')")) is not None:
         raise NotAStep(f"the step can't use the time zone {zone} of this column ({problem})")
     return f"timezone({_sql(zone)}, {name})"
+
+
+def _step_pattern(pattern: str) -> str:
+    """A filter's pattern (Polars: \\w, \\d and \\s are the letters, digits and spaces of Unicode)
+    for the step's regexp_matches (RE2 in DuckDB: those of ASCII). Raises NotAStep where RE2 can't
+    say the same."""
+    translated = _re2_pattern(pattern)
+    if (problem := _duckdb_problem(f"regexp_matches('', {_sql(translated)})")) is not None:
+        raise NotAStep(f"the step can't read the pattern ({problem})")
+    return translated
+
+
+def _re2_pattern(pattern: str) -> str:
+    """``_step_pattern`` without the check of DuckDB."""
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    in_class = False
+    while i < n:
+        char = pattern[i]
+        if char == "\\" and i + 1 < n:
+            letter = pattern[i + 1]
+            if letter in "bB<>":
+                raise NotAStep(
+                    "a step reads \\b and \\B (the start or end of a word) only with the letters A to Z, not with ä or ß"
+                )
+            if letter in _CLASSES:
+                if in_class and letter not in _IN_CLASS:
+                    raise NotAStep(f"a step can't use \\{letter} inside [ ] as the filter does: write it outside them")
+                out.append(_IN_CLASS[letter] if in_class else _CLASSES[letter])
+                i += 2
+                continue
+            end = i + 2
+            if letter in "pPx" and pattern.startswith("{", end):  # \p{Greek}, \x{20AC}: with their braces
+                end = pattern.find("}", end) + 1 or n
+            out.append(pattern[i:end])
+            i = end
+            continue
+        if in_class:
+            if char == "[" and not pattern.startswith("[:", i):
+                raise NotAStep("a step can't use a class inside a class, such as [a[b]]")
+            if pattern.startswith(("&&", "--", "~~"), i):
+                raise NotAStep("a step can't use &&, -- or ~~ inside [ ] as the filter does")
+            if char == "[":  # [:alpha:]
+                end = pattern.find(":]", i + 2)
+                end = n if end < 0 else end + 2
+                out.append(pattern[i:end])
+                i = end
+                continue
+            in_class = char != "]"
+        elif char == "[":
+            in_class = True
+            out.append(char)
+            i += 1
+            for start in ("^", "]"):  # [^...], and a ] right after [ or [^ is the character itself
+                if pattern.startswith(start, i):
+                    out.append(start)
+                    i += 1
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
 
 
 def _duckdb_problem(expression: str) -> str | None:

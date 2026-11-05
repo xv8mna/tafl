@@ -19,6 +19,7 @@ from tafl.ui.filter_pane import MAX_CARDS, FilterPane
 from tafl.ui.filters import (
     PERIODS,
     Filter,
+    NotAStep,
     apply,
     facet,
     facets_for,
@@ -1021,3 +1022,60 @@ def test_time_periods_of_a_column_with_a_time_zone_as_a_step(act, zone):
             same_rows(act, df, Filter("When", [period], "period", {"by": by}, excluded=True))
             if by == "month" and period is not None:
                 assert rows == [row for row, text in enumerate(local) if text == period], (zone, period)
+
+
+TEXTS = pl.DataFrame({"id": range(10), "T": ["Straße", "ä", "abc", "١٢٣", "a b", "a b", "x_y", "Ⓐ", "", None]})
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [r"^\w+$", r"\d", r"^\d+$", r"\s", r"^\S+$", r"^\W", r"^[\w]+$", r"^[^\d]+$", r"[\d\s]", r"\D", "(?i)STRASSE", r"\p{Greek}", "^$", r"x\_y"],
+)
+def test_a_pattern_as_a_step_keeps_the_rows_of_the_card(act, pattern):
+    """The card uses Polars, whose \\w, \\d and \\s are the letters, digits and spaces of Unicode; the
+    step used them as RE2 (DuckDB) reads them, for ASCII only: ^\\w+$ kept Straße and ä in the card
+    only, \\d the Arabic-Indic ١٢٣."""
+    rows = [same_rows(act, TEXTS, Filter("T", [picked], "regex", {"pattern": pattern})) for picked in ("match", "no match")]
+    expected = {r"^\w+$": [0, 1, 2, 3, 6, 7], r"\d": [3], r"\s": [4, 5]}  # Straße, ä, ١٢٣, x_y and Ⓐ are words
+    assert pattern not in expected or rows[0] == expected[pattern]
+
+
+@pytest.mark.parametrize("pattern, reason", [
+    (r"\bb", r"a step reads \\b and \\B \(the start or end of a word\) only with the letters A to Z"),
+    (r"[\S]", r"a step can't use \\S inside \[ \]"),
+    (r"[a&&b]", r"a step can't use &&, -- or ~~ inside \[ \]"),
+    (r"[a[b]]", r"a step can't use a class inside a class"),
+    (r"\u{E4}", r"the step can't read the pattern"),
+])  # fmt: skip
+def test_a_pattern_that_a_step_reads_otherwise_is_no_step(pattern, reason):
+    assert unusable(Filter("T", ["match"], "regex", {"pattern": pattern}), TEXTS.schema) is None  # the card works
+    with pytest.raises(NotAStep, match=reason):
+        formula(Filter("T", ["match"], "regex", {"pattern": pattern}), pl.String)
+
+
+def test_the_classes_of_a_pattern_as_a_step_are_those_of_the_card_for_every_character(act):
+    """All characters: they differ only where DuckDB's tables of Unicode don't know a character
+    yet (Polars' are newer)."""
+    chars = pl.DataFrame({"T": [chr(c) for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF]}).with_row_index("id")
+    known = act("rows.filter_formula", chars, {"condition": r"regexp_matches([T], '^[\p{L}\p{M}\p{N}\p{P}\p{S}\p{Z}\p{C}]$')"})
+    unknown = set(chars["id"].to_list()) - set(known["id"].to_list())  # also all code points that have no character
+    assert known.height > 250_000
+    for pattern in (r"^\w$", r"^\W$", r"^\d$", r"^\D$", r"^\s$", r"^\S$", r"^[\w\s]$", r"^[^\d\s]$"):
+        chosen = Filter("T", ["match"], "regex", {"pattern": pattern})
+        card = set(apply(chars, [chosen])["id"].to_list())
+        step = set(act("rows.filter_formula", chars, {"condition": formula(chosen, pl.String)})["id"].to_list())
+        assert card ^ step <= unknown, (pattern, [hex(c) for c in sorted(card ^ step - unknown)[:10]])
+
+
+def test_add_as_step_says_why_a_filter_cant_be_one(session, qtbot):
+    df = pl.DataFrame({"T": ["Straße", "abc"]})
+    table = session.project.add_table("T")
+    stored = [{"column": "T", "facet": "regex", "options": {"pattern": r"\bab"}, "values": ["match"]}]
+    session.set_filters(table.id, stored)
+    pane = FilterPane(session)
+    qtbot.addWidget(pane)
+    pane.show_data(table.id, df)
+    for index, words in ((0, r"\b and \B"),):
+        pane.add_as_step(index)
+        assert pane.cards[index].status.text().startswith("Not added as a step: a step") and words in pane.cards[index].status.text()
+    assert session.filters(table.id) == stored and table.steps == []  # the filters stay
