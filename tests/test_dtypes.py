@@ -559,6 +559,13 @@ def test_the_functions_of_a_series_work_for_a_name_like_a_pattern(function, valu
     assert_series_equal(function(s.alias(name)), function(s).alias(name))
 
 
-def test_a_conversion_that_fails_names_the_column():
-    with pytest.raises(pl.exceptions.InvalidOperationError, match="in column 'Amount'"):
-        dtypes.excel_serial_to_datetime(pl.Series("Amount", [1.5, math.inf]))
+def test_day_numbers_beyond_the_years_1_to_9999_become_empty():
+    """Before, 20250101 became a day in the year 57342 (which no export can write), and very big
+    numbers, NaN and infinity stopped with "conversion from f64 to i64 failed"."""
+    days = [2958465.5, 2958466, -693593, -693593.5, 20250101, 1e300, math.nan, math.inf, -math.inf, None, 1.5]
+    out = dtypes.excel_serial_to_datetime(pl.Series("Amount", days))
+    assert out.name == "Amount" and out.dtype == pl.Datetime("us")
+    first, last = dt.datetime(1, 1, 1), dt.datetime(9999, 12, 31, 12)
+    assert out.to_list() == [last, None, first, None, None, None, None, None, None, None, dt.datetime(1899, 12, 31, 12)]
+    whole = dtypes.excel_serial_to_datetime(pl.Series([2**63 - 1, 2958465, None], dtype=pl.Int64))
+    assert whole.to_list() == [None, dt.datetime(9999, 12, 31), None]

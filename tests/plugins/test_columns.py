@@ -126,6 +126,29 @@ def test_numbers_to_dates_with_a_format_of_digits(act):
     assert change(act, serials, "Day", "date", "dd.mm.yyyy").to_list() == [dt.date(2025, 1, 1), dt.date(2025, 1, 2)]
 
 
+def test_numbers_beyond_excel_days_become_empty_with_a_warning(act):
+    """Before, 20250101 became a day in the year 57342 without a warning (an export to Excel then
+    stopped), and very big numbers, NaN and infinity stopped with "conversion from f64 to i64
+    failed", also with "become empty"."""
+    df = pl.DataFrame({"Day": [45658, 20250101, 2958465, None], "Value": [45658.5, float("nan"), float("inf"), 1e300]})
+    ctx = StubContext()
+    assert change(act, df, "Day", "date", ctx=ctx).to_list() == [dt.date(2025, 1, 1), None, dt.date(9999, 12, 31), None]
+    hint = (
+        ". Numbers are Excel day numbers, up to 2,958,465 (31.12.9999): for a number such as 20260131, give the format "
+        "yyyymmdd"
+    )
+    assert ctx.warnings == [f"Day: 1 value(s) could not be converted to Date, e.g. '20250101' (now empty){hint}"]
+    ctx = StubContext()
+    assert change(act, df, "Value", "datetime", ctx=ctx).to_list() == [dt.datetime(2025, 1, 1, 12), None, None, None]
+    assert ctx.warnings == [f"Value: 3 value(s) could not be converted to Date and time, e.g. 'nan', 'inf', '1e+300' (now empty){hint}"]
+    ctx = StubContext()  # NaN and infinity alone are no dates written as digits
+    assert change(act, df.head(3), "Value", "date", ctx=ctx).to_list() == [dt.date(2025, 1, 1), None, None]
+    assert ctx.warnings == ["Value: 2 value(s) could not be converted to Date, e.g. 'nan', 'inf' (now empty)"]
+    with pytest.raises(ActionError) as raised:
+        change(act, df, "Day", "date", on_error="fail")
+    assert str(raised.value) == f"Day: 1 value(s) could not be converted to Date, e.g. '20250101'{hint}"
+
+
 def test_long_numbers_keep_all_their_digits(act):
     df = pl.DataFrame(
         {

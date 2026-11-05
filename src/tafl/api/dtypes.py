@@ -60,6 +60,9 @@ _DATETIME_PATTERNS = (
 )
 
 _EXCEL_EPOCH = dt.datetime(1899, 12, 30)
+# The day numbers of the dates that the app shows: the years 1 to 9999 (2958465 is 31.12.9999)
+_FIRST_DAY = (dt.datetime(1, 1, 1) - _EXCEL_EPOCH).days
+_LAST_DAY = (dt.datetime(9999, 12, 31) - _EXCEL_EPOCH).days
 # Quoted text ("Uhr") and backslash escapes are literal, like in Excel formats.
 _DATE_TOKEN = re.compile(r'(?i)"[^"]*"|\\.|am/pm|y+|m+|d+|h+|s+|\.0+|.', re.S)
 # Number formats: also _x (a space as wide as x), *x (fill with x) and [...] (color, currency).
@@ -251,10 +254,14 @@ def parse_booleans(s: pl.Series) -> pl.Series:
 
 
 def excel_serial_to_datetime(s: pl.Series) -> pl.Series:
-    """Excel day numbers (45658 = 2025-01-01, fractions = time of day) -> Datetime."""
-    rounded = (s.cast(pl.Float64) * 86_400_000).alias("ms").round(0)  # a fixed name, as in _clean_text
-    ms = rounded.alias(s.name).cast(pl.Int64)  # a cast that fails names the column
-    return pl.select((pl.lit(_EXCEL_EPOCH) + pl.duration(milliseconds=pl.lit(ms))).alias(s.name)).to_series()
+    """Excel day numbers (45658 = 2025-01-01, fractions = time of day) -> Datetime. A day number
+    whose date is not in the years 1 to 9999 (after 2958465, which is 31.12.9999), NaN and
+    infinity become empty."""
+    days = s.alias("days").cast(pl.Float64)  # a fixed name, as in _clean_text
+    ms = (pl.col("days") * 86_400_000).round(0)
+    inside = ms.is_between(_FIRST_DAY * 86_400_000, (_LAST_DAY + 1) * 86_400_000, closed="left")  # not NaN or inf
+    moment = pl.lit(_EXCEL_EPOCH) + pl.duration(milliseconds=pl.when(inside).then(ms).cast(pl.Int64))
+    return days.to_frame().select(moment.alias(s.name)).to_series()
 
 
 def numbers_to_datetimes(s: pl.Series, fmt: str = "") -> pl.Series:
@@ -273,6 +280,12 @@ def numbers_to_datetimes(s: pl.Series, fmt: str = "") -> pl.Series:
     if width:
         text = pl.when(text.str.contains("^[0-9]+$")).then(text.str.pad_start(width, "0")).otherwise(text)
     return parse_datetimes(_apply(s, text), fmt).alias(name)
+
+
+def is_digit_format(fmt: str) -> bool:
+    """Whether ``numbers_to_datetimes`` reads the digits of numbers with this date format (one of
+    digit codes only, such as yyyymmdd), rather than taking them as Excel day numbers."""
+    return _digit_format(fmt) is not None
 
 
 def _digit_format(fmt: str) -> int | None:

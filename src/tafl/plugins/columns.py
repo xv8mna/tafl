@@ -117,6 +117,8 @@ def change_type(df, p, ctx):
             hint = ""
             if c.type == "integer" and _numbers(source, p.decimal).filter(failed).is_finite().any():
                 hint = ". Whole numbers go up to 9,223,372,036,854,775,807: keep longer IDs as text"
+            elif _beyond_day_numbers(source, failed, c):
+                hint = ". Numbers are Excel day numbers, up to 2,958,465 (31.12.9999): for a number such as 20260131, give the format yyyymmdd"
             if p.on_error == "fail":
                 raise ActionError(message + hint)
             ctx.warn(message + " (now empty)" + hint)
@@ -124,6 +126,14 @@ def change_type(df, p, ctx):
             _warn_rounded(c.column, source, converted, p.decimal, ctx)
         df = df.with_columns(converted.alias(c.column))
     return df
+
+
+def _beyond_day_numbers(source: pl.Series, failed: pl.Series, c) -> bool:
+    """Whether numbers that became no date are numbers beyond Excel's days (not NaN or infinity),
+    read as day numbers: then they are probably dates written as digits, such as 20260131."""
+    if c.type not in ("date", "datetime") or not source.dtype.is_numeric() or dtypes.is_digit_format(c.format.strip()):
+        return False
+    return source.filter(failed).cast(pl.Float64).is_finite().any()
 
 
 def _warn_rounded(name: str, source: pl.Series, converted: pl.Series, decimal: str, ctx) -> None:
