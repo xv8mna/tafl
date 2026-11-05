@@ -377,7 +377,9 @@ class SqlServer(Connector):
         zone the offset of this PC's time zone on its day), and a text the form the driver reads
         (2026-10-01T08:30:00+02:00, as imports give it, is 2026-10-01 08:30:00 +02:00). Decimals
         (Decimal) are rounded to the decimal places of a decimal column, half away from zero as
-        SQL Server rounds (1.005 is 1.01 in a decimal(10,2)), and are floats for a float column."""
+        SQL Server rounds (1.005 is 1.01 in a decimal(10,2)), and are floats for a float column.
+        The driver takes fractions of a second to the microsecond: digits below it are cut here
+        too, as the driver would cut them (``_below_microseconds`` tells about them)."""
         changes = []
         for name, dtype in df.schema.items():
             kind, size, scale = _kind(types.get(name, ""))
@@ -392,6 +394,10 @@ class SqlServer(Connector):
             elif dtype == pl.Time and kind == "time" and size < 7:
                 step = 10 ** (9 - size)  # nanoseconds
                 changes.append((column.cast(pl.Int64) // step * step).cast(pl.Time))
+            elif moment and dtype.time_unit == "ns":
+                changes.append(column.dt.truncate("1us"))
+            elif dtype == pl.Time:
+                changes.append((column.cast(pl.Int64) // 1000 * 1000).cast(pl.Time))
             elif dtype == pl.String and kind == "datetimeoffset":
                 changes.append(_driver_offset_text(column, size))
             elif isinstance(dtype, pl.Decimal) and kind in ("float", "real"):
@@ -555,6 +561,36 @@ def _round_half_away(series: pl.Series, scale: int) -> pl.Series:
             return pl.Series(series.name, values, dtype=pl.Decimal(38, scale))
         except Exception:  # too large for the column after all: SQL Server says so
             return series
+
+
+def _below_microseconds(df: pl.DataFrame, types: dict[str, str]) -> list[str]:
+    """Warnings for the columns of ``df`` whose SQL Server column holds 100 nanoseconds
+    (datetime2, time or datetimeoffset with 7 digits), and that have values with digits below a
+    microsecond: the driver passes none (``fit_frame`` cuts them as it does). Columns of fewer
+    digits cut more anyway, as they hold the values."""
+    warnings = []
+    for name, dtype in df.schema.items():
+        kind, size, _scale = _kind(types.get(name, ""))
+        if kind not in _FRACTION_TYPES or size != 7 or not (dtype == pl.Time or getattr(dtype, "time_unit", "") == "ns"):
+            continue
+        values = df[name].alias("value")  # a fixed name, as in _round_half_away
+        cut = (values.dt.nanosecond() % 1000 != 0).fill_null(False)
+        if count := int(cut.sum()):
+            example = values.filter(cut).head(1)
+            shown, kept = (pl.select(dtypes.text_expr(pl.lit(v), v.dtype)).item() for v in (example, _microseconds(example)))
+            values_were = "1 value was" if count == 1 else f"{count:,} values were"
+            warnings.append(
+                f"{name}: {values_were} cut to whole microseconds (e.g. {shown} is {kept}): SQL Server's driver passes "
+                "no smaller parts of a second"
+            )
+    return warnings
+
+
+def _microseconds(values: pl.Series) -> pl.Series:
+    """Date-times or times cut to whole microseconds."""
+    if values.dtype == pl.Time:
+        return (values.cast(pl.Int64) // 1000 * 1000).cast(pl.Time)
+    return values.dt.truncate("1us")
 
 
 def _data_binding(series: pl.Series) -> tuple[int, int, int]:
@@ -1209,6 +1245,7 @@ def export_database(df, p, ctx):
         data = _fit_lengths(data, names, types, p.table, finding)
         kinds = {name.lower(): kind for name, kind in types.items()}
         fitted = {c: kinds[names[c].lower()] for c in data.columns if names[c].lower() in kinds}
+        cut = _below_microseconds(data, fitted) if db.connector.id == "sqlserver" else []
         data = db.connector.fit_frame(data, fitted)
         if p.mode in ("update", "upsert"):
             _check_unique(data, p.key_columns)  # as stored: 08:00:01.2 and .7 are one second in datetime2(0)
@@ -1239,6 +1276,8 @@ def export_database(df, p, ctx):
     parts = [f"{what} {count:,} row{'s' if count != 1 else ''}" for what, count in (
         ("deleted", deleted), ("updated", updated), ("added", added)) if count > 0]
     ctx.log(f"{p.table}: " + (", ".join(parts) if parts else "nothing changed"))
+    for warning in cut:
+        ctx.warn(warning)
     return df
 
 

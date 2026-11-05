@@ -577,6 +577,52 @@ def test_sqlserver_keyed_modes_store_values_as_add_does(registry):
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_cuts_digits_below_a_microsecond_with_a_warning(registry):
+    """The driver passes fractions of a second to the microsecond: 08:30:00.000000001 became
+    08:30:00 without a word, also as a key (an update gave two rows the values of one). A column
+    of fewer digits holds less anyway, as it always did: no warning there."""
+    ctx, name = _sqlserver()
+    second = 1_735_720_200 * 10**9  # 2025-01-01 08:30:00
+    data = pl.DataFrame({
+        "N": [1, 2, 3],
+        "Stamp": pl.Series([second + 1, second + 100, second + 1_000], dtype=pl.Int64).cast(pl.Datetime("ns")),
+        "Clock": pl.Series([30_600 * 10**9 + 1, 30_600 * 10**9, 30_600 * 10**9 + 2_000], dtype=pl.Int64).cast(pl.Time),
+    })  # fmt: skip
+
+    def export(df, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
+
+    try:
+        export(data)
+        assert ctx.warnings == [
+            "Stamp: 2 values were cut to whole microseconds (e.g. 2025-01-01 08:30:00.000000001 is 2025-01-01 08:30:00): "
+            "SQL Server's driver passes no smaller parts of a second",
+            "Clock: 1 value was cut to whole microseconds (e.g. 08:30:00.000000001 is 08:30:00): SQL Server's driver passes "
+            "no smaller parts of a second",
+        ]
+        with ctx.database("server") as db:
+            rows = db.read(f"SELECT N, CONVERT(nvarchar(30), Stamp, 121) AS S, CONVERT(nvarchar(30), Clock) AS C FROM {name} ORDER BY N")
+        assert rows.rows() == [
+            (1, "2025-01-01 08:30:00.0000000", "08:30:00.0000000"),
+            (2, "2025-01-01 08:30:00.0000000", "08:30:00.0000000"),
+            (3, "2025-01-01 08:30:00.0000010", "08:30:00.0000020"),
+        ]
+        message = r"1 key value occurs more than once \(e\.g\. Stamp = 2025-01-01 08:30:00\)"
+        with pytest.raises(ActionError, match=message):  # as the column holds them, rows 1 and 2 have one key
+            export(data.with_columns(N=pl.col("N") * 10), mode="update", key_columns=["Stamp"])
+        export(data.with_columns(N=pl.col("N") * 10).tail(1), mode="update", key_columns=["Stamp"])
+        assert ctx.messages[-1] == ("info", f"{name}: updated 1 row") and len(ctx.warnings) == 2
+        with ctx.database("server") as db:
+            db.execute(f"DROP TABLE {name}")
+            db.execute(f"CREATE TABLE {name} (N int, Stamp datetime2(3), Clock time(6))")
+        export(data)
+        assert len(ctx.warnings) == 2  # no new ones
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_export_mistakes_are_explained(registry):
     ctx, name = _sqlserver()
     new = f"{name}_new"
