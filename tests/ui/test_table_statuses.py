@@ -717,6 +717,36 @@ def test_renaming_the_selected_table_refreshes_a_table_that_uses_it_by_its_name(
     assert [session.table_status(t.id) for t in (user, named, second)] == ["ok", "ok", "ok"]
 
 
+def test_an_edit_of_a_skipped_table_updates_the_messages_of_the_tables_that_use_it(session, settle, tmp_path):
+    """S starts from A and uses Off, so it is skipped before and after it starts from B instead,
+    with the same message. A uses B and Off: with S between B and A, B and A use each other, and A
+    names Off; after the edit, A names B, which is on the way to Off."""
+    actions = session.registry.actions
+    (tmp_path / "a.csv").write_text("A\n1\n", encoding="utf-8")
+    project = Project()
+    off, a, b, s = (project.add_table(name) for name in ("Off", "A", "B", "S"))
+    project.add_step(off, actions["csv.import"], {"file": "a.csv"})
+    project.add_step(a, actions["csv.import"], {"file": "a.csv"})
+    project.add_step(a, actions["table.append"], {"tables": [b.id, off.id]})
+    project.add_step(b, actions["table.derive"], {"table": s.id})
+    project.add_step(s, actions["table.derive"], {"table": a.id})
+    project.add_step(s, actions["table.append"], {"tables": [off.id]})
+    off.enabled = False
+    session.open_project(project.save(tmp_path / "skipped.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    session.select_table(s.id)
+    settle(session)
+    assert session.results[a.id].skipped == "uses “Off”, which is turned off"
+    session.set_params(session.project.table("S").steps[0].id, {"table": b.id})
+    settle(session)
+    assert session.results[s.id].skipped == "uses “Off”, which is turned off"
+    assert session.results[a.id].skipped == "uses “B”, which is skipped"
+    shown, fresh = shown_and_fresh(session)
+    assert shown == fresh
+
+
 @pytest.mark.parametrize("edit", ["delete", "turn off"])
 def test_an_edit_of_a_step_of_another_table_on_the_map_and_leaving_the_map_at_once_leaves_no_old_status(
     session, settle, tmp_path, edit

@@ -1286,14 +1286,17 @@ class Session(QObject):
         before the change, ``previous``) is calculated again, and so are the tables that use it,
         as they did before or do now (nothing uses a deleted table now, and a renamed one can be
         used by name). The selected table is calculated anyway, and the tables that use it follow
-        when its result changes (``_on_results``), unless its name or its on/off state changed,
-        which its result doesn't show. Only tables with a result are marked: the others are
-        calculated when they are looked at."""
+        when its result changes (``_on_results``). Not so when its name or its on/off state
+        changed, or when it is skipped: its result doesn't show that, but the tables that use it
+        name it, or the table they use on the way to a table that is off. Only tables with a result
+        are marked: the others are calculated when they are looked at."""
         after = _contents(self.project)
         changed = {id_ for id_ in before.keys() | after.keys() if before.get(id_) != after.get(id_)}
         selected = self.table_id
         if selected in changed and selected in before and before[selected][:2] == after[selected][:2]:
-            changed.discard(selected)  # only its steps changed
+            result = self.results.get(selected)
+            if result is None or not result.skipped:
+                changed.discard(selected)  # only its steps changed
         if not changed:
             return
         if isinstance(previous, dict):  # as an undo step holds it
