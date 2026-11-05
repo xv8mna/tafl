@@ -118,6 +118,12 @@ _SANDBOX = (
     "(use an import step for files)"
 )
 _HUGEINT_MAX = 2**127 - 1
+_TOO_LONG = (
+    "the result needs more than 38 digits, decimal places included, more than an exact number holds. "
+    "For a decimal number (about 15 digits) write CAST(... AS DOUBLE)"
+)
+# DuckDB's message when a value doesn't fit into the exact decimal it brings two of them to
+_DECIMAL_CAST = re.compile(r"(?:Casting value .*? to type|Could not cast value .*? to) DECIMAL\((\d+),\s*\d+\)")
 _temp: Path | None = None
 _temp_lock = threading.Lock()
 _connections: dict[int, duckdb.DuckDBPyConnection] = {}  # one per thread, by its id
@@ -349,7 +355,15 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     try:
         values = _calculate(con, frame, kinds, beyond, body, formula, table=table, condition=condition)
     except duckdb.Error as e:
-        raise ActionError(_clean_error(e, formula, df.columns)) from None
+        # Two exact decimals that DuckDB brings to one type with the decimal places of both: again
+        # with the decimal places their values use (only then: it changes their text, 1.50 to 1.5)
+        narrower = _narrower(frame, kinds) if _DECIMAL_CAST.search(str(e)) else None
+        if narrower is None:
+            raise ActionError(_clean_error(e, formula, df.columns)) from None
+        try:
+            values = _calculate(con, frame, narrower, beyond, body, formula, table=table, condition=condition)
+        except duckdb.Error as e:
+            raise ActionError(_clean_error(e, formula, df.columns)) from None
     if values.len() != df.height:
         raise ActionError(
             "The formula must give one value per row. For totals use the Aggregate action, "
@@ -690,6 +704,38 @@ def _selected(columns: Sequence[str], kinds: dict[str, str]) -> str:
     return ", ".join(f"CAST({q} AS {kinds[name]}) AS {q}" if name in kinds else q for name, q in zip(columns, quoted, strict=True))
 
 
+def _narrower(frame: pl.DataFrame, kinds: dict[str, str]) -> dict[str, str] | None:
+    """``kinds`` with each column of exact decimals given the decimal places its values use (at
+    least one), or None when no column uses fewer than its type. DuckDB compares and adds exact
+    decimals in one type with the decimal places of both: 12345678901234567890123 and a number with
+    18 decimal places don't fit into its 38 digits, 1.500000000000000000 needs only one of them."""
+    narrower = dict(kinds)
+    for name, dtype in frame.schema.items():
+        if isinstance(dtype, pl.Decimal) and dtype.scale:
+            places = _decimal_places(frame[name].alias("value"))
+            if places < dtype.scale:
+                narrower[name] = f"DECIMAL(38, {places})"
+    return narrower if narrower != kinds else None
+
+
+def _decimal_places(values: pl.Series) -> int:
+    """The decimal places that exact decimals use, at least one: 1.50 and 2.25 use 2, 1.500 one."""
+    scale = values.dtype.scale
+    units = values.to_physical()  # whole numbers of the last decimal place
+
+    def enough(places: int) -> bool:
+        return bool((units % pl.Series([10 ** (scale - places)], dtype=pl.Int128) == 0).all())
+
+    low, high = 1, scale
+    while low < high:  # if some decimal places are enough, so are more
+        middle = (low + high) // 2
+        if enough(middle):
+            high = middle
+        else:
+            low = middle + 1
+    return low
+
+
 def _register(con: duckdb.DuckDBPyConnection, frame: pl.DataFrame, name: str) -> None:
     """Make ``frame`` the view ``name``. An interrupted formula can leave a view or table of that
     name behind (and unregister then doesn't remove it): it is dropped, so that formulas on this
@@ -938,10 +984,10 @@ def _clean_error(error: Exception, formula: str, columns: Sequence[str] = ()) ->
     # with a smaller scale, doesn't help a whole number. The decimal places count: 12.5 * 10 of two
     # DECIMAL(38,18) needs 36 of them. Not for DECIMAL(18): there DuckDB's hint, a bigger decimal, helps
     if re.search(r"Overflow in (\w+ of (DECIMAL\(38\)|INT128)|HUGEINT \w+)", text):
-        return (
-            "Formula error: the result needs more than 38 digits, decimal places included, more than an exact "
-            f"number holds. For a decimal number (about 15 digits) write CAST(... AS DOUBLE)\nFormula: {formula}"
-        )
+        return f"Formula error: {_TOO_LONG}\nFormula: {formula}"
+    cast = _DECIMAL_CAST.search(text)
+    if cast and cast.group(1) == "38":  # two exact decimals whose values need more than 38 digits together
+        return f"Formula error: {_TOO_LONG}\nFormula: {formula}"
     if "+(" in text and "VARCHAR" in text:
         text += " — to join text use || or CONCAT()"
     return f"Formula error: {text}\nFormula: {formula}"

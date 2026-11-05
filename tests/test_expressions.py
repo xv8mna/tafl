@@ -874,7 +874,37 @@ def test_unsigned_128_bit_numbers_mix_with_signed_ones():
     assert expressions.evaluate(beyond, "TYPEOF([v]) || ' ' || TYPEOF([w])").to_list() == ["UHUGEINT HUGEINT"] * 2
 
 
+def test_exact_decimals_with_other_decimal_places_are_compared():
+    """DuckDB brings two exact decimals to one type with the decimal places of both, in its 38
+    digits: 12345678901234567890123 = 1.500000000000000000 (18 decimal places) stopped with "Casting
+    value ... is out of range". Such a formula is calculated again with the decimal places that the
+    values use; it stops with the plain message only when they need more than 38 digits."""
+    df = pl.DataFrame({
+        "Big": pl.Series([Decimal("12345678901234567890123"), Decimal(5)], dtype=pl.Decimal(38, 0)),
+        "Rate": pl.Series([Decimal("1.5"), Decimal(5)], dtype=pl.Decimal(38, 18)),
+        "Fine": pl.Series([Decimal("0.123456789012345678"), Decimal(5)], dtype=pl.Decimal(38, 18)),
+        "Count": pl.Series([2**63 - 1, 5], dtype=pl.Int64),
+        "Share": pl.Series([Decimal("0.5"), Decimal(5)], dtype=pl.Decimal(38, 20)),
+    })  # fmt: skip
+    assert expressions.evaluate(df, "[Big] = [Rate]").to_list() == [False, True]
+    assert expressions.evaluate(df, "[Big] > [Rate]").to_list() == [True, False]
+    assert expressions.filter_rows(df, "[Big] IN ([Rate], 7)")["Big"].to_list() == [Decimal(5)]
+    assert expressions.evaluate(df, "[Big] + [Rate]").to_list() == [pytest.approx(1.2345678901234568e22), 10.0]
+    assert expressions.evaluate(df, "[Count] = [Share]").to_list() == [False, True]  # 19 digits and 20 places
+    assert expressions.evaluate(df, "CAST([Rate] AS VARCHAR)").to_list() == ["1.500000000000000000", "5.000000000000000000"]
+    needs = (
+        "the result needs more than 38 digits, decimal places included, more than an exact number holds. "
+        "For a decimal number (about 15 digits) write CAST(... AS DOUBLE)"
+    )
+    for formula in ("[Big] = [Fine]", "[Big] + [Fine]", "CAST([Big] AS DECIMAL(38, 18))"):  # 23 digits and 18 places
+        with pytest.raises(ActionError) as raised:
+            expressions.evaluate(df, formula)
+        assert str(raised.value) == f"Formula error: {needs}\nFormula: {formula}"
+    assert expressions.evaluate(df, "CAST([Big] AS DOUBLE) = [Fine]").to_list() == [False, True]
+
+
 _WIDE_UNSIGNED = """
+from decimal import Decimal
 import polars as pl
 from tafl.api import expressions
 
@@ -883,11 +913,16 @@ assert expressions.evaluate(whole, "LIST_SUM(LIST_VALUE(*COLUMNS(*)))").to_list(
 assert expressions.evaluate(whole, "-LIST_SUM(LIST_VALUE(*COLUMNS('c.*')))").to_list() == [-4100, -8200]
 big = whole.with_columns(pl.Series("c0", [2**64 - 1, 2], dtype=pl.UInt64))  # all of them HUGEINT
 assert expressions.evaluate(big, "-LIST_SUM(LIST_VALUE(*COLUMNS('c.*')))").to_list() == [-(2**64 - 1 + 4099), -8200]
+columns = {f"d{i}": pl.Series([Decimal("1.5"), Decimal(2)], dtype=pl.Decimal(38, 18)) for i in range(4100)}
+decimals = pl.DataFrame({**columns, "Big": pl.Series([Decimal(10**22), Decimal(2)], dtype=pl.Decimal(38, 0))})
+found = expressions.evaluate(decimals, "[Big] = [d0] AND LIST_SUM(LIST_VALUE(*COLUMNS('d.*'))) > 0")
+assert found.to_list() == [False, True], found
 """
 
 
-def test_a_formula_on_4000_unsigned_columns():
-    """Each such column gets a type of its own in DuckDB, also when a formula reads all of them. In
-    a process of its own, so that an end of the process shows as a failed test."""
+def test_a_formula_on_4000_unsigned_or_exact_decimal_columns():
+    """Each such column gets a type of its own in DuckDB, also when a formula reads all of them
+    (and again with the decimal places that their values use). In a process of its own, so that an
+    end of the process shows as a failed test."""
     done = subprocess.run([sys.executable, "-c", _WIDE_UNSIGNED], capture_output=True, encoding="utf-8", errors="replace", timeout=300)
     assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
