@@ -351,13 +351,13 @@ BERLIN = pl.Datetime("us", "Europe/Berlin")
         (
             pl.Datetime("us"),
             dt.datetime(2024, 1, 31, 8),
-            ["2024-01-31 08:00:00.000000", "2024-02-01 09:30:00.250000"],
+            ["2024-01-31 08:00:00", "2024-02-01 09:30:00.250"],  # as the grid shows them
             [dt.datetime(2024, 1, 31, 8), dt.datetime(2024, 2, 1, 9, 30, 0, 250000)],
         ),
         (
             BERLIN,
             dt.datetime(2024, 1, 31, 8, tzinfo=ZoneInfo("Europe/Berlin")),
-            ["2024-01-31 08:00:00.000000+01:00", "2024-07-01 09:30:00.000000+02:00"],
+            ["2024-01-31 08:00:00", "2024-07-01 09:30:00"],  # the local time, without the offset
             [dt.datetime(2024, 1, 31, 8, tzinfo=ZoneInfo("Europe/Berlin")), dt.datetime(2024, 7, 1, 9, 30, tzinfo=ZoneInfo("Europe/Berlin"))],
         ),
         (pl.Time, dt.time(8), ["08:00:00", "09:30:00"], [dt.time(8), dt.time(9, 30)]),
@@ -440,6 +440,140 @@ def test_times_are_compared_with_text_with_their_fractions_of_a_second(act, how)
         assert out.rows() == [("08:00:00.500", None), ("09:00:00", "b"), ("08:00:00", "a"), ("x", "c")]
     exact = StubContext(tables={"other": pl.DataFrame({"K": ["08:00:00.500"], "N": ["a"]})})
     assert act("table.merge", this, params, exact).rows()[0] == (dt.time(8, 0, 0, 500000), "a")
+
+
+DECIMALS = [17.0, 2.5, 1e16, -0.0, None]
+AS_SHOWN = ["17", "2.5", "10000000000000000", "0"]  # as the grid shows them
+
+
+@pytest.mark.parametrize("name", ["A", "*", "^a.*$"])
+@pytest.mark.parametrize("how", ["lookup", "left", "inner", "full", "matching", "non_matching"])
+def test_decimal_number_keys_find_the_text_that_the_grid_shows(act, how, name):
+    """17.0 finds the text "17", 1e16 "10000000000000000" and -0.0 "0", as Change type writes them
+    as text. Before, Polars' text was compared: "17.0", "1e+16" and "-0.0"."""
+    params = {"other": "other", "match": [{"column": name, "other_column": "K"}], "how": how}
+    this = pl.DataFrame({name: DECIMALS, "abc": [1, 2, 3, 4, 5]})  # abc: the column ^a.*$ would find
+    other = pl.DataFrame({"K": AS_SHOWN, "N": ["a", "b", "c", "d"]})
+    ctx = StubContext(tables={"other": other})
+    out = act("table.merge", this, params, ctx)
+    assert ctx.warnings == [f"'{name}' (Float64) and 'K' (String) are compared as text"]
+    expected = {
+        "lookup": [(17.0, 1, "a"), (2.5, 2, "b"), (1e16, 3, "c"), (-0.0, 4, "d"), (None, 5, None)],
+        "inner": [(17.0, 1, "a"), (2.5, 2, "b"), (1e16, 3, "c"), (-0.0, 4, "d")],
+        "matching": [(17.0, 1), (2.5, 2), (1e16, 3), (-0.0, 4)],
+        "non_matching": [(None, 5)],
+    }
+    expected["left"] = expected["full"] = expected["lookup"]  # every text matches: the key column stays as it is
+    assert out.rows() == expected[how] and out.schema[name] == pl.Float64
+    swapped = {"other": "other", "match": [{"column": "K", "other_column": name}]}  # this table's keys are the texts
+    back = act("table.merge", other, swapped, StubContext(tables={"other": this.with_columns(L=pl.lit("x"))}))
+    assert back["L"].to_list() == ["x"] * 4
+
+
+def test_a_full_join_keeps_decimal_number_keys_only_when_the_texts_are_those_of_the_grid(act):
+    """A text of the other table without a match becomes a number only when it is that number's
+    text: "17.0" and "1e16" stay text, and so does the key column (as "04" for whole numbers)."""
+    params = {"other": "other", "match": [{"column": "A", "other_column": "K"}], "how": "full"}
+    this = pl.DataFrame({"A": DECIMALS})
+    fits = StubContext(tables={"other": pl.DataFrame({"K": ["17", "3.25", "20000000000000000"], "N": ["a", "b", "c"]})})
+    out = act("table.merge", this, params, fits)
+    assert out.schema["A"] == pl.Float64
+    assert out.rows() == [(17.0, "a"), (2.5, None), (1e16, None), (-0.0, None), (None, None), (3.25, "b"), (2e16, "c")]
+    for text in ("17.0", "1e16", "-0"):
+        other = StubContext(tables={"other": pl.DataFrame({"K": [text], "N": ["a"]})})
+        out = act("table.merge", this, params, other)
+        assert out.schema["A"] == pl.String
+        assert out.rows() == [*((shown, None) for shown in AS_SHOWN), (None, None), (text, "a")]
+
+
+@pytest.mark.parametrize(
+    ("values", "found", "not_found"),
+    [
+        (pl.Series([dt.datetime(2025, 12, 31, 8, 30)], dtype=pl.Datetime("ns")), ["2025-12-31 08:30:00"], ["2025-12-31 08:30:00.000000000"]),
+        (pl.Series([dt.datetime(2025, 12, 31, 8, 30, 0, 250000)], dtype=pl.Datetime("ms")), ["2025-12-31 08:30:00.250"], ["2025-12-31 08:30:00.25"]),
+        (pl.Series([dt.datetime(2025, 12, 31, 8, 30, 0, 500)]), ["2025-12-31 08:30:00.000500"], ["2025-12-31 08:30:00"]),
+        (pl.Series([dt.datetime(2025, 12, 31, 8, 30)]).dt.replace_time_zone("UTC"), ["2025-12-31 08:30:00"], ["2025-12-31 08:30:00.000000+00:00"]),
+        (pl.Series([0.1, 17.0], dtype=pl.Float32), ["0.1", "17"], ["17.0", "0.10000000149011612"]),
+    ],
+    ids=["nanoseconds", "milliseconds", "microseconds", "UTC", "Float32"],
+)
+def test_date_time_keys_find_the_text_that_the_grid_shows(act, values, found, not_found):
+    """Without fractions of a second when there are none, and a time zone's local time without the
+    offset. Before, Polars' text with all six digits (or three, or nine) was compared, and the
+    offset: 2025-12-31 08:30:00.000000+01:00."""
+    params = {"other": "other", "match": [{"column": "A", "other_column": "K"}]}
+    other = pl.DataFrame({"K": [*not_found, *found], "N": ["not"] * len(not_found) + [f"found {i}" for i in range(len(found))]})
+    out = act("table.merge", values.alias("A").to_frame(), params, StubContext(tables={"other": other}))
+    assert out.schema["A"] == values.dtype and out["N"].to_list() == [f"found {i}" for i in range(len(found))]
+
+
+def test_a_full_join_reads_the_local_time_of_a_time_zone(act):
+    """The rows only in the other table get a date-time with the column's time zone when their text
+    is a local time there. The clocks turned back (02:30 twice) or forward (no 02:30) on those
+    days: such a text is no single moment, and the key column becomes text."""
+    params = {"other": "other", "match": [{"column": "A", "other_column": "K"}], "how": "full"}
+    this = pl.DataFrame({"A": [dt.datetime(2025, 7, 1, 9, 30, tzinfo=ZoneInfo("Europe/Berlin"))]})
+    fits = StubContext(tables={"other": pl.DataFrame({"K": ["2025-07-01 09:30:00", "2025-12-01 10:00:00.500"], "N": ["a", "b"]})})
+    out = act("table.merge", this, params, fits)
+    assert out.schema["A"] == BERLIN
+    assert out.rows() == [
+        (dt.datetime(2025, 7, 1, 9, 30, tzinfo=ZoneInfo("Europe/Berlin")), "a"),
+        (dt.datetime(2025, 12, 1, 10, 0, 0, 500000, tzinfo=ZoneInfo("Europe/Berlin")), "b"),
+    ]
+    for text in ("2025-10-26 02:30:00", "2025-03-30 02:30:00"):
+        other = StubContext(tables={"other": pl.DataFrame({"K": [text], "N": ["a"]})})
+        out = act("table.merge", this, params, other)
+        assert out.schema["A"] == pl.String and out.rows() == [("2025-07-01 09:30:00", None), (text, "a")]
+
+
+@pytest.mark.parametrize("how", ["lookup", "full", "matching"])
+@pytest.mark.parametrize(
+    ("this", "other", "message"),
+    [
+        ([[1, 2]], ["[1, 2]"], r"^'A' holds list values, which can't be compared with 'K': choose other key columns$"),
+        ([{"x": 1}], [{"y": 1}], r"^'A' holds record values, which can't be compared with 'K'"),  # Polars' text: {1}, {1}
+        ([1], [[1]], r"^'K' holds list values, which can't be compared with 'A'"),
+        ([[1]], [["1"]], r"^'A' holds list values, which can't be compared with 'K'"),
+        ([None], [[1]], r"^'K' holds list values, which can't be compared with 'A'"),
+    ],
+    ids=["list and text", "records of other fields", "number and list", "lists of other types", "empty and list"],
+)
+def test_lists_and_records_match_only_keys_of_their_own_type(act, how, this, other, message):
+    """They have no text to compare with: a list stopped with Polars' message, and a record was
+    compared as Polars' text, without the names of its fields. Lists and records of one type match
+    value by value, as before."""
+    params = {"other": "other", "match": [{"column": "A", "other_column": "K"}], "how": how}
+    ctx = StubContext(tables={"other": pl.DataFrame({"K": other, "N": ["x"]})})
+    with pytest.raises(ActionError, match=message):
+        act("table.merge", pl.DataFrame({"A": this}), params, ctx)
+    assert ctx.warnings == []
+    same = StubContext(tables={"other": pl.DataFrame({"K": [[1, 2], [3]], "N": ["x", "y"]})})
+    out = act("table.merge", pl.DataFrame({"A": [[3], [4]]}), params, same)
+    assert out.rows() == {"lookup": [([3], "y"), ([4], None)], "full": [([3], "y"), ([4], None), ([1, 2], "x")], "matching": [([3],)]}[how]
+
+
+@pytest.mark.parametrize("how", ["lookup", "full"])
+def test_objects_of_a_plugin_cant_be_keys(act, how):
+    """Polars can't compare them: "not yet implemented: Hash Left Join between object and object"."""
+    params = {"other": "other", "match": [{"column": "A", "other_column": "K"}], "how": how}
+    objects = pl.Series([object()], dtype=pl.Object)
+    for other in (pl.DataFrame({"K": objects}), pl.DataFrame({"K": ["x"]})):
+        with pytest.raises(ActionError, match=r"^'A' holds object values, which can't be compared: choose other key columns$"):
+            act("table.merge", pl.DataFrame({"A": objects}), params, StubContext(tables={"other": other}))
+    with pytest.raises(ActionError, match=r"^'K' holds object values"):
+        act("table.merge", pl.DataFrame({"A": ["x"]}), params, StubContext(tables={"other": pl.DataFrame({"K": objects})}))
+
+
+@pytest.mark.parametrize("how", ["lookup", "full"])
+def test_categories_and_bytes_that_are_text_are_compared_as_their_text(act, how):
+    """As before: a category is its text, and bytes that are all text are that text."""
+    params = {"other": "other", "match": [{"column": "A", "other_column": "K"}], "how": how}
+    other = StubContext(tables={"other": pl.DataFrame({"K": ["b", "c"], "N": ["x", "y"]})})
+    categories = pl.DataFrame({"A": pl.Series(["a", "b"], dtype=pl.Categorical)})
+    out = act("table.merge", categories, params, other)
+    assert out.schema["A"] == pl.Categorical and out.rows() == [("a", None), ("b", "x"), *([("c", "y")] if how == "full" else [])]
+    out = act("table.merge", pl.DataFrame({"A": [b"a", b"b"]}), params, other)
+    assert out.schema["A"] == pl.Binary and out.rows() == [(b"a", None), (b"b", "x"), *([(b"c", "y")] if how == "full" else [])]
 
 
 @pytest.mark.parametrize("how", ["lookup", "full"])

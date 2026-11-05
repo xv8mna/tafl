@@ -92,9 +92,10 @@ def merge(df, p, ctx):
     without a match filters this table without adding columns. The step tells how many rows
     matched and shows a few keys of the rows without a match. Empty keys never match. Whole
     numbers and exact decimals are compared with all their digits, also when their types differ.
-    Keys of different types (a number and a text) are compared as text; the key columns keep
-    their type, except in a full join whose other table has keys that don't fit it (2.5 for
-    whole numbers): then they get a type that fits both.
+    Keys of different types (a number and a text) are compared as text, as the grid shows the
+    values (the decimal number 17.0 finds the text 17); the key columns keep their type, except in
+    a full join whose other table has keys that don't fit it (2.5 for whole numbers): then they
+    get a type that fits both. Lists and records match only keys of their own type.
     """
     other = ctx.table(p.other)
     pairs = list(dict.fromkeys((m.column, m.other_column) for m in p.match))  # a row given twice counts once
@@ -255,6 +256,7 @@ def _compared_keys(left, right, left_on, right_on, ctx):
     taken = {*left.columns, *right.columns}
     for index, (left_name, right_name) in enumerate(zip(left_on, right_on)):
         left_type, right_type = left.schema[left_name], right.schema[right_name]
+        _check_lists(left_name, left_type, right_name, right_type)
         repeated = right_name in right_keys[:index]
         if left_type == right_type and not repeated:
             continue
@@ -291,6 +293,20 @@ def _compared_keys(left, right, left_on, right_on, ctx):
     return left, right, left_keys, right_keys, compared
 
 
+def _check_lists(left_name: str, left_type: pl.DataType, right_name: str, right_type: pl.DataType) -> None:
+    """Lists and records (from Parquet files or plugins) match only lists and records of the same
+    type, value by value: they have no text to compare with other keys. A plugin's own values
+    (objects) can't be compared at all."""
+    for name, dtype, other in ((left_name, left_type, right_name), (right_name, right_type, left_name)):
+        if dtype == pl.Object:
+            raise ActionError(f"'{name}' holds object values, which can't be compared: choose other key columns")
+        if dtype.is_nested() and left_type != right_type:
+            raise ActionError(
+                f"'{name}' holds {dtypes.type_label(dtype)} values, which can't be compared with '{other}': "
+                "choose other key columns"
+            )
+
+
 def _number_type(left: pl.DataType, right: pl.DataType) -> pl.DataType:
     """The type in which number keys of two types are compared. Whole numbers and exact decimals
     keep all their digits: as Int64 when both types fit it, otherwise as a Decimal with the
@@ -305,11 +321,12 @@ def _number_type(left: pl.DataType, right: pl.DataType) -> pl.DataType:
 
 def _cast_key(column: pl.Expr, dtype: pl.DataType, target: pl.DataType, as_hex: bool = False) -> pl.Expr:
     """``column`` (of type ``dtype``) as ``target``, to compare keys, empty where a value doesn't
-    fit. A time keeps its fractions of a second as text ("08:00:00", "08:00:00.500"): Polars' cast
-    to text leaves them out. Binary values are hex digits as text with ``as_hex`` (see ``_as_hex``)."""
-    if dtype == pl.Time and target == pl.String:
-        return column.dt.strftime("%H:%M:%S%.f")
-    if as_hex and target == pl.String:
+    fit. As text, a value is written as the grid shows it (see ``dtypes.text_expr``): 17 for 17.0,
+    10000000000000000 for 1e16, "2025-12-31 08:30:00" (a time zone's local time), "08:00:00.500".
+    Polars' own text differs ("17.0", "1e16", "2025-12-31 08:30:00.000000+01:00") and leaves out
+    the fractions of a second of a time. Binary values are text, or hex digits with ``as_hex`` (see
+    ``_as_hex``). A time span has no cast to text: Polars stops, and so does the step."""
+    if target == pl.String and dtype not in (pl.String, pl.Duration) and (dtype != pl.Binary or as_hex):
         return dtypes.text_expr(column, dtype)
     return column.cast(target, strict=False)
 
@@ -325,7 +342,9 @@ def _cast_fitting(column: pl.Expr, dtype: pl.DataType, target: pl.DataType) -> p
     stops with an error for a decimal number (Float) too big for an exact decimal (1e9 for a
     Decimal(10, 2)), also with strict=False: those are left out first. Polars can't cast text
     to a date, date-time, time or true/false: text is read in the form that ``_cast_key`` writes
-    ("2024-01-31", "2024-01-31 08:00:00.000000", "08:00:00.500", "true")."""
+    ("2024-01-31", "2024-01-31 08:00:00", "2024-01-31 08:00:00.250", "08:00:00.500", "true"). A
+    date-time with a time zone is its local time there: empty when the clocks were turned back or
+    forward at that time (two moments or none)."""
     if dtype.is_float() and isinstance(target, pl.Decimal):
         whole = (target.precision or 38) - target.scale  # digits before the decimal point
         below = 10.0**whole - 0.5 * 10.0**-target.scale  # values below it don't round up to more digits
@@ -334,8 +353,10 @@ def _cast_fitting(column: pl.Expr, dtype: pl.DataType, target: pl.DataType) -> p
         if target == pl.Date:
             return column.str.to_date("%Y-%m-%d", strict=False)
         if isinstance(target, pl.Datetime):
-            text = "%Y-%m-%d %H:%M:%S%.f" + ("%:z" if target.time_zone else "")
-            return column.str.to_datetime(text, time_unit=target.time_unit, time_zone=target.time_zone, strict=False)
+            moment = column.str.to_datetime("%Y-%m-%d %H:%M:%S%.f", time_unit=target.time_unit, strict=False)
+            if target.time_zone:
+                moment = moment.dt.replace_time_zone(target.time_zone, ambiguous="null", non_existent="null")
+            return moment
         if target == pl.Time:
             return column.str.to_time("%H:%M:%S%.f", strict=False)
         if target == pl.Boolean:
