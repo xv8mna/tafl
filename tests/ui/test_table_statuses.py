@@ -722,6 +722,94 @@ def used_project(session, settle, tmp_path):
     return session.project.tables
 
 
+def said_and_fresh(session):
+    """{table name: (status, message)} as the window shows it, and as a new engine calculates the
+    open project; only the tables that are on and have a result. For projects without incomplete steps."""
+    project = Project.from_dict(session.project.to_dict(), path=session.project.path)
+    results = Engine(project, session.registry).run(mode=Mode.PREVIEW)
+
+    def said(result):
+        return "skipped" if result.skipped else "ok" if result.ok else "error", result.skipped or result.first_error
+
+    names = [t.name for t in project.tables if t.id in session.results and t.enabled]
+    return {n: said(session.results[project.table(n).id]) for n in names}, {n: said(results[project.table(n).id]) for n in names}
+
+
+@pytest.mark.parametrize("edit", ["delete", "turn off", "other table", "undo of adding", "redo of deleting"])
+@pytest.mark.parametrize("first", ["skip the rest", "failing first step"])
+def test_a_link_in_a_step_that_doesn_t_run_of_the_selected_table_leaves_no_old_status(session, settle, tmp_path, first, edit):
+    """S skips its rest (a filter keeps no row), or its first step fails, so its last step, a merge
+    with X, never runs; X starts from S, so the links make a circular reference. When that link goes
+    (deleted, turned off, another table chosen, Undo of adding it, Redo of deleting it), the result
+    of S stays the same, but X is in no circle any more."""
+    actions = session.registry.actions
+    (tmp_path / "a.csv").write_text("Id;Name\n1;Anna\n2;Ben\n", encoding="utf-8")
+    project = Project()
+    s, x, other = project.add_table("S"), project.add_table("X"), project.add_table("Other")
+    if first == "skip the rest":
+        project.add_step(s, actions["csv.import"], {"file": "a.csv"})
+        project.add_step(s, actions["rows.filter_formula"], {"condition": "[Id] > 100"})
+        project.add_step(s, actions["flow.skip_if_empty"], {"which": "this"})
+    else:
+        project.add_step(s, actions["csv.import"], {"file": "missing.csv"})
+    merge = {"other": x.id, "how": "lookup", "match": [{"column": "Id", "other_column": "Id"}]}
+    if edit != "undo of adding":
+        project.add_step(s, actions["table.merge"], merge)
+    project.add_step(x, actions["table.derive"], {"table": s.id})
+    project.add_step(other, actions["csv.import"], {"file": "a.csv"})
+    session.open_project(project.save(tmp_path / "links.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    session.select_table(s.id)
+    settle(session)
+
+    def last_step():
+        return session.project.table("S").steps[-1].id
+
+    operations = {
+        "delete": [lambda: session.delete_step(last_step())],
+        "turn off": [lambda: session.set_enabled(last_step(), False)],
+        "other table": [lambda: session.set_params(last_step(), {"other": other.id})],
+        "undo of adding": [lambda: session.add_step(actions["table.merge"], params=merge), session.undo],
+        "redo of deleting": [lambda: session.delete_step(last_step()), session.undo, session.redo],
+    }
+    for operation in operations[edit]:
+        operation()
+        settle(session)
+        assert session.table_id == s.id
+        shown, fresh = said_and_fresh(session)
+        assert shown == fresh
+    assert session.table_status(x.id) == ("ok" if first == "skip the rest" else "error")
+    assert "Circular" not in (session.results[x.id].first_error or "")
+
+
+def test_moving_a_link_of_the_selected_table_updates_the_circle_that_a_table_that_uses_it_names(session, settle, tmp_path):
+    """The import of S fails, so its merges with A and B don't run. U starts from S, A and B from U:
+    two circles of the same length from U, which names the one through the first merge of S."""
+    actions = session.registry.actions
+    project = Project()
+    s, u, a, b = (project.add_table(name) for name in ("S", "U", "A", "B"))
+    project.add_step(s, actions["csv.import"], {"file": "missing.csv"})
+    for other in (a, b):
+        project.add_step(s, actions["table.merge"], {"other": other.id, "match": [{"column": "Id", "other_column": "Id"}]})
+    project.add_step(u, actions["table.derive"], {"table": s.id})
+    for table in (a, b):
+        project.add_step(table, actions["table.derive"], {"table": u.id})
+    session.open_project(project.save(tmp_path / "two circles.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    session.select_table(s.id)
+    settle(session)
+    assert session.results[u.id].first_error == "Circular reference: U → S → A → U"
+    session.move_step(session.project.table("S").steps[2].id, 1)  # the merge with B first
+    settle(session)
+    assert session.results[u.id].first_error == "Circular reference: U → S → B → U"
+    shown, fresh = said_and_fresh(session)
+    assert shown == fresh
+
+
 def test_an_edit_of_another_table_reads_only_the_settings_that_changed(session, settle, tmp_path, monkeypatch):
     """To find the tables that use the edited one, the window's thread reads the settings of the
     steps that changed only, not those of every step (twice), and doesn't build the project as it

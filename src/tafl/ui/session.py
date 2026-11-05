@@ -1315,10 +1315,11 @@ class Session(QObject):
         before the change) is calculated again, and so are the tables that use it, as they did
         before or do now (nothing uses a deleted table now, and a renamed one can be used by name).
         The selected table is calculated anyway, and the tables that use it follow when its result
-        changes (``_on_results``). Not so when its name or its on/off state changed, or when it is
-        skipped: its result doesn't show that, but the tables that use it name it, or the table
-        they use on the way to a table that is off. Only tables with a result are marked: the
-        others are calculated when they are looked at.
+        changes (``_on_results``). Not so when its name, its on/off state or the tables that its
+        steps use changed: its result doesn't show that (a step after a failing step, or after
+        "Skip the rest", doesn't run), but the tables that use it name it, are in a circular
+        reference with it or not, or name the table on their way to a table that is off. Only
+        tables with a result are marked: the others are calculated when they are looked at.
 
         The tables that used a changed table before and don't now are found in the open project
         too: on their way to it, the first table that changed is one of them, and so they use that
@@ -1326,18 +1327,29 @@ class Session(QObject):
         changed, and not any more: for that, the tables are looked up as they were then."""
         after = _contents(self.project)
         changed = {id_ for id_ in before.keys() | after.keys() if before.get(id_) != after.get(id_)}
+        same_tables = before.keys() == after.keys() and all(before[id_][0] == after[id_][0] for id_ in after)
+        then = self.project if same_tables else self._as_before(before)  # the tables and names before
         selected = self.table_id
         if selected in changed and selected in before and before[selected][:2] == after[selected][:2]:
-            result = self.results.get(selected)
-            if result is None or not result.skipped:
-                changed.discard(selected)  # only its steps changed
+            steps = [Step(action=a, params=p, id=i, version=v, enabled=e) for i, a, v, e, p in before[selected][2]]
+            if self._dependencies(steps, then) == self._dependencies(self.project.table(selected).steps, self.project):
+                changed.discard(selected)  # only its steps changed, not the tables they use
         if not changed:
             return
         users = self.users(changed)
-        if before.keys() != after.keys() or any(before[id_][0] != after[id_][0] for id_ in after):
-            users |= _reached(self._used_by(self._as_before(before)), changed)
+        if not same_tables:
+            users |= _reached(self._used_by(then), changed)
         self._recheck |= ((changed | users) - {selected}) & set(self.results)
         self._recheck &= set(after)  # a table that is gone isn't calculated again
+
+    def _dependencies(self, steps: Iterable[Step], project: Project) -> list[str]:
+        """The tables that ``steps`` (of one table; those that are on) use in ``project``, in their
+        order, once each, as ``Engine.dependencies`` finds them."""
+        found = []
+        for step in steps:
+            if step.enabled:
+                found += [source.id for ref in self._named_by(step) if (source := project.used_table(ref)) is not None]
+        return list(dict.fromkeys(found))
 
     def _as_before(self, before: dict[str, tuple]) -> Project:
         """The open project with the tables and names of ``before``: a table that is still there
