@@ -32,10 +32,9 @@ _OPERATORS = [
 ]
 _LABELS = dict(_OPERATORS)
 _TEXT_OPERATORS = ("contains", "not_contains", "starts", "ends")  # they look at a value's text
-_AT_ONCE = 1 << 18  # the most decimal numbers whose texts a filter writes at once (see _decimal_texts)
-_PART = 1 << 16  # the most decimal numbers that one Python call writes as text (see _decimal_tests)
-_ROUND = 1 << 19  # the most decimal numbers whose texts are there at the same time (see _decimal_tests)
-_MORSEL = 1 << 15  # rows of a column for each thread from which a filter writes decimal texts quickly itself
+_PART = 1 << 16  # the most decimal numbers that one Python call writes as text (see _texts_in_parts)
+_ROUND = 1 << 18  # the most decimal numbers whose texts are there at the same time (see _decimal_tests)
+_MORSEL = 1 << 13  # rows of a column for each thread from which a filter writes decimal texts quickly itself
 _KEEP = [("keep", "Keep matching rows"), ("remove", "Remove matching rows")]
 _COMPARE = {
     "=": operator.eq,
@@ -100,22 +99,19 @@ def filter_rows(df, p, ctx):
     """
     schema = df.schema  # once: Polars makes it anew for every call, with all columns (seconds for thousands)
     typed: dict[tuple[Any, ...], Any] = {}  # each typed value read once for each type of column (see _typed)
-    # contains, starts and ends on decimal numbers: their text runs Python (see _decimal_texts)
+    # contains, starts and ends on decimal numbers: their text runs Python (see _decimal_tests)
     decimal = [
         index
         for index, c in enumerate(p.conditions)
         if c.operator in _TEXT_OPERATORS and c.column in schema and schema[c.column].is_float()
     ]
-    columns = list(dict.fromkeys(p.conditions[index].column for index in decimal))
-    texts = {}
     threads = pl.thread_pool_size()
-    if df.height * len(columns) <= _AT_ONCE:  # few values: their texts at once, for thousands of columns
-        texts, decimal = _decimal_texts(df, schema, columns), []
-    elif len(columns) >= threads and df.height >= threads * _MORSEL:  # many long columns: inside the filter, as
-        decimal = []  # Polars writes them in parts for all its threads, in less time and memory than in turns
+    many = len({p.conditions[index].column for index in decimal}) >= threads and df.height >= threads * _MORSEL
+    if many or not df.height:  # many long columns: the filter writes them in parts for all its threads, quicker
+        decimal = []  # than in turns (and a table without rows has nothing to write)
     warned: list[tuple[str, str]] = []  # (column, warning): 3 of them in full, the others in one line
     parts = {
-        index: _condition(df, c, p.case_sensitive, schema, lambda text, c=c: warned.append((c.column, text)), typed, texts)
+        index: _condition(df, c, p.case_sensitive, schema, lambda text, c=c: warned.append((c.column, text)), typed)
         for index, c in enumerate(p.conditions)
         if index not in decimal
     }
@@ -128,7 +124,7 @@ def filter_rows(df, p, ctx):
             f"{more:,} more condition{'s compare' if more > 1 else ' compares'} texts character by character: {named}"
         )
     if decimal:  # many values: the rows of each condition, without keeping the texts (see _decimal_tests)
-        tests, decided = _decimal_tests(df, [p.conditions[index] for index in decimal], p.case_sensitive, p.match)
+        tests, decided = _decimal_tests(df, schema, [p.conditions[index] for index in decimal], p.case_sensitive, p.match)
         if decided is not None:  # one condition keeps all rows (any of them), or one keeps none (all of them)
             return df if decided == (p.keep == "keep") else df.clear()
         parts.update((index, pl.lit(test)) for index, test in zip(decimal, tests, strict=True))
@@ -280,7 +276,6 @@ def _condition(
     schema: pl.Schema | None = None,
     warn: Callable[[str], None] | None = None,
     typed: dict[tuple[Any, ...], Any] | None = None,
-    texts: dict[str, pl.Series] | None = None,
 ) -> pl.Expr:
     column = col(c.column)
     dtype = (df.schema if schema is None else schema)[c.column]
@@ -299,8 +294,6 @@ def _condition(
     if op in _TEXT_OPERATORS:
         if dtype == pl.Binary and dtypes.bytes_are_text(df[c.column]):  # binary values that are all text: that text
             text = column.cast(pl.String)
-        elif texts is not None and c.column in texts:  # decimal numbers: written once for all (see _decimal_texts)
-            text = pl.lit(texts[c.column])
         else:  # their text as Split column and Pivot write it: 17 (Polars: 17.0), 2025-12-31 08:30:00 in a zone's
             text = dtypes.text_expr(column, dtype)  # local time (Polars: ...08:30:00.000000+01:00), 1d 2h 3m; bytes 0xFF00
         return _text_test(text, op, c.value, case_sensitive)
@@ -368,66 +361,79 @@ def _text_test(text: pl.Expr, op: str, needle: str, case_sensitive: bool, decima
     return found if op == "contains" else (~found).fill_null(True)
 
 
-def _decimal_tests(df: pl.DataFrame, conditions: list[Any], case_sensitive: bool, match: str) -> tuple[list[pl.Series], bool | None]:
-    """contains, starts and ends on decimal-number columns of many values: the rows that each
-    condition keeps. The values are written as text and tested in parts (``_PART``), one for each
-    thread of Polars at a time, and a part's text is gone once it is tested: with the texts of all
+def _decimal_tests(
+    df: pl.DataFrame, schema: pl.Schema, conditions: list[Any], case_sensitive: bool, match: str
+) -> tuple[list[pl.Series], bool | None]:
+    """contains, starts and ends on decimal-number columns: the rows that each condition keeps.
+    Their text runs Python: inside a filter once for each condition and each thread of Polars,
+    which took seconds for a few hundred columns. Here the values are written in rounds of at most
+    ``_ROUND`` values (many short columns together, a long one in several rounds), each round in
+    parts that Polars writes at the same time (``_texts_in_parts``); each test runs once for all
+    the columns of a round that have it, and the round's texts are let go: with the texts of all
     values at once a filter took 10 times the memory of its data. A column's text is written once
-    for all its conditions. The columns are worked out in the order of the conditions, and stop
-    once the rows are decided: then the second value is True (one of any conditions keeps all
-    rows) or False (one of all conditions keeps none), else None."""
-    height = max(df.height, 1)
-    size = -(-height // -(-height // _PART))  # the values of a part: at most _PART, as even as can be
-    columns = list(dict.fromkeys(c.column for c in conditions))
-    pieces = [(name, start) for name in columns for start in range(0, height, size)]
-    at_once = max(1, min(pl.thread_pool_size(), _ROUND // size))  # parts at the same time
-    found: list[list[pl.Series]] = [[] for _ in conditions]
+    for all its conditions. The columns are worked out in the order of the conditions (each type
+    apart: Float32 values have their own digits), and stop once the rows are decided: then the
+    second value is True (one of any conditions keeps all rows) or False (one of all conditions
+    keeps none), else None."""
+    by_column: dict[str, list[int]] = {}
+    for n, c in enumerate(conditions):
+        by_column.setdefault(c.column, []).append(n)
+    found: dict[int, list[pl.Series]] = {n: [] for n in range(len(conditions))}
     tests: dict[int, pl.Series] = {}
     together: pl.Series | None = None
-    for first in range(0, len(pieces), at_once):
-        written = []
-        for name, start in pieces[first : first + at_once]:
+    for kind in dict.fromkeys(schema[name] for name in by_column):
+        for segments in _rounds([name for name in by_column if schema[name] == kind], df.height):
             # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
-            values = df[name].alias("value").slice(start, size)
-            values = values.extend_constant(None, size - values.len())  # parts of one length, for one select
-            written.append(dtypes.text_expr(pl.lit(values), values.dtype).alias(f"text{len(written)}"))
-        texts = pl.select(written).get_columns()
-        checks = [(n, k) for k, (name, _) in enumerate(pieces[first : first + at_once]) for n, c in enumerate(conditions) if c.column == name]
-        tested = [_text_test(pl.lit(texts[k]), conditions[n].operator, conditions[n].value, case_sensitive, decimal=True) for n, k in checks]
-        for (n, _), part in zip(checks, pl.select(t.alias(f"test{j}") for j, t in enumerate(tested)).get_columns(), strict=True):
-            found[n].append(part)
-        del texts
-        for name, start in pieces[first : first + at_once]:
-            if start + size < df.height:
-                continue
-            for n in (n for n, c in enumerate(conditions) if c.column == name):  # the last part of its column
-                tests[n] = test = pl.concat(found[n]).head(df.height).alias("test")
-                together = test if together is None else (together | test if match == "any" else together & test)
-                if not together.null_count() and (together.all() if match == "any" else not together.any()):
-                    return list(tests.values()), match == "any"
+            texts = _texts_in_parts(pl.concat([df[name].alias("value").slice(start, size) for name, start, size in segments]), kind)
+            layout, groups, offset = [], {}, 0  # each test, with the places of the texts it tests
+            for name, _, size in segments:
+                layout.append((offset, size))
+                for n in by_column[name]:
+                    groups.setdefault((conditions[n].operator, conditions[n].value), []).append((n, offset, size))
+                offset += size
+            for (op, needle), members in groups.items():
+                tested = texts if [(o, s) for _, o, s in members] == layout else pl.concat([texts.slice(o, s) for _, o, s in members])
+                result, at = pl.select(_text_test(pl.lit(tested), op, needle, case_sensitive, decimal=True)).to_series(), 0
+                for n, _, size in members:
+                    found[n].append(result.slice(at, size))
+                    at += size
+            del texts
+            for name, start, size in segments:
+                if start + size < df.height:
+                    continue
+                for n in by_column[name]:  # the last values of its column
+                    tests[n] = test = pl.concat(found.pop(n)).alias("test")
+                    together = test if together is None else (together | test if match == "any" else together & test)
+                    if not together.null_count() and (together.all() if match == "any" else not together.any()):
+                        return list(tests.values()), match == "any"
     return [tests[n] for n in range(len(conditions))], None
 
 
-def _decimal_texts(df: pl.DataFrame, schema: pl.Schema, names: list[str]) -> dict[str, pl.Series]:
-    """The text of the decimal-number columns among ``names`` (``dtypes.text_expr``), written before
-    the filter, once for all of them. That text runs Python: inside a filter once for each column
-    and each thread of Polars (a few hundred columns took seconds), and for each condition. The
-    values of all columns of a type are written in one go (each value's text depends on itself
-    only), in parts that Polars writes at the same time; each type apart, as Float32 values have
-    their own digits."""
-    floats = [name for name in dict.fromkeys(names) if name in schema and schema[name].is_float()]
-    texts = {}
-    for kind in dict.fromkeys(schema[name] for name in floats):
-        group = [name for name in floats if schema[name] == kind]
-        # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
-        values = pl.concat([df[name].alias("value") for name in group])
-        count = max(1, min(pl.thread_pool_size(), -(-values.len() // _PART)))
-        size = -(-values.len() // count)
-        values = values.extend_constant(None, count * size - values.len())  # parts of one length, for one select
-        parts = [dtypes.text_expr(pl.lit(values.slice(k * size, size)), kind).alias(f"part{k}") for k in range(count)]
-        written = pl.concat([part.alias("text") for part in pl.select(parts).get_columns()])
-        texts.update((name, written.slice(index * df.height, df.height)) for index, name in enumerate(group))
-    return texts
+def _rounds(names: list[str], height: int) -> list[list[tuple[str, int, int]]]:
+    """The columns ``names`` of ``height`` values in rounds of at most ``_ROUND`` values: lists of
+    (column, first row, rows), many short columns in one round, a long one in several."""
+    rounds: list[list[tuple[str, int, int]]] = [[]]
+    room = _ROUND
+    for name in names:
+        start = 0
+        while start < height:
+            size = min(height - start, room)
+            rounds[-1].append((name, start, size))
+            start, room = start + size, room - size
+            if not room:
+                rounds.append([])
+                room = _ROUND
+    return [segments for segments in rounds if segments]
+
+
+def _texts_in_parts(values: pl.Series, kind: pl.DataType) -> pl.Series:
+    """``dtypes.text_expr`` of decimal numbers, in parts of at most ``_PART`` values that Polars
+    writes at the same time, one Python call each (each value's text depends on itself only)."""
+    count = max(1, -(-values.len() // _PART))
+    size = -(-values.len() // count)
+    padded = values.extend_constant(None, count * size - values.len())  # parts of one length, for one select
+    parts = [dtypes.text_expr(pl.lit(padded.slice(k * size, size)), kind).alias(f"part{k}") for k in range(count)]
+    return pl.concat([part.alias("text") for part in pl.select(parts).get_columns()]).head(values.len())
 
 
 def _for_polars(value: Any, dtype: pl.DataType) -> Any:

@@ -1274,23 +1274,27 @@ CHECKS = [
 @pytest.mark.parametrize("match", ["any", "all"])
 @pytest.mark.parametrize("keep", ["keep", "remove"])
 @pytest.mark.parametrize("case_sensitive", [False, True])
-@pytest.mark.parametrize("way", ["in parts", "in the filter"])
-def test_long_tables_keep_the_rows_of_short_ones(act, monkeypatch, checks, match, keep, case_sensitive, way):
-    """A long table writes the texts of its decimal numbers in parts and tests them at once (and
-    stops when the rows are decided), or, with many long columns, inside the filter: holding all
-    texts at once took 10 times the memory of the data (1M rows x 60 columns: 5.8 GB). Here the
-    limits are made small, so that a table of 7 rows takes these ways too: the same rows."""
+@pytest.mark.parametrize("way", ["as it is", "columns together", "a column in rounds"])
+def test_decimal_texts_in_rounds_keep_the_rows_of_the_filter(act, monkeypatch, checks, match, keep, case_sensitive, way):
+    """The texts of decimal numbers are written in rounds of a limited number of values (several
+    short columns in one, a long one in several), in parts, tested at once, and stop when the rows
+    are decided; with many long columns the filter writes them itself. Holding all texts at once
+    took 10 times the memory of the data (1M rows x 60 columns: 5.8 GB), and small rounds of one
+    column each took 8 s for 4,000 columns of 66 rows. Here the limits are made small, so that a
+    table of 7 rows takes these ways too: the rows of the filter that writes the texts itself."""
     from tafl.plugins import rows
 
     options = {"match": match, "keep": keep, "case_sensitive": case_sensitive}
-    expected = names(flt(act, DECIMALS, *checks, **options))  # all texts at once, as a short table
-    monkeypatch.setattr(rows, "_AT_ONCE", 0)
-    if way == "in parts":
-        monkeypatch.setattr(rows, "_PART", 3)  # 3 parts of 3, 3 and 1 values (one of them filled up)
-        monkeypatch.setattr(rows, "_ROUND", 6)  # 2 parts at the same time
-    else:
-        monkeypatch.setattr(rows, "_MORSEL", 0)
-        monkeypatch.setattr(rows.pl, "thread_pool_size", lambda: 1)  # any decimal column is many of them
+    with monkeypatch.context() as inside:
+        inside.setattr(rows, "_MORSEL", 0)
+        inside.setattr(rows.pl, "thread_pool_size", lambda: 1)  # any decimal column is many of them
+        expected = names(flt(act, DECIMALS, *checks, **options))
+    if way == "columns together":
+        monkeypatch.setattr(rows, "_PART", 3)  # 7 values of each column in parts of 3
+        monkeypatch.setattr(rows, "_ROUND", 1000)
+    elif way == "a column in rounds":
+        monkeypatch.setattr(rows, "_PART", 2)
+        monkeypatch.setattr(rows, "_ROUND", 3)  # 7 values in rounds of 3, 3, then 1 with the next column's first 2
     assert names(flt(act, DECIMALS, *checks, **options)) == expected
 
 
@@ -1300,14 +1304,13 @@ def test_a_long_table_writes_the_text_of_a_column_once_and_in_parts(act, monkeyp
     calls = []
     written = dtypes._float_texts
     monkeypatch.setattr(dtypes, "_float_texts", lambda s: calls.append(s.len()) or written(s))
-    monkeypatch.setattr(rows, "_AT_ONCE", 0)
     monkeypatch.setattr(rows, "_PART", 3)
     monkeypatch.setattr(rows, "_ROUND", 9)  # the 3 parts of a column at the same time
     out = flt(act, DECIMALS, ("Net", "contains", "17"), ("Net", "ends", "5"), match="any")
     assert names(out) == ["a", "b", "g"] and calls == [3, 3, 3]  # 3 parts of Net, not one for each condition
     calls.clear()
     assert names(flt(act, DECIMALS, ("Rate", "not_contains", "zzz"), ("Net", "contains", "17"), match="any")) == list("abcdefg")
-    assert len(calls) == 3  # the rows are decided after Rate: Net isn't written
+    assert len(calls) == 3  # the rows are decided after Rate's round: the rest of Net isn't written
 
 
 _LONG = """
@@ -1380,10 +1383,14 @@ day = dt.datetime(2025, 1, 1, 8, 30)
 stamps = pl.DataFrame({f"d{i}": pl.Series([day, None, day + dt.timedelta(milliseconds=1)], dtype=pl.Datetime("ms")) for i in range(4001)})
 later = dt.datetime(2025, 1, 1, 8, 30, 0, 500)
 decimals = pl.DataFrame({f"f{i}": [17.0, 2.5, 1e16, None] for i in range(4001)})
+longer = pl.DataFrame({f"f{i}": [17.0, 2.5, 1e16, None] * 16 + [17.0, 2.5] for i in range(4001)})  # 66 rows
 steps = [
     # the text of decimal numbers: 17, 2.5, 10000000000000000 (Python wrote it in each thread of Polars)
     ("filter decimal texts", keep, decimals, {"conditions": [{"column": c, "operator": "contains", "value": "17"}
      for c in decimals.columns]}, [(17.0,)]),
+    # 264,066 values: each column written in a round of its own took 8 s
+    ("filter decimal texts of 66 rows", keep, longer, {"conditions": [{"column": c, "operator": "contains", "value": "17"}
+     for c in longer.columns]}, [(17.0,)] * 17),
     ("fill texts", fill, texts, {"columns": texts.columns, "method": "value", "value": "x"}, [("a",), ("x",), ("x",)]),
     ("fill numbers", fill, numbers, {"columns": numbers.columns, "method": "value", "value": "0"}, [(1.5,), (0.0,), (2.0,)]),
     ("fill down", fill, texts, {"columns": texts.columns, "method": "down"}, [("a",), ("a",), ("a",)]),
