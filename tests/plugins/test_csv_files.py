@@ -1,4 +1,5 @@
 import datetime as dt
+import re
 import subprocess
 import sys
 import time
@@ -492,6 +493,22 @@ def test_a_quote_out_of_place_is_shown_with_its_line(act, tmp_path):
     assert act("csv.import", None, {"file": str(tmp_path / "q.csv")})["Size"].to_list() == ['24" and 27"', '24""', '24" x']  # read as before
 
 
+def test_a_quote_that_is_never_closed_is_shown_with_its_line(act, tmp_path):
+    """Polars' words were the message, with the rest of the file in them: "could not parse
+    `"Mouse;5↵2;Pad;1↵3;Key;2↵` as dtype `str` at column 'column_1' (column number 2)"."""
+    never = "has a value that starts with a quote that is never closed"
+    cases = [
+        (b'Id;Name;Price\n1;"Mouse;5\n2;Pad;1\n3;Key;2\n', f"line 2 {never}: '1;\"Mouse;5'"),
+        (b'Id;Name;Price\n1;Mouse;"5\n2;Pad;1\n3;Key;2\n', f"line 2 {never}: '1;Mouse;\"5'"),
+        (b'Id;Name;Price\n1;Mouse;5\n2;"Pad;1\n', f"line 3 {never}: '2;\"Pad;1'"),
+        (b'Id,Name,Price\n1,"Mouse,5\n2,Pad,1\n3,Key,2\n', f"line 2 {never}: '1,\"Mouse,5'"),
+    ]
+    for data, message in cases:
+        (tmp_path / "q.csv").write_bytes(data)
+        with pytest.raises(ActionError, match=f"^Could not read q\\.csv: {re.escape(message)}\\. In a CSV file, a value in quotes ends with a quote"):
+            act("csv.import", None, {"file": str(tmp_path / "q.csv")})
+
+
 def test_a_lone_carriage_return_in_a_value_is_no_end_of_the_line(act, tmp_path):
     """A \\r without \\n in a value (Polars reads it as part of the value) ended the line for the
     check: the message named that line, which has no quote."""
@@ -591,6 +608,7 @@ def test_lists_and_records_stop_the_export_with_their_columns(act, tmp_path):
 
 _WIDE = """
 import datetime as dt
+import re
 import sys
 from pathlib import Path
 

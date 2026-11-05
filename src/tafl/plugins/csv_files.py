@@ -188,8 +188,9 @@ def _converted_twice(data: bytes, skip_lines: int) -> bool:
 
 def _stray_quote(data: bytes, separator: str, skip_lines: int) -> str | None:
     """Why Polars can't read the file, when a quote is out of place: in a value that doesn't start
-    with one (24";Monitor: an odd number of them; an even number Polars reads as it is), or after
-    the closing quote of a value ("24"x). The line and its start; None for other faults."""
+    with one (24";Monitor: an odd number of them; an even number Polars reads as it is), after the
+    closing quote of a value ("24"x), or one that is never closed ("Mouse;5 to the end of the
+    file). The line and its start; None for other faults."""
     text = data.decode("utf-8", errors="replace")
     start = 0
     for _ in range(skip_lines):  # Polars skips them as they are, also in quotes
@@ -202,11 +203,15 @@ def _stray_quote(data: bytes, separator: str, skip_lines: int) -> str | None:
     end = re.compile(rf"(?:{field}(?:{s}|\r?\n|\Z))*+").match(text, start).end()  # possessive: linear, little memory
     if end >= len(text):
         return None
-    if text[end] == '"' and not _QUOTED.match(text, end):  # never closed: Polars reads it to the end
-        return None
     line = text.count("\n", 0, end) + 1
     shown = text[text.rfind("\n", 0, end) + 1 :].split("\n", 1)[0].rstrip("\r")
     shown = shown if len(shown) <= 60 else shown[:60] + "…"
+    if text[end] == '"' and not _QUOTED.match(text, end):  # Polars stops at it, with the rest of the file in its text
+        return (
+            f"line {line} has a value that starts with a quote that is never closed: '{shown}'. In a CSV file, a value "
+            'in quotes ends with a quote, and a quote in it is doubled ("24"" Monitor"). Correct the file, or export it '
+            "again in that form."
+        )
     if text[end] == '"':
         return (
             f"line {line} has a value that goes on after its closing quote: '{shown}'. In a CSV file, a quote in a "
