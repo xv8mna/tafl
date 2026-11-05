@@ -1305,7 +1305,8 @@ def test_a_step_that_would_keep_other_rows_here_is_not_made():
 def test_add_as_step_checks_the_rows_only_where_they_can_differ(monkeypatch):
     """The check of the step's rows took as long as the step: 50,000 texts five seconds on a
     million rows, on the window's thread. It looks only where the step can differ from the card,
-    and at no more than 1,000 picked values."""
+    and at no more than 1,000 picked values; and wherever a stored value isn't a value of the
+    column's type as it is (a project file can hold such values: the card then keeps no row)."""
     from tafl.ui import filters as module
 
     checked = []
@@ -1327,11 +1328,26 @@ def test_add_as_step_checks_the_rows_only_where_they_can_differ(monkeypatch):
         "span": (pl.Series([dt.timedelta(hours=1)]), Filter("span", [3600.0])),
         "a thousand": (many, Filter("a thousand", stored_values(many[:1000]))),
         "more": (many, Filter("more", stored_values(many))),
+        "beyond Int8": (pl.Series([1], dtype=pl.Int8), Filter("beyond Int8", [300, 1])),
+        "no category": (pl.Series(["a"], dtype=pl.Enum(["a", "b"])), Filter("no category", ["x", "a"])),
+        "number on categories": (pl.Series(["a"], dtype=pl.Categorical), Filter("number on categories", [1.5])),
+        "negative unsigned": (pl.Series([0], dtype=pl.UInt64), Filter("negative unsigned", [-1, 0])),
+        "long length": (pl.Series(["a"]), Filter("long length", [2**64, 1], "length")),
+        "NaN threshold": (pl.Series([1.5]), Filter("NaN threshold", [1], "ranges", {"thresholds": [float("nan"), 1.0]})),
+        "left out": (pl.Series([dt.date(2025, 1, 1)]), Filter("left out", ["10000-01-01", "2025-01-01"])),
+        "text of a number": (pl.Series(["1"]), Filter("text of a number", [1])),
     }
     for name, (data, chosen) in columns.items():
         assert formula(chosen, data.dtype, data.alias(name)), name
     assert len(many) == 1001
-    assert checked == ["pattern", "period", "zoned", "nanoseconds", "time", "span", "a thousand"]
+    assert checked == ["pattern", "period", "zoned", "nanoseconds", "time", "span", "a thousand", "beyond Int8", "no category",
+                       "number on categories", "negative unsigned", "long length", "NaN threshold", "left out"]  # fmt: skip
+    texts = pl.Series("T", ["a", "b"])
+    for picked, reason in ((f"a{chr(0)}b", r"^a step can't write a text with the character U\+0000 in it$"),
+                           (f"a{chr(0xD800)}", r"^a step can't write a text with a broken character in it$")):  # fmt: skip
+        for chosen in (Filter("T", [picked]), Filter("T", [picked], excluded=True), Filter("T", ["match"], "regex", {"pattern": picked})):
+            with pytest.raises(NotAStep, match=reason):
+                formula(chosen, pl.String, texts)
 
 
 def test_add_as_step_says_why_a_filter_cant_be_one(session, qtbot):

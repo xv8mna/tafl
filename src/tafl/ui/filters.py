@@ -584,7 +584,7 @@ def formula(f: Filter, dtype: pl.DataType, data: pl.Series | None = None) -> str
     calculated (such as a date-time beyond the years that Polars knows): only NotAStep."""
     try:
         step = _formula(f, dtype, data)
-        if data is not None and _may_differ(f, dtype):
+        if data is not None and (_may_differ(f, dtype) or not _exact(f, dtype)):
             _check_rows(f, step, data)
     except NotAStep:
         raise
@@ -610,6 +610,38 @@ def _may_differ(f: Filter, dtype: pl.DataType) -> bool:
     if f.facet in ("regex", "period") or dtype in (pl.Time, pl.Duration):
         return True
     return dtype == pl.Datetime and (_zone(dtype) is not None or _unit(dtype) == "ns")
+
+
+def _exact(f: Filter, dtype: pl.DataType) -> bool:
+    """Whether each stored value of the filter is a value of the column's type as it is. A project
+    file can hold others: a number on a column of categories, a whole number beyond an Int8, a text
+    that is no category of an Enum, a threshold that is no finite number of the column's type, a
+    value that is left out. With these the card and a step part ways (the card keeps no row, a step
+    keeps some or stops), so _check_rows looks."""
+    kind = key_type(f, dtype)
+    stored = [value for value in f.values if value is not None]
+    try:
+        values = from_json(stored, kind)
+        if len(values) != len(stored):
+            return False
+        if values:
+            series = _series(values, kind)
+            back = series.to_physical().to_list() if kind in (pl.Datetime, pl.Time, pl.Duration) else series.to_list()
+            if series.null_count() or not all(_same(a, b) for a, b in zip(back, values, strict=True)):
+                return False
+        for limit in f.options.get("thresholds") or [] if f.facet == "ranges" else []:
+            if isinstance(limit, bool) or not isinstance(limit, (int, float)) or not math.isfinite(limit):
+                return False
+            if pl.Series([float(limit)]).cast(dtype, strict=True).cast(pl.Float64)[0] != float(limit):
+                return False
+    except Exception:  # noqa: BLE001 - a value that Polars can't take is no value of the type
+        return False
+    return True
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Equal, also NaN and NaN."""
+    return a == b or (isinstance(a, float) and isinstance(b, float) and math.isnan(a) and math.isnan(b))
 
 
 def _check_rows(f: Filter, step: str, data: pl.Series) -> None:
@@ -1059,4 +1091,9 @@ def _sql(value: Any) -> str:
         return f"INTERVAL '{_seconds(value // _MICROSECOND)} seconds'"
     if isinstance(value, bytes):
         return f"from_hex('{value.hex()}')"
-    return "'" + str(value).replace("'", "''") + "'"
+    text = str(value)
+    if chr(0) in text:  # DuckDB's reading of the step ends there: it would stop at every run
+        raise NotAStep("a step can't write a text with the character U+0000 in it")
+    if not text.isascii() and any(0xD800 <= ord(char) <= 0xDFFF for char in text):  # half of a pair
+        raise NotAStep("a step can't write a text with a broken character in it")
+    return "'" + text.replace("'", "''") + "'"
