@@ -835,6 +835,42 @@ def test_sqlserver_text_and_ntext_columns_take_texts(registry):
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_keyed_modes_write_text_and_ntext_columns_as_add_does(registry):
+    """An update or upsert of numbers, dates or true/false into a text or ntext column stopped with
+    "Operand type clash: int is incompatible with text". The keyed modes write the text that Add
+    the rows writes into such a column."""
+    ctx, name = _sqlserver()
+    data = pl.DataFrame({
+        "N": [1, 2], "I": [1, -5], "F": [1.5, None], "D": [dt.date(2025, 12, 31), None], "B": [True, False], "S": ["Łódź", "x"],
+    })  # fmt: skip
+    read = f"SELECT N, {', '.join(f'CAST({c} AS nvarchar(max)) AS {c}' for c in 'IFDBS')} FROM {name} ORDER BY N"
+
+    def export(**params):
+        registry.actions["db.export"](data, {"connection": "server", "table": name} | params, ctx)
+
+    try:
+        for kind in ("text", "ntext"):
+            with ctx.database("server") as db:
+                db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                db.execute(f"CREATE TABLE {name} (N int, {', '.join(f'{c} {kind}' for c in 'IFDBS')})")
+            export()
+            with ctx.database("server") as db:
+                added = db.read(read).rows()
+            assert added[0][:5] == (1, "1", "1.5", "2025-12-31", "1"), kind
+            for mode in ("update", "upsert"):
+                with ctx.database("server") as db:
+                    db.execute(f"DELETE FROM {name}")
+                    if mode == "update":
+                        db.execute(f"INSERT INTO {name} (N) VALUES (1), (2)")
+                export(mode=mode, key_columns=["N"])
+                with ctx.database("server") as db:
+                    assert db.read(read).rows() == added, (kind, mode)
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_whole_numbers_of_more_than_38_digits(registry):
     """A new table got decimal(38, 0) for them, and the export then said "Make the column wider …,
     e.g. decimal(38, 0)", although 38 digits are the most (the table was rolled back). It stops

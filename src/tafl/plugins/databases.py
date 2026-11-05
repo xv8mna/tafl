@@ -274,12 +274,18 @@ class SqlServer(Connector):
     def stage_types(self, conn, table):
         """The type of each column (an alias type as the one it is based on; texts with their
         collation), except for types the stage can't have or the driver can't send as they are
-        (sql_variant, xml, CLR types such as geography, text, ntext, image, rowversion)."""
+        (sql_variant, xml, CLR types such as geography, image, rowversion). A text or ntext column
+        gets varchar(max) or nvarchar(max) with its collation: numbers, dates and true/false
+        arrive there as the text the driver writes into the column itself (an int column of the
+        stage could not be assigned to it: "Operand type clash: int is incompatible with text")."""
         types = {}
         for c in self._columns(conn, table):
             if c.clr:
                 continue
-            if c.kind in _PLAIN_TYPES:
+            if c.kind in _LONG_TEXT_TYPES:
+                collation = f" COLLATE {c.collation}" if c.collation else ""
+                types[c.name] = f"{'NVARCHAR' if c.kind == 'ntext' else 'VARCHAR'}(MAX){collation}"
+            elif c.kind in _PLAIN_TYPES:
                 types[c.name] = c.kind.upper()
             elif c.kind in ("decimal", "numeric"):
                 types[c.name] = f"{c.kind.upper()}({c.precision}, {c.scale})"
