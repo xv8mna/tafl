@@ -760,8 +760,6 @@ def test_sqlserver_says_what_it_cant_store(registry):
         for data, message in (
             (pl.DataFrame({"N": [1], "Span": [dt.timedelta(hours=1)]}), r"^SQL Server can't store time spans: Span has them\. Leave this"),
             (pl.DataFrame({"Tags": [["a"]], "Pair": [{"x": 1}]}), r"^SQL Server can't store lists or records: Tags and Pair have them"),
-            (pl.DataFrame({"N": [1, 2], "Id": big}), rf"^The column Id of {name} holds whole numbers from -9,223,372,036,854,775,808 "
-             r"to 9,223,372,036,854,775,807 \(bigint\), but Id has others \(e\.g\. 18446744073709551615\)\. Change the column's type"),
         ):  # fmt: skip
             with pytest.raises(ActionError, match=message):
                 export(data)
@@ -773,6 +771,36 @@ def test_sqlserver_says_what_it_cant_store(registry):
         export(pl.DataFrame({"N": [1, 2], "Id": big}))
         with ctx.database("server") as db:
             assert db.read(f"SELECT CONVERT(nvarchar(40), Id) AS Id FROM {name} ORDER BY N")["Id"].to_list() == [str(2**64 - 1), "5"]
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_new_table_holds_whole_numbers_beyond_a_bigint(registry):
+    """A new table got a bigint column for them, and the export stopped with a message about that
+    column of a table that wasn't made. Now the column is a decimal that holds every value exactly:
+    decimal(20, 0) for UInt64, decimal(38, 0) for 128 bits; keys find the rows."""
+    ctx, name = _sqlserver()
+    data = pl.DataFrame({
+        "N": [1, 2],
+        "Id": pl.Series([2**64 - 1, 5], dtype=pl.UInt64),
+        "Big": pl.Series([-(10**37), 2**100], dtype=pl.Int128),
+        "Small": pl.Series([7, 8], dtype=pl.UInt64),  # within a bigint: as before
+    })  # fmt: skip
+    try:
+        registry.actions["db.export"](data, {"connection": "server", "table": name}, ctx)
+        with ctx.database("server") as db:
+            types = db.read(
+                "SELECT COLUMN_NAME, DATA_TYPE, NUMERIC_PRECISION FROM INFORMATION_SCHEMA.COLUMNS "
+                f"WHERE TABLE_NAME = '{name.split('.')[1]}' ORDER BY ORDINAL_POSITION"
+            ).rows()
+            stored = db.read(f"SELECT CONVERT(nvarchar(45), Id) AS Id, CONVERT(nvarchar(45), Big) AS Big FROM {name} ORDER BY N").rows()
+        assert types == [("N", "int", 10), ("Id", "decimal", 20), ("Big", "decimal", 38), ("Small", "int", 10)]
+        assert stored == [(str(2**64 - 1), str(-(10**37))), ("5", str(2**100))]
+        changed = data.with_columns(N=pl.col("N") + 10)
+        registry.actions["db.export"](changed, {"connection": "server", "table": name, "mode": "update", "key_columns": ["Id"]}, ctx)
+        assert ctx.messages[-1] == ("info", f"{name}: updated 2 rows")
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

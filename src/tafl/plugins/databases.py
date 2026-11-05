@@ -313,7 +313,12 @@ class SqlServer(Connector):
         dtype = series.dtype
         if dtype.is_integer():
             low, high = series.min(), series.max()
-            return "INT" if low is None or (-(2**31) <= low and high < 2**31) else "BIGINT"
+            if low is None or (-(2**31) <= low and high < 2**31):
+                return "INT"
+            if _BIGINT[0] <= low and high <= _BIGINT[1]:
+                return "BIGINT"
+            # beyond a bigint (UInt64 from Parquet, 128 bits from a plugin): a decimal holds them exactly
+            return "DECIMAL(20, 0)" if dtype == pl.UInt64 else "DECIMAL(38, 0)"
         if dtype.is_float():
             return "FLOAT"
         if isinstance(dtype, pl.Decimal):
