@@ -41,6 +41,20 @@ def test_decimals_and_small_types_become_the_usual_ones(act, tmp_path):
     }
 
 
+def test_categories_of_a_name_of_their_own_become_text(act, tmp_path):
+    """Polars 2.0 writes categories with a name of their own (pl.Categories) into a Parquet file, also
+    with small numbers inside. They stayed categories, while other categories became text. They become
+    text too."""
+    texts = ["Łódź", "日本"]
+    pl.DataFrame({
+        "Named": pl.Series(texts, dtype=pl.Categorical(pl.Categories("tafl_test"))),
+        "Small": pl.Series(texts, dtype=pl.Categorical(pl.Categories("tafl_test_8", physical=pl.UInt8))),
+    }).write_parquet(tmp_path / "c.parquet")  # fmt: skip
+    df = act("parquet.import", None, {"file": str(tmp_path / "c.parquet")})
+    assert df.schema == {"Named": pl.String, "Small": pl.String}
+    assert df.rows() == [("Łódź", "Łódź"), ("日本", "日本")]
+
+
 def test_decimals_keep_all_their_digits(act, tmp_path):
     pl.DataFrame(
         {

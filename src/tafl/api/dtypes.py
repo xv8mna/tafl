@@ -753,7 +753,7 @@ def normalize(s: pl.Series, *, exact: bool = False) -> pl.Series:
         return s.cast(pl.Int64)
     if dtype == pl.Float32:
         return s.cast(pl.Float64)
-    if dtype in (pl.Null, pl.Categorical) or isinstance(dtype, pl.Enum):
+    if dtype == pl.Null or isinstance(dtype, (pl.Categorical, pl.Enum)):  # categories also of a name of their own
         return s.cast(pl.String)
     return s
 
