@@ -210,10 +210,15 @@ def rounded_to_whole(s: pl.Series, decimal: str = ",") -> pl.Series:
     those that are no number."""
     name, s = s.name, s.alias("value")  # a fixed name, as in _clean_text
     if s.dtype == pl.String:
-        text = _number_text(_VALUE, decimal)
-        number = text.cast(pl.Float64, strict=False)  # e.g. 1.5e0
-        fraction = pl.when(text.str.contains(_PLAIN_NUMBER)).then(text.str.contains(r"\.[0-9]*[1-9]")).otherwise(number.round(0) != number)
-        return _apply(s, fraction.fill_null(False)).alias(name)
+        rounded = pl.repeat(False, s.len(), eager=True).alias(name)
+        rows = s.str.contains_any([".", ",", "e", "E"]).fill_null(False).arg_true()  # the others have no decimal places
+        if rows.len():
+            text = _apply(s.gather(rows), _number_text(_VALUE, decimal))  # once: the slow part
+            number = _VALUE.cast(pl.Float64, strict=False)  # e.g. 1.5e0
+            plain = _VALUE.str.contains(_PLAIN_NUMBER)
+            fraction = pl.when(plain).then(_VALUE.str.contains(r"\.[0-9]*[1-9]")).otherwise(number.round(0) != number)
+            rounded = rounded.scatter(rows, _apply(text, fraction.fill_null(False)))
+        return rounded
     if s.dtype.is_float() or isinstance(s.dtype, pl.Decimal):
         return (s.round(0) != s).fill_null(False).alias(name)  # NaN and infinity are equal to themselves here
     return pl.repeat(False, s.len(), eager=True).alias(name)
