@@ -31,6 +31,8 @@ _OPERATORS = [
     ("not_empty", "is not empty"),
 ]
 _LABELS = dict(_OPERATORS)
+_TEXT_OPERATORS = ("contains", "not_contains", "starts", "ends")  # they look at a value's text
+_PART = 1 << 16  # the fewest decimal numbers that a part of _decimal_texts writes
 _KEEP = [("keep", "Keep matching rows"), ("remove", "Remove matching rows")]
 _COMPARE = {
     "=": operator.eq,
@@ -95,7 +97,8 @@ def filter_rows(df, p, ctx):
     """
     schema = df.schema  # once: Polars makes it anew for every call, with all columns (seconds for thousands)
     typed: dict[tuple[Any, ...], Any] = {}  # each typed value read once for each type of column (see _typed)
-    mask_parts = [_condition(df, c, p.case_sensitive, schema, ctx.warn, typed) for c in p.conditions]
+    texts = _decimal_texts(df, schema, [c.column for c in p.conditions if c.operator in _TEXT_OPERATORS])
+    mask_parts = [_condition(df, c, p.case_sensitive, schema, ctx.warn, typed, texts) for c in p.conditions]
     mask = pl.all_horizontal(mask_parts) if p.match == "all" else pl.any_horizontal(mask_parts)
     mask = mask.fill_null(False)
     return df.filter(mask if p.keep == "keep" else ~mask)
@@ -241,6 +244,7 @@ def _condition(
     schema: pl.Schema | None = None,
     warn: Callable[[str], None] | None = None,
     typed: dict[tuple[Any, ...], Any] | None = None,
+    texts: dict[str, pl.Series] | None = None,
 ) -> pl.Expr:
     column = col(c.column)
     dtype = (df.schema if schema is None else schema)[c.column]
@@ -256,10 +260,12 @@ def _condition(
     if _held_values(dtype) is not None:  # lists, records: only whether they are empty
         raise ActionError(_not_comparable(c.column, dtype))
 
-    if op in ("contains", "not_contains", "starts", "ends"):
+    if op in _TEXT_OPERATORS:
         needle = c.value
         if dtype == pl.Binary and dtypes.bytes_are_text(df[c.column]):  # binary values that are all text: that text
             text = column.cast(pl.String)
+        elif texts is not None and c.column in texts:  # decimal numbers: written once for all (see _decimal_texts)
+            text = pl.lit(texts[c.column])
         else:  # their text as Split column and Pivot write it: 17 (Polars: 17.0), 2025-12-31 08:30:00 in a zone's
             text = dtypes.text_expr(column, dtype)  # local time (Polars: ...08:30:00.000000+01:00), 1d 2h 3m; bytes 0xFF00
         if not case_sensitive:
@@ -317,6 +323,28 @@ def _condition(
     else:
         compared = _COMPARE[op](column, _for_polars(value, dtype))
     return compared.fill_null(True) if op == "!=" else compared
+
+
+def _decimal_texts(df: pl.DataFrame, schema: pl.Schema, names: list[str]) -> dict[str, pl.Series]:
+    """The text of the decimal-number columns among ``names`` (``dtypes.text_expr``), written before
+    the filter, once for all of them. That text runs Python: inside a filter once for each column
+    and each thread of Polars (a few hundred columns took seconds), and for each condition. The
+    values of all columns of a type are written in one go (each value's text depends on itself
+    only), in parts that Polars writes at the same time; each type apart, as Float32 values have
+    their own digits."""
+    floats = [name for name in dict.fromkeys(names) if name in schema and schema[name].is_float()]
+    texts = {}
+    for kind in dict.fromkeys(schema[name] for name in floats):
+        group = [name for name in floats if schema[name] == kind]
+        # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
+        values = pl.concat([df[name].alias("value") for name in group])
+        count = max(1, min(pl.thread_pool_size(), -(-values.len() // _PART)))
+        size = -(-values.len() // count)
+        values = values.extend_constant(None, count * size - values.len())  # parts of one length, for one select
+        parts = [dtypes.text_expr(pl.lit(values.slice(k * size, size)), kind).alias(f"part{k}") for k in range(count)]
+        written = pl.concat([part.alias("text") for part in pl.select(parts).get_columns()])
+        texts.update((name, written.slice(index * df.height, df.height)) for index, name in enumerate(group))
+    return texts
 
 
 def _for_polars(value: Any, dtype: pl.DataType) -> Any:

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import polars as pl
 import pytest
 
-from tafl.api import ActionError
+from tafl.api import ActionError, dtypes
 from tafl.api.parameters import DateTimeText
 from tafl.api.testing import StubContext
 
@@ -1096,6 +1096,29 @@ def test_binary_data_with_bytes_that_are_no_text_is_searched_in_its_hex_digits(a
     assert names(flt(act, text, ("V", "contains", "Ä"))) == ["b"]
 
 
+def test_the_text_of_a_decimal_number_column_is_written_once(act, monkeypatch):
+    """For contains, starts with and ends with: inside a filter, Polars ran the Python that writes
+    it once for each thread and condition, so that 500 columns took 3 s (0.6.3: 0.2 s), and a
+    column of two conditions took twice the time. Float32 values keep their own digits (0.1)."""
+    calls = []
+    written = dtypes._float_texts
+    monkeypatch.setattr(dtypes, "_float_texts", lambda s: calls.append(s.len()) or written(s))
+    df = pl.DataFrame(
+        {
+            "Name": list("abcd"),
+            "Net": [3.0, 2.5, 1e16, None],
+            "Rate": [0.5, 1.0, 17.25, -0.0],
+            "Small": pl.Series([0.1, 3.0, None, 2.0], dtype=pl.Float32),
+        }
+    )
+    conditions = [("Net", "contains", "17"), ("Net", "ends", "5"), ("Rate", "starts", "17"), ("Small", "ends", "0.1")]
+    assert names(flt(act, df, *conditions, match="any")) == ["a", "b", "c"]
+    assert 1 <= len(calls) <= 3  # at most once for each of the 3 columns
+    calls.clear()
+    assert names(flt(act, df, ("Rate", "=", "0"), ("Rate", "contains", "-"), match="any")) == ["d"]  # -0.0 is 0
+    assert len(calls) == 1
+
+
 _WIDE = """
 import datetime as dt
 import time
@@ -1113,7 +1136,11 @@ numbers = pl.DataFrame({f"n{i}": [1.5, None, 2.0] for i in range(4001)})
 day = dt.datetime(2025, 1, 1, 8, 30)
 stamps = pl.DataFrame({f"d{i}": pl.Series([day, None, day + dt.timedelta(milliseconds=1)], dtype=pl.Datetime("ms")) for i in range(4001)})
 later = dt.datetime(2025, 1, 1, 8, 30, 0, 500)
+decimals = pl.DataFrame({f"f{i}": [17.0, 2.5, 1e16, None] for i in range(4001)})
 steps = [
+    # the text of decimal numbers: 17, 2.5, 10000000000000000 (Python wrote it in each thread of Polars)
+    ("filter decimal texts", keep, decimals, {"conditions": [{"column": c, "operator": "contains", "value": "17"}
+     for c in decimals.columns]}, [(17.0,)]),
     ("fill texts", fill, texts, {"columns": texts.columns, "method": "value", "value": "x"}, [("a",), ("x",), ("x",)]),
     ("fill numbers", fill, numbers, {"columns": numbers.columns, "method": "value", "value": "0"}, [(1.5,), (0.0,), (2.0,)]),
     ("fill down", fill, texts, {"columns": texts.columns, "method": "down"}, [("a",), ("a",), ("a",)]),
