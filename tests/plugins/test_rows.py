@@ -73,7 +73,29 @@ def test_text_compared_in_order_with_a_number_or_a_date_says_that_it_compares_te
     ]
 
 
-@pytest.mark.parametrize(("operator", "value"), [("=", "-16"), ("!=", "31.03.2026"), (">", "Berlin"), ("in", "-16"), ("contains", "1"), ("<", "")])
+@pytest.mark.parametrize(("operator", "value"), [("<", "08:30"), (">=", " 8:30:15 "), (">", "17:00:00.5")])
+def test_text_compared_in_order_with_a_time_says_that_it_compares_text_and_which_formula_compares_times(act, operator, value):
+    """Text order puts "8:15" after "08:30" and "10:00" before "9:00". Change type makes no times,
+    so the step names a formula that compares them, and that formula does."""
+    texts = ["8:15", "08:45", "10:00", "9:00", "17:00", "x", None]
+    df = pl.DataFrame({"Name": list("abcdefg"), "Start]": texts})
+    ctx = StubContext()
+    out = act("rows.filter", df, {"conditions": [{"column": "Start]", "operator": operator, "value": value}]}, ctx)
+    keep = {">": "__gt__", ">=": "__ge__", "<": "__lt__", "<=": "__le__"}[operator]
+    assert names(out) == [n for n, t in zip("abcdefg", texts) if t is not None and getattr(t, keep)(value)]  # as before
+    label = {">": "is greater than", ">=": "is greater than or equal to", "<": "is less than"}[operator]
+    formula = f"TRY_CAST([Start]]] AS TIME) {operator} TIME '{value.strip()}'"
+    assert ctx.warnings == [
+        f"Column 'Start]' holds text, so the condition {label} '{value.strip()}' compares the texts character by "
+        f"character, not as times: to compare times, use Filter rows by formula, e.g. {formula}"
+    ]
+    moments = [None if t in ("x", None) else dt.time.fromisoformat(t.zfill(5)) for t in texts]
+    typed = dt.time.fromisoformat(value.strip().zfill(5) if value.strip().count(":") == 1 else value.strip().zfill(8))
+    in_time_order = [n for n, t in zip("abcdefg", moments) if t is not None and getattr(t, keep)(typed)]
+    assert names(act("rows.filter_formula", df, {"condition": formula})) == in_time_order
+
+
+@pytest.mark.parametrize(("operator", "value"), [("=", "-16"), ("!=", "31.03.2026"), (">", "Berlin"), ("in", "-16"), ("contains", "1"), ("<", ""), ("=", "08:30"), ("<", "25:00")])
 def test_text_compared_otherwise_says_nothing(act, operator, value):
     ctx = StubContext()
     act("rows.filter", pl.DataFrame({"Due": ["-16", "x"]}), {"conditions": [{"column": "Due", "operator": operator, "value": value}]}, ctx)
