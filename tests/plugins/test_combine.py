@@ -477,7 +477,7 @@ BERLIN = pl.Datetime("us", "Europe/Berlin")
         (
             pl.Datetime("us"),
             dt.datetime(2024, 1, 31, 8),
-            ["2024-01-31 08:00:00", "2024-02-01 09:30:00.250"],  # as the grid shows them
+            ["2024-01-31 08:00:00", "2024-02-01 09:30:00.250"],  # the same text on every PC
             [dt.datetime(2024, 1, 31, 8), dt.datetime(2024, 2, 1, 9, 30, 0, 250000)],
         ),
         (
@@ -570,17 +570,17 @@ def test_times_are_compared_with_text_with_their_fractions_of_a_second(act, how)
 
 
 DECIMALS = [17.0, 2.5, 1e16, -0.0, None]
-AS_SHOWN = ["17", "2.5", "10000000000000000", "0"]  # as the grid shows them
+AS_TEXT = ["17", "2.5", "10000000000000000", "0"]  # the same on every PC, as Pivot and Split column write them
 
 
 @pytest.mark.parametrize("name", ["A", "*", "^a.*$"])
 @pytest.mark.parametrize("how", ["lookup", "left", "inner", "full", "matching", "non_matching"])
-def test_decimal_number_keys_find_the_text_that_the_grid_shows(act, how, name):
-    """17.0 finds the text "17", 1e16 "10000000000000000" and -0.0 "0", as Change type writes them
-    as text. Before, Polars' text was compared: "17.0", "1e+16" and "-0.0"."""
+def test_decimal_number_keys_find_the_same_text_on_every_pc(act, how, name):
+    """17.0 finds the text "17", 1e16 "10000000000000000" and -0.0 "0", as Pivot and Split column
+    write them. Before, Polars' text was compared: "17.0", "1e+16" and "-0.0"."""
     params = {"other": "other", "match": [{"column": name, "other_column": "K"}], "how": how}
     this = pl.DataFrame({name: DECIMALS, "abc": [1, 2, 3, 4, 5]})  # abc: the column ^a.*$ would find
-    other = pl.DataFrame({"K": AS_SHOWN, "N": ["a", "b", "c", "d"]})
+    other = pl.DataFrame({"K": AS_TEXT, "N": ["a", "b", "c", "d"]})
     ctx = StubContext(tables={"other": other})
     out = act("table.merge", this, params, ctx)
     assert ctx.warnings == [f"'{name}' (number) and 'K' (text) are compared as text"]
@@ -597,7 +597,7 @@ def test_decimal_number_keys_find_the_text_that_the_grid_shows(act, how, name):
     assert back["L"].to_list() == ["x"] * 4
 
 
-def test_a_full_join_keeps_decimal_number_keys_only_when_the_texts_are_those_of_the_grid(act):
+def test_a_full_join_keeps_decimal_number_keys_only_for_texts_written_like_them(act):
     """A text of the other table without a match becomes a number only when it is that number's
     text: "17.0" and "1e16" stay text, and so does the key column (as "04" for whole numbers)."""
     params = {"other": "other", "match": [{"column": "A", "other_column": "K"}], "how": "full"}
@@ -610,7 +610,7 @@ def test_a_full_join_keeps_decimal_number_keys_only_when_the_texts_are_those_of_
         other = StubContext(tables={"other": pl.DataFrame({"K": [text], "N": ["a"]})})
         out = act("table.merge", this, params, other)
         assert out.schema["A"] == pl.String
-        assert out.rows() == [*((shown, None) for shown in AS_SHOWN), (None, None), (text, "a")]
+        assert out.rows() == [*((shown, None) for shown in AS_TEXT), (None, None), (text, "a")]
 
 
 @pytest.mark.parametrize(
@@ -624,10 +624,10 @@ def test_a_full_join_keeps_decimal_number_keys_only_when_the_texts_are_those_of_
     ],
     ids=["nanoseconds", "milliseconds", "microseconds", "UTC", "Float32"],
 )
-def test_date_time_keys_find_the_text_that_the_grid_shows(act, values, found, not_found):
-    """Without fractions of a second when there are none, and a time zone's local time without the
-    offset. Before, Polars' text with all six digits (or three, or nine) was compared, and the
-    offset: 2025-12-31 08:30:00.000000+01:00."""
+def test_date_time_keys_find_the_same_text_on_every_pc(act, values, found, not_found):
+    """As Pivot and Split column write them: without fractions of a second when there are none,
+    and a time zone's local time without the offset. Before, Polars' text with all six digits (or
+    three, or nine) was compared, and the offset: 2025-12-31 08:30:00.000000+01:00."""
     params = {"other": "other", "match": [{"column": "A", "other_column": "K"}]}
     other = pl.DataFrame({"K": [*not_found, *found], "N": ["not"] * len(not_found) + [f"found {i}" for i in range(len(found))]})
     out = act("table.merge", values.alias("A").to_frame(), params, StubContext(tables={"other": other}))
@@ -693,9 +693,9 @@ def test_objects_of_a_plugin_cant_be_keys(act, how):
 
 @pytest.mark.parametrize("how", ["lookup", "full"])
 def test_categories_and_bytes_that_are_text_are_compared_as_their_text(act, how):
-    """As before: a category is its text, and bytes that are all text are that text. Categories
-    are text in the grid, so the step doesn't warn about them (before: "'A' (Categorical) and 'K'
-    (String) are compared as text")."""
+    """As before: a category is its text, and bytes that are all text are that text. The type of
+    categories is called text, so the step doesn't warn about them (before: "'A' (Categorical) and
+    'K' (String) are compared as text")."""
     params = {"other": "other", "match": [{"column": "A", "other_column": "K"}], "how": how}
     other = StubContext(tables={"other": pl.DataFrame({"K": ["b", "c"], "N": ["x", "y"]})})
     for dtype in (pl.Categorical, pl.Enum(["a", "b", "c"])):

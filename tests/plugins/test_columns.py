@@ -279,9 +279,10 @@ def test_dates_to_text_with_month_names(act):
 
 
 @pytest.mark.parametrize("name", ["v", "*", "^a.*$"])
-def test_time_spans_and_times_to_text_as_the_grid_shows_them(act, name):
-    """A time span stopped with "casting from Duration to String not supported"; a time lost its
-    fractions of a second (08:30:00.500 became 08:30:00, like 08:30:00)."""
+def test_time_spans_and_times_to_text_the_same_on_every_pc(act, name):
+    """As Pivot and Split column write them. A time span stopped with "casting from Duration to
+    String not supported"; a time lost its fractions of a second (08:30:00.500 became 08:30:00,
+    like 08:30:00)."""
     df = pl.DataFrame({name: [dt.timedelta(days=1, hours=2, minutes=3), dt.timedelta(seconds=1.5), None], "abc": [1, 2, 3]})
     assert change(act, df, name, "text").to_list() == ["1d 2h 3m", "1s 500ms", None]
     times = pl.DataFrame({name: [dt.time(8, 30, 0, 500000), dt.time(8, 30), None], "abc": [1, 2, 3]})
@@ -328,8 +329,9 @@ def test_dates_to_text_with_a_format_without_date_codes_stops_the_step(act, dtyp
 
 
 def test_date_times_to_text_without_a_format_keep_their_fractions_of_a_second(act):
-    """With as many digits as the grid shows. Before, the default dd.mm.yyyy hh:mm:ss left them
-    out, so that 08:30:00.500 and 08:30:00 gave one text. A format that is typed stays as it is."""
+    """With 3, 6 or 9 digits, as Pivot and Split column write them. Before, the default
+    dd.mm.yyyy hh:mm:ss left them out, so that 08:30:00.500 and 08:30:00 gave one text. A format
+    that is typed stays as it is."""
     texts = ["2025-12-31 08:30:00", "2025-12-31 08:30:00.5", "2025-12-31 08:30:00.000001", "2025-12-31 08:30:00.000000001", None]
     moments = pl.Series("When", texts).str.to_datetime("%Y-%m-%d %H:%M:%S%.f", time_unit="ns").to_frame()
     expected = ["31.12.2025 08:30:00", "31.12.2025 08:30:00.500", "31.12.2025 08:30:00.000001", "31.12.2025 08:30:00.000000001", None]

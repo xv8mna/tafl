@@ -92,10 +92,10 @@ def merge(df, p, ctx):
     without a match filters this table without adding columns. The step tells how many rows
     matched and shows a few keys of the rows without a match. Empty keys never match. Whole
     numbers and exact decimals are compared with all their digits, also when their types differ.
-    Keys of different types (a number and a text) are compared as text, as the grid shows the
-    values (the decimal number 17.0 finds the text 17); the key columns keep their type, except in
-    a full join whose other table has keys that don't fit it (2.5 for whole numbers): then they
-    get a type that fits both. Lists and records match only keys of their own type.
+    Keys of different types (a number and a text) are compared as text, the same on every PC (the
+    decimal number 17.0 finds the text 17); the key columns keep their type, except in a full join
+    whose other table has keys that don't fit it (2.5 for whole numbers): then they get a type
+    that fits both. Lists and records match only keys of their own type.
     """
     other = ctx.table(p.other)
     pairs = list(dict.fromkeys((m.column, m.other_column) for m in p.match))  # a row given twice counts once
@@ -282,7 +282,7 @@ def _compared_keys(left, right, left_on, right_on, ctx):
                 f"{keys} can't be compared: choose other key columns, or first make one of them text with a "
                 f"formula such as CAST([{left_name}] AS VARCHAR)"
             ) from None
-        if target == pl.String and not left_label == right_label == "text":  # categories are text, as the grid shows them
+        if target == pl.String and not left_label == right_label == "text":  # categories and text: both are called text
             how = " (the binary values as hex digits, 0xFF00)" if left_hex or right_hex else ""
             ctx.warn(f"{keys} are compared as text{how}")
         left_keys[index] = right_keys[index] = key
@@ -318,8 +318,9 @@ def _number_type(left: pl.DataType, right: pl.DataType) -> pl.DataType:
 
 def _cast_key(column: pl.Expr, dtype: pl.DataType, target: pl.DataType, as_hex: bool = False) -> pl.Expr:
     """``column`` (of type ``dtype``) as ``target``, to compare keys, empty where a value doesn't
-    fit. As text, a value is written as the grid shows it (see ``dtypes.text_expr``): 17 for 17.0,
-    10000000000000000 for 1e16, "2025-12-31 08:30:00" (a time zone's local time), "08:00:00.500".
+    fit. As text, a value is written the same on every PC, as Pivot and Split column write it (see
+    ``dtypes.text_expr``): 17 for 17.0, 10000000000000000 for 1e16, "2025-12-31 08:30:00" (a time
+    zone's local time), "08:00:00.500".
     Polars' own text differs ("17.0", "1e16", "2025-12-31 08:30:00.000000+01:00") and leaves out
     the fractions of a second of a time. Binary values are text, or hex digits with ``as_hex`` (see
     ``_as_hex``). A time span has no cast to text: Polars stops, and so does the step."""
@@ -473,17 +474,17 @@ def _sample(keys: pl.DataFrame) -> str:
         distinct = hashes.n_unique()
         if rows.height < 3 and distinct > rows.height:  # the first rows have one or two keys (sorted by key)
             rows = keys[hashes.is_first_distinct().arg_true().head(3).to_list()]
-    shown = [_key_text(row) for row in _as_shown(rows).rows()]
+    shown = [_key_text(row) for row in _key_texts(rows).rows()]
     if distinct > len(shown):
         return f"{', '.join(shown)} and {distinct - len(shown):,} more"
     return f"{', '.join(shown[:-1])} and {shown[-1]}" if len(shown) > 1 else shown[0]
 
 
-def _as_shown(keys: pl.DataFrame) -> pl.DataFrame:
-    """The key values as the grid shows them (see ``dtypes.text_expr``): 17 and 10000000000000000
-    for decimal numbers, true, 0xFF00, 08:30:00.500, 1d 2h 3m, a time zone's local time. Python's
-    text was 17.0, 1e+16, True, b'\\xff\\x00', ... Lists and records, which have no such text, stay
-    as they are."""
+def _key_texts(keys: pl.DataFrame) -> pl.DataFrame:
+    """The key values as text, the same on every PC, as Pivot and Split column write them (see
+    ``dtypes.text_expr``): 17 and 10000000000000000 for decimal numbers, true, 0xFF00,
+    08:30:00.500, 1d 2h 3m, a time zone's local time. Python's text was 17.0, 1e+16, True,
+    b'\\xff\\x00', ... Lists and records, which have no such text, stay as they are."""
     return keys.select(
         col(name) if dtype.is_nested() or dtype == pl.Object else dtypes.text_expr(col(name), dtype).alias(name)
         for name, dtype in keys.schema.items()

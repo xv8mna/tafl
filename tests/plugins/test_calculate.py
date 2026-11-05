@@ -126,10 +126,11 @@ def test_join_texts_of_time_spans_and_binary_values(act):
         pytest.param(pl.Series(["b", "a"], dtype=pl.Categorical), "b|a", id="categories"),
     ],
 )
-def test_join_texts_writes_the_values_as_the_grid_shows_them(act, values, joined, name):
-    """2, not 2.0; a time keeps its fractions of a second (two times gave one text, 08:30:00); a
-    date-time has them only when there are some, and a time zone's local time has no offset.
-    Before, Polars' text: 2.0, 1e+16, -0.0, 08:30:00, 2025-12-31 08:30:00.000000+01:00."""
+def test_join_texts_writes_the_values_the_same_on_every_pc(act, values, joined, name):
+    """As Pivot and Split column write them: 2, not 2.0; a time keeps its fractions of a second
+    (two times gave one text, 08:30:00); a date-time has them only when there are some, and a time
+    zone's local time has no offset. Before, Polars' text: 2.0, 1e+16, -0.0, 08:30:00,
+    2025-12-31 08:30:00.000000+01:00."""
     df = pl.DataFrame({"G": ["a"] * values.len(), name: values, "abc": [1] * values.len()})  # abc: what ^a.*$ would find
     params = {"group_by": ["G"], "calculations": [{"function": "join", "column": name, "name": "J"}], "separator": "|"}
     assert act("calc.aggregate", df, params).rows() == [("a", joined)]

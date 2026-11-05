@@ -318,7 +318,7 @@ def _aggregation(calc, separator: str, dtype: pl.DataType | None, as_hex: bool) 
             return column.drop_nulls().first()
         case "last":
             return column.drop_nulls().last()
-        case "join":  # each value as the grid shows it (17, not 17.0), bytes that are no text as hex digits
+        case "join":  # each value the same on every PC (17, not 17.0), as Pivot writes it; bytes that are no text as hex digits
             if dtype is not None and (dtype.is_nested() or dtype == pl.Object):
                 raise ActionError(f"“{calc.column}” holds {dtypes.type_label(dtype)} values, which Join texts can't join")
             text = column.cast(pl.String) if dtype is None or (dtype == pl.Binary and not as_hex) else dtypes.text_expr(column, dtype)

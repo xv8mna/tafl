@@ -51,7 +51,7 @@ def replace(df, p, ctx):
     typed = {}  # Whole cell value: the values of the pairs in the type of a column, None when one doesn't fit
     if p.match == "whole":
         typed = {name: _typed_pairs(pairs, schema[name]) for name in p.columns if schema[name] != pl.String}
-    df = _as_shown(df, [name for name in p.columns if typed.get(name) is None], schema, "Replace")
+    df = _with_texts(df, [name for name in p.columns if typed.get(name) is None], schema, "Replace")
     updates = []
     for name in p.columns:
         if p.match == "whole":
@@ -131,13 +131,13 @@ def _replacement(pattern: str, text: str) -> str:
     return "".join(out)
 
 
-def _as_shown(df: pl.DataFrame, names: list[str], schema: pl.Schema, step: str) -> pl.DataFrame:
-    """``df`` with those of the columns ``names`` that are not text as text, as the grid shows
-    them (see ``dtypes.text_expr``): 17 for 17.0, 2025-12-31 08:30:00, 08:30:00.500, 1d 2h 3m.
-    Binary values are their text, or hex digits (0xFF00) when some of them are no text, as Join
-    texts writes them. Lists, records and a plugin's own values stop the ``step`` with a message.
-    Made once, before the step changes the text: an expression would make the text of decimal
-    numbers again for each use of it."""
+def _with_texts(df: pl.DataFrame, names: list[str], schema: pl.Schema, step: str) -> pl.DataFrame:
+    """``df`` with those of the columns ``names`` that are not text as text, the same on every PC,
+    as Pivot and Split column write values (see ``dtypes.text_expr``): 17 for 17.0,
+    2025-12-31 08:30:00, 08:30:00.500, 1d 2h 3m. Binary values are their text, or hex digits
+    (0xFF00) when some of them are no text, as Join texts writes them. Lists, records and a
+    plugin's own values stop the ``step`` with a message. Made once, before the step changes the
+    text: an expression would make the text of decimal numbers again for each use of it."""
     texts = []
     for name in dict.fromkeys(names):
         dtype = schema[name]
@@ -158,7 +158,7 @@ _A_VALUE = {"integer": "an integer", "number": "a number", "date": "a date", "da
 def _made_text(name: str, dtype: pl.DataType, pairs) -> str | None:
     """The warning when Replace of whole values makes the column ``name`` (of type ``dtype``)
     text: a Find or Replace with isn't a value of its type, or the type is one that the step
-    doesn't keep. None for categories: the grid shows them as text already."""
+    doesn't keep. None for categories: their type is called text already."""
     label = dtypes.type_label(dtype)
     if label == "text":
         return None
@@ -256,10 +256,10 @@ def _fits(value, dtype: pl.Decimal) -> bool:
 def clean(df, p, ctx):
     """Tidies up text: removes surrounding or repeated spaces and line breaks, changes upper/lower
     case, pads values to a fixed length (e.g. postal codes 1234 → 01234). Selected columns that
-    are not text are turned into text, as the grid shows them (17, not 17.0)."""
+    are not text are turned into text, the same on every PC: 17 (not 17.0), 2025-12-31 08:30:00."""
     schema = df.schema  # made once: for a wide table that takes a while
     names = p.columns or [name for name, dtype in schema.items() if dtype == pl.String]
-    df = _as_shown(df, names, schema, "Clean text")
+    df = _with_texts(df, names, schema, "Clean text")
     updates = []
     for name in names:
         text = col(name)

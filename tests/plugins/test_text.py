@@ -130,7 +130,7 @@ KEEPS = "'v' was converted to text: Replace keeps the type only of numbers, date
 def test_replace_of_whole_values_says_why_a_column_became_text(act, values, pairs, warning):
     """In plain words, with the value that isn't one of the column's type. Before: "'v' was
     converted to text because a value isn't a Time", also when Find and Replace with were times:
-    Replace keeps no time in its type. Categories are text in the grid: no warning."""
+    Replace keeps no time in its type. The type of categories is called text: no warning."""
     ctx = StubContext()
     out = replace(act, pl.DataFrame({"v": values}), ["v"], pairs, ctx)
     assert out.schema["v"] == pl.String and ctx.warnings == ([warning] if warning else [])
@@ -183,7 +183,7 @@ def test_upper_case_writes_sharp_s_as_ss_like_formulas(act):
     assert formula["s"].to_list() == out["s"].to_list()
 
 
-AS_SHOWN = [  # values of other types, and their text as the grid shows it
+AS_TEXT = [  # values of other types, and their text, the same on every PC (as Pivot and Split column write it)
     pytest.param(pl.Series([17.0, 2.5, 1e16, -0.0, None]), ["17", "2.5", "10000000000000000", "0", None], id="decimal numbers"),
     pytest.param(pl.Series([0.1, 2.0], dtype=pl.Float32), ["0.1", "2"], id="Float32"),
     pytest.param(
@@ -206,12 +206,12 @@ AS_SHOWN = [  # values of other types, and their text as the grid shows it
 
 
 @pytest.mark.parametrize("name", ["v", "*", "^a.*$"])
-@pytest.mark.parametrize(("values", "shown"), AS_SHOWN)
-def test_clean_text_and_replace_change_other_types_as_the_grid_shows_them(act, values, shown, name):
-    """The column becomes text, as before, now with the grid's text: 17, not 17.0; 1e16 as
-    10000000000000000; 08:30:00.500 (Polars' text left out the fractions of a time); a date-time
-    without .000000 and its zone's local time without +02:00. Time spans and bytes that are no
-    text stopped the step with a technical error."""
+@pytest.mark.parametrize(("values", "shown"), AS_TEXT)
+def test_clean_text_and_replace_make_other_types_the_same_text_on_every_pc(act, values, shown, name):
+    """The column becomes text, as before, now the same text on every PC, as Pivot and Split
+    column write it: 17, not 17.0; 1e16 as 10000000000000000; 08:30:00.500 (Polars' text left out
+    the fractions of a time); a date-time without .000000 and its zone's local time without
+    +02:00. Time spans and bytes that are no text stopped the step with a technical error."""
     df = pl.DataFrame({name: values, "abc": [0] * values.len()})  # abc: the column that ^a.*$ would find
     cleaned = act("text.clean", df, {"columns": [name], "trim": "none", "empty_to_null": False})
     assert cleaned.schema[name] == pl.String and cleaned[name].to_list() == shown
@@ -226,7 +226,7 @@ def test_clean_text_and_replace_change_other_types_as_the_grid_shows_them(act, v
     assert out["abc"].to_list() == [0] * values.len()
 
 
-def test_replace_of_a_whole_value_finds_the_text_of_the_grid(act):
+def test_replace_of_a_whole_value_finds_a_time_with_its_fractions_of_a_second(act):
     df = pl.DataFrame({"t": [dt.time(8, 30, 0, 500000), dt.time(8, 30)]})
     out = replace(act, df, ["t"], [("08:30:00.500", "half past")])  # a time column becomes text, as before
     assert out["t"].to_list() == ["half past", "08:30:00"]  # before, both times were 08:30:00
@@ -277,7 +277,7 @@ print(f"{time.perf_counter() - start:.2f} s")
 
 
 def test_replace_and_clean_text_of_a_wide_table_of_numbers():
-    """4,000 decimal-number columns become text as the grid shows them, each with its own
-    expression: in a process of its own, so that a stack overflow shows as a failed test."""
+    """4,000 decimal-number columns become text (17, not 17.0), each with its own expression: in a
+    process of its own, so that a stack overflow shows as a failed test."""
     done = subprocess.run([sys.executable, "-c", _WIDE], capture_output=True, text=True, timeout=300)
     assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-500:]}"

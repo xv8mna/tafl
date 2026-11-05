@@ -228,7 +228,8 @@ def test_key_values_of_other_types(act, this, other, shown):
         pytest.param(pl.Series([[1], [2, 3]]), "[2, 3]", id="lists"),  # they have no such text: as before
     ],
 )
-def test_keys_without_a_match_are_shown_as_the_grid_shows_them(act, this, shown):
+def test_keys_without_a_match_are_shown_the_same_on_every_pc(act, this, shown):
+    """As Pivot and Split column write the values, and as Merge compares keys as text."""
     df, right = pl.DataFrame({"Key": this}), pl.DataFrame({"Key": this.head(1), "Name": ["x"]})
     assert info(act, df, right, "lookup") == f"1 of 2 rows matched, 1 without a match: {shown}"
     two = info(act, df.with_columns(Other=pl.lit("o")), right.with_columns(Other=pl.lit("o")), "lookup", match=[
