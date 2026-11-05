@@ -124,9 +124,10 @@ _TOO_LONG = (
     "For a decimal number (about 15 digits) write CAST(... AS DOUBLE)"
 )
 # DuckDB's messages for a time of day with nanoseconds (TIME_NS) against one without (TIME): a
-# comparison, BETWEEN, COALESCE, + INTERVAL, DATE + time
-_TIME_MIX = re.compile(
-    r"Cannot (?:compare|mix) values of type (?:TIME_NS and (?:type )?TIME|TIME and (?:type )?TIME_NS)\b"
+# comparison, BETWEEN, COALESCE, GREATEST and LEAST, + INTERVAL, DATE + time
+_TIME_MIX = re.compile(  # not TIME WITH TIME ZONE (TIMETZ), for which a CAST AS TIME doesn't help
+    r"Cannot (?:(?:compare|mix) values of type|combine types of) "
+    r"(?:TIME_NS and (?:type )?TIME\b(?! WITH)|TIME and (?:type )?TIME_NS\b)"
     r"|'[-+]\((?:TIME_NS, (?:INTERVAL|DATE)|(?:INTERVAL|DATE), TIME_NS)\)'"
 )
 # DuckDB's message when a value doesn't fit into the exact decimal it brings two of them to
@@ -536,13 +537,14 @@ def _has_nanoseconds(times: pl.Series) -> bool:
 
 
 def _nanosecond_times(df: pl.DataFrame, formula: str) -> list[str]:
-    """The columns of times of day with nanoseconds that the formula names ([N] or "N"):
-    _clean_error names them in a hint."""
+    """The columns of times of day with nanoseconds that the formula names ([N] or "N"), which
+    _clean_error names in a hint; none where it names a time column without nanoseconds too: these
+    made it TIME_NS (see _readable), so the time that stops can be that one, and a CAST of [N]
+    doesn't help ([T] > TIME '12:00:00' AND [N] IS NOT NULL)."""
     named = {_fold(name) for name in column_names(formula)}
-    return [
-        name for name, dtype in df.schema.items()
-        if dtype == pl.Time and _fold(name) in named and _has_nanoseconds(df[name].alias("value"))
-    ]  # fmt: skip
+    times = [name for name, dtype in df.schema.items() if dtype == pl.Time and _fold(name) in named]
+    nanos = [name for name in times if _has_nanoseconds(df[name].alias("value"))]
+    return nanos if len(nanos) == len(times) else []
 
 
 def _make_input(con: duckdb.DuckDBPyConnection, columns: str, *, table: bool, empty: bool = False) -> None:
