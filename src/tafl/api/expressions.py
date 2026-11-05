@@ -16,6 +16,7 @@ Examples: ``[Price] * [Quantity]``, ``UPPER(TRIM([Name]))``,
 from __future__ import annotations
 
 import atexit
+import contextvars
 import datetime as dt
 import difflib
 import itertools
@@ -163,9 +164,25 @@ class Token:
     joined: bool = False
 
 
+# Within one evaluate, the tokens of each formula it splits (see tokenize)
+_split: contextvars.ContextVar[dict[str, tuple[Token, ...]] | None] = contextvars.ContextVar("_split", default=None)
+
+
 def tokenize(formula: str) -> list[Token]:
     """Split a formula into tokens, as DuckDB reads what ``translate`` makes of it (in which a
-    comment is spaces). It never fails: what isn't closed runs to the end."""
+    comment is spaces). It never fails: what isn't closed runs to the end. Within one evaluate a
+    formula is split once: its checks look at it about ten times, and the step of a filter of
+    20,000 texts takes 0.13 seconds each time."""
+    split = _split.get()
+    if split is None:
+        return _tokenize(formula)
+    if (tokens := split.get(formula)) is None:
+        tokens = split[formula] = tuple(_tokenize(formula))
+    return list(tokens)
+
+
+def _tokenize(formula: str) -> list[Token]:
+    """``tokenize`` without keeping the tokens."""
     tokens: list[Token] = []
     i, n = 0, len(formula)
     while i < n:
@@ -347,6 +364,15 @@ def _with_row_number(df: pl.DataFrame, formula: str) -> pl.DataFrame:
 def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.Series:
     """Evaluate a formula for every row; returns one value per row, in row order. With
     ``condition``, the result must be true or false."""
+    scope = _split.set({})
+    try:
+        return _evaluate(df, formula, condition=condition)
+    finally:
+        _split.reset(scope)
+
+
+def _evaluate(df: pl.DataFrame, formula: str, *, condition: bool) -> pl.Series:
+    """``evaluate``, in which each formula is split into tokens once."""
     if not formula or all(t.kind in ("space", "comment") for t in tokenize(formula)):
         raise ActionError("The formula is empty")
     from .parameters import left_in_formula

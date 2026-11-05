@@ -978,6 +978,19 @@ def test_functions_for_dates_on_text_say_how_to_change_the_column():
         expressions.evaluate(df, "ROUND([Date], 2) + [n]")
 
 
+def test_a_formula_is_split_into_tokens_once(monkeypatch):
+    """The checks of a formula look at its tokens about ten times: the step of a filter of 20,000
+    texts took a second more on a million rows. Each evaluate splits a formula once."""
+    split = []
+    real = expressions._tokenize
+    monkeypatch.setattr(expressions, "_tokenize", lambda text: split.append(text) or real(text))
+    formula = "[s] IN ('a', 'b') AND length([s]) > 0"
+    for _ in range(2):
+        assert expressions.evaluate(pl.DataFrame({"s": ["a", "c"]}), formula).to_list() == [True, False]
+    assert split.count(formula) == 2
+    assert expressions.tokenize(formula) == real(formula)  # outside evaluate, as before
+
+
 def test_a_time_of_day_is_compared_with_a_time():
     """Polars' times are TIME_NS for DuckDB, which compares them with a time such as TIME '12:00:00'
     only by = and IN: [T] > TIME '12:00:00' stopped with "Cannot compare values of type TIME_NS and
