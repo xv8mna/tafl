@@ -94,7 +94,8 @@ def filter_rows(df, p, ctx):
     equal a value, but they count as "does not equal" and "does not contain".
     """
     schema = df.schema  # once: Polars makes it anew for every call, with all columns (seconds for thousands)
-    mask_parts = [_condition(df, c, p.case_sensitive, schema, ctx.warn) for c in p.conditions]
+    typed: dict[tuple[Any, ...], Any] = {}  # each typed value read once for each type of column (see _typed)
+    mask_parts = [_condition(df, c, p.case_sensitive, schema, ctx.warn, typed) for c in p.conditions]
     mask = pl.all_horizontal(mask_parts) if p.match == "all" else pl.any_horizontal(mask_parts)
     mask = mask.fill_null(False)
     return df.filter(mask if p.keep == "keep" else ~mask)
@@ -187,7 +188,7 @@ def fill(df, p, ctx):
     """Fills empty cells: with the value above (typical for Excel lists where a group name is
     only written once), the value below, or a fixed value. Empty text counts as empty."""
     schema = df.schema  # once: Polars makes it anew for every call, with all columns (seconds for thousands)
-    typed: dict[pl.DataType, Any] = {}  # the fixed value for each type of column, read once
+    typed: dict[tuple[Any, ...], Any] = {}  # the fixed value read once for each type of column (see _typed)
     updates = []
     for name in p.columns:
         dtype = schema[name]
@@ -197,9 +198,7 @@ def fill(df, p, ctx):
         if p.method == "value":
             if (held := _held_values(dtype)) is not None:  # lists, records: Polars made them text, or stopped
                 raise ActionError(_no_typed_value(name, held))
-            if dtype not in typed:
-                typed[dtype] = _literal(p.value, dtype, name)
-            value = typed[dtype]
+            value = _typed(p.value, dtype, name, typed)
             if isinstance(value, _Moment):  # in the column's unit, or in a finer one that holds it
                 target, value = _moment_fill(df[name], p.value, value, name)
                 updates.append((column if target == dtype else column.cast(target)).fill_null(value).alias(name))
@@ -241,6 +240,7 @@ def _condition(
     case_sensitive: bool,
     schema: pl.Schema | None = None,
     warn: Callable[[str], None] | None = None,
+    typed: dict[tuple[Any, ...], Any] | None = None,
 ) -> pl.Expr:
     column = col(c.column)
     dtype = (df.schema if schema is None else schema)[c.column]
@@ -278,7 +278,7 @@ def _condition(
         items = [item.strip() for item in re.split(r"[;\n]", c.value) if item.strip()]
         if isinstance(c.value, parameters.DateTimeText):  # a date-time parameter alone: its value goes with it (see _literal)
             items = [parameters.DateTimeText(items[0], c.value.value)]
-        values = [i.lower() if text_column and not case_sensitive else _literal(i, dtype, c.column) for i in items]
+        values = [i.lower() if text_column and not case_sensitive else _typed(i, dtype, c.column, typed) for i in items]
         if isinstance(dtype, pl.Decimal):  # values the column can't hold aren't in it
             values = [v for v in (_on_scale(v, dtype.scale) for v in values) if v is not None]
         elif dtype.is_integer():  # the same for whole numbers: not 1,5, and 300 not for an Int8
@@ -300,7 +300,7 @@ def _condition(
             )
         value: Any = c.value if case_sensitive else c.value.lower()
     else:
-        value = _literal(c.value, dtype, c.column)
+        value = _typed(c.value, dtype, c.column, typed)
         if dtype.is_integer() and not _holds(dtype, value):  # no whole number the column holds: with all its digits
             exact = dtypes.parse_decimal(c.value.strip(), _decimal_of(c.value.strip()))
             if exact is not None:
@@ -445,6 +445,17 @@ def _rounded_typed(text: str, value: Any, dtype: pl.DataType) -> int | str | Non
     if exact is None or exact in (Decimal(value), Decimal(repr(value))):
         return None
     return int(value) if value.is_integer() else pl.select(dtypes.text_expr(pl.lit(value), pl.Float64)).item()
+
+
+def _typed(text: str, dtype: pl.DataType, column: str, typed: dict[tuple[Any, ...], Any] | None) -> Any:
+    """``_literal``, kept in ``typed`` for the next column of the same type: reading a value takes
+    Polars a millisecond or more, and a step can have thousands of columns."""
+    if typed is None:
+        return _literal(text, dtype, column)
+    key = (type(text), text, dtype)  # a date-time parameter (DateTimeText) is a moment: not the same as its text
+    if key not in typed:
+        typed[key] = _literal(text, dtype, column)
+    return typed[key]
 
 
 def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
@@ -656,6 +667,7 @@ def _holds(dtype: pl.DataType, value: Any) -> bool:
     return isinstance(value, int) and low <= value <= high
 
 
+@functools.lru_cache(maxsize=256)  # a step can compare thousands of columns with one value
 def _reads_as(text: str) -> str | None:
     """What a typed value would be in a column of dates or numbers: "date" (31.03.2026, also with
     a time) or "number" (-16, 1.234,5); None for other text."""

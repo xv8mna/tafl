@@ -1060,6 +1060,7 @@ def test_binary_data_with_bytes_that_are_no_text_is_searched_in_its_hex_digits(a
 
 
 _WIDE = """
+import datetime as dt
 import time
 
 import polars as pl
@@ -1072,11 +1073,19 @@ registry.load_builtin()
 fill, keep = registry.actions["rows.fill"], registry.actions["rows.filter"]
 texts = pl.DataFrame({f"t{i}": ["a", None, " "] for i in range(4001)})
 numbers = pl.DataFrame({f"n{i}": [1.5, None, 2.0] for i in range(4001)})
+day = dt.datetime(2025, 1, 1, 8, 30)
+stamps = pl.DataFrame({f"d{i}": pl.Series([day, None, day + dt.timedelta(milliseconds=1)], dtype=pl.Datetime("ms")) for i in range(4001)})
+later = dt.datetime(2025, 1, 1, 8, 30, 0, 500)
 steps = [
     ("fill texts", fill, texts, {"columns": texts.columns, "method": "value", "value": "x"}, [("a",), ("x",), ("x",)]),
     ("fill numbers", fill, numbers, {"columns": numbers.columns, "method": "value", "value": "0"}, [(1.5,), (0.0,), (2.0,)]),
     ("fill down", fill, texts, {"columns": texts.columns, "method": "down"}, [("a",), ("a",), ("a",)]),
     ("filter", keep, numbers, {"conditions": [{"column": c, "operator": ">", "value": "1,5"} for c in numbers.columns]}, [(2.0,)]),
+    # milliseconds become microseconds for the typed value
+    ("fill date-times", fill, stamps, {"columns": stamps.columns, "method": "value", "value": "2025-01-01 08:30:00.0005"},
+     [(day,), (later,), (day + dt.timedelta(milliseconds=1),)]),
+    ("filter date-times", keep, stamps, {"conditions": [{"column": c, "operator": ">", "value": "2025-01-01 08:30:00.0005"}
+     for c in stamps.columns]}, [(day + dt.timedelta(milliseconds=1),)]),
 ]
 for label, action, df, params, rows in steps:
     start = time.perf_counter()
@@ -1088,9 +1097,10 @@ for label, action, df, params, rows in steps:
 
 
 def test_fill_and_filter_many_columns_quickly():
-    """Fill empty values with a fixed value took 9 s for 2,000 columns and 30 s for 4,000 (0.6.2:
-    7 and 23 s), and Filter rows with a condition for each of 4,000 columns 8 s: every column made
-    the schema of the whole table anew. In a process of its own, so that a stack overflow of so
-    many columns shows as a failed test."""
+    """Fill empty values with a fixed value took 10 s for 2,000 text columns and 40 s for 4,000
+    (0.6.2: 7 and 29 s), 72 s for 4,000 date-time columns (0.6.2: 55 s), and Filter rows with a
+    condition for each of 4,000 columns 10 s, 23 s with a date-time (0.6.2 too): every column made
+    the schema of the whole table anew, and read the typed value again. In a process of its own,
+    so that a stack overflow of so many columns shows as a failed test."""
     done = subprocess.run([sys.executable, "-c", _WIDE], capture_output=True, text=True, timeout=300)
     assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
