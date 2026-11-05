@@ -931,3 +931,33 @@ def test_a_full_join_on_one_column_that_is_the_key_for_two_of_the_other_table(ac
     texts = {"K": ["2025-01-02 08:30:00", "2025-01-05 10:00:00"], "X": ["2025-01-02 08:30:00", "2025-01-05 10:00:00"]}
     fits = act("table.merge", pl.DataFrame({"A": [dt.datetime(2025, 1, 2, 8, 30)]}), params, StubContext(tables={"other": pl.DataFrame(texts)}))
     assert fits["A"].to_list() == [dt.datetime(2025, 1, 2, 8, 30), dt.datetime(2025, 1, 5, 10)]  # both keys fit: a date-time
+
+
+BERLIN_DAY = pl.Series([dt.datetime(2025, 1, 3, 9), dt.datetime(2025, 1, 4, 9)]).dt.replace_time_zone("Europe/Berlin")
+
+
+@pytest.mark.parametrize(
+    ("this", "second", "added"),
+    [
+        pytest.param([dt.datetime(2025, 1, 2, 8, 30)], [dt.date(2025, 1, 3), dt.date(2025, 1, 4)], "2025-01-04", id="date-times, a date"),
+        pytest.param([dt.date(2025, 1, 2)], [dt.datetime(2025, 1, 3, 9), dt.datetime(2025, 1, 4, 9)], "2025-01-04 09:00:00", id="dates, a date-time"),
+        pytest.param([dt.datetime(2025, 1, 2, 8, 30)], BERLIN_DAY, "2025-01-04 09:00:00", id="date-times, a time zone"),
+        pytest.param([1], [5.0, 0.0], "0", id="whole numbers, 0.0"),
+        pytest.param([1], [5.0, 1e16], "10000000000000000", id="whole numbers, 1e16"),
+        pytest.param([1], [5.0, 2.5], "2.5", id="whole numbers, 2.5"),
+        pytest.param([1], pl.Series([5.0, 0.1], dtype=pl.Float32), "0.1", id="whole numbers, Float32"),
+        pytest.param([1], pl.Series([D("5.00"), D("17.00")], dtype=pl.Decimal(10, 2)), "17.00", id="whole numbers, exact decimals"),
+        pytest.param([1], pl.Series([5, 2**64 - 1], dtype=pl.UInt64), "18446744073709551615", id="whole numbers, UInt64"),
+    ],
+)
+def test_a_full_join_writes_a_later_key_as_text_when_an_earlier_one_made_the_column_text(act, this, second, added):
+    """A = K and A = X: K's text "x" doesn't fit A, so A becomes text; X is compared with A as
+    date-times or numbers. The row only in the other table with an empty K gets X's value, as text
+    in X's own type. Before, the step stopped ("casting from string to datetime is not
+    supported"), or wrote 0.0, 1e+16 and 0.10000000149011612."""
+    match = [{"column": "A", "other_column": "K"}, {"column": "A", "other_column": "X"}]
+    params = {"other": "other", "match": match, "how": "full", "multiple": "all"}
+    other = pl.DataFrame({"K": ["x", None], "X": second})
+    out = act("table.merge", pl.DataFrame({"A": this}), params, StubContext(tables={"other": other}))
+    shown = {int: "1", dt.date: "2025-01-02"}.get(type(this[0]), "2025-01-02 08:30:00")
+    assert out.schema["A"] == pl.String and out["A"].to_list() == [shown, "x", added]

@@ -172,6 +172,11 @@ def merge(df, p, ctx):
         for name, other_name, key in compared:
             as_hex = _as_hex(df[name])
             dtype = out.schema[name]  # not df's: a column that is the key for two may be text after the first
+            if dtype == pl.String and out.schema[key] != pl.String:  # text since an earlier key, this one not compared as text
+                own = other.schema[other_name]  # the key as text in its own type: 0.1 for a Float32, a zone's local time
+                text = dtypes.text_expr(_cast_fitting(col(key), out.schema[key], own), own)
+                out = out.with_columns(pl.coalesce(col(name), text).alias(name))
+                continue
             back = _cast_fitting(col(key), out.schema[key], dtype)
             same = (_cast_key(back, dtype, out.schema[key], as_hex) == col(key)).fill_null(False)
             if out.select((col(name).is_not_null() | col(key).is_null() | same).all()).item():
