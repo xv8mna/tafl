@@ -55,8 +55,8 @@ def replace(df, p, ctx):
     updates = []
     for name in p.columns:
         if p.match == "whole":
-            if schema[name] != pl.String and typed[name] is None:
-                ctx.warn(f"'{name}' was converted to text because a value isn't a {schema[name]}")
+            if schema[name] != pl.String and typed[name] is None and (warning := _made_text(name, schema[name], pairs)):
+                ctx.warn(warning)
             updates.append(_replace_whole(name, schema[name], typed.get(name), pairs, p.case_sensitive))
         else:
             text = col(name)
@@ -150,6 +150,26 @@ def _as_shown(df: pl.DataFrame, names: list[str], schema: pl.Schema, step: str) 
         else:
             texts.append(dtypes.text_expr(col(name), dtype).alias(name))
     return df.with_columns(texts) if texts else df
+
+
+_A_VALUE = {"integer": "an integer", "number": "a number", "date": "a date", "date-time": "a date-time", "true/false": "true or false"}
+
+
+def _made_text(name: str, dtype: pl.DataType, pairs) -> str | None:
+    """The warning when Replace of whole values makes the column ``name`` (of type ``dtype``)
+    text: a Find or Replace with isn't a value of its type, or the type is one that the step
+    doesn't keep. None for categories: the grid shows them as text already."""
+    label = dtypes.type_label(dtype)
+    if label == "text":
+        return None
+    if label not in _A_VALUE:  # a time, a time span, binary values, an empty column, ...
+        return f"'{name}' was converted to text: Replace keeps the type only of numbers, dates, date-times and true/false values"
+    for text in (text for pair in pairs for text in pair if text.strip()):
+        if _typed_pairs([(text, "")], dtype) is None:
+            if isinstance(dtype, pl.Decimal) and dtypes.parse_decimal(text.strip(), "," if "," in text else ".") is not None:
+                return f"'{name}' was converted to text because '{text}' has more digits than the column's exact decimals hold"
+            return f"'{name}' was converted to text because '{text}' isn't {_A_VALUE[label]}"
+    return f"'{name}' was converted to text"
 
 
 def _replace_whole(name: str, dtype: pl.DataType, typed, pairs, case_sensitive: bool) -> pl.Expr:

@@ -107,7 +107,33 @@ def test_replace_in_number_columns(act):
     ctx = StubContext()
     out = replace(act, df, ["n"], [("0", "zero")], ctx)
     assert out["n"].to_list() == ["zero", "1", None]
-    assert ctx.warnings
+    assert ctx.warnings == ["'n' was converted to text because 'zero' isn't an integer"]
+
+
+KEEPS = "'v' was converted to text: Replace keeps the type only of numbers, dates, date-times and true/false values"
+
+
+@pytest.mark.parametrize(
+    ("values", "pairs", "warning"),
+    [
+        pytest.param([1.5, 2.0], [("1,5", "x")], "'v' was converted to text because 'x' isn't a number", id="number"),
+        pytest.param([dt.date(2025, 1, 2)], [("02.01.2025", "soon")], "'v' was converted to text because 'soon' isn't a date", id="date"),
+        pytest.param([dt.datetime(2025, 1, 2, 8)], [("x", "")], "'v' was converted to text because 'x' isn't a date-time", id="date-time"),
+        pytest.param([True, None], [("ja", "maybe")], "'v' was converted to text because 'maybe' isn't true or false", id="true/false"),
+        pytest.param([dt.time(8)], [("08:00:00", "09:00:00")], KEEPS, id="time"),
+        pytest.param([dt.timedelta(hours=1)], [("1h", "2h")], KEEPS, id="time span"),
+        pytest.param([b"a"], [("a", "b")], KEEPS, id="binary"),
+        pytest.param(pl.Series([None, None], dtype=pl.Null), [("", "x")], KEEPS, id="empty"),
+        pytest.param(pl.Series(["a"], dtype=pl.Categorical), [("a", "b")], None, id="categories"),
+    ],
+)
+def test_replace_of_whole_values_says_why_a_column_became_text(act, values, pairs, warning):
+    """In plain words, with the value that isn't one of the column's type. Before: "'v' was
+    converted to text because a value isn't a Time", also when Find and Replace with were times:
+    Replace keeps no time in its type. Categories are text in the grid: no warning."""
+    ctx = StubContext()
+    out = replace(act, pl.DataFrame({"v": values}), ["v"], pairs, ctx)
+    assert out.schema["v"] == pl.String and ctx.warnings == ([warning] if warning else [])
 
 
 def test_clean_text(act):
@@ -146,7 +172,7 @@ def test_replace_exact_decimals(act):
     ctx = StubContext()  # a value with more decimal places than the column holds isn't cut
     out = replace(act, df, ["n"], [("1,1", "1,12345")], ctx)
     assert out["n"].to_list() == ["12345678901234567890.1234", "12345678901234567890.1235", "1.1000"]  # as numbers in text
-    assert ctx.warnings == ["'n' was converted to text because a value isn't a Decimal(precision=30, scale=4)"]
+    assert ctx.warnings == ["'n' was converted to text because '1,12345' has more digits than the column's exact decimals hold"]
 
 
 def test_upper_case_writes_sharp_s_as_ss_like_formulas(act):
