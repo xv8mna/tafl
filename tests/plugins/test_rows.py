@@ -1220,6 +1220,120 @@ def test_the_text_of_a_decimal_number_column_is_written_once(act, monkeypatch):
     assert len(calls) == 1
 
 
+DECIMALS = pl.DataFrame(
+    {
+        "Name": list("abcdefg"),
+        "Net": [17.0, 2.5, 1e16, None, float("nan"), -0.0, 170.5],
+        "Rate": [0.5, None, 17.25, 3.0, 1.0, 2.0, float("inf")],
+        "Small": pl.Series([0.1, 3.0, None, 2.0, 0.25, 1.0, 17.0], dtype=pl.Float32),
+        "Code": ["x17", "y", None, "17z", "", "a", "b"],
+    }
+)
+CHECKS = [
+    [("Net", "contains", "17")],
+    [("Net", "contains", "NAN")],  # NaN, any case
+    [("Net", "not_contains", "7"), ("Rate", "ends", "5")],
+    [("Net", "starts", "1"), ("Net", "ends", ".5"), ("Small", "contains", "0.1")],
+    [("Rate", "contains", "17"), ("Code", "contains", "17"), ("Net", "=", "17")],
+    [("Small", "ends", "0.1"), ("Small", "not_contains", "2")],
+    [("Net", "contains", "")],  # all rows but the empty one
+    [("Rate", "not_contains", "zzz"), ("Net", "contains", "17")],  # the first keeps all rows
+    [("Net", "contains", "zzz"), ("Rate", "contains", "17")],  # the first keeps none
+]
+
+
+@pytest.mark.parametrize("checks", CHECKS)
+@pytest.mark.parametrize("match", ["any", "all"])
+@pytest.mark.parametrize("keep", ["keep", "remove"])
+@pytest.mark.parametrize("case_sensitive", [False, True])
+@pytest.mark.parametrize("way", ["in parts", "in the filter"])
+def test_long_tables_keep_the_rows_of_short_ones(act, monkeypatch, checks, match, keep, case_sensitive, way):
+    """A long table writes the texts of its decimal numbers in parts and tests them at once (and
+    stops when the rows are decided), or, with many long columns, inside the filter: holding all
+    texts at once took 10 times the memory of the data (1M rows x 60 columns: 5.8 GB). Here the
+    limits are made small, so that a table of 7 rows takes these ways too: the same rows."""
+    from tafl.plugins import rows
+
+    options = {"match": match, "keep": keep, "case_sensitive": case_sensitive}
+    expected = names(flt(act, DECIMALS, *checks, **options))  # all texts at once, as a short table
+    monkeypatch.setattr(rows, "_AT_ONCE", 0)
+    if way == "in parts":
+        monkeypatch.setattr(rows, "_PART", 3)  # 3 parts of 3, 3 and 1 values (one of them filled up)
+        monkeypatch.setattr(rows, "_ROUND", 6)  # 2 parts at the same time
+    else:
+        monkeypatch.setattr(rows, "_MORSEL", 0)
+        monkeypatch.setattr(rows.pl, "thread_pool_size", lambda: 1)  # any decimal column is many of them
+    assert names(flt(act, DECIMALS, *checks, **options)) == expected
+
+
+def test_a_long_table_writes_the_text_of_a_column_once_and_in_parts(act, monkeypatch):
+    from tafl.plugins import rows
+
+    calls = []
+    written = dtypes._float_texts
+    monkeypatch.setattr(dtypes, "_float_texts", lambda s: calls.append(s.len()) or written(s))
+    monkeypatch.setattr(rows, "_AT_ONCE", 0)
+    monkeypatch.setattr(rows, "_PART", 3)
+    monkeypatch.setattr(rows, "_ROUND", 9)  # the 3 parts of a column at the same time
+    out = flt(act, DECIMALS, ("Net", "contains", "17"), ("Net", "ends", "5"), match="any")
+    assert names(out) == ["a", "b", "g"] and calls == [3, 3, 3]  # 3 parts of Net, not one for each condition
+    calls.clear()
+    assert names(flt(act, DECIMALS, ("Rate", "not_contains", "zzz"), ("Net", "contains", "17"), match="any")) == list("abcdefg")
+    assert len(calls) == 3  # the rows are decided after Rate: Net isn't written
+
+
+_LONG = """
+import ctypes
+import time
+from ctypes import wintypes
+
+import polars as pl
+
+from tafl.api.testing import StubContext
+from tafl.core.registry import Registry
+
+
+class Counters(ctypes.Structure):  # PROCESS_MEMORY_COUNTERS
+    _fields_ = [("size", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
+        (name, ctypes.c_size_t) for name in ("peak_set", "set", "a", "b", "c", "d", "used", "peak")
+    ]
+
+
+def memory():
+    counters = Counters(ctypes.sizeof(Counters))
+    process = ctypes.WinDLL("kernel32").GetCurrentProcess
+    process.restype = wintypes.HANDLE
+    read = ctypes.WinDLL("psapi").GetProcessMemoryInfo
+    read.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+    read(process(), ctypes.byref(counters), counters.size)
+    return counters
+
+
+rows = pl.int_range(0, 1_000_000, eager=True)
+df = pl.DataFrame({f"c{i}": (rows + i) / 7 for i in range(6)})  # 45 MB
+registry = Registry()
+registry.load_builtin()
+params = {"conditions": [{"column": c, "operator": "contains", "value": "zzz"} for c in df.columns], "match": "any"}
+before = memory().used
+start = time.perf_counter()
+out = registry.actions["rows.filter"](df, params, StubContext())
+assert out.height == 0
+print((memory().peak - before) >> 20, time.perf_counter() - start)
+"""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="reads the peak of the process with a Windows call")
+def test_contains_on_long_decimal_columns_stays_small_in_memory():
+    """With the texts of all decimal values at once, contains on 6 columns of 1M decimal numbers
+    took 640 MB more (0.6.3: 75 MB), and 1M x 60 columns 5.8 GB. They are now written in parts
+    and tested at once: about 230 MB more, also for more columns. In a process of its own,
+    because only there the peak says something."""
+    done = subprocess.run([sys.executable, "-c", _LONG], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr[-800:]
+    grown, seconds = (float(number) for number in done.stdout.split())
+    assert grown < 400 and seconds < 5, (grown, seconds)
+
+
 _WIDE = """
 import datetime as dt
 import time

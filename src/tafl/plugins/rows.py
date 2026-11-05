@@ -32,7 +32,10 @@ _OPERATORS = [
 ]
 _LABELS = dict(_OPERATORS)
 _TEXT_OPERATORS = ("contains", "not_contains", "starts", "ends")  # they look at a value's text
-_PART = 1 << 16  # the fewest decimal numbers that a part of _decimal_texts writes
+_AT_ONCE = 1 << 18  # the most decimal numbers whose texts a filter writes at once (see _decimal_texts)
+_PART = 1 << 16  # the most decimal numbers that one Python call writes as text (see _decimal_tests)
+_ROUND = 1 << 19  # the most decimal numbers whose texts are there at the same time (see _decimal_tests)
+_MORSEL = 1 << 15  # rows of a column for each thread from which a filter writes decimal texts quickly itself
 _KEEP = [("keep", "Keep matching rows"), ("remove", "Remove matching rows")]
 _COMPARE = {
     "=": operator.eq,
@@ -97,12 +100,25 @@ def filter_rows(df, p, ctx):
     """
     schema = df.schema  # once: Polars makes it anew for every call, with all columns (seconds for thousands)
     typed: dict[tuple[Any, ...], Any] = {}  # each typed value read once for each type of column (see _typed)
-    texts = _decimal_texts(df, schema, [c.column for c in p.conditions if c.operator in _TEXT_OPERATORS])
-    warned: list[tuple[str, str]] = []  # (column, warning): 3 of them in full, the others in one line
-    mask_parts = [
-        _condition(df, c, p.case_sensitive, schema, lambda text, c=c: warned.append((c.column, text)), typed, texts)
-        for c in p.conditions
+    # contains, starts and ends on decimal numbers: their text runs Python (see _decimal_texts)
+    decimal = [
+        index
+        for index, c in enumerate(p.conditions)
+        if c.operator in _TEXT_OPERATORS and c.column in schema and schema[c.column].is_float()
     ]
+    columns = list(dict.fromkeys(p.conditions[index].column for index in decimal))
+    texts = {}
+    threads = pl.thread_pool_size()
+    if df.height * len(columns) <= _AT_ONCE:  # few values: their texts at once, for thousands of columns
+        texts, decimal = _decimal_texts(df, schema, columns), []
+    elif len(columns) >= threads and df.height >= threads * _MORSEL:  # many long columns: inside the filter, as
+        decimal = []  # Polars writes them in parts for all its threads, in less time and memory than in turns
+    warned: list[tuple[str, str]] = []  # (column, warning): 3 of them in full, the others in one line
+    parts = {
+        index: _condition(df, c, p.case_sensitive, schema, lambda text, c=c: warned.append((c.column, text)), typed, texts)
+        for index, c in enumerate(p.conditions)
+        if index not in decimal
+    }
     for _, text in warned[:3]:
         ctx.warn(text)
     if len(warned) > 3:
@@ -111,6 +127,12 @@ def filter_rows(df, p, ctx):
         ctx.warn(
             f"{more:,} more condition{'s compare' if more > 1 else ' compares'} texts character by character: {named}"
         )
+    if decimal:  # many values: the rows of each condition, without keeping the texts (see _decimal_tests)
+        tests, decided = _decimal_tests(df, [p.conditions[index] for index in decimal], p.case_sensitive, p.match)
+        if decided is not None:  # one condition keeps all rows (any of them), or one keeps none (all of them)
+            return df if decided == (p.keep == "keep") else df.clear()
+        parts.update((index, pl.lit(test)) for index, test in zip(decimal, tests, strict=True))
+    mask_parts = [parts[index] for index in range(len(p.conditions))]
     mask = pl.all_horizontal(mask_parts) if p.match == "all" else pl.any_horizontal(mask_parts)
     mask = mask.fill_null(False)
     return df.filter(mask if p.keep == "keep" else ~mask)
@@ -275,21 +297,13 @@ def _condition(
         raise ActionError(_not_comparable(c.column, dtype))
 
     if op in _TEXT_OPERATORS:
-        needle = c.value
         if dtype == pl.Binary and dtypes.bytes_are_text(df[c.column]):  # binary values that are all text: that text
             text = column.cast(pl.String)
         elif texts is not None and c.column in texts:  # decimal numbers: written once for all (see _decimal_texts)
             text = pl.lit(texts[c.column])
         else:  # their text as Split column and Pivot write it: 17 (Polars: 17.0), 2025-12-31 08:30:00 in a zone's
             text = dtypes.text_expr(column, dtype)  # local time (Polars: ...08:30:00.000000+01:00), 1d 2h 3m; bytes 0xFF00
-        if not case_sensitive:
-            text, needle = text.str.to_lowercase(), needle.lower()
-        if op == "starts":
-            return text.str.starts_with(needle)
-        if op == "ends":
-            return text.str.ends_with(needle)
-        found = text.str.contains(needle, literal=True)
-        return found if op == "contains" else (~found).fill_null(True)
+        return _text_test(text, op, c.value, case_sensitive)
 
     if text_column and not case_sensitive:
         column = column.str.to_lowercase()
@@ -337,6 +351,61 @@ def _condition(
     else:
         compared = _COMPARE[op](column, _for_polars(value, dtype))
     return compared.fill_null(True) if op == "!=" else compared
+
+
+def _text_test(text: pl.Expr, op: str, needle: str, case_sensitive: bool, decimal: bool = False) -> pl.Expr:
+    """contains, does not contain (also an empty cell), starts with or ends with, on texts. The text
+    of a decimal number has no capital letter but in NaN: then a lowercase copy of all texts isn't
+    needed."""
+    if not case_sensitive:
+        needle = needle.lower()
+        text = pl.when(text == "NaN").then(pl.lit("nan")).otherwise(text) if decimal else text.str.to_lowercase()
+    if op == "starts":
+        return text.str.starts_with(needle)
+    if op == "ends":
+        return text.str.ends_with(needle)
+    found = text.str.contains(needle, literal=True)
+    return found if op == "contains" else (~found).fill_null(True)
+
+
+def _decimal_tests(df: pl.DataFrame, conditions: list[Any], case_sensitive: bool, match: str) -> tuple[list[pl.Series], bool | None]:
+    """contains, starts and ends on decimal-number columns of many values: the rows that each
+    condition keeps. The values are written as text and tested in parts (``_PART``), one for each
+    thread of Polars at a time, and a part's text is gone once it is tested: with the texts of all
+    values at once a filter took 10 times the memory of its data. A column's text is written once
+    for all its conditions. The columns are worked out in the order of the conditions, and stop
+    once the rows are decided: then the second value is True (one of any conditions keeps all
+    rows) or False (one of all conditions keeps none), else None."""
+    height = max(df.height, 1)
+    size = -(-height // -(-height // _PART))  # the values of a part: at most _PART, as even as can be
+    columns = list(dict.fromkeys(c.column for c in conditions))
+    pieces = [(name, start) for name in columns for start in range(0, height, size)]
+    at_once = max(1, min(pl.thread_pool_size(), _ROUND // size))  # parts at the same time
+    found: list[list[pl.Series]] = [[] for _ in conditions]
+    tests: dict[int, pl.Series] = {}
+    together: pl.Series | None = None
+    for first in range(0, len(pieces), at_once):
+        written = []
+        for name, start in pieces[first : first + at_once]:
+            # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
+            values = df[name].alias("value").slice(start, size)
+            values = values.extend_constant(None, size - values.len())  # parts of one length, for one select
+            written.append(dtypes.text_expr(pl.lit(values), values.dtype).alias(f"text{len(written)}"))
+        texts = pl.select(written).get_columns()
+        checks = [(n, k) for k, (name, _) in enumerate(pieces[first : first + at_once]) for n, c in enumerate(conditions) if c.column == name]
+        tested = [_text_test(pl.lit(texts[k]), conditions[n].operator, conditions[n].value, case_sensitive, decimal=True) for n, k in checks]
+        for (n, _), part in zip(checks, pl.select(t.alias(f"test{j}") for j, t in enumerate(tested)).get_columns(), strict=True):
+            found[n].append(part)
+        del texts
+        for name, start in pieces[first : first + at_once]:
+            if start + size < df.height:
+                continue
+            for n in (n for n, c in enumerate(conditions) if c.column == name):  # the last part of its column
+                tests[n] = test = pl.concat(found[n]).head(df.height).alias("test")
+                together = test if together is None else (together | test if match == "any" else together & test)
+                if not together.null_count() and (together.all() if match == "any" else not together.any()):
+                    return list(tests.values()), match == "any"
+    return [tests[n] for n in range(len(conditions))], None
 
 
 def _decimal_texts(df: pl.DataFrame, schema: pl.Schema, names: list[str]) -> dict[str, pl.Series]:
