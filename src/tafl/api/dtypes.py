@@ -257,6 +257,43 @@ def excel_serial_to_datetime(s: pl.Series) -> pl.Series:
     return pl.select((pl.lit(_EXCEL_EPOCH) + pl.duration(milliseconds=pl.lit(ms))).alias(s.name)).to_series()
 
 
+def numbers_to_datetimes(s: pl.Series, fmt: str = "") -> pl.Series:
+    """Numbers -> Datetime. With a date format of digits only (yyyymmdd, ddmmyyyy, yymmdd,
+    yyyymmddhhmmss), the digits of each whole number are read with it, as the text of the digits
+    would be: 20260131 is 31.01.2026. A number with fewer digits than such a format lost its
+    leading zeros, and gets them back (1012026 is 01012026 for ddmmyyyy), unless the format starts
+    with a four-digit year. Decimal numbers that are whole count as whole (20260131.0); others
+    can't be read with a format and become empty. With another format or none, the numbers are
+    Excel day numbers (``excel_serial_to_datetime``)."""
+    width = _digit_format(fmt)
+    if width is None:
+        return excel_serial_to_datetime(s)
+    name, s = s.name, s.alias("value")  # a fixed name, as in _clean_text
+    text = text_expr(_VALUE, s.dtype).str.replace(r"\.0+$", "")  # 20260131.00 of an exact decimal: its digits
+    if width:
+        text = pl.when(text.str.contains("^[0-9]+$")).then(text.str.pad_start(width, "0")).otherwise(text)
+    return parse_datetimes(_apply(s, text), fmt).alias(name)
+
+
+def _digit_format(fmt: str) -> int | None:
+    """For a date format of digit codes only (yyyy, yy, mm, dd, hh, ss; also m, d, h, s): the
+    number of digits a number is padded to with leading zeros, or 0 for none (a code such as d
+    reads one or two digits; a four-digit year first can't have lost a zero). None for a format
+    with anything else, such as a separator, a month name or a strftime code."""
+    if not fmt or "%" in fmt:
+        return None
+    tokens = _DATE_TOKEN.findall(fmt)
+    fixed = True
+    for token in tokens:
+        kind, length = _token_kind(token), len(token)
+        if kind not in ("y", "m", "d", "h", "s") or (kind != "y" and length > 2):
+            return None
+        fixed = fixed and length in ((2, 4) if kind == "y" else (2,))
+    if not fixed or tokens[0].lower() == "yyyy":
+        return 0
+    return sum(len(token) for token in tokens)
+
+
 # --- detecting types -------------------------------------------------------------------------
 
 

@@ -99,7 +99,8 @@ def change_type(df, p, ctx):
     text: 0.00, #,##0.00, 00000 (pads with zeros, e.g. postal codes), 0%, #,##0.00 €. Without a
     date format, common formats are detected; two-digit years are read like in Excel (25 = 2025,
     75 = 1975). Month and day names (mmm, mmmm, ddd, dddd) are English. Numbers become dates as
-    Excel day numbers (45658 = 01.01.2025). Whole numbers keep all their digits (up to
+    Excel day numbers (45658 = 01.01.2025); with a format of digits only, such as yyyymmdd, their
+    digits are read with it (20260131 = 31.01.2026). Whole numbers keep all their digits (up to
     9,223,372,036,854,775,807); decimal numbers keep about 15.
     """
     for c in p.columns:  # one after the other, so a column can be converted twice
@@ -172,8 +173,8 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
             parsed = dtypes.parse_dates(s, fmt) if target == "date" else dtypes.parse_datetimes(s, fmt)
         elif source in (pl.Date, pl.Datetime):
             parsed = s.cast(pl.Datetime("us"))
-        elif source.is_numeric():
-            parsed = dtypes.excel_serial_to_datetime(s)
+        elif source.is_numeric():  # Excel day numbers; with a format of digits such as yyyymmdd, the digits
+            parsed = dtypes.numbers_to_datetimes(s, fmt)
         else:
             raise ActionError(f"{s.name}: a {source} column can't become a date")
         if target == "date" and parsed.dtype != pl.Date:

@@ -534,6 +534,7 @@ _OF_A_SERIES = [
     pytest.param(dtypes.parse_times, ["08:30", None, "x"], id="parse_times"),
     pytest.param(dtypes.parse_booleans, ["ja", "No", None, "x"], id="parse_booleans"),
     pytest.param(dtypes.excel_serial_to_datetime, [45658, None, 45658.5], id="excel_serial_to_datetime"),
+    pytest.param(lambda s: dtypes.numbers_to_datetimes(s, "ddmmyyyy"), [31012026.0, None, 1012026.5], id="numbers_to_datetimes"),
     pytest.param(lambda s: dtypes.format_dates(s, "dd.mm.yyyy"), [dt.date(2025, 1, 2), None], id="format_dates"),
     pytest.param(lambda s: dtypes.format_numbers(s, "#,##0.00"), [1234.5, None], id="format_numbers"),
     pytest.param(dtypes.float_loses_digits, ["12345678901234567890", "1", None], id="float_loses_digits of texts"),

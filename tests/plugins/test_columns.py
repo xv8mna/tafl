@@ -94,6 +94,38 @@ def test_excel_day_numbers_to_dates(act):
     assert change(act, df, "serial", "date").to_list() == [dt.date(2025, 1, 1), dt.date(2025, 1, 2)]
 
 
+def test_numbers_to_dates_with_a_format_of_digits(act):
+    """20260131 with yyyymmdd: its digits are read with the format, as the text "20260131" is.
+    Before, every number was an Excel day number: 20260131 became a day in the year 57370, without
+    a message."""
+    df = pl.DataFrame(
+        {
+            "Day": [20260131, 20251231, None],
+            "Excel": [20260131.0, 20251231.0, None],  # as an Excel import gives them
+            "Exact": pl.Series([D("20260131.00"), D("20251231"), None], dtype=pl.Decimal(38, 2)),
+            "Lost": [1012026, 31122025, None],  # ddmmyyyy: the number lost the leading zero of 01012026
+            "When": [20260131083015, 20251231235959, None],
+        }
+    )
+    days = [dt.date(2026, 1, 31), dt.date(2025, 12, 31), None]
+    ctx = StubContext()
+    assert change(act, df, "Day", "date", "yyyymmdd", ctx=ctx).to_list() == days
+    assert change(act, df, "Excel", "date", "yyyymmdd", ctx=ctx).to_list() == days
+    assert change(act, df, "Exact", "date", "YYYYMMDD", ctx=ctx).to_list() == days
+    assert change(act, df, "Lost", "date", "ddmmyyyy", ctx=ctx).to_list() == [dt.date(2026, 1, 1), dt.date(2025, 12, 31), None]
+    assert change(act, df, "Day", "datetime", "yyyymmdd", ctx=ctx).to_list() == [dt.datetime(2026, 1, 31), dt.datetime(2025, 12, 31), None]
+    moments = [dt.datetime(2026, 1, 31, 8, 30, 15), dt.datetime(2025, 12, 31, 23, 59, 59), None]
+    assert change(act, df, "When", "datetime", "yyyymmddhhmmss", ctx=ctx).to_list() == moments
+    assert ctx.warnings == []
+
+    ctx = StubContext()  # decimal places don't fit a format; a four-digit year first can't have lost a zero
+    odd = pl.DataFrame({"Day": [20260131.5, 990131.0, 20260131.0]})
+    assert change(act, odd, "Day", "date", "yyyymmdd", ctx=ctx).to_list() == [None, None, dt.date(2026, 1, 31)]
+    assert ctx.warnings == ["Day: 2 value(s) could not be converted to Date, e.g. '20260131.5', '990131.0' (now empty)"]
+    serials = pl.DataFrame({"Day": [45658, 45659]})  # a format with separators: Excel day numbers, as before
+    assert change(act, serials, "Day", "date", "dd.mm.yyyy").to_list() == [dt.date(2025, 1, 1), dt.date(2025, 1, 2)]
+
+
 def test_long_numbers_keep_all_their_digits(act):
     df = pl.DataFrame(
         {
