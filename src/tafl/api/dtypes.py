@@ -374,11 +374,11 @@ def common_type(columns: list[pl.Series]) -> CommonType:
     other types become whole numbers (Int64), or beyond them exact decimals of up to 38 digits.
     Whole and decimal numbers become decimal numbers, whole numbers and exact decimals exact
     decimals, dates and date-times of one time zone date-times, durations durations (each in the
-    finest unit that holds every value), when every value stays as it is. Any other mix becomes text, as
-    ``to_common_type`` writes it: the grid's text. A column whose values are all empty doesn't
-    count, whatever its type; when no column has a value (a table without rows), the types count,
-    except Null. Lists, records and objects have no common type with another type (``dtype`` is
-    None): they have no text."""
+    finest unit that holds every value), when every value stays as it is. Any other mix becomes
+    text, as ``to_common_type`` writes it: the same text on every PC. A column whose values are
+    all empty doesn't count, whatever its type; when no column has a value (a table without
+    rows), the types count, except Null. Lists, records and objects have no common type with
+    another type (``dtype`` is None): they have no text."""
     columns = [s.alias("value") for s in columns]  # Polars' Series methods would read a name like ^a.*$ as a pattern
     has_values = [s.null_count() < s.len() for s in columns]
     counted = tuple(has_values) if any(has_values) else tuple(s.dtype != pl.Null for s in columns)
@@ -398,9 +398,9 @@ def common_type(columns: list[pl.Series]) -> CommonType:
 
 
 def to_common_type(expr: pl.Expr, dtype: pl.DataType, target: pl.DataType) -> pl.Expr:
-    """``expr``, of type ``dtype``, in the type that ``common_type`` gave: as text, the grid's text
-    (``text_expr``); a date as midnight of a date-time's time zone (a plain cast would take
-    midnight in UTC); else empty where a value doesn't fit."""
+    """``expr``, of type ``dtype``, in the type that ``common_type`` gave: as text, the same text on
+    every PC (``text_expr``: 2025-12-31, 2.5, 1d 2h 3m); a date as midnight of a date-time's time
+    zone (a plain cast would take midnight in UTC); else empty where a value doesn't fit."""
     if target == pl.String:
         return text_expr(expr, dtype)
     if dtype == pl.Date and isinstance(target, pl.Datetime) and target.time_zone:

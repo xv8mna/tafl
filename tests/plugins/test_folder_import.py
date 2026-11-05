@@ -156,7 +156,7 @@ def test_parquet_files_whose_column_has_other_types(act, tmp_path, first, second
 
 
 def test_excel_sheets_whose_column_has_other_types(act, tmp_path):
-    """Excel stores numbers as decimal numbers: beside text, 5 is "5", as the grid shows it. Before,
+    """Excel stores numbers as decimal numbers: beside text, 5 is "5", as Unpivot writes it. Before,
     it was "5.0", without a message."""
     book = xlsxwriter.Workbook(str(tmp_path / "mixed.xlsx"))
     for sheet, nr, amount in (("A", 5, 1.5), ("B", "n/a", 2)):
