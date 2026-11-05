@@ -893,11 +893,17 @@ OpenDocument spreadsheet (ods), or the workbooks of a folder.
 - **Read**: as for CSV. For a folder, add `;*.ods` to **File names** to read ods files too.
 - **Sheets**: *One sheet* (**Sheet**: empty = the first sheet), *All sheets*, or *Sheets whose name
   matches* (**Sheet names**, e.g. `2025*` or `Jan;Feb`). With several sheets, a column **Sheet**
-  names the sheet of each row; **Add a column with the sheet name** turns it off.
+  names the sheet of each row. It is the first column (in a folder, after **File** and
+  **Path**); **Add a column with the sheet name** turns it off.
 - **Row with the column names** (`1`): the rows above it are skipped; `0` = no header row.
 - **Whole numbers as integers** and **Date-times at midnight as dates** (both on): Excel stores
   every number as a decimal number and every date as a date-time. These turn columns with only
   whole numbers into integer columns, and columns whose times are all 00:00 into date columns.
+
+Excel stores a type with each cell, and the import keeps it: nothing else is detected. Text
+cells stay text, also when they look like numbers or dates (`123`, `00017`, `2025-01-31`), and
+a column with both numbers and text cells becomes a text column (5 becomes `5`). **Change type**
+turns such a column into numbers or dates.
 
 Example: `customers.xlsx` has a title in row 1 and the column names in row 3: see
 [Bring in the customer names](#bring-in-the-customer-names).
