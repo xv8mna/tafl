@@ -905,18 +905,39 @@ def test_exact_decimals_with_other_decimal_places_are_compared():
 
 def test_a_sum_beyond_38_digits_stops():
     """DuckDB adds up exact decimals without checking their 38 digits: SUM() OVER () of 6×10^37
-    twice gave a text of 39 digits, while [v] + [v] stopped. Whole numbers of 128 bits keep their
-    39 digits as text, as before."""
+    twice gave a text of 39 digits, while [v] + [v] stopped. Such a sum is calculated again with the
+    decimal places that the values use; only when it still needs more than 38 digits does it stop
+    (a sum of 6000000000000000000.5 twice with 19 decimal places is a decimal number, as in 0.6.3).
+    Whole numbers of 128 bits keep their 39 digits as text, as before."""
     needs = "the result needs more than 38 digits, decimal places included"
     whole = pl.DataFrame({"v": pl.Series([Decimal(6 * 10**37)] * 2, dtype=pl.Decimal(38, 0))})
     scaled = pl.DataFrame({"v": pl.Series([Decimal("6000000000000000000.5")] * 2, dtype=pl.Decimal(38, 19))})
-    for df in (whole, scaled):
-        for formula in ("SUM([v]) OVER ()", "[v] + [v]", "LIST_SUM(LIST_VALUE([v], [v]))"):
-            with pytest.raises(ActionError, match=needs):
-                expressions.evaluate(df, formula)
+    for df, formula in [(whole, "SUM([v]) OVER ()"), (whole, "[v] + [v]"), (whole, "LIST_SUM(LIST_VALUE([v], [v]))"), (scaled, "[v] + [v]")]:
+        with pytest.raises(ActionError, match=needs):  # [v] + [v] by its decimal places, as in 0.6.3
+            expressions.evaluate(df, formula)
+    for formula in ("SUM([v]) OVER ()", "LIST_SUM(LIST_VALUE([v], [v]))"):
+        assert expressions.evaluate(scaled, formula).to_list() == [pytest.approx(1.2e19)] * 2
     assert expressions.evaluate(whole, "SUM([v]) OVER () - [v]").to_list() == [Decimal(6 * 10**37)] * 2
     wide = pl.DataFrame({"h": pl.Series([6 * 10**37] * 2, dtype=pl.Int128)})
     assert expressions.evaluate(wide, "SUM([h]) OVER ()").to_list() == [str(12 * 10**37)] * 2
+
+
+def test_exact_decimals_of_other_widths_are_calculated_in_38_digits():
+    """DuckDB adds DECIMAL(18,2) and DECIMAL(18,4) in 18 digits: 123456789012345.67 plus a rate
+    stopped with "Casting value ... to type DECIMAL(18,4) failed: value is out of range!", also
+    [Id] + 1.5 of a DECIMAL(18,0). A sum of DECIMAL(38,18) values beyond 10^20 stopped with the
+    38-digit message; 0.6.3 gave it as a decimal number. Such a formula is calculated again with each
+    exact decimal in 38 digits, with the decimal places its values use."""
+    df = pl.DataFrame({
+        "Amount": pl.Series([Decimal("123456789012345.67"), Decimal(5)], dtype=pl.Decimal(18, 2)),
+        "Rate": pl.Series([Decimal("1.2345"), Decimal("5.5")], dtype=pl.Decimal(18, 4)),
+        "Id": pl.Series([Decimal(947199311863146620), Decimal(5)], dtype=pl.Decimal(18, 0)),
+    })  # fmt: skip
+    assert expressions.evaluate(df, "[Amount] + [Rate]").to_list() == [pytest.approx(123456789012346.9045), 10.5]
+    assert expressions.evaluate(df, "[Id] + 1.5").to_list() == [pytest.approx(947199311863146621.5), 6.5]
+    assert expressions.evaluate(df, "[Id] + [Amount]").to_list() == [pytest.approx(9.47322768652159e17), 10.0]
+    rates = pl.DataFrame({"v": pl.Series([Decimal(6 * 10**19)] * 2, dtype=pl.Decimal(38, 18))})
+    assert expressions.evaluate(rates, "SUM([v]) OVER ()").to_list() == [1.2e20, 1.2e20]
 
 
 def test_functions_for_dates_on_text_say_how_to_change_the_column():

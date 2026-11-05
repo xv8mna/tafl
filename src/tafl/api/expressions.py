@@ -362,18 +362,18 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     _check_names(formula, df.columns)
     con = _connection()
     frame, kinds, beyond = _readable(df if table else _with_row_number(df, formula))
-    try:
-        values = _calculate(con, frame, kinds, beyond, body, formula, table=table, condition=condition)
-    except duckdb.Error as e:
-        # Two exact decimals that DuckDB brings to one type with the decimal places of both: again
-        # with the decimal places their values use (only then: it changes their text, 1.50 to 1.5)
-        narrower = _narrower(frame, kinds) if _DECIMAL_CAST.search(str(e)) else None
-        if narrower is None:
-            raise ActionError(_clean_error(e, formula, df.columns, _texts(df))) from None
+    tried: set[str] = set()
+    while True:
         try:
-            values = _calculate(con, frame, narrower, beyond, body, formula, table=table, condition=condition)
-        except duckdb.Error as e:
-            raise ActionError(_clean_error(e, formula, df.columns, _texts(df))) from None
+            values = _calculate(con, frame, kinds, beyond, body, formula, table=table, condition=condition)
+            break
+        except (duckdb.Error, _TooLong) as e:
+            wider = _wider(e, frame, kinds, tried)
+            if wider is None:
+                if isinstance(e, _TooLong):
+                    raise ActionError(f"Formula error: {_TOO_LONG}\nFormula: {formula}") from None
+                raise ActionError(_clean_error(e, formula, df.columns, _texts(df))) from None
+            kinds = wider
     if values.len() != df.height:
         raise ActionError(
             "The formula must give one value per row. For totals use the Aggregate action, "
@@ -394,7 +394,7 @@ def _calculate(
     condition: bool,
 ) -> pl.Series:
     """The values of the formula (``body`` as translated) on ``frame``, its columns in the types of
-    ``kinds``. DuckDB's errors are passed on: the caller may try again."""
+    ``kinds``. DuckDB's errors, and _TooLong, are passed on: the caller may try again (see _wider)."""
     order = "rowid" if table else _ROW
     columns = _selected(frame.columns, kinds)
     view = not table and columns != "*"  # a view that gives columns their own types back
@@ -441,8 +441,23 @@ def _calculate(
             _clear(con, _VIEW)
     values = result.to_series(0)
     if result_type.startswith("DECIMAL(") and _beyond_its_digits(values, result_type):
-        raise ActionError(f"Formula error: {_TOO_LONG}\nFormula: {formula}")
+        raise _TooLong
     return values
+
+
+class _TooLong(Exception):
+    """A result of exact decimals with more digits than its type (DuckDB's SUM doesn't check them)."""
+
+
+def _wider(error: Exception, frame: pl.DataFrame, kinds: dict[str, str], tried: set[str]) -> dict[str, str] | None:
+    """The types to try a formula again with after ``error``, once each; None when there are none.
+    Exact decimals that DuckDB brings to one type, or that its SUM makes too long: each column as
+    DECIMAL(38, the decimal places its values use), as long as they fit (the text of such a decimal
+    loses its last zeros, 1.50 becomes 1.5: only then)."""
+    if (isinstance(error, _TooLong) or _DECIMAL_CAST.search(str(error))) and "decimals" not in tried:
+        tried.add("decimals")
+        return _decimal_kinds(frame, kinds)
+    return None
 
 
 def _texts(df: pl.DataFrame) -> list[str]:
@@ -733,18 +748,19 @@ def _selected(columns: Sequence[str], kinds: dict[str, str]) -> str:
     return ", ".join(f"CAST({q} AS {kinds[name]}) AS {q}" if name in kinds else q for name, q in zip(columns, quoted, strict=True))
 
 
-def _narrower(frame: pl.DataFrame, kinds: dict[str, str]) -> dict[str, str] | None:
-    """``kinds`` with each column of exact decimals given the decimal places its values use (at
-    least one), or None when no column uses fewer than its type. DuckDB compares and adds exact
-    decimals in one type with the decimal places of both: 12345678901234567890123 and a number with
-    18 decimal places don't fit into its 38 digits, 1.500000000000000000 needs only one of them."""
-    narrower = dict(kinds)
+def _decimal_kinds(frame: pl.DataFrame, kinds: dict[str, str]) -> dict[str, str] | None:
+    """``kinds`` with each column of exact decimals as DECIMAL(38, the decimal places its values use,
+    at least one of those it has), or None when none of them changes. DuckDB brings two exact
+    decimals to one type with the decimal places of both and the digits of their types:
+    12345678901234567890123 and a number with 18 decimal places don't fit into its 38 digits,
+    1.500000000000000000 needs only one of them; DECIMAL(18,2) and DECIMAL(18,4) need more than 18."""
+    wider = dict(kinds)
     for name, dtype in frame.schema.items():
-        if isinstance(dtype, pl.Decimal) and dtype.scale:
-            places = _decimal_places(frame[name].alias("value"))
-            if places < dtype.scale:
-                narrower[name] = f"DECIMAL(38, {places})"
-    return narrower if narrower != kinds else None
+        if isinstance(dtype, pl.Decimal):
+            places = _decimal_places(frame[name].alias("value")) if dtype.scale else 0
+            if (dtype.precision, dtype.scale) != (38, places):
+                wider[name] = f"DECIMAL(38, {places})"
+    return wider if wider != kinds else None
 
 
 def _decimal_places(values: pl.Series) -> int:
