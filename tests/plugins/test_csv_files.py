@@ -534,6 +534,30 @@ def test_a_quote_that_is_never_closed_is_shown_with_its_line(act, tmp_path):
             act("csv.import", None, {"file": str(tmp_path / "q.csv")})
 
 
+def test_the_quote_check_is_as_fast_as_one_without_carriage_returns_in_values():
+    """A lone \\r in a value is part of the value for the check of quotes. The first pattern for that
+    took 2.6 times as long as one without (on a file of 50 MB with the fault at its end, 1.8 s):
+    measured against that one here, best of 3 each."""
+    from tafl.plugins import csv_files
+
+    line = b"12345;Some product name;99.5;2025-01-31;x\n"
+    data = b"Id;Name;Price;Date;Flag\n" + line * 250_000 + b'9;Monitor 24";1;2025-01-31;x\n'
+    plain = r'[^";\r\n]*+'  # without lone carriage returns
+    without = re.compile(rf'(?:(?>"(?:[^"]|"")*+"|{plain}(?:"{plain}"{plain})*+)(?:;|\r?\n|\Z))*+')
+    text = data.decode()
+
+    def best(work) -> float:
+        times = []
+        for _ in range(3):
+            start = time.perf_counter()
+            work()
+            times.append(time.perf_counter() - start)
+        return min(times)
+
+    assert csv_files._stray_quote(data, ";", 0).startswith("line 250002 has a quote")
+    assert best(lambda: csv_files._stray_quote(data, ";", 0)) < 1.6 * best(lambda: without.match(text)) + 0.05
+
+
 def test_a_lone_carriage_return_in_a_value_is_no_end_of_the_line(act, tmp_path):
     """A \\r without \\n in a value (Polars reads it as part of the value) ended the line for the
     check: the message named that line, which has no quote."""
