@@ -471,10 +471,13 @@ def stack(frames: list[pl.DataFrame], warn: Callable[[str], None] | None = None,
             )
         if common.dtype == pl.String and not all(_is_text(dtype) for dtype in counted):  # categories are text too
             texts.append((name, words, common.lost is not None))
+        # Bytes that are all text become that text, as in Clean text, Join texts and Merge: decided once
+        # for the column, so that one value that is no text makes all of them hex digits
+        binary = [i for i, counts in zip(where, common.counted, strict=True) if counts and schemas[i][name] == pl.Binary]
+        text_bytes = all(bytes_are_text(frames[i][name].alias("value")) for i in binary)
         for i, counts in zip(where, common.counted, strict=True):
             if schemas[i][name] != common.dtype:  # a column with only empty values: empty values of that type
-                if counts:  # bytes that are all text become that text, as in Clean text, Join texts and Merge
-                    text_bytes = schemas[i][name] == pl.Binary and bytes_are_text(frames[i][name].alias("value"))
+                if counts:
                     change = to_common_type(col(name), schemas[i][name], common.dtype, text_bytes=text_bytes)
                 else:
                     change = pl.lit(None, common.dtype)

@@ -187,6 +187,19 @@ def test_parquet_files_whose_column_has_other_types(act, tmp_path, first, second
     assert ctx.warnings == ([f"“x” is text: it has different types in the files ({words})"] if words else [])
 
 
+def test_parquet_files_with_binary_values_beside_text(act, tmp_path):
+    """Binary values that are all text become that text; one value that is no text, in any of the
+    files, makes all of them hex digits. Before, each file decided for itself: "abc" beside "0xFF"."""
+    for name, values in (("a", [b"abc"]), ("b", [b"\xff"]), ("c", ["t"])):
+        pl.DataFrame({"v": values}).write_parquet(tmp_path / f"{name}.parquet")
+    ctx = StubContext()
+    out = act("parquet.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out["v"].to_list() == ["0x616263", "0xFF", "t"]
+    assert ctx.warnings == ["“v” is text: it has different types in the files (binary, text)"]
+    (tmp_path / "b.parquet").unlink()
+    assert act("parquet.import", None, folder(tmp_path, file_column=False))["v"].to_list() == ["abc", "t"]
+
+
 def test_parquet_files_with_categories_beside_text(act, tmp_path):
     """A dictionary column (as pandas writes its categories) is text: no warning. Before: "“Region” is
     text: it has different types in the files (text)"."""

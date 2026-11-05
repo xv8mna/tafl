@@ -192,6 +192,8 @@ def test_binary_values_that_are_text_become_that_text(act):
     digits. Before, they were always hex digits."""
     assert values(act, a=[b"abc", None], b=["x", "y"]).to_list() == ["abc", "x", None, "y"]
     assert values(act, a=[b"abc", b"\xff"], b=["x", "y"]).to_list() == ["0x616263", "x", "0xFF", "y"]
+    once = values(act, a=[b"x", None], b=[b"y", b"\xff"], c=["t", "u"])  # decided once for the value column
+    assert once.to_list() == ["0x78", "0x79", "t", None, "0xFF", "u"]  # it gave "x" beside "0x79"
 
 
 def test_categories_beside_text_are_text_without_a_message(act):

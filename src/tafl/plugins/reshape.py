@@ -425,9 +425,12 @@ def unpivot(df, p, ctx):
             ctx.log(f"“{value}” is text, so that no value of “{turned[common.lost]}” changes")
         else:
             ctx.log(f"“{value}” is text: the columns have different types ({_type_groups(df, [c for c in turned if counted[c]])})")
+    # Bytes that are all text become that text, as in Clean text: decided once for the value column,
+    # so that one value that is no text makes all of them hex digits
+    text_bytes = all(_text_bytes(df[c]) for c in turned if counted[c] and schema[c] == pl.Binary)
     casts = []
-    for c in (c for c in turned if schema[c] != target):  # bytes that are all text become that text, as in Clean text
-        cast = dtypes.to_common_type(col(c), schema[c], target, text_bytes=_text_bytes(df[c])) if counted[c] else pl.lit(None, dtype=target)
+    for c in (c for c in turned if schema[c] != target):
+        cast = dtypes.to_common_type(col(c), schema[c], target, text_bytes=text_bytes) if counted[c] else pl.lit(None, dtype=target)
         casts.append(cast.alias(c))
 
     # Working names: a new column may have the name of a turned column, which is there until the end

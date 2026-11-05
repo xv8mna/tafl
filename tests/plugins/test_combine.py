@@ -291,6 +291,9 @@ def test_append_writes_binary_values_that_are_text_as_that_text(act):
     assert ctx.warnings == ["“v” is text: it has different types in the tables (binary, text)"]
     out = act("table.append", pl.DataFrame({"v": [b"abc", b"\xff\x00"]}), {"tables": ["t"]}, StubContext(tables={"t": pl.DataFrame({"v": ["x"]})}))
     assert out["v"].to_list() == ["0x616263", "0xFF00", "x"]
+    tables = {"y": pl.DataFrame({"v": [b"y", b"\xff"]}), "t": pl.DataFrame({"v": ["t"]})}  # decided once for the column
+    out = act("table.append", pl.DataFrame({"v": [b"x"]}), {"tables": ["y", "t"]}, StubContext(tables=tables))
+    assert out["v"].to_list() == ["0x78", "0x79", "0xFF", "t"]  # it gave "x" beside "0x79"
 
 
 def test_append_of_categories_beside_text_says_nothing(act):
