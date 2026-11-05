@@ -304,9 +304,11 @@ def test_typed_date_times_with_a_time_zone_are_its_local_time(act):
     assert names(flt(act, df, ("Berlin", "not_in", "2025-01-01 09:30"))) == ["a", "b", "d"]
     assert names(flt(act, df, ("UTC", "in", "2025-03-30 02:30; 2025-10-26 02:30"))) == []  # no clock changes in UTC
     filled = act("rows.fill", df, {"columns": ["Berlin", "UTC"], "method": "value", "value": "2025-07-01 08:30:00.000000002"})
-    assert filled.schema["Berlin"] == pl.Datetime("ns", "Europe/Berlin") and filled.schema["UTC"] == pl.Datetime("us", "UTC")
+    # the column of microseconds holds nanoseconds for the 2 below them, which it lost before
+    assert filled.schema["Berlin"] == pl.Datetime("ns", "Europe/Berlin") and filled.schema["UTC"] == pl.Datetime("ns", "UTC")
     summer = int(dt.datetime(2025, 7, 1, 6, 30, tzinfo=dt.UTC).timestamp()) * 10**9  # 08:30 in Berlin
-    assert filled["Berlin"].to_physical()[3] == summer + 2 and filled["UTC"].to_physical()[3] == (summer + 2 * 3600 * 10**9) // 1000
+    assert filled["Berlin"].to_physical()[3] == summer + 2 and filled["UTC"].to_physical()[3] == summer + 2 * 3600 * 10**9 + 2
+    assert filled["UTC"].to_physical()[:3].to_list() == [v * 1000 for v in df["UTC"].to_physical()[:3]]
 
 
 @pytest.mark.parametrize("operator", ["=", ">=", "in", "not_in", "fill"])
@@ -462,6 +464,116 @@ def test_a_typed_date_time_less_than_a_microsecond_inside_nanoseconds_is_in_nano
         assert names(flt(act, df, ("At", "in", text))) == ["a"], text
         filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": text})["At"]
         assert filled.dtype == pl.Datetime("ns", zone) and filled.to_physical().to_list() == [moment, other, moment], text
+
+
+def nanoseconds_of(local: dt.datetime, zone: str | None) -> int:
+    """The moment of a local time in nanoseconds since 1970 in UTC, with Python's zoneinfo and
+    whole numbers (a time without a zone: as if it were UTC, as Polars keeps it)."""
+    if local.tzinfo is None:
+        local = local.replace(tzinfo=dt.UTC if zone is None else ZoneInfo(zone))
+    delta = local - dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
+    return (delta.days * 86_400 + delta.seconds) * 10**9 + delta.microseconds * 1000
+
+
+def stamps_in(moments: list[int | None], unit: str, zone: str | None) -> pl.Series:
+    """Date-times of these moments (nanoseconds since 1970 in UTC) in ``unit``, which holds them."""
+    size = {"ms": 10**6, "us": 10**3, "ns": 1}[unit]
+    numbers = pl.Series([None if m is None else m // size for m in moments], dtype=pl.Int64)
+    return numbers.cast(pl.Datetime(unit)) if zone is None else numbers.cast(pl.Datetime(unit, "UTC")).dt.convert_time_zone(zone)
+
+
+def matching(cells: list[int | None], operator: str, value: int) -> list[str]:
+    """The names of the rows (a, b, c, ...) whose cell an operator keeps, worked out with Python."""
+    keep = {"=": "__eq__", "!=": "__ne__", "<": "__lt__", "<=": "__le__", ">": "__gt__", ">=": "__ge__"}[operator]
+    return [chr(97 + i) for i, cell in enumerate(cells) if (cell is None and operator == "!=") or (cell is not None and getattr(cell, keep)(value))]
+
+
+@pytest.mark.parametrize("zone", [None, "Europe/Berlin"])
+@pytest.mark.parametrize("day", [dt.datetime(2025, 1, 1, 8, 30), dt.datetime(1960, 7, 1, 8, 30)], ids=["2025", "1960"])
+@pytest.mark.parametrize(("unit", "fraction"), [("ms", "0005"), ("ms", "000000001"), ("ms", "9999999"), ("us", "0000005"), ("us", "000000999")])
+def test_a_typed_date_time_with_digits_below_the_unit_of_its_column_is_compared_exactly(act, zone, day, unit, fraction):
+    """Polars left out the digits that the column's unit doesn't hold: in a column of milliseconds
+    08:30:00.0005 equaled 08:30:00 and was neither greater nor less. It is between two values of
+    the column, and Fill empty values makes the unit finer, so that it keeps its digits."""
+    size = {"ms": 10**6, "us": 10**3}[unit]
+    typed = nanoseconds_of(day, zone) + int(fraction.ljust(9, "0"))
+    below = typed // size * size  # the value of the column below it
+    cells = [below - size, below, below + size, None]
+    df = pl.DataFrame({"Name": list("abcd"), "At": stamps_in(cells, unit, zone)})
+    text = f"{day:%Y-%m-%d %H:%M:%S}.{fraction}"
+    for operator in ("=", "!=", "<", "<=", ">", ">="):
+        assert names(flt(act, df, ("At", operator, text))) == matching(cells, operator, typed), operator
+    assert names(flt(act, df, ("At", "in", f"{text}; {day:%Y-%m-%d %H:%M}"))) == matching(cells, "=", nanoseconds_of(day, zone))
+    assert names(flt(act, df, ("At", "not_in", text))) == ["a", "b", "c", "d"]
+    finer = "ns" if typed % 1000 else "us"
+    filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": text})["At"]
+    assert filled.dtype == pl.Datetime(finer, zone)  # Polars wrote the value below it
+    assert filled.to_physical().to_list() == [m // {"us": 1000, "ns": 1}[finer] for m in cells[:3] + [typed]]
+
+
+def test_a_typed_time_or_date_time_with_digits_below_a_nanosecond_is_compared_exactly(act):
+    """No column holds them: Polars left them out, so 08:00:00.0000000005 equaled 08:00:00."""
+    eight = 8 * 3600 * 10**9
+    times = pl.DataFrame({"Name": list("abc"), "Start": pl.Series([eight, eight + 1, None]).cast(pl.Time)})
+    stamps = pl.DataFrame({"Name": list("abc"), "At": stamps_in([eight, eight + 1, None], "ns", "Europe/Berlin")})
+    for df, column, whole in [(times, "Start", "08:00:00"), (stamps, "At", "1970-01-01 09:00:00")]:  # 08:00 in UTC
+        value = whole + ".0000000005"
+        assert names(flt(act, df, (column, "=", value))) == []
+        assert names(flt(act, df, (column, "!=", value))) == ["a", "b", "c"]
+        assert names(flt(act, df, (column, "<", value))) == names(flt(act, df, (column, "<=", value))) == ["a"]
+        assert names(flt(act, df, (column, ">", value))) == names(flt(act, df, (column, ">=", value))) == ["b"]
+        assert names(flt(act, df, (column, "in", f"{value}; {whole}.000000001"))) == ["b"]
+        assert names(flt(act, df, (column, "=", whole + ".0000000000"))) == ["a"]  # zeros below a nanosecond: as before
+        kind = "times" if column == "Start" else "date-times"
+        message = rf"^'{re.escape(value)}' doesn't fit column '{column}': {kind} hold no digits below a nanosecond$"
+        with pytest.raises(ActionError, match=message):
+            act("rows.fill", df, {"columns": [column], "method": "value", "value": value})
+
+
+@pytest.mark.parametrize("unit", ["ms", "us"])
+def test_a_date_time_parameter_with_digits_below_the_unit_of_its_column(act, unit):
+    """A moment of this PC's clock, such as {Now}, has microseconds: in a column of milliseconds
+    with a time zone Polars left them out, as for a typed date-time."""
+    local = dt.datetime(2026, 7, 1, 10, 0, 0, 123_457)  # on this PC's clock
+    moment = nanoseconds_of(local.astimezone(dt.UTC), None)
+    value = DateTimeText(local.isoformat(sep=" "), local)
+    size = {"ms": 10**6, "us": 10**3}[unit]
+    below = moment // size * size
+    cells = [below - size, below, below + size, None]
+    df = pl.DataFrame({"Name": list("abcd"), "At": stamps_in(cells, unit, KIRITIMATI)})
+    for operator in ("=", "!=", "<", ">="):
+        assert names(flt(act, df, ("At", operator, value))) == matching(cells, operator, moment), operator
+    filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": value})["At"]
+    assert filled.dtype == pl.Datetime("us", KIRITIMATI) and filled.to_physical()[3] == moment // 1000
+
+
+@pytest.mark.parametrize(
+    ("cells", "unit", "value", "message"),
+    [
+        (  # its digits below a microsecond can't be after 2262
+            [nanoseconds_of(dt.datetime(2025, 1, 1), None), None],
+            "us",
+            "9999-01-01 00:00:00.000000001",
+            r"its digits below a microsecond need nanoseconds, which reach only from 1677 to 2262$",
+        ),
+        (  # the column of microseconds can't become nanoseconds
+            [nanoseconds_of(dt.datetime(9999, 12, 31), None), None],
+            "us",
+            "2025-01-01 08:30:00.000000001",
+            r"with it the column holds nanoseconds, which reach only from 1677 to 2262, but it has values beyond them \(e\.g\. 9999-12-31 00:00:00\)$",
+        ),
+        (  # nor milliseconds of a year far beyond 9999 microseconds
+            [2**62 * 10**6, None],
+            "ms",
+            "2025-01-01 08:30:00.0005",
+            r"with it the column holds microseconds, but it has values beyond them",
+        ),
+    ],
+)
+def test_filling_a_date_time_that_a_finer_unit_of_its_column_cant_take_says_so(act, cells, unit, value, message):
+    df = pl.DataFrame({"At": stamps_in(cells, unit, None)})
+    with pytest.raises(ActionError, match=rf"^'{re.escape(value)}' doesn't fit column 'At': " + message):
+        act("rows.fill", df, {"columns": ["At"], "method": "value", "value": value})
 
 
 @pytest.mark.parametrize("unit", ["ns", "us", "ms"])
