@@ -267,6 +267,41 @@ def test_sqlite_writes_each_date_time_the_same_way_in_every_export(db):
     assert db.rows("SELECT COUNT(*) FROM orders") == [(0,)]
 
 
+def test_sqlite_keeps_the_fractions_of_a_second(db, registry):
+    """A time 08:30:00.5 was stored as 08:30:00, and a date-time lost its nanoseconds: different
+    values became one, also as keys. Each value has one text: whole seconds without a fraction,
+    a fraction of whole microseconds with six digits (as date-times always had), one with
+    nanoseconds with nine; the same in a column of microseconds and one of nanoseconds."""
+    second = 1_735_720_200 * 10**9  # 2025-01-01 08:30:00
+    stamps = [second + 1, second, second + 500_000_000, second + 1_500]
+    clocks = [30_600 * 10**9 + 500_000_000, 30_600 * 10**9, 30_600 * 10**9 + 1, 30_600 * 10**9 + 1_000]
+    data = pl.DataFrame({
+        "OrderNo": [1, 2, 3, 4],
+        "Stamp": pl.Series(stamps, dtype=pl.Int64).cast(pl.Datetime("ns")),
+        "Clock": pl.Series(clocks, dtype=pl.Int64).cast(pl.Time),
+    })  # fmt: skip
+    stored = [
+        (1, "2025-01-01 08:30:00.000000001", "08:30:00.500000"),
+        (2, "2025-01-01 08:30:00", "08:30:00"),
+        (3, "2025-01-01 08:30:00.500000", "08:30:00.000000001"),
+        (4, "2025-01-01 08:30:00.000001500", "08:30:00.000001"),
+    ]
+    db.export(data)
+    assert db.rows("SELECT OrderNo, Stamp, Clock FROM orders ORDER BY OrderNo") == stored
+    for key in ("Stamp", "Clock"):  # each key finds its own row, and no other
+        db.export(data.with_columns(OrderNo=pl.col("OrderNo") * 10), mode="update", key_columns=[key])
+        assert db.context.messages[-1] == ("info", "orders: updated 4 rows"), key
+        assert db.rows("SELECT OrderNo, Stamp, Clock FROM orders ORDER BY OrderNo") == [(n * 10, s, c) for n, s, c in stored], key
+        db.export(data, mode="replace_keys", key_columns=[key])
+        assert db.rows("SELECT OrderNo, Stamp, Clock FROM orders ORDER BY OrderNo") == stored, key
+        db.export(data.head(2), mode="delete", key_columns=[key])
+        assert db.rows("SELECT OrderNo FROM orders ORDER BY OrderNo") == [(3,), (4,)], key
+        db.export(data.head(2))
+    later = data.with_columns(pl.col("Stamp").cast(pl.Datetime("us")), OrderNo=pl.col("OrderNo") + 100)
+    db.export(later.slice(1, 2), mode="upsert", key_columns=["Stamp"])  # 08:30:00 and .5 as microseconds
+    assert db.context.messages[-1] == ("info", "orders: updated 2 rows")
+
+
 def test_sqlite_exact_decimals_keep_their_digits(db, registry):
     """Exact decimals (e.g. from Parquet or SQL Server) go to SQLite as texts with all their
     digits. A new table gets INTEGER or REAL for them when that keeps every value of the type,

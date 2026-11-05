@@ -896,12 +896,13 @@ class SQLite(Connector):
 
     def prepare_frame(self, df):
         """Dates and times as ISO text, the way SQLite stores them (2025-01-31 08:30:00, with
-        six digits for a fraction of a second: 08:30:00.500000); a date-time with a time zone in
-        that zone's local time, without the zone. Exact decimals (Decimal) as text with all their
-        digits (1.50): SQLite turns it into a number for a column of numbers (REAL, INTEGER,
-        NUMERIC, DECIMAL(10,2)), as it does with every text that is a number, also when keys
-        compare, and keeps it for a TEXT column. Each value gets the same text in every export,
-        whatever the other values are, so that keys find their rows."""
+        six digits for a fraction of a second: 08:30:00.500000, and nine for one with
+        nanoseconds: 08:30:00.000000001); a date-time with a time zone in that zone's local time,
+        without the zone. Exact decimals (Decimal) as text with all their digits (1.50): SQLite
+        turns it into a number for a column of numbers (REAL, INTEGER, NUMERIC, DECIMAL(10,2)),
+        as it does with every text that is a number, also when keys compare, and keeps it for a
+        TEXT column. Each value gets the same text in every export, whatever the other values
+        and the column's unit are, so that keys find their rows."""
         df = super().prepare_frame(df)
         changes = []
         for name, dtype in df.schema.items():
@@ -911,10 +912,9 @@ class SQLite(Connector):
             elif dtype == pl.Date:
                 changes.append(column.dt.strftime("%Y-%m-%d"))
             elif dtype == pl.Datetime:
-                whole, fraction = column.dt.strftime("%Y-%m-%d %H:%M:%S"), column.dt.strftime("%Y-%m-%d %H:%M:%S%.6f")
-                changes.append(pl.when(column.dt.microsecond() == 0).then(whole).otherwise(fraction))
+                changes.append(_iso_text(column, "%Y-%m-%d %H:%M:%S"))
             elif dtype == pl.Time:
-                changes.append(column.cast(pl.String))
+                changes.append(_iso_text(column, "%H:%M:%S"))
         return df.with_columns(changes)
 
     def insert_missing_sql(self, table, stage, columns, keys):
@@ -949,6 +949,21 @@ class SQLite(Connector):
         finally:
             conn.set_authorizer(None)
         return conn.total_changes - before
+
+
+def _iso_text(column: pl.Expr, seconds: str) -> pl.Expr:
+    """A date-time or time as SQLite keeps it, in the strftime form ``seconds`` (up to the whole
+    seconds): without a fraction for whole seconds (08:30:00), with six digits for one of whole
+    microseconds (08:30:00.500000, as SQLite exports have always written date-times, so that keys
+    find those rows), with nine for one with nanoseconds (08:30:00.000000001)."""
+    nanoseconds = column.dt.nanosecond()  # the whole fraction of the second
+    return (
+        pl.when(nanoseconds == 0)
+        .then(column.dt.strftime(seconds))
+        .when(nanoseconds % 1000 == 0)
+        .then(column.dt.strftime(seconds + "%.6f"))
+        .otherwise(column.dt.strftime(seconds + "%.9f"))
+    )
 
 
 # Steps of SQLite's own program. Mostly that is some microseconds, but a row takes only a few
