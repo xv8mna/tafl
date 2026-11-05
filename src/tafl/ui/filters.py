@@ -62,6 +62,14 @@ _EPOCH = dt.datetime(1970, 1, 1)
 _EPOCH_UTC = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 _MICROSECOND = dt.timedelta(microseconds=1)
 _UNIT_NS = {"ns": 1, "us": 1_000, "ms": 1_000_000}  # nanoseconds of a time unit of Polars
+_DAY_US = 86_400_000_000  # microseconds of a day
+_PERIOD_TEXTS = {  # the periods of the card (Polars): a year before 1 has a -, one after 9999 a + (not in a week)
+    "year": re.compile(r"([-+]?[0-9]+)"),
+    "quarter": re.compile(r"([-+]?[0-9]+) Q([1-4])"),
+    "month": re.compile(r"([-+]?[0-9]+)-([0-9]{2})"),
+    "week": re.compile(r"([-+]?[0-9]+)-W([0-9]{2})"),
+    "date": re.compile(r"([-+]?[0-9]+)-([0-9]{2})-([0-9]{2})"),
+}
 _NANOSECONDS = re.compile(r"(:\d{2}\.\d{6})(\d{1,3})(?!\d)")  # the digits of a fraction after the 6th
 _SPAN = re.compile(r"(-)?P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)(?:\.(\d{1,9}))?S)?)?")  # PT1H, P2DT0.000000001S
 # Polars' \w, \d and \s are those of Unicode, RE2's (in DuckDB) those of ASCII: what to write for
@@ -570,10 +578,20 @@ def facet(
 def formula(f: Filter, dtype: pl.DataType, data: pl.Series | None = None) -> str:
     """The filter as a condition for the step "Filter rows by formula" (same rows). ``data``: the
     column at the step: the condition must keep the rows there that the filter keeps. Raises
-    NotAStep for a filter that a step can't say the same way."""
-    step = _formula(f, dtype, data)
-    if data is not None:
-        _check_rows(f, step, data)
+    NotAStep for a filter that a step can't say the same way, and for values that can't be
+    calculated (such as a date-time beyond the years that Polars knows): only NotAStep."""
+    try:
+        step = _formula(f, dtype, data)
+        if data is not None:
+            _check_rows(f, step, data)
+    except NotAStep:
+        raise
+    except (ArithmeticError, ValueError, pl.exceptions.PolarsError):
+        raise NotAStep("a step can't say these values") from None
+    except BaseException as e:  # a crash inside Polars (Rust) is not an Exception
+        if not expressions.is_panic(e):
+            raise
+        raise NotAStep("a step can't say these values") from None
     return step
 
 
@@ -622,9 +640,9 @@ def _formula(f: Filter, dtype: pl.DataType, data: pl.Series | None) -> str:
         # From when to when each period is, by Polars' rules of the zone, as the card has them: DuckDB's
         # rules of a zone can differ (America/Vancouver from 2026-11-01)
         for period in values:
-            limits = _period_moments(period, f.options.get("by", "month"), dtype)
+            limits = _period_moments(period, f.options.get("by", "month"), _zone(dtype))
             if limits is not None:
-                start, end = (_literal(moment, dtype) for moment in limits)
+                start, end = (_moment_sql(moment) for moment in limits)
                 parts.append(f"{name} >= {start} AND {name} < {end}")
     elif values:
         kind = key_type(f, dtype)
@@ -654,44 +672,75 @@ def _picked_sql(f: Filter, name: str) -> str:
     return name
 
 
-def _period_moments(period: str, by: str, dtype: pl.DataType) -> tuple[int, int] | None:
-    """The first moment of a period of the card (2026-11, 2026 Q4, 2026-W48, ...) and of the period
-    after it, in the time unit of a column with a time zone (since 1970, UTC); None for a text that
-    is no period."""
-    try:
-        if by == "year":
-            start = dt.date(int(period), 1, 1)
-            end = dt.date(start.year + 1, 1, 1)
-        elif by == "quarter":
-            year, quarter = map(int, re.fullmatch(r"(-?\d+) Q([1-4])", period).groups())
-            start = dt.date(year, 3 * quarter - 2, 1)
-            end = dt.date(year + 1, 1, 1) if quarter == 4 else dt.date(year, 3 * quarter + 1, 1)
-        elif by == "week":
-            year, week = map(int, re.fullmatch(r"(-?\d+)-W(\d{2})", period).groups())
-            start = dt.date.fromisocalendar(year, week, 1)
-            end = start + dt.timedelta(days=7)
-        elif by == "date":
-            start = dt.date.fromisoformat(period)
-            end = start + dt.timedelta(days=1)
-        else:
-            year, month = map(int, re.fullmatch(r"(-?\d+)-(\d{2})", period).groups())
-            start = dt.date(year, month, 1)
-            end = dt.date(year + 1, 1, 1) if month == 12 else dt.date(year, month + 1, 1)
-    except (AttributeError, TypeError, ValueError, OverflowError):  # no period, or beyond the years of Python
+def _period_moments(period: str, by: str, zone: str) -> tuple[int, int] | None:
+    """The first moment of a period of the card (2026-11, 2026 Q4, 2026-W48, +10000-01, ...) in the
+    time zone ``zone`` and the first moment of the period after it, as microseconds since 1970 (UTC);
+    None for a text that is no period."""
+    days = _period_days(period, by)
+    if days is None:
         return None
-    first, after = (_first_moment(dt.datetime.combine(day, dt.time()), dtype) for day in (start, end))
+    first, after = (_first_moment(day * _DAY_US, zone) for day in days)
     return None if first is None or after is None else (first, after)
 
 
-def _first_moment(local: dt.datetime, dtype: pl.DataType) -> int | None:
-    """The first moment whose local time in the zone of ``dtype`` (by Polars' rules) is ``local`` or
-    later, in its time unit since 1970 (UTC): of a time that a clock change repeats the earlier one,
-    of a time that it skips (as midnight in Havana in March) the moment of the change."""
-    unit, zone = _unit(dtype), _zone(dtype)
-    day = _units(dt.datetime(1970, 1, 2), unit)
-    wall = _units(local, unit)
+def _period_days(period: str, by: str) -> tuple[int, int] | None:
+    """The first day of a period of the card and the first day of the period after it, as days
+    since 1970, in any year (Polars writes 0000, -0001 and +10000); None for a text that is no
+    period. Not with Python's dates: they end at the years 1 and 9999."""
+    found = _PERIOD_TEXTS.get(by, _PERIOD_TEXTS["month"]).fullmatch(period)
+    if found is None:
+        return None
+    year, *more = map(int, found.groups())
+    if by == "year":
+        return _days(year, 1, 1), _days(year + 1, 1, 1)
+    if by == "quarter":
+        quarter = more[0]
+        return _days(year, 3 * quarter - 2, 1), _days(year + quarter // 4, 3 * quarter % 12 + 1, 1)
+    if by == "week":
+        start = _week_one(year) + 7 * (more[0] - 1)
+        return (start, start + 7) if more[0] >= 1 and start < _week_one(year + 1) else None
+    month = more[0]
+    if not 1 <= month <= 12:
+        return None
+    if by == "date":
+        start = _days(year, month, more[1])
+        return (start, start + 1) if _civil(start) == (year, month, more[1]) else None
+    return _days(year, month, 1), _days(year + month // 12, month % 12 + 1, 1)
+
+
+def _days(year: int, month: int, day: int) -> int:
+    """The days since 1970-01-01 of a date of the Gregorian calendar, in any year (0 is 1 BC, as
+    Polars and DuckDB count). The method of "chrono-Compatible Low-Level Date Algorithms"."""
+    year -= month <= 2
+    era, year_of_era = divmod(year, 400)
+    day_of_year = (153 * ((month + 9) % 12) + 2) // 5 + day - 1  # from 1 March
+    return era * 146_097 + year_of_era * 365 + year_of_era // 4 - year_of_era // 100 + day_of_year - 719_468
+
+
+def _civil(days: int) -> tuple[int, int, int]:
+    """The year, month and day of a number of days since 1970-01-01 (see _days)."""
+    era, day_of_era = divmod(days + 719_468, 146_097)
+    year_of_era = (day_of_era - day_of_era // 1460 + day_of_era // 36_524 - day_of_era // 146_096) // 365
+    day_of_year = day_of_era - (365 * year_of_era + year_of_era // 4 - year_of_era // 100)  # from 1 March
+    shifted = (5 * day_of_year + 2) // 153
+    month = shifted + 3 if shifted < 10 else shifted - 9
+    return era * 400 + year_of_era + (month <= 2), month, day_of_year - (153 * shifted + 2) // 5 + 1
+
+
+def _week_one(year: int) -> int:
+    """The Monday of week 1 of an ISO year (the week of 4 January), as days since 1970."""
+    fourth = _days(year, 1, 4)
+    return fourth - (fourth + 3) % 7  # 1970-01-01 was a Thursday
+
+
+def _first_moment(wall: int, zone: str) -> int | None:
+    """The first moment whose local time in ``zone`` (by Polars' rules) is ``wall`` or later (both
+    as microseconds since 1970): of a time that a clock change repeats the earlier one, of a time
+    that it skips (as midnight in Havana in March) the moment of the change. In microseconds also
+    for a column of nanoseconds: Polars' nanoseconds end in the years 1677 and 2262, and there its
+    replace_time_zone gives a wrong moment, not an error."""
     found, before, after = (
-        pl.Series([wall, wall - day, wall + day], dtype=pl.Int64).cast(pl.Datetime(unit))
+        pl.Series([wall, wall - _DAY_US, wall + _DAY_US], dtype=pl.Int64).cast(pl.Datetime("us"))
         .dt.replace_time_zone(zone, ambiguous="earliest", non_existent="null").cast(pl.Int64).to_list()
     )  # fmt: skip
     if found is not None:
@@ -700,19 +749,35 @@ def _first_moment(local: dt.datetime, dtype: pl.DataType) -> int | None:
         return None
 
     def local_of(moment: int) -> int:
-        return pl.Series([moment], dtype=pl.Int64).cast(pl.Datetime(unit, zone)).dt.replace_time_zone(None).cast(pl.Int64)[0]
+        return pl.Series([moment], dtype=pl.Int64).cast(pl.Datetime("us", zone)).dt.replace_time_zone(None).cast(pl.Int64)[0]
 
     # The change is after the moment that has local - the later offset, and not after local - the earlier one
-    low, high = wall - (wall + day - after), wall - (wall - day - before)
+    low, high = wall - (wall + _DAY_US - after), wall - (wall - _DAY_US - before)
     while high - low > 1:
         middle = (low + high) // 2
         low, high = (low, middle) if local_of(middle) >= wall else (middle, high)
     return high if local_of(high - 1) < wall <= local_of(high) else None
 
 
-def _units(moment: dt.datetime, unit: str) -> int:
-    """A naive date-time as whole units of Polars since 1970."""
-    return (moment - _EPOCH) // _MICROSECOND * 1000 // _UNIT_NS[unit]
+def _moment_sql(microseconds: int) -> str:
+    """A moment (microseconds since 1970, UTC) as a step writes it: TIMESTAMPTZ '2026-12-01
+    07:30:00+00:00' (a TIMESTAMP would be in this PC's time zone)."""
+    return f"TIMESTAMPTZ '{_timestamp_text(microseconds * 1000)}+00:00'"
+
+
+def _timestamp_text(nanoseconds: int) -> str:
+    """A date-time (nanoseconds since 1970) as DuckDB reads it, in any year: 2026-12-01 07:30:00,
+    with 6 digits of a fraction, or 9 for nanoseconds. A year before 1 is written as Polars and
+    DuckDB count it (0000 is 1 BC, -0001 2 BC), one after 9999 without a + (10000)."""
+    microseconds, below = divmod(nanoseconds, 1000)
+    days, rest = divmod(microseconds, _DAY_US)
+    seconds, fraction = divmod(rest, 1_000_000)
+    year, month, day = _civil(days)
+    text = f"{year:04d}" if year >= 0 else f"-{-year:04d}"
+    text += f"-{month:02d}-{day:02d} {seconds // 3600:02d}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
+    if below:
+        return text + f".{fraction:06d}{below:03d}"
+    return text + (f".{fraction:06d}" if fraction else "")
 
 
 def _check_nanoseconds(f: Filter, dtype: pl.DataType, values: list[Any], data: pl.Series | None) -> None:
@@ -738,13 +803,10 @@ def _check_nanoseconds(f: Filter, dtype: pl.DataType, values: list[Any], data: p
 def _literal(value: Any, dtype: pl.DataType) -> str:
     """A value of ``from_json`` as a step writes it, in the column's type."""
     if dtype == pl.Datetime:
-        microseconds, nanoseconds = divmod(value * _UNIT_NS[_unit(dtype)], 1000)
-        moment = _EPOCH + dt.timedelta(microseconds=microseconds)
-        if _zone(dtype) is not None:  # the moment, in UTC (a TIMESTAMP would be in this PC's time zone)
-            return f"TIMESTAMPTZ '{moment.isoformat(sep=' ')}+00:00'"
-        if nanoseconds:
-            return f"TIMESTAMP_NS '{_with_nanoseconds(moment, nanoseconds).replace('T', ' ')}'"
-        return f"TIMESTAMP '{moment.isoformat(sep=' ')}'"
+        nanoseconds = value * _UNIT_NS[_unit(dtype)]
+        if _zone(dtype) is not None:  # to the microsecond (see _check_nanoseconds)
+            return _moment_sql(nanoseconds // 1000)
+        return f"TIMESTAMP{'_NS' if nanoseconds % 1000 else ''} '{_timestamp_text(nanoseconds)}'"
     if dtype == pl.Time:
         microseconds, nanoseconds = divmod(value, 1000)
         time = (dt.datetime.min + dt.timedelta(microseconds=microseconds)).time()

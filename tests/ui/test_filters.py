@@ -1052,6 +1052,32 @@ def test_a_time_period_of_a_zone_whose_rules_duckdb_has_otherwise_as_a_step(act,
     assert zone != "America/Vancouver" or same_rows(act, vancouver, Filter("When", ["2026-11"], "period", {"by": "month"})) == [0]
 
 
+@pytest.mark.parametrize("zone", ["Asia/Tokyo", "Europe/Berlin", "America/Vancouver", "UTC"])
+def test_periods_and_values_at_the_ends_of_the_years_as_a_step(act, zone):
+    """East of UTC, local 0001-01-01 begins in the year 0 (UTC), and after 9999 comes 10000:
+    Python's dates have neither. Add as step of such a period stopped with "OverflowError: date
+    value out of range" (or said that the step would keep other rows), and so did a picked value
+    whose moment is in the year 0. Values beyond the years of Polars are refused, with no other
+    error than NotAStep."""
+    moments = [dt.datetime(1, 1, 1), dt.datetime(1, 1, 1, 12), dt.datetime(9999, 12, 31, 12), dt.datetime(9999, 12, 31, 23, 59), dt.datetime(2026, 1, 5, 8), None]
+    df = pl.DataFrame({"id": range(len(moments)), "When": pl.Series("When", moments).dt.replace_time_zone("UTC").dt.convert_time_zone(zone)})
+    for by in PERIODS:
+        periods, _ = facet(df, [Filter("When", [], "period", {"by": by})], 0)
+        for period in periods["value"].to_list():
+            assert same_rows(act, df, Filter("When", [period], "period", {"by": by})), (by, period)
+    nanos = pl.Series("When", [dt.datetime(2262, 1, 1, 12), dt.datetime(1677, 12, 31, 12)], dtype=pl.Datetime("ns"))
+    near = pl.DataFrame({"id": [0, 1], "When": nanos.dt.replace_time_zone("UTC").dt.convert_time_zone(zone)})
+    for period in ("2262", "1677"):  # nanoseconds end in 1677 and 2262: these years begin or end beyond them
+        assert same_rows(act, near, Filter("When", [period], "period", {"by": "year"})), period
+    berlin = pl.Series("When", [dt.datetime(1, 1, 1, 0, 10), dt.datetime(2026, 1, 5, 8)]).dt.replace_time_zone("Europe/Berlin")
+    first = pl.DataFrame({"id": [0, 1], "When": berlin})  # 0001-01-01 00:10 +00:53:28 is 0000-12-31 23:16:32 UTC
+    assert same_rows(act, first, Filter("When", stored_values(first["When"])[:1])) == [0]
+    beyond = pl.Series("When", [270_000 * 31_556_952 * 10**6, 0], dtype=pl.Int64).cast(pl.Datetime("us")).dt.replace_time_zone("UTC")
+    with pytest.raises(NotAStep, match=r"^a step can't say these values$"):  # Polars stops with a panic there
+        formula(Filter("When", ["+271970"], "period", {"by": "year"}), beyond.dtype, beyond)
+    assert formula(Filter("When", ["1970-01-01T00:00:00+00:00"]), beyond.dtype, beyond).startswith("[When] IN (TIMESTAMPTZ")
+
+
 @pytest.mark.parametrize("zone", ["UTC", "America/New_York", "Europe/Berlin"])
 def test_a_value_of_a_column_with_a_time_zone_as_a_step(act, zone):
     """The step's TIMESTAMP dropped the offset: it kept no row, or (in the PC's zone) the other row
