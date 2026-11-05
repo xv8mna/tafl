@@ -97,6 +97,22 @@ def test_excel_serial_numbers():
     assert out.to_list() == [dt.datetime(2025, 1, 1), dt.datetime(2025, 1, 1, 12)]
 
 
+def test_the_common_type_of_columns():
+    """The rule of Unpivot and Append for columns of different types (see their tests)."""
+    whole, decimal = pl.Series("a", [1, None]), pl.Series("b", [1.5])
+    assert dtypes.common_type([whole, decimal]) == dtypes.CommonType(pl.Float64, (True, True))
+    empty = pl.Series("^a.*$", [None, None], dtype=pl.String)  # nothing in it: it doesn't count
+    assert dtypes.common_type([whole, empty]) == dtypes.CommonType(pl.Int64, (True, False))
+    assert dtypes.common_type([decimal, pl.Series("*", [2**53 + 1])]) == dtypes.CommonType(pl.String, (True, True), lost=1)
+    assert dtypes.common_type([whole, pl.Series("d", [[1]])]).dtype is None  # a list beside a number has no text
+    no_rows = [whole.clear(), pl.Series("e", [], dtype=pl.Date), pl.Series("f", [], dtype=pl.Null)]
+    assert dtypes.common_type(no_rows) == dtypes.CommonType(pl.String, (True, True, False))  # the types decide
+    assert dtypes.common_type([pl.Series("g", [None])]) == dtypes.CommonType(pl.Null, (False,))
+    two, seven = dtypes.to_common_type(pl.lit(2.0), pl.Float64, pl.String), dtypes.to_common_type(pl.lit(7), pl.Int64, pl.Float64)
+    assert pl.select(two.alias("a"), seven.alias("b")).row(0) == ("2", 7.0)
+    assert dtypes.type_word(pl.Decimal(38, 2)) == "exact decimal" and dtypes.type_word(pl.Datetime("us", "UTC")) == "date-time (UTC)"
+
+
 def test_parse_booleans():
     s = pl.Series(["Ja", "nein", "X", "0", "maybe", None])
     assert dtypes.parse_booleans(s).to_list() == [True, False, True, False, None, None]

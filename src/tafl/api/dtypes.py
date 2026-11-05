@@ -322,6 +322,105 @@ def _digit_format(fmt: str) -> int | None:
     return sum(len(token) for token in tokens)
 
 
+# --- one type for the values of several columns ----------------------------------------------
+
+_UNITS = ("ns", "us", "ms")  # of date-times and durations, the finest first
+
+
+@dataclass(frozen=True)
+class CommonType:
+    """The type in which the values of several columns go into one column (``common_type``)."""
+
+    dtype: pl.DataType | None  # None: lists, records or objects beside another type
+    counted: tuple[bool, ...]  # for each column, whether its type counted (if not, its values are all empty)
+    lost: int | None = None  # with text: the first column whose values the best common type would change
+
+
+def common_type(columns: list[pl.Series]) -> CommonType:
+    """The type for the values of these columns in one column, as Unpivot puts them into its value
+    column and Append puts tables below each other. Columns of one type keep it. Whole and decimal
+    numbers become decimal numbers, whole numbers and exact decimals exact decimals, dates and
+    date-times of one time zone date-times, durations durations (each in the finest unit that
+    holds every value), when every value stays as it is. Any other mix becomes text, as
+    ``to_common_type`` writes it: the grid's text. A column whose values are all empty doesn't
+    count, whatever its type; when no column has a value (a table without rows), the types count,
+    except Null. Lists, records and objects have no common type with another type (``dtype`` is
+    None): they have no text."""
+    columns = [s.alias("value") for s in columns]  # Polars' Series methods would read a name like ^a.*$ as a pattern
+    has_values = [s.null_count() < s.len() for s in columns]
+    counted = tuple(has_values) if any(has_values) else tuple(s.dtype != pl.Null for s in columns)
+    types = list(dict.fromkeys(s.dtype for s, counts in zip(columns, counted, strict=True) if counts))
+    if len(types) <= 1:
+        return CommonType(types[0] if types else pl.Null, counted)
+    if any(t.is_nested() or t == pl.Object for t in types):
+        return CommonType(None, counted)
+    first_lost = None
+    for common in _common_types(types):
+        changed = (i for i, s in enumerate(columns) if counted[i] and s.dtype != common and not _keeps_values(s, common))
+        lost = next(changed, None)
+        if lost is None:
+            return CommonType(common, counted)
+        first_lost = lost if first_lost is None else first_lost
+    return CommonType(pl.String, counted, first_lost)
+
+
+def to_common_type(expr: pl.Expr, dtype: pl.DataType, target: pl.DataType) -> pl.Expr:
+    """``expr``, of type ``dtype``, in the type that ``common_type`` gave: as text, the grid's text
+    (``text_expr``); a date as midnight of a date-time's time zone (a plain cast would take
+    midnight in UTC); else empty where a value doesn't fit."""
+    if target == pl.String:
+        return text_expr(expr, dtype)
+    if dtype == pl.Date and isinstance(target, pl.Datetime) and target.time_zone:
+        local = expr.cast(pl.Datetime(target.time_unit))
+        return local.dt.replace_time_zone(target.time_zone, ambiguous="earliest", non_existent="null")
+    return expr.cast(target, strict=False)
+
+
+def type_word(dtype: pl.DataType) -> str:
+    """The word for a type in a message about columns of different types: ``type_label``, but an
+    exact decimal and a date-time with a time zone are told apart ("date-time (UTC)")."""
+    if isinstance(dtype, pl.Decimal):
+        return "exact decimal"
+    if isinstance(dtype, pl.Datetime) and dtype.time_zone:
+        return f"date-time ({dtype.time_zone})"
+    return type_label(dtype)
+
+
+def _common_types(types: list[pl.DataType]) -> list[pl.DataType]:
+    """Types that can hold the values of all these types (if the values fit), the best first."""
+    if all(t.is_integer() for t in types):
+        return [pl.Int64]
+    if all(t.is_integer() or t.is_float() for t in types):
+        return [pl.Float64]
+    if all(t.is_integer() or isinstance(t, pl.Decimal) for t in types):
+        return [pl.Decimal(38, max(t.scale for t in types if isinstance(t, pl.Decimal)))]
+    # Dates and date-times of one time zone, or durations: date-times (durations) in the finest
+    # unit of the columns, else in a coarser one (a nanosecond one ends in the year 2262)
+    times = [t for t in types if t != pl.Date]
+    if all(isinstance(t, pl.Datetime) for t in times) and len({t.time_zone for t in times}) == 1:
+        return [pl.Datetime(unit, times[0].time_zone) for unit in _coarser(times)]
+    if all(isinstance(t, pl.Duration) for t in types):
+        return [pl.Duration(unit) for unit in _coarser(types)]
+    return []
+
+
+def _coarser(types: list[pl.DataType]) -> tuple[str, ...]:
+    """The finest unit of these date-times or durations, and the coarser ones."""
+    return _UNITS[min(_UNITS.index(t.time_unit) for t in types) :]
+
+
+def _keeps_values(s: pl.Series, target: pl.DataType) -> bool:
+    """Whether the values of ``s`` (named "value") come back unchanged from ``target``."""
+    if s.dtype.is_float() and target == pl.Float64:
+        return True
+    if s.dtype.is_integer() and target == pl.Float64:  # all whole numbers up to 2^53 are exact
+        low, high = s.min(), s.max()
+        return low is None or (-(2**53) <= low and high <= 2**53)
+    back = to_common_type(pl.col("value"), s.dtype, target)
+    back = back.dt.date() if s.dtype == pl.Date else back.cast(s.dtype, strict=False)
+    return s.to_frame().select((pl.col("value").is_null() | (back == pl.col("value")).fill_null(False)).all()).item()
+
+
 # --- detecting types -------------------------------------------------------------------------
 
 

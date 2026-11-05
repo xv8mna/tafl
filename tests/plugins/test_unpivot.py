@@ -1,6 +1,8 @@
 """Unpivot: columns become rows."""
 
 import datetime as dt
+import subprocess
+import sys
 import time
 from decimal import Decimal as D
 
@@ -205,6 +207,30 @@ def test_other_mixes_become_text(act, columns, expected, message):
     assert ctx.messages == [("info", message)]
 
 
+def test_a_column_of_only_empty_values_doesnt_decide_the_type(act):
+    """A column with nothing in it, also one of text as a CSV import gives it, doesn't make the
+    values text. Before, all values became text, also with "Leave out empty values"."""
+    wide = pl.DataFrame({"id": [1, 2], "a": [12500, 300], "b": pl.Series([None, None], dtype=pl.String)})
+    ctx = StubContext()
+    out = unpivot(act, wide, ctx, columns=["a", "b"])
+    assert out.schema["Value"] == pl.Int64 and out["Value"].to_list() == [12500, None, 300, None]
+    dropped = unpivot(act, wide, ctx, columns=["a", "b"], drop_empty=True)
+    assert dropped.schema["Value"] == pl.Int64 and dropped.rows() == [(1, "a", 12500), (2, "a", 300)]
+    spaces = wide.with_columns(b=pl.Series(["  ", None]))  # left out as empty values: they don't count either
+    assert unpivot(act, spaces, ctx, columns=["a", "b"], drop_empty=True).rows() == [(1, "a", 12500), (2, "a", 300)]
+    for dtype in (pl.Date, pl.Boolean, pl.Decimal(10, 2), pl.Datetime("ns", "UTC"), pl.Categorical):  # whatever its type
+        out = unpivot(act, wide.with_columns(pl.Series("b", [None, None], dtype=dtype)), ctx, columns=["a", "b"])
+        assert out.schema["Value"] == pl.Int64 and out["Value"].to_list() == [12500, None, 300, None]
+    assert ctx.messages == []
+    kept = unpivot(act, spaces, ctx, columns=["a", "b"])  # the spaces stay a value: text
+    assert kept["Value"].to_list() == ["12500", "  ", "300", None]
+    assert ctx.messages == [("info", MIXED.format("integer: a; text: b"))]
+    dates = unpivot(act, wide.with_columns(c=pl.Series([None, dt.date(2025, 1, 2)])), StubContext(), columns=["a", "b", "c"])
+    assert dates["Value"].to_list() == ["12500", None, None, "300", None, "2025-01-02"]  # the empty text b doesn't count
+    nothing = pl.DataFrame({"a": pl.Series([None], dtype=pl.Int64), "b": pl.Series([None], dtype=pl.Date)})
+    assert unpivot(act, nothing, columns=["a", "b"]).schema["Value"] == pl.String  # no column has a value: the types decide
+
+
 def test_text_forms(act):
     ctx = StubContext()
     out = values(
@@ -289,6 +315,45 @@ def test_in_a_project(registry, tmp_path):
     table.steps[1].params["name"] = "Amount"
     result = Engine(project, registry).run(mode="preview")[table.id]
     assert result.steps[1].error == "The two new columns need different names"
+
+
+_WIDE_TYPES = """
+import datetime as dt
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+step = registry.actions["reshape.unpivot"]
+
+
+def column(i):
+    if i % 3 == 0:  # nothing in it
+        return pl.Series(f"M{i}", [None, None], dtype=pl.String)
+    if i % 3 == 1:
+        return pl.Series(f"M{i}", [i, None], dtype=pl.Int64)
+    return pl.Series(f"M{i}", [i + 0.5, None], dtype=pl.Float64)
+
+
+df = pl.DataFrame([pl.Series("id", [1, 2]), *(column(i) for i in range(4001))])
+ctx = StubContext()
+out = step(df, {"mode": "others", "columns": ["id"], "drop_empty": True}, ctx)
+assert out.schema["Value"] == pl.Float64 and out.height == 2667 and ctx.messages == [], (out.schema, out.height, ctx.messages)
+assert out["Value"].head(2).to_list() == [1.0, 2.5]
+dated = df.with_columns(pl.Series("M3", [None, dt.date(2025, 1, 2)]))
+out = step(dated, {"mode": "others", "columns": ["id"]}, ctx)
+assert out.schema["Value"] == pl.String and out.height == 2 * 4001 and out["Value"].head(3).to_list() == [None, "1", "2.5"]
+assert ctx.messages == [("info", "“Value” is text: the columns have different types (integer: M1, M4, M7 and 1331 more; "
+    "number: M2, M5, M8 and 1330 more; date: M3)")], ctx.messages
+"""
+
+
+def test_the_types_of_4000_columns():
+    """The type of the value column is worked out column by column. In a process of its own, so
+    that a deep Polars expression that overflows the stack shows as a failed test."""
+    done = subprocess.run([sys.executable, "-c", _WIDE_TYPES], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-1500:]}"
 
 
 def _best(run, rounds=3) -> float:

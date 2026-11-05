@@ -33,7 +33,6 @@ _PIECE = 2**18  # Unpivot puts this many result rows at a time in order (all at 
 _NARROW = (pl.Int8, pl.Int16, pl.Int32, pl.UInt8, pl.UInt16, pl.UInt32, pl.Boolean)  # summed as Int64
 _EXACT = 10**38  # the units of an exact decimal (its digits without the point) are below this
 _PART = 10**19  # a sum of exact decimals is checked in two parts: see _decimal_parts
-_UNITS = ("ns", "us", "ms")  # of date-times and durations, the finest first
 _PER_DAY = {"ns": 86_400 * 10**9, "us": 86_400 * 10**6, "ms": 86_400 * 10**3}  # durations
 
 
@@ -364,8 +363,9 @@ def unpivot(df, p, ctx):
     one type keep it. Whole and decimal numbers become decimal numbers, whole numbers and exact
     decimals exact decimals, dates and date-times date-times, when every value stays as it is. Any
     other mix, also decimal numbers with exact decimals, becomes text (numbers as 1.5, exact
-    decimals as 2.00, dates as 2025-12-31), and the step says so. At most 250,000,000 cells in the
-    result (rows × columns).
+    decimals as 2.00, dates as 2025-12-31), and the step says so. A column whose values are all
+    empty doesn't count, whatever its type. At most 250,000,000 cells in the result (rows ×
+    columns).
     """
     name, value = p.name.strip(), p.value.strip()
     chosen = list(dict.fromkeys(p.columns))
@@ -392,15 +392,19 @@ def unpivot(df, p, ctx):
             f"(at most {_MAX_LONG_CELLS:,}). Turn fewer columns into rows, or remove columns or rows before this step."
         )
 
-    target, lost = _value_type(df, turned)
-    if target == pl.String and any(schema[c] not in (pl.String, pl.Null) for c in turned):  # a mix
-        if lost is not None:
-            ctx.log(f"“{value}” is text, so that no value of “{lost}” changes")  # digits or a date out of range
+    # The type of the value column: a column whose values are all empty (or left out) doesn't count
+    common = dtypes.common_type([_deciding(df[c], p.drop_empty) for c in turned])
+    target, counted = common.dtype, dict(zip(turned, common.counted, strict=True))
+    if target == pl.String and any(counted[c] and schema[c] != pl.String for c in turned):  # a mix
+        if common.lost is not None:  # digits or a date out of range
+            ctx.log(f"“{value}” is text, so that no value of “{turned[common.lost]}” changes")
         else:
-            ctx.log(f"“{value}” is text: the columns have different types ({_type_groups(df, turned)})")
-        casts = [dtypes.text_expr(col(c), schema[c]).alias(c) for c in turned if schema[c] != pl.String]
-    else:
-        casts = [_cast(col(c), schema[c], target).alias(c) for c in turned if schema[c] != target]
+            ctx.log(f"“{value}” is text: the columns have different types ({_type_groups(df, [c for c in turned if counted[c]])})")
+    casts = [
+        (dtypes.to_common_type(col(c), schema[c], target) if counted[c] else pl.lit(None, dtype=target)).alias(c)
+        for c in turned
+        if schema[c] != target
+    ]
 
     # Working names: a new column may have the name of a turned column, which is there until the end
     taken = set(df.columns)
@@ -432,67 +436,13 @@ def _unpivot_problems(p) -> list[str]:
     return problems
 
 
-def _value_type(df: pl.DataFrame, turned: list[str]) -> tuple[pl.DataType, str | None]:
-    """The type of the new value column, and the first column whose values it would change
-    (then it is text). Columns with nothing but empty values (type Null) don't count."""
-    schema = df.schema
-    types = list(dict.fromkeys(schema[c] for c in turned if schema[c] != pl.Null))
-    if not types:
-        return pl.Null, None
-    if len(types) == 1:
-        return types[0], None
-    first_lost = None
-    for common in _common_types(types):
-        lost = next((c for c in turned if schema[c] not in (common, pl.Null) and not _keeps_values(df[c], common)), None)
-        if lost is None:
-            return common, None
-        first_lost = first_lost or lost
-    return pl.String, first_lost
-
-
-def _common_types(types: list[pl.DataType]) -> list[pl.DataType]:
-    """Types that can hold the values of all these types (if the values fit), the best first."""
-    if all(t.is_integer() for t in types):
-        return [pl.Int64]
-    if all(t.is_integer() or t.is_float() for t in types):
-        return [pl.Float64]
-    if all(t.is_integer() or isinstance(t, pl.Decimal) for t in types):
-        return [pl.Decimal(38, max(t.scale for t in types if isinstance(t, pl.Decimal)))]
-    # Dates and date-times of one time zone, or durations: date-times (durations) in the finest
-    # unit of the columns, else in a coarser one (a nanosecond one ends in the year 2262)
-    times = [t for t in types if t != pl.Date]
-    if all(isinstance(t, pl.Datetime) for t in times) and len({t.time_zone for t in times}) == 1:
-        return [pl.Datetime(unit, times[0].time_zone) for unit in _coarser(times)]
-    if all(isinstance(t, pl.Duration) for t in types):
-        return [pl.Duration(unit) for unit in _coarser(types)]
-    return []
-
-
-def _coarser(types: list[pl.DataType]) -> tuple[str, ...]:
-    """The finest unit of these date-times or durations, and the coarser ones."""
-    return _UNITS[min(_UNITS.index(t.time_unit) for t in types) :]
-
-
-def _keeps_values(s: pl.Series, target: pl.DataType) -> bool:
-    """Whether the values of ``s`` come back unchanged from ``target``."""
-    if s.dtype.is_float() and target == pl.Float64:
-        return True
-    if s.dtype.is_integer() and target == pl.Float64:  # all whole numbers up to 2^53 are exact
-        low, high = s.min(), s.max()
-        return low is None or (-(2**53) <= low and high <= 2**53)
-    frame = s.to_frame("value")
-    back = _cast(pl.col("value"), s.dtype, target)
-    back = back.dt.date() if s.dtype == pl.Date else back.cast(s.dtype, strict=False)
-    return frame.select((pl.col("value").is_null() | (back == pl.col("value")).fill_null(False)).all()).item()
-
-
-def _cast(column: pl.Expr, dtype: pl.DataType, target: pl.DataType) -> pl.Expr:
-    """``column`` as ``target``, empty where a value doesn't fit. A date becomes midnight of the
-    date-time's time zone (a plain cast would take midnight in UTC)."""
-    if dtype == pl.Date and isinstance(target, pl.Datetime) and target.time_zone:
-        local = column.cast(pl.Datetime(target.time_unit))
-        return local.dt.replace_time_zone(target.time_zone, ambiguous="earliest", non_existent="null")
-    return column.cast(target, strict=False)
+def _deciding(s: pl.Series, drop_empty: bool) -> pl.Series:
+    """The values of a turned column that decide the type of the value column: with "Leave out
+    empty values", not its text with nothing but spaces either."""
+    if drop_empty and _is_text(s.dtype):
+        s = s.alias("value")  # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
+        return s.filter(~_is_empty(s))
+    return s
 
 
 def _type_groups(df: pl.DataFrame, turned: list[str]) -> str:
@@ -501,20 +451,11 @@ def _type_groups(df: pl.DataFrame, turned: list[str]) -> str:
     chosen = set(turned)
     for column, dtype in df.schema.items():
         if column in chosen and dtype != pl.Null:
-            groups.setdefault(_type_word(dtype), []).append(column)
+            groups.setdefault(dtypes.type_word(dtype), []).append(column)
     return "; ".join(
         f"{word}: {', '.join(names[:3])}" + (f" and {len(names) - 3} more" if len(names) > 3 else "")
         for word, names in groups.items()
     )
-
-
-def _type_word(dtype: pl.DataType) -> str:
-    """The word for a type in a message; an exact decimal and a date-time with a time zone are told apart."""
-    if isinstance(dtype, pl.Decimal):
-        return "exact decimal"
-    if isinstance(dtype, pl.Datetime) and dtype.time_zone:
-        return f"date-time ({dtype.time_zone})"
-    return dtypes.type_label(dtype)
 
 
 # --- values as text --------------------------------------------------------------------------
@@ -524,9 +465,13 @@ def _can_be_text(dtype: pl.DataType) -> bool:
     return not (dtype.is_nested() or dtype == pl.Object)
 
 
+def _is_text(dtype: pl.DataType) -> bool:
+    return dtype in (pl.String, pl.Categorical) or isinstance(dtype, pl.Enum)
+
+
 def _is_empty(s: pl.Series) -> pl.Series:
     """Empty values, and text with nothing but spaces (as "is empty" in Filter rows)."""
-    if s.dtype in (pl.String, pl.Categorical) or isinstance(s.dtype, pl.Enum):
+    if _is_text(s.dtype):
         text = s.cast(pl.String)
         return (text.is_null() | (text.str.strip_chars() == "")).alias(s.name)
     return s.is_null()
