@@ -36,7 +36,9 @@ def replace(df, p, ctx):
 
     Whole cell value: cells equal to "Find" get the new value; an empty "Find" matches empty
     cells, an empty "Replace with" makes cells empty. Text inside: every occurrence is
-    replaced. Regular expression: "Replace with" can use $1, $2 for groups.
+    replaced. Regular expression: "Replace with" can use $1 or \\1, $2 or \\2, ... for groups
+    ($1_$2 is group 1, _ and group 2), ${name} for a named group, $$ for a $ sign, and \\\\1 for
+    a backslash before a digit.
     """
     pairs = [(r.find, r.replace) for r in p.replacements]
     if p.match != "whole" and any(find == "" for find, _ in pairs):
@@ -44,6 +46,7 @@ def replace(df, p, ctx):
     if p.match == "regex":
         for find, _ in pairs:
             _check_regex(find)
+        pairs = [(find, _replacement(find, new)) for find, new in pairs]
     schema = df.schema  # made once: for a wide table that takes a while
     typed = {}  # Whole cell value: the values of the pairs in the type of a column, None when one doesn't fit
     if p.match == "whole":
@@ -83,6 +86,49 @@ def _regex_problem(error: Exception) -> str:
     """The reason in an error of the regex library, e.g. "unclosed group"."""
     found = re.search(r"^error: (.+)$", str(error), re.MULTILINE)
     return found.group(1).strip() if found else str(error).splitlines()[0]
+
+
+# In "Replace with": $$, ${…}, $ and a number, $ and a name, two backslashes before a digit, a backslash and a number
+_REFERENCE = re.compile(r"\$\$|\$\{([^}]*)\}|\$([0-9]+)|\$([A-Za-z_][0-9A-Za-z_]*)|\\\\(?=[0-9])|\\([0-9]+)")
+
+
+def _replacement(pattern: str, text: str) -> str:
+    """The "Replace with" of the regular expression ``pattern`` as the regex library reads it, in
+    which only ${…} names a group and $$ is a $ sign. A group is $1, \\1, ${1}, $name or ${name},
+    and a number ends where the digits end: $1_$2 is group 1, _ and group 2 (the library would
+    read $1_ as a group named "1_", which no group can be). A backslash before a digit is written
+    \\\\1; other backslashes are text, as before. A group that the expression doesn't have stops
+    the step: the library would write nothing for it."""
+    groups = pl.select(pl.lit("").str.extract_groups(pattern).alias("groups")).schema["groups"].fields
+    names = {group.name for group in groups if not group.name.isdigit()}  # the others are named 1, 2, ...
+    out, end = [], 0
+    for found in _REFERENCE.finditer(text):
+        out.append(text[end : found.start()].replace("$", "$$"))  # a $ that names no group is a $ sign
+        end = found.end()
+        braced, number, name, digits = found.groups()
+        if found.group() == "$$":  # a $ sign
+            out.append("$$")
+            continue
+        if found.group() == "\\\\":  # two backslashes before a digit: a backslash, and the digit is text
+            out.append("\\")
+            continue
+        if braced is not None:  # the library reads ${01} and ${+1} as group 1
+            number, name = (braced, None) if re.fullmatch(r"\+?[0-9]+", braced) else (None, braced)
+        number = number if number is not None else digits
+        problem = ""
+        if number is not None and int(number) > len(groups):
+            problem = f"no group {int(number)}"
+        elif number is None and name not in names:
+            problem = f"no group named '{name}'"
+        if problem:
+            if digits is not None:
+                hint = f". For a backslash before a digit, write two: \\{found.group()}"
+            else:
+                hint = "" if braced is not None else ". For a $ sign, write $$"
+            raise ActionError(f"Replace with '{text}': the regular expression '{pattern}' has {problem}{hint}")
+        out.append(f"${{{int(number) if number is not None else name}}}")
+    out.append(text[end:].replace("$", "$$"))
+    return "".join(out)
 
 
 def _as_shown(df: pl.DataFrame, names: list[str], schema: pl.Schema, step: str) -> pl.DataFrame:

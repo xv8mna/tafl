@@ -31,6 +31,76 @@ def test_replace_inside_text_and_regex(act):
         replace(act, df, ["s"], [("(", "x")], match="regex")
 
 
+CODE = r"^([A-Z]+)([0-9]+)$"
+
+
+@pytest.mark.parametrize(
+    ("replace_with", "expected"),
+    [
+        ("$1_$2", "PA_1004"),  # before: 1004 (the library read $1_ as a group named "1_")
+        ("$1a$2", "PAa1004"),
+        (r"\1-\2", "PA-1004"),  # before: \1-\2
+        (r"\2\1", "1004PA"),
+        ("$1-$2", "PA-1004"),  # as before
+        ("${1}_${2}", "PA_1004"),
+        ("${01}${+2}", "PA1004"),  # as the library reads them
+        ("$0!", "PA1004!"),
+        (r"\0!", "PA1004!"),
+        ("$$1", "$1"),  # $$ is a $ sign
+        ("US$ $2", "US$ 1004"),  # a $ that names no group too
+        ("${1", "${1"),
+        ("$", "$"),
+        (r"\\1", r"\1"),  # a backslash before a digit
+        (r"$1\\2", r"PA\2"),
+        (r"C:\data\$2", r"C:\data\1004"),  # other backslashes are text, as before
+        (r"\\server\$1", r"\\server\PA"),
+        ("\\", "\\"),
+    ],
+)
+def test_replace_with_the_groups_of_a_regular_expression(act, replace_with, expected):
+    df = pl.DataFrame({"c": ["PA1004", "x"]})
+    out = replace(act, df, ["c"], [(CODE, replace_with)], match="regex")
+    assert out["c"].to_list() == [expected, "x"]
+    upper = replace(act, df, ["c"], [(CODE.lower(), replace_with)], match="regex", case_sensitive=False)
+    assert upper["c"].to_list() == [expected, "x"]
+
+
+def test_replace_with_named_groups(act):
+    df = pl.DataFrame({"c": ["PA1004"]})
+    named = r"^(?P<L>[A-Z]+)(?P<N>[0-9]+)$"
+    for replace_with, expected in [("${L}_${N}", "PA_1004"), ("$L-$N", "PA-1004"), ("$2/$1", "1004/PA"), (r"\2_\1", "1004_PA")]:
+        assert replace(act, df, ["c"], [(named, replace_with)], match="regex")["c"].to_list() == [expected]
+    with pytest.raises(ActionError) as raised:  # the name is the longest one: L_, as before
+        replace(act, df, ["c"], [(named, "$L_$N")], match="regex")
+    assert str(raised.value) == r"Replace with '$L_$N': the regular expression '" + named + "' has no group named 'L_'. For a $ sign, write $$"
+
+
+@pytest.mark.parametrize(
+    ("replace_with", "problem"),
+    [
+        ("$3", "has no group 3. For a $ sign, write $$"),
+        ("${3}", "has no group 3"),
+        (r"D:\Archiv\2026\$1", r"has no group 2026. For a backslash before a digit, write two: \\2026"),
+        ("Price: $amount", "has no group named 'amount'. For a $ sign, write $$"),
+        ("${amount}", "has no group named 'amount'"),
+    ],
+)
+def test_a_group_that_the_expression_doesnt_have_stops_replace(act, replace_with, problem):
+    """The regex library wrote nothing for it: D:\\Archiv\\2026\\$1 would lose a part of the path."""
+    ctx = StubContext()
+    with pytest.raises(ActionError) as raised:
+        replace(act, pl.DataFrame({"c": ["PA1004"]}), ["c"], [("x", "y"), (CODE, replace_with)], ctx, match="regex")
+    assert str(raised.value) == f"Replace with '{replace_with}': the regular expression '{CODE}' {problem}"
+    assert ctx.warnings == []
+
+
+def test_only_a_regular_expression_has_groups(act):
+    df = pl.DataFrame({"c": ["PA1004"]})
+    for match, case_sensitive in (("whole", True), ("whole", False), ("contains", True), ("contains", False)):
+        out = replace(act, df, ["c"], [("PA1004", r"$1_\1$$\\2")], match=match, case_sensitive=case_sensitive)
+        assert out["c"].to_list() == [r"$1_\1$$\\2"]
+
+
 def test_replace_in_number_columns(act):
     df = pl.DataFrame({"n": [0, 1, None]})
     assert replace(act, df, ["n"], [("0", "100"), ("", "-1")])["n"].to_list() == [100, 1, -1]
