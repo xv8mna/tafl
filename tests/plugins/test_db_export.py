@@ -1178,6 +1178,48 @@ def test_sqlserver_whole_numbers_beyond_a_bigint_into_other_columns(registry):
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_columns_that_hold_no_numbers_get_no_advice_to_change_them(registry):
+    """For whole numbers beyond 64 bits, a sql_variant column was told to become decimal(38, 0) or
+    varchar(40), and a date, time, uniqueidentifier, xml or binary column to become decimal(38, 0),
+    which SQL Server refuses. A sql_variant column takes them as text, as its message says; the others
+    say that they can't take whole numbers, whatever their number of digits."""
+    ctx, name = _sqlserver()
+    frames = [pl.DataFrame({"Id": pl.Series(values, dtype=pl.Int128), "V": [7, 8]}) for values in ([10**19, 5], [10**38, 5])]
+
+    def export(df, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
+
+    def table(kind):
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+            db.execute(f"CREATE TABLE {name} (Id {kind}, V int)")
+
+    try:
+        for kind in ("date", "time", "datetime2", "datetimeoffset", "datetime", "uniqueidentifier", "xml", "binary(16)", "varbinary(50)"):
+            table(kind)
+            for df in frames:
+                message = rf"^The column Id of {name} \(\S+\) can't take whole numbers, and Id has some \(e\.g\. {df['Id'][0]}\)\.$"
+                with pytest.raises(ActionError, match=message):
+                    export(df)
+        table("sql_variant")
+        for df in frames:
+            with pytest.raises(ActionError, match=(
+                rf"^The column Id of {name} \(sql_variant\) can't take whole numbers outside -9,223,372,036,854,775,808 to "
+                rf"9,223,372,036,854,775,807, and Id has some \(e\.g\. {df['Id'][0]}\)\. Change Id to text before this step "
+                r"\(Change type / format\)\.$"
+            )):  # fmt: skip
+                export(df)
+            export(df.with_columns(pl.col("Id").cast(pl.String)))  # as the message says
+            export(df.with_columns(pl.col("Id").cast(pl.String), V=pl.lit(9)), mode="update", key_columns=["Id"])
+        with ctx.database("server") as db:
+            stored = db.read(f"SELECT CAST(Id AS nvarchar(40)) AS Id, V FROM {name} ORDER BY V, Id").rows()
+        assert stored == [("10000000000000000000", 9), ("100000000000000000000000000000000000000", 9), ("5", 9), ("5", 9)]
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_columns_of_whole_numbers_name_their_own_range(registry):
     """The message gave the range of a bigint for an int, smallint, tinyint or bit column, and a
     value beyond the column but within a bigint (2^40 into an int) got the driver's message, which

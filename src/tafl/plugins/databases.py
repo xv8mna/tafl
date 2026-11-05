@@ -1442,8 +1442,8 @@ def _fit_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str,
     SQLite INTEGER", "int too big to convert"): SQLite holds none of them; in SQL Server, a text
     column gets their digits as text (its length is checked as for other texts), a decimal column
     with enough digits gets them exactly, and other columns stop the export with a plain message:
-    float and real (they would round them), a decimal with fewer digits, money, sql_variant and the
-    rest."""
+    float and real (they would round them), a decimal with fewer digits, money, sql_variant (it takes
+    them as text) and columns of other things than numbers, such as dates (no advice to change them)."""
     kinds = {name.lower(): kind for name, kind in types.items()}
     changes = []
     for source in df.columns:
@@ -1465,6 +1465,13 @@ def _fit_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str,
                 f"SQLite stores whole numbers {_BIGINT_RANGE}, and {source} has others (e.g. {example}). Change {source} "
                 "to text before this step (Change type / format): a TEXT column keeps all their digits."
             )
+        if kind == "sql_variant":  # SQL Server can't change it to another type, but it takes their digits as text
+            raise ActionError(
+                f"The column {target} of {table} ({kind}) can't take whole numbers outside {_BIGINT[0]:,} to {_BIGINT[1]:,}, "
+                f"and {source} has some (e.g. {example}). Change {source} to text before this step (Change type / format)."
+            )
+        if base in _NO_NUMBER_KINDS:
+            raise ActionError(f"The column {target} of {table} ({kind}) can't take whole numbers, and {source} has some (e.g. {example}).")
         if base not in _TEXT_KINDS and max(len(str(abs(low))), len(str(abs(high)))) > _MOST_DIGITS:
             # beyond every decimal: whatever the column's type, only a text column takes them
             longest = low if len(str(abs(low))) >= len(str(abs(high))) else high
@@ -1502,6 +1509,12 @@ def _fit_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str,
 
 
 _TEXT_KINDS = ("char", "varchar", "nchar", "nvarchar", "text", "ntext")
+# Columns of other things than numbers (dates and times, ids, xml, binary values, …): SQL Server changes
+# none of them to a type of numbers (binary and varbinary only while they are empty)
+_NO_NUMBER_KINDS = (
+    "date", "time", "datetime", "datetime2", "smalldatetime", "datetimeoffset", "uniqueidentifier", "xml", "binary", "varbinary",
+    "image", "timestamp", "hierarchyid", "geography", "geometry",
+)  # fmt: skip
 _MOST_DIGITS = 38  # of a SQL Server decimal
 
 
