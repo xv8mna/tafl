@@ -63,6 +63,7 @@ _EPOCH_UTC = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 _MICROSECOND = dt.timedelta(microseconds=1)
 _UNIT_NS = {"ns": 1, "us": 1_000, "ms": 1_000_000}  # nanoseconds of a time unit of Polars
 _DAY_US = 86_400_000_000  # microseconds of a day
+_LAST_DAY = 95_000_000  # days from 1970 to about the year 262,000: Polars' calendar ends at 262,143
 _CHECKED_VALUES = 1_000  # Add as step checks the rows of a step of at most so many picked values (see _may_differ)
 _PERIOD_TEXTS = {  # the periods of the card (Polars): a year before 0 has a -, one after 9999 a + (not in a week)
     "year": re.compile(r"([-+]?[0-9]+)"),
@@ -587,7 +588,7 @@ def formula(f: Filter, dtype: pl.DataType, data: pl.Series | None = None) -> str
             _check_rows(f, step, data)
     except NotAStep:
         raise
-    except (ArithmeticError, ValueError, pl.exceptions.PolarsError):
+    except (ArithmeticError, ValueError, TypeError, pl.exceptions.PolarsError):
         raise NotAStep("a step can't say these values") from None
     except BaseException as e:  # a crash inside Polars (Rust) is not an Exception
         if not expressions.is_panic(e):
@@ -754,7 +755,15 @@ def _period_moments(periods: list[str], by: str, zone: str) -> list[tuple[int, i
 def _period_days(period: str, by: str) -> tuple[int, int] | None:
     """The first day of a period of the card and the first day of the period after it, as days
     since 1970, in any year (Polars writes 0000, -0001 and +10000); None for a text that is no
-    period. Not with Python's dates: they end at the years 1 and 9999."""
+    period, and for a period beyond the years of Polars' calendar (about 262,000), which only a
+    project file can hold: no value of a column is in it. Not with Python's dates: they end at the
+    years 1 and 9999."""
+    days = _calendar_days(period, by)
+    return days if days is not None and -_LAST_DAY <= days[0] and days[1] <= _LAST_DAY else None
+
+
+def _calendar_days(period: str, by: str) -> tuple[int, int] | None:
+    """``_period_days`` in all years."""
     found = _PERIOD_TEXTS.get(by, _PERIOD_TEXTS["month"]).fullmatch(period)
     if found is None:
         return None

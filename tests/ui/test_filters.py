@@ -1058,13 +1058,16 @@ def test_periods_and_values_at_the_ends_of_the_years_as_a_step(act, zone):
     Python's dates have neither. Add as step of such a period stopped with "OverflowError: date
     value out of range" (or said that the step would keep other rows), and so did a picked value
     whose moment is in the year 0. Values beyond the years of Polars are refused, with no other
-    error than NotAStep."""
+    error than NotAStep. A period beyond them, which only a project file holds, is left out of the
+    step: it stopped with "TypeError: unexpected value while building Series of type Int64"."""
     moments = [dt.datetime(1, 1, 1), dt.datetime(1, 1, 1, 12), dt.datetime(9999, 12, 31, 12), dt.datetime(9999, 12, 31, 23, 59), dt.datetime(2026, 1, 5, 8), None]
     df = pl.DataFrame({"id": range(len(moments)), "When": pl.Series("When", moments).dt.replace_time_zone("UTC").dt.convert_time_zone(zone)})
     for by in PERIODS:
         periods, _ = facet(df, [Filter("When", [], "period", {"by": by})], 0)
         for period in periods["value"].to_list():
             assert same_rows(act, df, Filter("When", [period], "period", {"by": by})), (by, period)
+    for by, far in (("year", "300000"), ("year", "-300000"), ("year", "999999999999"), ("month", "300000-01"), ("week", "300000-W01")):
+        assert same_rows(act, df, Filter("When", [far, "2026"], "period", {"by": by})) == ([4] if by == "year" else []), far
     nanos = pl.Series("When", [dt.datetime(2262, 1, 1, 12), dt.datetime(1677, 12, 31, 12)], dtype=pl.Datetime("ns"))
     near = pl.DataFrame({"id": [0, 1], "When": nanos.dt.replace_time_zone("UTC").dt.convert_time_zone(zone)})
     for period in ("2262", "1677"):  # nanoseconds end in 1677 and 2262: these years begin or end beyond them
