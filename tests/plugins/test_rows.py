@@ -989,7 +989,7 @@ NESTED = pl.DataFrame(
     ("column", "message"),
     [
         ("Tags", r"^Column 'Tags' holds lists, which Filter rows can't compare .*LIST_CONTAINS\(\[Tags\], 'a'\)$"),
-        ("Sizes", r"^Column 'Sizes' holds lists, which Filter rows can't compare .*LIST_CONTAINS\(\[Sizes\], 'a'\)$"),
+        ("Sizes", r"^Column 'Sizes' holds lists, which Filter rows can't compare .*LIST_CONTAINS\(\[Sizes\], 1\)$"),
         ("Pair", r"^Column 'Pair' holds records, which Filter rows can't compare .*STRUCT_EXTRACT\(\[Pair\], 'x'\) = 1$"),
         ("Own", r"^Column 'Own' holds values of a plugin's own type, which Filter rows can't compare with a value$"),
     ],
@@ -1018,6 +1018,57 @@ def test_the_formula_of_the_message_for_lists_and_records_works(act):
         flt(act, df, ("It's", "=", "1"))
     formula = re.search(r"STRUCT_EXTRACT\(.*", str(raised.value)).group()
     assert names(act("rows.filter_formula", df, {"condition": formula})) == ["a"]
+
+
+MORNING = dt.datetime(2025, 12, 31, 8, 30)
+ITEMS = {  # the first row holds the value of the example, if there is one; None: any list or record
+    "Texts": pl.Series([["a", "b"], ["c"], None]),
+    "Ids": pl.Series([[1, 2], [3], None]),
+    "Rates": pl.Series([[1.5], [2.5], None]),
+    "Amounts": pl.Series([[D("1.50")], [D("2.00")], None], dtype=pl.List(pl.Decimal(10, 2))),
+    "Flags": pl.Series([[True], [False], None]),
+    "Days": pl.Series([[dt.date(2025, 12, 31)], [dt.date(2026, 1, 1)], None]),
+    "Millis": pl.Series([[MORNING], [MORNING.replace(hour=9)], None], dtype=pl.List(pl.Datetime("ms"))),
+    "Stamps": pl.Series([[MORNING], [MORNING.replace(hour=9)], None], dtype=pl.List(pl.Datetime("us"))),
+    "Nanos": pl.Series([[MORNING], [MORNING.replace(hour=9)], None], dtype=pl.List(pl.Datetime("ns"))),
+    "Zoned": pl.Series([[MORNING], [MORNING], None], dtype=pl.List(pl.Datetime("ns", "Europe/Berlin"))),
+    "Starts": pl.Series([[dt.time(8, 30)], [dt.time(9)], None]),
+    "Spans": pl.Series([[dt.timedelta(hours=1)], [dt.timedelta(hours=2)], None]),
+    "Nanospans": pl.Series([[dt.timedelta(hours=1)], [dt.timedelta(hours=2)], None], dtype=pl.List(pl.Duration("ns"))),
+    "Bytes": pl.Series([[b"a"], [b"b"], None]),
+    "Nested": pl.Series([[["a"]], [["b"]], None]),
+    "Deeper": pl.Series([[[1]], [[2]], None]),
+    "Pairs": pl.Series([[{"x": 1, "y": "a"}], [{"x": 2, "y": "b"}], None]),
+    "Empties": pl.Series([[None], [None], None], dtype=pl.List(pl.Null)),
+    "Sizes": pl.Series([[1, 2], [3, 4], None], dtype=pl.Array(pl.Int64, 2)),
+    "Person": pl.Series([{"name": "a", "age": 30}, {"name": "Bo", "age": 40}, None]),
+    "Seen": pl.Series([{"at": MORNING}, {"at": MORNING.replace(hour=9)}, None]),
+    "Hour": pl.Series([{"t": dt.time(8, 30)}, {"t": dt.time(9)}, None]),
+    "Inner": pl.Series([{"l": ["a"]}, {"l": ["b"]}, None]),
+    "Quoted": pl.Series([{"it's": 1}, {"it's": 2}, None]),
+    "Lasting": pl.Series([{"d": dt.timedelta(hours=1)}, {"d": dt.timedelta(hours=2)}, None]),
+    "Blank": pl.Series([{"n": None}, {"n": None}, None], dtype=pl.Struct({"n": pl.Null})),
+}
+
+
+@pytest.mark.parametrize("column", list(ITEMS))
+def test_the_formula_of_the_message_runs_for_lists_and_records_of_every_type(act, column):
+    """It always proposed LIST_CONTAINS(…, 'a') and STRUCT_EXTRACT(…) = 1: "Could not convert string
+    'a' to INT64" for lists of numbers, and the same for lists of lists and records of texts. The
+    example's value now has the type of the items (or of the record's first field)."""
+    df = pl.DataFrame({"Name": list("abc"), column: ITEMS[column]})
+    with pytest.raises(ActionError, match=rf"^Column '{column}' holds (lists|records), which Filter rows") as raised:
+        flt(act, df, (column, "contains", "a"))
+    formula = re.search(r"e\.g\. (.*)$", str(raised.value)).group(1)
+    kept = names(act("rows.filter_formula", df, {"condition": formula}))
+    if column == "Zoned":  # the example's time is one of DuckDB's time zone: it runs
+        assert kept in ([], ["a"], ["a", "b"]), formula
+    elif column == "Empties":  # no value of the type: any list that has items
+        assert formula == "LEN([Empties]) > 0" and kept == ["a", "b"]
+    elif column == "Blank":  # a record whose first field is never filled
+        assert formula == "STRUCT_EXTRACT([Blank], 'n') IS NOT NULL" and kept == []
+    else:
+        assert kept == ["a"], formula
 
 
 @pytest.mark.parametrize(

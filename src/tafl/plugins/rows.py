@@ -667,12 +667,55 @@ def _not_comparable(column: str, dtype: pl.DataType) -> str:
     that does it."""
     held, name = _held_values(dtype), "[" + column.replace("]", "]]") + "]"
     message = f"Column '{column}' holds {held}, which Filter rows can't compare with a value"
-    if held == "lists":
-        return f"{message}: use Filter rows by formula, e.g. LIST_CONTAINS({name}, 'a')"
+    if held == "lists":  # a value of the type of the items, or a formula for any list
+        value = _formula_value(dtype.inner)
+        return f"{message}: use Filter rows by formula, e.g. " + (
+            f"LIST_CONTAINS({name}, {value})" if value is not None else f"LEN({name}) > 0"
+        )
     if held == "records" and dtype.fields:
-        field = dtype.fields[0].name.replace("'", "''")
-        return f"{message}: use Filter rows by formula, e.g. STRUCT_EXTRACT({name}, '{field}') = 1"
+        field = dtype.fields[0]
+        value = _formula_value(field.dtype)
+        test = f"= {value}" if value is not None else "IS NOT NULL"
+        return f"{message}: use Filter rows by formula, e.g. STRUCT_EXTRACT({name}, {_formula_text(field.name)}) {test}"
     return message
+
+
+def _formula_value(dtype: pl.DataType) -> str | None:
+    """A value of type ``dtype`` as a formula writes it, for the example of a message; None for a
+    type that has no such value (empty values, a plugin's own values)."""
+    if dtype == pl.String or dtype == pl.Categorical or isinstance(dtype, pl.Enum):
+        return "'a'"
+    if dtype == pl.Boolean:
+        return "true"
+    if dtype.is_integer():
+        return "1"
+    if dtype.is_float() or isinstance(dtype, pl.Decimal):
+        return "1.5"
+    if dtype == pl.Date:
+        return "DATE '2025-12-31'"
+    if dtype == pl.Datetime:  # in the unit of the column: DuckDB doesn't find microseconds among nanoseconds
+        kind = {"ms": "TIMESTAMP_MS", "us": "TIMESTAMP", "ns": "TIMESTAMP_NS"}[dtype.time_unit]
+        return f"CAST('2025-12-31 08:30:00' AS {'TIMESTAMPTZ' if dtype.time_zone else kind})"
+    if dtype == pl.Time:  # Polars' times are nanoseconds, which DuckDB keeps apart from its times
+        return "CAST('08:30:00' AS TIME_NS)"
+    if dtype == pl.Duration:
+        return "INTERVAL 1 HOUR"
+    if dtype == pl.Binary:
+        return "'a'::BLOB"
+    if isinstance(dtype, pl.List | pl.Array):  # not [...]: a formula reads that as a column's name
+        inner = _formula_value(dtype.inner)
+        return None if inner is None else f"LIST_VALUE({inner})"
+    if isinstance(dtype, pl.Struct) and dtype.fields:
+        values = [_formula_value(field.dtype) for field in dtype.fields]
+        if None in values:
+            return None
+        return "{" + ", ".join(f"{_formula_text(f.name)}: {v}" for f, v in zip(dtype.fields, values)) + "}"
+    return None
+
+
+def _formula_text(text: str) -> str:
+    """A text in a formula: in single quotes, with each single quote doubled."""
+    return "'" + text.replace("'", "''") + "'"
 
 
 def _whole(value: str, dtype: pl.DataType) -> int | None:
