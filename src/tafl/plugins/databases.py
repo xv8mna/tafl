@@ -364,9 +364,10 @@ class SqlServer(Connector):
             texts = [None] * df.width
             for index, (name, dtype) in enumerate(df.schema.items()):
                 kind = _kind(types.get(name, ""))[0]
+                text = dtype in (pl.String, pl.Categorical) or isinstance(dtype, pl.Enum)  # categories are texts too
                 # text and ntext: values of every type, as for the stage below (left to the driver,
                 # categories, and numbers or dates whose first value is empty, took 2 GB per value)
-                if (dtype == pl.String and kind in _CODE_PAGE_TYPES) or kind in _LONG_TEXT_TYPES:
+                if (text and kind in _CODE_PAGE_TYPES) or kind in _LONG_TEXT_TYPES:
                     texts[index] = _binding(types[name])
             return texts if any(texts) else None
         # The driver can't look up the columns of a #temporary table: it would send texts as 255
