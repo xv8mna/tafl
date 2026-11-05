@@ -1152,7 +1152,7 @@ TEXTS = pl.DataFrame({"id": range(10), "T": ["Straße", "ä", "abc", "١٢٣", "
 @pytest.mark.parametrize(
     "pattern",
     [r"^\w+$", r"\d", r"^\d+$", r"\s", r"^\S+$", r"^\W", r"^[\w]+$", r"^[^\d]+$", r"[\d\s]", r"\D", "(?i)STRASSE", r"\p{Greek}", "^$", r"x\_y",
-     r"\u{E4}", r"ä", r"(?<letter>ä)", r"^(?<w>\w)+$"],  # RE2 writes these \x{E4} and (?P<letter>...)
+     r"\u{E4}", r"\u00E4", r"(?<letter>ä)", r"^(?<w>\w)+$"],  # RE2 writes these \x{E4} and (?P<letter>...)
 )  # fmt: skip
 def test_a_pattern_as_a_step_keeps_the_rows_of_the_card(act, pattern):
     """The card uses Polars, whose \\w, \\d and \\s are the letters, digits and spaces of Unicode; the

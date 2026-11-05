@@ -794,7 +794,7 @@ def _re2_pattern(pattern: str) -> str:
                 out.append(_IN_CLASS[letter] if in_class else _CLASSES[letter])
                 i += 2
                 continue
-            if code := _CODE_POINT.match(pattern, i):  # \u{E4}, ä, \U{E4}: RE2 writes \x{E4}
+            if code := _CODE_POINT.match(pattern, i):  # \u{E4}, \u00E4, \U{E4}: RE2 writes \x{E4}
                 out.append("\\x{" + (code.group(1) or code.group(2)) + "}")
                 i = code.end()
                 continue
