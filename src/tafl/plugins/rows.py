@@ -40,6 +40,9 @@ _COMPARE = {
 }
 _DECIMAL_DIGITS = 38  # an exact decimal (Decimal) holds 38 digits, decimal places included
 _CONTEXT = Context(prec=2 * _DECIMAL_DIGITS)  # room for all of them (the default context keeps 28)
+# The moments that date-times in nanoseconds hold, in nanoseconds since 1970 (UTC): from
+# 1677-09-21 00:12:43.145224192 to 2262-04-11 23:47:16.854775807
+_NANOSECONDS = (-(2**63), 2**63 - 1)
 
 
 @action(
@@ -436,7 +439,7 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
                 f"'{text}' is not a date-time (column '{column}'); use e.g. 31.12.2025 08:30 or 2025-12-31 08:30"
             )
         moment = parsed if dtype.time_zone is None else _in_zone(parsed, text, column, dtype.time_zone)
-        if dtype.time_unit == "us" or not _unit_holds(moment, dtype.time_unit):
+        if dtype.time_unit == "us" or not _unit_holds(moment, dtype.time_unit, _nanoseconds(value)):
             return moment
         if dtype.time_unit == "ms" or not re.search(r"\.[0-9]{7}", value):  # no digits below a microsecond
             return moment.cast(dtype)
@@ -487,11 +490,11 @@ def _nanoseconds(value: str) -> int:
     return int(fraction.group(1)[6:9].ljust(3, "0")) if fraction else 0
 
 
-def _unit_holds(moment: pl.Series, unit: str) -> bool:
-    """Whether date-times in ``unit`` hold a typed one, ``moment`` in microseconds, also with
-    digits below a microsecond: nanoseconds reach only from 1677 to 2262."""
-    around = pl.concat([moment - dt.timedelta(microseconds=1), moment + dt.timedelta(microseconds=1)])
-    return not around.cast(pl.Datetime(unit, moment.dtype.time_zone), strict=False).null_count()
+def _unit_holds(moment: pl.Series, unit: str, nanoseconds: int = 0) -> bool:
+    """Whether date-times in ``unit`` hold a typed one: ``moment`` in microseconds, and the
+    ``nanoseconds`` below them. Nanoseconds reach only from 1677 to 2262 (``_NANOSECONDS``, to the
+    last nanosecond: a margin left out moments inside), the other units beyond the years 1 to 9999."""
+    return unit != "ns" or _NANOSECONDS[0] <= moment.to_physical()[0] * 1000 + nanoseconds <= _NANOSECONDS[1]
 
 
 def _cut_with(values: pl.Series, value: Any) -> tuple[str, str] | None:

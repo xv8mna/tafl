@@ -445,6 +445,25 @@ def test_a_typed_date_time_near_the_ends_of_nanoseconds_is_the_moment_of_its_loc
     assert filled.dtype == pl.Datetime("ns", zone) and filled.to_physical().to_list() == [moment, moment - 1, moment + 1, moment]
 
 
+@pytest.mark.parametrize("zone", [None, "UTC", "Asia/Tokyo"])
+@pytest.mark.parametrize("moment", [LOWEST, LOWEST + 1, LOWEST + 808, LOWEST + 999, HIGHEST, HIGHEST - 807, HIGHEST - 999])
+def test_a_typed_date_time_less_than_a_microsecond_inside_nanoseconds_is_in_nanoseconds(act, zone, moment):
+    """The microsecond at each end of nanoseconds counted as beyond them: Fill empty values made
+    the column microseconds, or stopped when one of its values had digits below a microsecond
+    ("doesn't fit column 'At': nanoseconds reach only from 1677 to 2262"), and Filter rows compared
+    in microseconds, so that 1677-09-21 00:12:43.145225 equaled 00:12:43.145225001 too."""
+    other = moment + 1 if moment < HIGHEST else moment - 1
+    df = pl.DataFrame({"Name": list("abc"), "At": nanosecond_stamps([moment, other, None], zone)})
+    for text in {local_text(moment, zone), local_text(moment, zone).rstrip("0")}:  # 1677-09-21 00:12:43.145225 too
+        assert names(flt(act, df, ("At", "=", text))) == ["a"], text
+        assert names(flt(act, df, ("At", "!=", text))) == ["b", "c"], text
+        assert names(flt(act, df, ("At", "<", text))) == ([] if other > moment else ["b"]), text
+        assert names(flt(act, df, ("At", ">", text))) == (["b"] if other > moment else []), text
+        assert names(flt(act, df, ("At", "in", text))) == ["a"], text
+        filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": text})["At"]
+        assert filled.dtype == pl.Datetime("ns", zone) and filled.to_physical().to_list() == [moment, other, moment], text
+
+
 @pytest.mark.parametrize("unit", ["ns", "us", "ms"])
 def test_a_date_time_parameter_on_a_column_with_a_time_zone_is_a_moment_of_this_pcs_clock(act, unit):
     """As in formulas, where {Now} is this moment: it was the local time of the column's zone
