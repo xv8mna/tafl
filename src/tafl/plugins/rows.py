@@ -745,12 +745,15 @@ def _holds(dtype: pl.DataType, value: Any) -> bool:
 @functools.lru_cache(maxsize=256)  # a step can compare thousands of columns with one value
 def _reads_as(text: str) -> str | None:
     """What a typed value would be in a column of dates, times or numbers: "date" (31.03.2026, also
-    with a time), "time" (08:30, 8:30:15) or "number" (-16, 1.234,5); None for other text."""
+    with a time), "time" (08:30, 8:30:15) or "number" (-16, 1.234,5); None for other text, also for
+    the words that Polars reads as numbers (nan, inf, infinity): a number has a digit."""
     value = text.strip()
     if dtypes.parse_dates(pl.Series([value]))[0] is not None:
         return "date"
     if dtypes.parse_times(pl.Series([value]))[0] is not None:
         return "time"
+    if not re.search("[0-9]", value):
+        return None
     return "number" if dtypes.parse_numbers(pl.Series([value]), _decimal_of(value))[0] is not None else None
 
 

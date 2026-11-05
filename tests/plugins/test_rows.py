@@ -95,7 +95,24 @@ def test_text_compared_in_order_with_a_time_says_that_it_compares_text_and_which
     assert names(act("rows.filter_formula", df, {"condition": formula})) == in_time_order
 
 
-@pytest.mark.parametrize(("operator", "value"), [("=", "-16"), ("!=", "31.03.2026"), (">", "Berlin"), ("in", "-16"), ("contains", "1"), ("<", ""), ("=", "08:30"), ("<", "25:00")])
+@pytest.mark.parametrize(
+    ("operator", "value"),
+    [
+        ("=", "-16"),
+        ("!=", "31.03.2026"),
+        (">", "Berlin"),
+        ("in", "-16"),
+        ("contains", "1"),
+        ("<", ""),
+        ("=", "08:30"),
+        ("<", "25:00"),
+        # words that Polars reads as numbers: they warned "not as numbers"
+        (">", "Nan"),
+        (">", "Inf"),
+        ("<=", "infinity"),
+        ("<", "-INF"),
+    ],
+)
 def test_text_compared_otherwise_says_nothing(act, operator, value):
     ctx = StubContext()
     act("rows.filter", pl.DataFrame({"Due": ["-16", "x"]}), {"conditions": [{"column": "Due", "operator": operator, "value": value}]}, ctx)
