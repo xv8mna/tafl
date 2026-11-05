@@ -6,6 +6,7 @@ import datetime as dt
 import functools
 import operator
 import re
+from collections.abc import Callable
 from decimal import ROUND_FLOOR, Context, Decimal
 from typing import Any, NamedTuple
 
@@ -93,7 +94,7 @@ def filter_rows(df, p, ctx):
     equal a value, but they count as "does not equal" and "does not contain".
     """
     schema = df.schema  # once: Polars makes it anew for every call, with all columns (seconds for thousands)
-    mask_parts = [_condition(df, c, p.case_sensitive, schema) for c in p.conditions]
+    mask_parts = [_condition(df, c, p.case_sensitive, schema, ctx.warn) for c in p.conditions]
     mask = pl.all_horizontal(mask_parts) if p.match == "all" else pl.any_horizontal(mask_parts)
     mask = mask.fill_null(False)
     return df.filter(mask if p.keep == "keep" else ~mask)
@@ -234,7 +235,13 @@ def fill(df, p, ctx):
     return df.with_columns(updates)
 
 
-def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool, schema: pl.Schema | None = None) -> pl.Expr:
+def _condition(
+    df: pl.DataFrame,
+    c: Any,
+    case_sensitive: bool,
+    schema: pl.Schema | None = None,
+    warn: Callable[[str], None] | None = None,
+) -> pl.Expr:
     column = col(c.column)
     dtype = (df.schema if schema is None else schema)[c.column]
     text_column = dtype == pl.String
@@ -285,6 +292,12 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool, schema: pl.Schema
         return found if op == "in" else (~found).fill_null(True)
 
     if text_column:
+        if op in (">", ">=", "<", "<=") and warn is not None and (kind := _reads_as(c.value)) is not None:
+            warn(
+                f"Column '{c.column}' holds text, so the condition {_LABELS[op]} '{c.value.strip()}' compares the texts "
+                f"character by character, not as {kind}s: to compare {kind}s, change the column's type before this step "
+                "(Change type / format)"
+            )
         value: Any = c.value if case_sensitive else c.value.lower()
     else:
         value = _literal(c.value, dtype, c.column)
@@ -641,6 +654,15 @@ def _holds(dtype: pl.DataType, value: Any) -> bool:
     -1 as Int128 numbers, in which its values from 2^127 up are empty."""
     low, high = _limits(dtype)
     return isinstance(value, int) and low <= value <= high
+
+
+def _reads_as(text: str) -> str | None:
+    """What a typed value would be in a column of dates or numbers: "date" (31.03.2026, also with
+    a time) or "number" (-16, 1.234,5); None for other text."""
+    value = text.strip()
+    if dtypes.parse_dates(pl.Series([value]))[0] is not None:
+        return "date"
+    return "number" if dtypes.parse_numbers(pl.Series([value]), _decimal_of(value))[0] is not None else None
 
 
 def _decimal_of(value: str) -> str:

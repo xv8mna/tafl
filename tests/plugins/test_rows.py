@@ -11,6 +11,7 @@ import pytest
 
 from tafl.api import ActionError
 from tafl.api.parameters import DateTimeText
+from tafl.api.testing import StubContext
 
 KIRITIMATI = "Pacific/Kiritimati"  # 14 hours ahead of UTC: another zone than this PC's
 
@@ -50,6 +51,33 @@ def test_dates_including_today(act):
     df = pl.DataFrame({"Name": ["a", "b", "c"], "Day": [today, today - dt.timedelta(days=1), None]})
     assert names(flt(act, df, ("Day", "=", "today"))) == ["a"]
     assert names(flt(act, df, ("Day", "<", today.strftime("%d.%m.%Y")))) == ["b"]
+
+
+@pytest.mark.parametrize(
+    ("operator", "value", "kind"),
+    [(">", "-16", "number"), ("<", "31.03.2026", "date"), (">=", " 1.234,5 ", "number"), ("<=", "2026-03-31 08:30", "date")],
+)
+def test_text_compared_in_order_with_a_number_or_a_date_says_that_it_compares_text(act, operator, value, kind):
+    """As the guide says, a text column compares text: "-14,2" is not greater than "-16", and
+    "2026-05-01" is less than "31.03.2026". The rows stay as they were; the step now says so."""
+    texts = ["-14,2", "-20,5", "2026-01-15", "2026-05-01", "abc", None]
+    df = pl.DataFrame({"Name": list("abcdef"), "Due": texts})
+    ctx = StubContext()
+    out = act("rows.filter", df, {"conditions": [{"column": "Due", "operator": operator, "value": value}]}, ctx)
+    keep = {">": "__gt__", ">=": "__ge__", "<": "__lt__", "<=": "__le__"}[operator]
+    assert names(out) == [n for n, t in zip("abcdef", texts) if t is not None and getattr(t.lower(), keep)(value.lower())]
+    label = {">": "is greater than", ">=": "is greater than or equal to", "<": "is less than", "<=": "is less than or equal to"}
+    assert ctx.warnings == [
+        f"Column 'Due' holds text, so the condition {label[operator]} '{value.strip()}' compares the texts character by "
+        f"character, not as {kind}s: to compare {kind}s, change the column's type before this step (Change type / format)"
+    ]
+
+
+@pytest.mark.parametrize(("operator", "value"), [("=", "-16"), ("!=", "31.03.2026"), (">", "Berlin"), ("in", "-16"), ("contains", "1"), ("<", "")])
+def test_text_compared_otherwise_says_nothing(act, operator, value):
+    ctx = StubContext()
+    act("rows.filter", pl.DataFrame({"Due": ["-16", "x"]}), {"conditions": [{"column": "Due", "operator": operator, "value": value}]}, ctx)
+    assert ctx.warnings == []
 
 
 def test_bad_values_are_reported(act, people):
