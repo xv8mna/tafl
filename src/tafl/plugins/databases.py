@@ -1231,6 +1231,7 @@ def export_database(df, p, ctx):
         if existing is None:
             if p.mode not in _ADDS or not p.create:
                 raise ActionError(f"Table {p.table} not found in {p.connection}")
+            _check_storable(df, db)
             definitions = ", ".join(f"{db.quote(c)} {db.connector.sql_type(df[c])}" for c in df.columns)
             db.execute(f"CREATE TABLE {table} ({definitions})")
             created, existing = True, list(df.columns)
@@ -1239,6 +1240,8 @@ def export_database(df, p, ctx):
         _check_whole_numbers(df, names, types, p.table)
         keys = _key_names(p, names) if p.mode in _KEYED else []
         data = df.select(cols(names))
+        _check_storable(data, db)
+        _check_beyond_bigint(data, names, types, p.table, db.connector.id)
         if p.mode == "delete":  # it writes nothing: only the key values count
             data = data.select(cols(c for c, n in names.items() if n in keys))
         finding = keys if p.mode in ("update", "delete") else []  # key values that only find rows
@@ -1306,6 +1309,80 @@ def _check_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[st
                     f"decimals (e.g. {example}): they would be cut off. Round them first, e.g. ROUND([{source}]), "
                     "or change the column's type in the database."
                 )
+
+
+# The databases of the built-in connectors, as messages name them. A plugin's connector decides
+# for itself what its database can store.
+_BUILT_IN = {"sqlite": "SQLite", "sqlserver": "SQL Server"}
+_KINDS = ("time spans", "lists", "records", "values of a plugin's own type")
+_BIGINT = (-(2**63), 2**63 - 1)
+_BIGINT_RANGE = f"from {_BIGINT[0]:,} to {_BIGINT[1]:,}"
+
+
+def _check_storable(df: pl.DataFrame, db) -> None:
+    """What SQLite and SQL Server can't hold stops the export with a plain message (their drivers
+    stop with a technical one): columns of time spans, lists, records and values of a plugin's
+    own type, and in SQLite more columns than a table holds."""
+    database = _BUILT_IN.get(db.connector.id)
+    if database is None:
+        return
+    if db.connector.id == "sqlite" and df.width > (most := db.raw.getlimit(sqlite3.SQLITE_LIMIT_COLUMN)):
+        raise ActionError(
+            f"The table has {df.width:,} columns, but a SQLite table holds at most {most:,}: leave some out before "
+            "this step (Keep, remove or reorder columns)"
+        )
+    kinds = {name: kind for name, dtype in df.schema.items() if (kind := _kind_of(dtype))}
+    if kinds:
+        names, more = list(kinds), len(kinds) - 5
+        shown = names[:5] + ([f"{more:,} more column{'s' if more > 1 else ''}"] if more > 0 else [])
+        raise ActionError(
+            f"{database} can't store {_listed([k for k in _KINDS if k in kinds.values()], 'or')}: {_listed(shown, 'and')} "
+            f"{'has' if len(names) == 1 else 'have'} them. Leave {'this column' if len(names) == 1 else 'these columns'} "
+            "out before this step (Keep, remove or reorder columns)."
+        )
+
+
+def _kind_of(dtype: pl.DataType) -> str:
+    """The words for a type that the built-in databases can't store, or "" for one they can."""
+    if dtype == pl.Duration:
+        return _KINDS[0]
+    if dtype.is_object():
+        return _KINDS[3]
+    if dtype.is_nested():
+        return _KINDS[2] if isinstance(dtype, pl.Struct) else _KINDS[1]
+    return ""
+
+
+def _listed(words: list[str], last: str) -> str:
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + f" {last} " + words[-1]
+
+
+def _check_beyond_bigint(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, connector_id: str) -> None:
+    """Whole numbers beyond 64 bits (UInt64 from Parquet, 128 bits from a plugin): SQLite holds
+    none of them, and a SQL Server column of whole numbers neither (their drivers stop with
+    "Python int too large to convert to SQLite INTEGER" and "int too big to convert"). A SQL
+    Server column of decimals takes them."""
+    kinds = {name.lower(): kind for name, kind in types.items()}
+    for source, target in names.items():
+        column = df[source].alias("value")  # a fixed name, as in _round_half_away
+        if column.dtype not in (pl.UInt64, pl.Int128, pl.UInt128) or connector_id not in _BUILT_IN:
+            continue
+        kind = kinds.get(target.lower(), "")
+        if connector_id == "sqlserver" and _kind(kind)[0] not in _WHOLE_NUMBER_TYPES:
+            continue
+        low, high = column.min(), column.max()  # Python's whole numbers: exact
+        if high is None or _BIGINT[0] <= low <= high <= _BIGINT[1]:
+            continue
+        example = high if high > _BIGINT[1] else low
+        if connector_id == "sqlite":
+            raise ActionError(
+                f"SQLite stores whole numbers {_BIGINT_RANGE}, and {source} has others (e.g. {example}). Change {source} "
+                "to text before this step (Change type / format): a TEXT column keeps all their digits."
+            )
+        raise ActionError(
+            f"The column {target} of {table} holds whole numbers {_BIGINT_RANGE} ({kind}), but {source} has others "
+            f"(e.g. {example}). Change the column's type in the database, e.g. to decimal(38, 0)."
+        )
 
 
 _TEXT_TYPE = re.compile(r"(n?)(?:var)?char\((\d+)\)( collate \S+_utf8)?")  # a UTF-8 varchar counts bytes

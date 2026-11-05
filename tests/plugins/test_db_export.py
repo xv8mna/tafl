@@ -302,6 +302,36 @@ def test_sqlite_keeps_the_fractions_of_a_second(db, registry):
     assert db.context.messages[-1] == ("info", "orders: updated 2 rows")
 
 
+def test_sqlite_says_what_it_cant_store(db):
+    """The driver's words were the message: "Error binding parameter 1: type 'datetime.timedelta'
+    is not supported", "Python int too large to convert to SQLite INTEGER", and SQLite's own "too
+    many columns on orders". Nothing is written, and a new table isn't made."""
+    big = pl.Series("Id", [2**64 - 1, 5], dtype=pl.UInt64)
+    cases = [
+        (pl.DataFrame({"OrderNo": [1], "Span": [dt.timedelta(hours=1)]}),
+         r"^SQLite can't store time spans: Span has them\. Leave this column out before this step \(Keep, remove or reorder columns\)\.$"),
+        (pl.DataFrame({"Tags": [["a"]], "OrderNo": [1], "Pair": [{"x": 1}]}),
+         r"^SQLite can't store lists or records: Tags and Pair have them\. Leave these columns out before this step"),
+        (pl.DataFrame({"OrderNo": [1, 2], "Id": big}),
+         r"^SQLite stores whole numbers from -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807, and Id has others "
+         r"\(e\.g\. 18446744073709551615\)\. Change Id to text before this step \(Change type / format\)"),
+        (pl.DataFrame({"OrderNo": [1, 2], "Id": pl.Series([-(2**70), 5], dtype=pl.Int128)}), r"and Id has others \(e\.g\. -1180591620717411303424\)"),
+        (pl.DataFrame({f"c{i}": [i] for i in range(2_001)}), r"^The table has 2,001 columns, but a SQLite table holds at most 2,000: leave some out"),
+    ]  # fmt: skip
+    for data, message in cases:
+        with pytest.raises(ActionError, match=message):
+            db.export(data)
+        assert db.rows("SELECT name FROM sqlite_master") == []
+    db.export(pl.DataFrame({"OrderNo": [1], "Id": pl.Series([2**63 - 1], dtype=pl.UInt64), "Span": ["text"]}))  # these fit
+    for data, message in (cases[0], cases[2]):  # into an existing table
+        with pytest.raises(ActionError, match=message):
+            db.export(data, extra_columns="skip")
+    db.export(cases[1][0], extra_columns="skip")  # columns that are left out don't count
+    assert db.rows() == [(1, 2**63 - 1, "text"), (1, None, None)]
+    db.export(pl.DataFrame({f"c{i}": [i] for i in range(2_000)}), table="wide")  # SQLite's most
+    assert db.rows("SELECT c1999 FROM wide") == [(1999,)]
+
+
 def test_sqlite_exact_decimals_keep_their_digits(db, registry):
     """Exact decimals (e.g. from Parquet or SQL Server) go to SQLite as texts with all their
     digits. A new table gets INTEGER or REAL for them when that keeps every value of the type,
@@ -617,6 +647,43 @@ def test_sqlserver_cuts_digits_below_a_microsecond_with_a_warning(registry):
             db.execute(f"CREATE TABLE {name} (N int, Stamp datetime2(3), Clock time(6))")
         export(data)
         assert len(ctx.warnings) == 2  # no new ones
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_says_what_it_cant_store(registry):
+    """Polars' and the driver's words were the message: "casting from Duration('μs') to String not
+    supported", "Unknown object type dict during describe", "int too big to convert". A column of
+    decimals takes whole numbers beyond a bigint, as before."""
+    ctx, name = _sqlserver()
+
+    def export(df, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
+
+    def exists():
+        with ctx.database("server") as db:
+            return db.read(f"SELECT OBJECT_ID('{name}') AS id")["id"][0] is not None
+
+    big = pl.Series("Id", [2**64 - 1, 5], dtype=pl.UInt64)
+    try:
+        for data, message in (
+            (pl.DataFrame({"N": [1], "Span": [dt.timedelta(hours=1)]}), r"^SQL Server can't store time spans: Span has them\. Leave this"),
+            (pl.DataFrame({"Tags": [["a"]], "Pair": [{"x": 1}]}), r"^SQL Server can't store lists or records: Tags and Pair have them"),
+            (pl.DataFrame({"N": [1, 2], "Id": big}), rf"^The column Id of {name} holds whole numbers from -9,223,372,036,854,775,808 "
+             r"to 9,223,372,036,854,775,807 \(bigint\), but Id has others \(e\.g\. 18446744073709551615\)\. Change the column's type"),
+        ):  # fmt: skip
+            with pytest.raises(ActionError, match=message):
+                export(data)
+            assert not exists()
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (N int, Id decimal(38, 0), Span nvarchar(50))")
+        with pytest.raises(ActionError, match=r"^SQL Server can't store time spans: Span has them"):
+            export(pl.DataFrame({"N": [1], "Span": [dt.timedelta(hours=1)]}))
+        export(pl.DataFrame({"N": [1, 2], "Id": big}))
+        with ctx.database("server") as db:
+            assert db.read(f"SELECT CONVERT(nvarchar(40), Id) AS Id FROM {name} ORDER BY N")["Id"].to_list() == [str(2**64 - 1), "5"]
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
