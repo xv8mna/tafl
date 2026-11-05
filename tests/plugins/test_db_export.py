@@ -334,6 +334,21 @@ def test_sqlite_says_what_it_cant_store(db):
     assert db.rows("SELECT c1999 FROM wide") == [(1999,)]
 
 
+def test_delete_by_keys_looks_only_at_the_keys(db, tmp_path):
+    """Delete writes only the key values: time spans or whole numbers beyond 64 bits beside the
+    keys don't stop it, as they never did. As keys, they do."""
+    with sqlite3.connect(tmp_path / "shop.db") as con:
+        con.executescript("CREATE TABLE orders (OrderNo INTEGER, Span TEXT, Id INTEGER); INSERT INTO orders VALUES (1, 'a', 1), (2, 'b', 2)")
+    con.close()
+    data = pl.DataFrame({"OrderNo": [1], "Span": [dt.timedelta(hours=1)], "Id": pl.Series([2**64 - 1], dtype=pl.UInt64)})
+    db.export(data, mode="delete", key_columns=["OrderNo"])
+    assert db.rows("SELECT OrderNo FROM orders") == [(2,)] and db.context.messages[-1] == ("info", "orders: deleted 1 row")
+    with pytest.raises(ActionError, match=r"^SQLite can't store time spans: Span has them"):
+        db.export(data, mode="delete", key_columns=["Span"])
+    with pytest.raises(ActionError, match=r"^SQLite stores whole numbers .* and Id has others \(e\.g\. 18446744073709551615\)"):
+        db.export(data, mode="delete", key_columns=["Id"])
+
+
 def test_sqlite_finds_rows_by_hundreds_of_key_columns(db):
     """SQLite stopped with "Expression tree is too large (maximum depth 1000)": in a delete with
     500 key columns, in every mode with 999. Empty key values still match empty ones."""

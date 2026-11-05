@@ -1266,10 +1266,10 @@ def export_database(df, p, ctx):
         _check_whole_numbers(df, names, types, p.table)
         keys = _key_names(p, names) if p.mode in _KEYED else []
         data = df.select(cols(names))
-        _check_storable(data, db)
-        _check_beyond_bigint(data, names, types, p.table, db.connector.id)
         if p.mode == "delete":  # it writes nothing: only the key values count
             data = data.select(cols(c for c, n in names.items() if n in keys))
+        _check_storable(data, db)
+        _check_beyond_bigint(data, names, types, p.table, db.connector.id)
         finding = keys if p.mode in ("update", "delete") else []  # key values that only find rows
         data = _fit_lengths(data, names, types, p.table, finding)
         kinds = {name.lower(): kind for name, kind in types.items()}
@@ -1389,8 +1389,8 @@ def _check_beyond_bigint(df: pl.DataFrame, names: dict[str, str], types: dict[st
     "Python int too large to convert to SQLite INTEGER" and "int too big to convert"). A SQL
     Server column of decimals takes them."""
     kinds = {name.lower(): kind for name, kind in types.items()}
-    for source, target in names.items():
-        column = df[source].alias("value")  # a fixed name, as in _round_half_away
+    for source in df.columns:
+        target, column = names[source], df[source].alias("value")  # a fixed name, as in _round_half_away
         if column.dtype not in (pl.UInt64, pl.Int128, pl.UInt128) or connector_id not in _BUILT_IN:
             continue
         kind = kinds.get(target.lower(), "")
