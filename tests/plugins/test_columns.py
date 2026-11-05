@@ -126,6 +126,34 @@ def test_numbers_to_dates_with_a_format_of_digits(act):
     assert change(act, serials, "Day", "date", "dd.mm.yyyy").to_list() == [dt.date(2025, 1, 1), dt.date(2025, 1, 2)]
 
 
+def test_texts_need_all_the_digits_of_a_format_of_digits(act):
+    """A text can't have lost leading zeros: one with fewer or more digits than such a format is no
+    date of it. Before, "1012026" with ddmmyyyy became 10.12.0026 and "10126" with ddmmyy
+    10.12.2006, without a warning."""
+    df = pl.DataFrame(
+        {
+            "Day": ["1012026", "01012026", " 31122025 ", "010120260", None],
+            "Iso": ["20260131", "2026131", "202601311", "20261231", None],
+            "Short": ["311225", "10126", "0101260", "010126", None],
+            "When": ["20260131083015", "2026013183015", "202601310830150", "20251231235959", None],
+        }
+    )
+    for column, fmt, expected, wrong in (
+        ("Day", "ddmmyyyy", [None, dt.date(2026, 1, 1), dt.date(2025, 12, 31), None, None], "'1012026', '010120260'"),
+        ("Iso", "yyyymmdd", [dt.date(2026, 1, 31), None, None, dt.date(2026, 12, 31), None], "'2026131', '202601311'"),
+        ("Short", "ddmmyy", [dt.date(2025, 12, 31), None, None, dt.date(2026, 1, 1), None], "'10126', '0101260'"),
+    ):
+        ctx = StubContext()
+        assert change(act, df, column, "date", fmt, ctx=ctx).to_list() == expected
+        assert ctx.warnings == [f"{column}: 2 value(s) could not be converted to Date, e.g. {wrong} (now empty)"]
+    ctx = StubContext()
+    moments = [dt.datetime(2026, 1, 31, 8, 30, 15), None, None, dt.datetime(2025, 12, 31, 23, 59, 59), None]
+    assert change(act, df, "When", "datetime", "yyyymmddhhmmss", ctx=ctx).to_list() == moments
+    assert ctx.warnings == ["When: 2 value(s) could not be converted to Date and time, e.g. '2026013183015', '202601310830150' (now empty)"]
+    separators = pl.DataFrame({"d": ["1.1.2026", "31.12.2025"]})  # a format with separators: as before
+    assert change(act, separators, "d", "date", "dd.mm.yyyy").to_list() == [dt.date(2026, 1, 1), dt.date(2025, 12, 31)]
+
+
 def test_numbers_beyond_excel_days_become_empty_with_a_warning(act):
     """Before, 20250101 became a day in the year 57342 without a warning (an export to Excel then
     stopped), and very big numbers, NaN and infinity stopped with "conversion from f64 to i64

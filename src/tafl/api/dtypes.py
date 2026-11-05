@@ -227,11 +227,13 @@ def rounded_to_whole(s: pl.Series, decimal: str = ",") -> pl.Series:
 
 def parse_dates(s: pl.Series, fmt: str = "") -> pl.Series:
     """Text -> Date. Without a format, the common formats are recognized (31.12.2025, 31.12.25,
-    2025-12-31, 2025/12/31, also with a time)."""
+    2025-12-31, 2025/12/31, also with a time). With a format of digits only, such as yyyymmdd, a
+    text needs exactly its digits."""
     text = _VALUE
     if fmt:
         code = to_strftime(fmt)
         parsed = _datetime_expr(text, code).dt.date() if _has_time(code) else _date_expr(text, code)
+        parsed = _all_digits(parsed, text, fmt)
     else:
         parsed = pl.coalesce(
             [pl.when(text.str.contains(pattern)).then(_date_expr(text, f)) for f, pattern in _DATE_PATTERNS]
@@ -250,6 +252,7 @@ def parse_datetimes(s: pl.Series, fmt: str = "", *, time_unit: str = "us") -> pl
     if fmt:
         code = to_strftime(fmt)
         parsed = _datetime_expr(text, code, time_unit) if _has_time(code) else _date_expr(text, code).cast(pl.Datetime(time_unit))
+        parsed = _all_digits(parsed, text, fmt)
     else:
         parsed = pl.coalesce(
             [pl.when(text.str.contains(pattern)).then(_datetime_expr(text, f, time_unit)) for f, pattern in _DATETIME_PATTERNS]
@@ -314,18 +317,40 @@ def _digit_format(fmt: str) -> int | None:
     number of digits a number is padded to with leading zeros, or 0 for none (a code such as d
     reads one or two digits; a four-digit year first can't have lost a zero). None for a format
     with anything else, such as a separator, a month name or a strftime code."""
+    tokens = _digit_codes(fmt)
+    if tokens is None:
+        return None
+    width = _digit_width(tokens)
+    return 0 if width is None or tokens[0].lower() == "yyyy" else width
+
+
+def _digit_codes(fmt: str) -> list[str] | None:
+    """The codes of a date format of digit codes only, or None (see ``_digit_format``)."""
     if not fmt or "%" in fmt:
         return None
     tokens = _DATE_TOKEN.findall(fmt)
-    fixed = True
     for token in tokens:
         kind, length = _token_kind(token), len(token)
         if kind not in ("y", "m", "d", "h", "s") or (kind != "y" and length > 2):
             return None
-        fixed = fixed and length in ((2, 4) if kind == "y" else (2,))
-    if not fixed or tokens[0].lower() == "yyyy":
-        return 0
-    return sum(len(token) for token in tokens)
+    return tokens
+
+
+def _digit_width(tokens: list[str]) -> int | None:
+    """How many digits these codes read, when that is fixed (yyyy, yy, mm, dd, hh, ss: 8 for
+    yyyymmdd); None when a code such as d reads one or two."""
+    if all(len(token) in ((2, 4) if token[0].lower() == "y" else (2,)) for token in tokens):
+        return sum(len(token) for token in tokens)
+    return None
+
+
+def _all_digits(parsed: pl.Expr, text: pl.Expr, fmt: str) -> pl.Expr:
+    """``parsed``, but empty for a text that hasn't exactly the digits of a date format of digit
+    codes only, such as 8 for yyyymmdd: Polars reads 1012026 with ddmmyyyy as 10.12.0026, and a
+    text can't have lost leading zeros."""
+    tokens = _digit_codes(fmt)
+    width = None if tokens is None else _digit_width(tokens)
+    return parsed if width is None else pl.when(text.str.contains(f"^[0-9]{{{width}}}$")).then(parsed)
 
 
 # --- one type for the values of several columns ----------------------------------------------
