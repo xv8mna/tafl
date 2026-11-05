@@ -492,6 +492,16 @@ def test_a_quote_out_of_place_is_shown_with_its_line(act, tmp_path):
     assert act("csv.import", None, {"file": str(tmp_path / "q.csv")})["Size"].to_list() == ['24" and 27"', '24""', '24" x']  # read as before
 
 
+def test_a_lone_carriage_return_in_a_value_is_no_end_of_the_line(act, tmp_path):
+    """A \\r without \\n in a value (Polars reads it as part of the value) ended the line for the
+    check: the message named that line, which has no quote."""
+    (tmp_path / "q.csv").write_bytes(b'Id;Name;Price\n1;Mou\rse;5\n2;Monitor 24";99\n3;Pad;1\n')
+    with pytest.raises(ActionError, match=r"^Could not read q\.csv: line 3 has a quote in a value that doesn't start with one: '2;Monitor 24\";99'"):
+        act("csv.import", None, {"file": str(tmp_path / "q.csv")})
+    (tmp_path / "q.csv").write_bytes(b'Id;Name;Price\n1;Mou\rse;5\n2;Monitor;99\n')  # without the quote: read as before
+    assert act("csv.import", None, {"file": str(tmp_path / "q.csv")})["Name"].to_list() == ["Mou\rse", "Monitor"]
+
+
 def test_a_failed_export_leaves_the_old_file(act, tmp_path, monkeypatch):
     path = tmp_path / "out.csv"
     path.write_text("an older, complete export\n", encoding="utf-8")

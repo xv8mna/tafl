@@ -197,7 +197,7 @@ def _stray_quote(data: bytes, separator: str, skip_lines: int) -> str | None:
         if not start:
             return None
     s = re.escape(separator)
-    plain = rf'[^"{s}\r\n]*+'
+    plain = rf'(?:[^"{s}\r\n]|\r(?!\n))*+'  # a lone \r is part of the value, as Polars reads it
     field = rf'(?>"(?:[^"]|"")*+"|{plain}(?:"{plain}"{plain})*+)'  # quoted, or plain with pairs of quotes in it
     end = re.compile(rf"(?:{field}(?:{s}|\r?\n|\Z))*+").match(text, start).end()  # possessive: linear, little memory
     if end >= len(text):
