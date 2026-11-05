@@ -33,6 +33,7 @@ _PIECE = 2**18  # Unpivot puts this many result rows at a time in order (all at 
 _NARROW = (pl.Int8, pl.Int16, pl.Int32, pl.UInt8, pl.UInt16, pl.UInt32, pl.Boolean)  # summed as Int64
 _EXACT = 10**38  # the units of an exact decimal (its digits without the point) are below this
 _PART = 10**19  # a sum of exact decimals is checked in two parts: see _decimal_parts
+_WIDE = (pl.Int128, pl.UInt128)  # whole numbers of 128 bits (only a plugin makes them): their sums are checked in parts too
 _PER_DAY = {"ns": 86_400 * 10**9, "us": 86_400 * 10**6, "ms": 86_400 * 10**3}  # durations
 
 
@@ -129,7 +130,7 @@ def pivot(df, p, ctx):
         _prepared(col(p.value), p.function, value_type).alias("value"),
     )
     summed, exact = work.schema["value"], None
-    if p.function == "sum" and (summed in (pl.Int64, pl.UInt64, pl.Duration) or isinstance(summed, pl.Decimal)):
+    if p.function == "sum" and (summed in (pl.Int64, pl.UInt64, *_WIDE, pl.Duration) or isinstance(summed, pl.Decimal)):
         if _check_sums(work, names, p.value) and isinstance(summed, pl.Decimal):
             # Polars stops at a sum beyond 38 digits, also on the way to one that fits: their units
             # (Int128) add up without stopping, and every sum fits
@@ -189,12 +190,23 @@ def _prepared(column: pl.Expr, function: str, dtype: pl.DataType) -> pl.Expr:
 
 
 def _sums_may_overflow(s: pl.Series) -> bool:
-    """Whether a sum of these whole numbers (or durations) might be beyond Int64, or one of exact
-    decimals beyond 38 digits."""
-    limit = _EXACT - 1 if isinstance(s.dtype, pl.Decimal) else 2**63 - 1
+    """Whether a sum of these whole numbers (or durations) might be beyond Int64 (beyond their
+    type for 128 bits), or one of exact decimals beyond 38 digits."""
+    limit = _EXACT - 1 if isinstance(s.dtype, pl.Decimal) else _whole_range(s.dtype)[1] if s.dtype in _WIDE else 2**63 - 1
     s = s.to_physical()
     low, high = s.min(), s.max()
     return low is not None and max(-low, high) * s.len() > limit
+
+
+def _whole_range(dtype: pl.DataType) -> tuple[int, int]:
+    """The smallest and the biggest value of a type of whole numbers (of a duration: Int64)."""
+    if dtype == pl.UInt64:
+        return 0, 2**64 - 1
+    if dtype == pl.Int128:
+        return -(2**127), 2**127 - 1
+    if dtype == pl.UInt128:
+        return 0, 2**128 - 1
+    return -(2**63), 2**63 - 1
 
 
 def _check_sums(work: pl.DataFrame, names: list[str], value: str) -> bool:
@@ -216,9 +228,16 @@ def _check_sums(work: pl.DataFrame, names: list[str], value: str) -> bool:
                 f"for an exact decimal (at most 38). Change “{value}” to a decimal number before this step."
             )
         return True
+    low, high = _whole_range(dtype)
+    if dtype in _WIDE:  # Int128 can't hold their sums either: in two parts, as those of exact decimals
+        sums = work.group_by(pl.exclude("value"), maintain_order=True).agg(_decimal_parts(pl.col("value"), dtype).alias("value"))
+        cells = zip(sums["name"], _decimal_units(sums["value"]), strict=True)
+        if beyond := [(place, total) for place, total in cells if not low <= total <= high]:
+            place, total = min(beyond, key=lambda cell: cell[0])  # in the first new column
+            raise ActionError(_too_big(value, names[place], total, low, high))
+        return True
     exact = pl.col("value").to_physical().cast(pl.Int128).sum()
     sums = work.group_by(pl.exclude("value"), maintain_order=True).agg(exact)
-    low, high = (0, 2**64 - 1) if dtype == pl.UInt64 else (-(2**63), 2**63 - 1)
     beyond = sums.filter((pl.col("value") < low) | (pl.col("value") > high))
     if beyond.height:
         first = beyond.sort("name", maintain_order=True).row(0, named=True)  # in the first new column
@@ -230,18 +249,23 @@ def _check_sums(work: pl.DataFrame, names: list[str], value: str) -> bool:
                 f"too long for a duration (at most {high // per_day:,} days). Change “{value}” to hours "
                 f"before this step, with the formula EPOCH([{value}]) / 3600."
             )
-        limit = f"big for a whole number (at most {high:,})" if total > high else f"small for a whole number (at least {low:,})"
-        raise ActionError(
-            f"The sum of “{value}” in “{name}” is {total:,}: too {limit}. "
-            f"Change “{value}” to a decimal number before this step."
-        )
+        raise ActionError(_too_big(value, name, total, low, high))
     return True
 
 
-def _decimal_parts(column: pl.Expr) -> pl.Expr:
-    """A sum of exact decimals as two sums that can't overflow: their units (the digits without
-    the point) are split at 19 digits, and each part is added up as Int128."""
+def _too_big(value: str, name: str, total: int, low: int, high: int) -> str:
+    limit = f"big for a whole number (at most {high:,})" if total > high else f"small for a whole number (at least {low:,})"
+    return f"The sum of “{value}” in “{name}” is {total:,}: too {limit}. Change “{value}” to a decimal number before this step."
+
+
+def _decimal_parts(column: pl.Expr, dtype: pl.DataType | None = None) -> pl.Expr:
+    """A sum of exact decimals (or of whole numbers of 128 bits) as two sums that can't overflow:
+    their units (the digits without the point) are split at 19 digits, and each part is added up
+    as Int128."""
     units = column.to_physical()
+    if dtype == pl.UInt128:  # beyond Int128: split in its own type
+        part = pl.lit(_PART, pl.UInt128)
+        return pl.struct((units // part).cast(pl.Int128).sum().alias("high"), (units % part).cast(pl.Int128).sum().alias("low"))
     high = units // pl.lit(_PART, pl.Int128)
     return pl.struct(high.sum().alias("high"), (units - high * pl.lit(_PART, pl.Int128)).sum().alias("low"))
 

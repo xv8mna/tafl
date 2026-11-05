@@ -233,6 +233,29 @@ def test_sums_of_durations_beyond_292_years_stop_the_step(act):
     assert fits.rows() == [(dt.timedelta(days=60_000), dt.timedelta(days=-60_001))] and fits.schema["x"] == pl.Duration("ns")
 
 
+def test_sums_beyond_whole_numbers_of_128_bits_stop_the_step(act):
+    """Only a plugin makes such columns. Before, the sums wrapped around without a message: 2^127 -
+    1 + 5 gave -170141183460469231731687303715884105724."""
+    big = 2**127 - 1
+    df = pl.DataFrame({"K": [1, 1, 2, 2], "O": ["x", "x", "x", "y"], "V": pl.Series([big, 5, 5, None], dtype=pl.Int128)})
+    with pytest.raises(ActionError) as raised:
+        pivot(act, df, rows=["K"], column="O", value="V")
+    assert str(raised.value) == (
+        f"The sum of “V” in “x” is {big + 5:,}: too big for a whole number (at most {big:,}). "
+        "Change “V” to a decimal number before this step."
+    )
+    negative = df.with_columns(V=pl.Series([-big - 1, -6, 5, None], dtype=pl.Int128))
+    with pytest.raises(ActionError, match=f"is {-big - 7:,}: too small for a whole number \\(at least {-big - 1:,}\\)"):
+        pivot(act, negative, rows=["K"], column="O", value="V")
+    fits = pivot(act, df.with_columns(V=pl.Series([big, -5, 5, None], dtype=pl.Int128)), rows=["K"], column="O", value="V")
+    assert fits.rows() == [(1, big - 5, None), (2, 5, None)] and fits.schema["x"] == pl.Int128
+    unsigned = pl.DataFrame({"O": ["x", "x"], "V": pl.Series([2**128 - 1, 2], dtype=pl.UInt128)})
+    with pytest.raises(ActionError, match=f"is {2**128 + 1:,}: too big for a whole number \\(at most {2**128 - 1:,}\\)"):
+        pivot(act, unsigned, column="O", value="V")
+    out = pivot(act, unsigned.with_columns(V=pl.Series([2**128 - 3, 2], dtype=pl.UInt128)), column="O", value="V")
+    assert out.rows() == [(2**128 - 1,)] and out.schema["x"] == pl.UInt128
+
+
 def test_sums_are_checked_without_a_wider_result(act, monkeypatch):
     """Sums that might be beyond Int64 are checked cell by cell first: the pivot itself is in the
     type of the values, as a result of Int128 would need twice the memory."""

@@ -333,6 +333,28 @@ def test_aggregate_sums_of_durations_beyond_292_years_stop_the_step(act):
     assert micro.rows() == [("A", dt.timedelta(days=120_000)), ("B", dt.timedelta(days=-60_001))]
 
 
+def test_aggregate_sums_beyond_whole_numbers_of_128_bits_stop_the_step(act):
+    """Only a plugin makes such columns. Before, the sums wrapped around without a message."""
+    big = 2**127 - 1
+    df = pl.DataFrame({"K": ["a", "a", "b", "b", "c"], "V": pl.Series([big, 5, big, -5, None], dtype=pl.Int128)})
+    with pytest.raises(ActionError) as raised:
+        act("calc.aggregate", df, {"group_by": ["K"], **sums_of("V")})
+    assert str(raised.value) == (
+        f"“V” is {big + 5:,} in a group: too big for a whole number (at most {big:,}). "
+        "Change “V” to a decimal number before this step."
+    )
+    fits = act("calc.aggregate", df.filter(pl.col("K") != "a"), {"group_by": ["K"], **sums_of("V")})
+    assert fits.rows() == [("b", big - 5), ("c", None)] and fits.schema["V"] == pl.Int128
+    small = pl.DataFrame({"V": pl.Series([-big - 1, -5], dtype=pl.Int128)})
+    with pytest.raises(ActionError, match=f"^“V” is {-big - 6:,}: too small for a whole number \\(at least {-big - 1:,}\\)"):
+        act("calc.aggregate", small, sums_of("V"))
+    unsigned = pl.DataFrame({"V": pl.Series([2**128 - 1, 2, None], dtype=pl.UInt128)})
+    with pytest.raises(ActionError, match=f"^“V” is {2**128 + 1:,}: too big for a whole number \\(at most {2**128 - 1:,}\\)"):
+        act("calc.aggregate", unsigned, sums_of("V"))
+    out = act("calc.aggregate", unsigned.with_columns(V=pl.Series([2**128 - 3, 2, None], dtype=pl.UInt128)), sums_of("V"))
+    assert out.rows() == [(2**128 - 1,)] and out.schema["V"] == pl.UInt128
+
+
 def test_number_rows_in_text_order_like_sort(act):
     df = pl.DataFrame({"Name": ["Zebra", "Äpfel", "apfel", "Peter"]})
     out = act("calc.enumerate", df, {"order_by": [{"column": "Name"}]})
