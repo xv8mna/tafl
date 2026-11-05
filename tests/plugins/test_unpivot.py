@@ -141,6 +141,17 @@ def test_common_types_without_lost_digits(act):
     assert ctx.messages == []
 
 
+def test_whole_numbers_beyond_int64_become_exact_decimals(act):
+    """As whole numbers beyond 9,223,372,036,854,775,807 do elsewhere (formulas, imports). Before,
+    whole numbers beside such values of another type (UInt64 from a Parquet file) became text."""
+    ctx = StubContext()
+    out = values(act, ctx, a=[1, None], b=pl.Series([2**63, 2**64 - 1], dtype=pl.UInt64))
+    assert out.dtype == pl.Decimal(38, 0) and out.to_list() == [D(1), D(2**63), None, D(2**64 - 1)]
+    fits = values(act, ctx, a=pl.Series([1], dtype=pl.Int32), b=pl.Series([2**62], dtype=pl.UInt64))  # the common case
+    assert fits.dtype == pl.Int64 and fits.to_list() == [1, 2**62]
+    assert ctx.messages == []
+
+
 def test_date_times_and_durations_of_different_precision(act):
     """E.g. microseconds from a CSV file and nanoseconds from a Parquet file: date-times in the
     finest unit, or in a coarser one when a value is beyond the nanoseconds (after 2262)."""
@@ -184,7 +195,7 @@ MIXED = "“Value” is text: the columns have different types ({})"
     ("columns", "expected", "message"),
     [
         ({"a": [2**53 + 1], "b": [1.5]}, ["9007199254740993", "1.5"], LOST.format("a")),
-        ({"a": [1], "b": pl.Series([2**63], dtype=pl.UInt64)}, ["1", "9223372036854775808"], LOST.format("b")),
+        ({"a": [1], "b": pl.Series([2**127 - 1], dtype=pl.Int128)}, ["1", str(2**127 - 1)], LOST.format("b")),  # 39 digits
         (
             {"a": [10**12], "b": pl.Series([D("0.1")], dtype=pl.Decimal(38, 30))},
             ["1000000000000", "0.100000000000000000000000000000"],

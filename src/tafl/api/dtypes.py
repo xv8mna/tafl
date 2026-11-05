@@ -356,6 +356,7 @@ def _all_digits(parsed: pl.Expr, text: pl.Expr, fmt: str) -> pl.Expr:
 # --- one type for the values of several columns ----------------------------------------------
 
 _UNITS = ("ns", "us", "ms")  # of date-times and durations, the finest first
+_NARROW_WHOLE = (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32)  # whole numbers that Int64 holds
 
 
 @dataclass(frozen=True)
@@ -369,10 +370,11 @@ class CommonType:
 
 def common_type(columns: list[pl.Series]) -> CommonType:
     """The type for the values of these columns in one column, as Unpivot puts them into its value
-    column and Append puts tables below each other. Columns of one type keep it. Whole and decimal
-    numbers become decimal numbers, whole numbers and exact decimals exact decimals, dates and
-    date-times of one time zone date-times, durations durations (each in the finest unit that
-    holds every value), when every value stays as it is. Any other mix becomes text, as
+    column and Append puts tables below each other. Columns of one type keep it. Whole numbers of
+    other types become whole numbers (Int64), or beyond them exact decimals of up to 38 digits.
+    Whole and decimal numbers become decimal numbers, whole numbers and exact decimals exact
+    decimals, dates and date-times of one time zone date-times, durations durations (each in the
+    finest unit that holds every value), when every value stays as it is. Any other mix becomes text, as
     ``to_common_type`` writes it: the grid's text. A column whose values are all empty doesn't
     count, whatever its type; when no column has a value (a table without rows), the types count,
     except Null. Lists, records and objects have no common type with another type (``dtype`` is
@@ -468,8 +470,8 @@ def stack(frames: list[pl.DataFrame], warn: Callable[[str], None] | None = None,
 
 def _common_types(types: list[pl.DataType]) -> list[pl.DataType]:
     """Types that can hold the values of all these types (if the values fit), the best first."""
-    if all(t.is_integer() for t in types):
-        return [pl.Int64]
+    if all(t.is_integer() for t in types):  # beyond Int64, whole numbers keep their digits as exact decimals
+        return [pl.Int64, pl.Decimal(38, 0)]
     if all(t.is_integer() or t.is_float() for t in types):
         return [pl.Float64]
     if all(t.is_integer() or isinstance(t, pl.Decimal) for t in types):
@@ -493,9 +495,17 @@ def _keeps_values(s: pl.Series, target: pl.DataType) -> bool:
     """Whether the values of ``s`` (named "value") come back unchanged from ``target``."""
     if s.dtype.is_float() and target == pl.Float64:
         return True
-    if s.dtype.is_integer() and target == pl.Float64:  # all whole numbers up to 2^53 are exact
+    if s.dtype.is_integer() and target == pl.Int64 and s.dtype in _NARROW_WHOLE:
+        return True
+    if s.dtype.is_integer() and (target in (pl.Float64, pl.Int64) or isinstance(target, pl.Decimal)):  # by their range
         low, high = s.min(), s.max()
-        return low is None or (-(2**53) <= low and high <= 2**53)
+        if target == pl.Float64:  # all whole numbers up to 2^53 are exact
+            limits = (-(2**53), 2**53)
+        elif target == pl.Int64:
+            limits = (-(2**63), 2**63 - 1)
+        else:  # the digits before the decimal point
+            limits = (1 - 10 ** (target.precision - target.scale), 10 ** (target.precision - target.scale) - 1)
+        return low is None or (limits[0] <= low and high <= limits[1])
     back = to_common_type(pl.col("value"), s.dtype, target)
     back = back.dt.date() if s.dtype == pl.Date else back.cast(s.dtype, strict=False)
     return s.to_frame().select((pl.col("value").is_null() | (back == pl.col("value")).fill_null(False)).all()).item()

@@ -259,6 +259,20 @@ def test_append_says_which_columns_became_text(act):
     ]
 
 
+def test_append_keeps_the_digits_of_whole_numbers_beyond_int64(act):
+    """As exact decimals, as whole numbers beyond 9,223,372,036,854,775,807 do elsewhere. Before,
+    such values beside whole numbers of another type became 128-bit numbers (only a plugin knows them)."""
+    ctx = StubContext(tables={"o": pl.DataFrame({"x": pl.Series([2**64 - 1], dtype=pl.UInt64)})})
+    out = act("table.append", pl.DataFrame({"x": [-1]}), {"tables": ["o"]}, ctx)
+    assert out.schema["x"] == pl.Decimal(38, 0) and out["x"].to_list() == [D(-1), D(2**64 - 1)] and ctx.messages == []
+    small = act("table.append", pl.DataFrame({"x": [-1]}), {"tables": ["s"]}, StubContext(tables={"s": pl.DataFrame({"x": pl.Series([7], dtype=pl.Int32)})}))
+    assert small.schema["x"] == pl.Int64 and small["x"].to_list() == [-1, 7]  # the common case
+    ctx = StubContext(tables={"o": pl.DataFrame({"x": pl.Series([2**127 - 1], dtype=pl.Int128)})})  # 39 digits
+    out = act("table.append", pl.DataFrame({"x": [-1]}), {"tables": ["o"]}, ctx)
+    assert out["x"].to_list() == ["-1", str(2**127 - 1)]
+    assert ctx.warnings == ["“x” is text, so that none of its values changes (integer)"]
+
+
 def test_append_of_lists_beside_other_values_stops_with_a_message(act):
     ctx = StubContext(tables={"o": pl.DataFrame({"Tags": ["x"], "Note": [[1]]})})
     with pytest.raises(ActionError) as raised:

@@ -385,7 +385,8 @@ def unpivot(df, p, ctx):
 
     The rows keep their order, and the values of a row come in the order of the columns. Columns of
     one type keep it. Whole and decimal numbers become decimal numbers, whole numbers and exact
-    decimals exact decimals, dates and date-times date-times, when every value stays as it is. Any
+    decimals exact decimals, dates and date-times date-times, when every value stays as it is
+    (whole numbers beyond 9,223,372,036,854,775,807 become exact decimals). Any
     other mix, also decimal numbers with exact decimals, becomes text (numbers as 1.5, exact
     decimals as 2.00, dates as 2025-12-31), and the step says so. A column whose values are all
     empty doesn't count, whatever its type. At most 250,000,000 cells in the result (rows ×
