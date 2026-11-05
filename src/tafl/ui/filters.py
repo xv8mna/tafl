@@ -306,6 +306,8 @@ def stored_values(values: pl.Series) -> list[Any]:
     if dtype == pl.Duration:
         factor = _UNIT_NS[_unit(dtype)]
         return [None if count is None else _span_json(count * factor) for count in column.cast(pl.Int64).to_list()]
+    if dtype == pl.Datetime and _zone(dtype) is not None:
+        return _zoned_texts(column)
     cells = column.to_list()
     if dtype == pl.Time or (dtype == pl.Datetime and _unit(dtype) == "ns"):
         below = (column.dt.nanosecond() % 1000).to_list()  # Python's values end at the microsecond (rounded down)
@@ -327,6 +329,33 @@ def _span_json(nanoseconds: int) -> float | str:
     if seconds or fraction or not (days or time):
         time += str(seconds) + (f".{fraction:09d}".rstrip("0") if fraction else "") + "S"
     return f"{sign}P" + (f"{days}D" if days else "") + (f"T{time}" if time else "")
+
+
+def _zoned_texts(column: pl.Series) -> list[str | None]:
+    """Date-times with a time zone as ISO text with their offset, as Python writes them
+    (2025-02-01T00:30:00+01:00), from Polars' own local time and offset. Python's rules of a zone can
+    differ from Polars' (America/Vancouver from 2026-11-01): its offset for Polars' local time would
+    make the text another moment."""
+    factor = _UNIT_NS[_unit(column.dtype)]
+    moments = column.cast(pl.Int64).to_list()
+    walls = column.dt.replace_time_zone(None).cast(pl.Int64).to_list()  # the local times, in the same unit
+    texts: list[str | None] = []
+    for moment, wall in zip(moments, walls, strict=True):
+        if moment is None:
+            texts.append(None)
+            continue
+        microseconds, nanoseconds = divmod(wall * factor, 1000)
+        local = _EPOCH + dt.timedelta(microseconds=microseconds)
+        text = _with_nanoseconds(local, nanoseconds) if nanoseconds else local.isoformat()
+        texts.append(text + _offset_text((wall - moment) * factor // 10**9))
+    return texts
+
+
+def _offset_text(seconds: int) -> str:
+    """An offset from UTC as Python's isoformat writes it: +01:00, -03:30, +00:53:28."""
+    hours, rest = divmod(abs(seconds), 3600)
+    minutes, rest = divmod(rest, 60)
+    return f"{'-' if seconds < 0 else '+'}{hours:02d}:{minutes:02d}" + (f":{rest:02d}" if rest else "")
 
 
 def _with_nanoseconds(value: dt.datetime | dt.time, nanoseconds: int) -> str:

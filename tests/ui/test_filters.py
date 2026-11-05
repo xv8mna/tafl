@@ -1042,6 +1042,22 @@ def test_a_value_of_a_column_with_a_time_zone_as_a_step(act, zone):
     assert formula(Filter("When", ["2025-01-31T23:30:00+00:00"]), pl.Datetime) == "FALSE"
 
 
+def test_a_value_of_a_zone_whose_rules_python_has_otherwise_keeps_its_moment(act):
+    """Polars and Python's tzdata can have other rules for a zone (America/Vancouver from
+    2026-11-01, Africa/Casablanca, Europe/Chisinau): a value was written with Python's offset for
+    Polars' local time, so it named another moment, and the card and the step kept the row of that
+    one. Where the rules agree, the text is the same as before: filters of 0.6.3 keep their rows."""
+    moments = [dt.datetime(2026, 12, 1, 7, 30), dt.datetime(2026, 12, 1, 6, 30), dt.datetime(2026, 7, 1, 7, 30), None]
+    vancouver = pl.Series("When", moments).dt.replace_time_zone("UTC").dt.convert_time_zone("America/Vancouver")
+    df = pl.DataFrame({"id": range(4), "When": vancouver})
+    for row, stored in enumerate(stored_values(df["When"])[:3]):
+        assert same_rows(act, df, Filter("When", [stored])) == [row], stored
+    stamps = [*moments, dt.datetime(1890, 6, 1, 12), dt.datetime(2025, 10, 26, 0, 30), dt.datetime(2025, 7, 1, 12, 0, 0, 500)]
+    for zone in ("Europe/Berlin", "Asia/Kolkata", "Australia/Lord_Howe"):  # rules that agree: 1890 is local mean time
+        same = pl.Series("When", stamps).dt.replace_time_zone("UTC").dt.convert_time_zone(zone)
+        assert stored_values(same) == [None if value is None else value.isoformat() for value in same.to_list()]
+
+
 def test_values_with_nanoseconds_are_stored_with_them(act):
     """08:30:00 and 08:30:00.000000001 were two values, but both were stored as 08:30:00: the
     card and the step kept the row of the first one. A filter that 0.6.3 stored keeps its rows."""
