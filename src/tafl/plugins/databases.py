@@ -1607,7 +1607,7 @@ def _fit_lengths(
         if source in hexed:  # hex digits take a character, also a byte in UTF-8
             raise ActionError(
                 f"The column {target} of {table} holds texts of up to {size:,} characters ({kind.split(' collate ')[0]}), but "
-                f"{source} has binary values that are longer as the hex text this column gets (e.g. {shown}, {length:,} "
+                f"{source} has binary values whose hex text is longer than this column holds (e.g. {shown}, {length:,} "
                 "characters). Make the column longer in the database."
             )
         if unit == "bytes":  # a varchar of a UTF-8 collation

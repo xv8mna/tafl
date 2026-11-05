@@ -976,8 +976,8 @@ def test_sqlserver_text_columns_get_binary_values_as_hex_text(registry):
             db.execute(f"DROP TABLE {name}")
             db.execute(f"CREATE TABLE {name} (N int, B varchar(5))")
         message = (
-            rf"^The column B of {name} holds texts of up to 5 characters \(varchar\(5\)\), but B has binary values that are "
-            r"longer as the hex text this column gets \(e\.g\. 0xFF00, 6 characters\)\. Make the column longer in the database\.$"
+            rf"^The column B of {name} holds texts of up to 5 characters \(varchar\(5\)\), but B has binary values whose hex text "
+            r"is longer than this column holds \(e\.g\. 0xFF00, 6 characters\)\. Make the column longer in the database\.$"
         )
         with pytest.raises(ActionError, match=message):
             export(data, "insert")
