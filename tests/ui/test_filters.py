@@ -1102,8 +1102,8 @@ def test_a_day_whose_midnight_a_clock_change_crosses_as_a_step(act, zone, midnig
 
 def test_many_periods_of_a_column_with_a_time_zone_as_a_step(act):
     """A step had a range of moments per period: 300 dates took two seconds on a million rows, at
-    each calculation. Periods that meet are one range now, and more than four ranges a binary
-    search (CASE)."""
+    each calculation. Periods that meet are one range now; more than four ranges become the local
+    days of the moments (IN), with the offsets of the zone's clock changes."""
     start = dt.datetime(2024, 12, 31, 12)
     moments = [start + dt.timedelta(hours=7 * k) for k in range(2400)] + [None]  # 700 days, with clock changes
     df = pl.DataFrame({"id": range(len(moments)), "When": pl.Series("When", moments).dt.replace_time_zone("UTC").dt.convert_time_zone("Europe/Berlin")})
@@ -1114,7 +1114,35 @@ def test_many_periods_of_a_column_with_a_time_zone_as_a_step(act):
             same_rows(act, df, Filter("When", values, "period", {"by": by}, excluded=excluded))
     in_a_row = [(dt.date(2025, 1, 1) + dt.timedelta(days=k)).isoformat() for k in range(300)]
     assert formula(Filter("When", in_a_row, "period", {"by": "date"}), df.schema["When"]).count("TIMESTAMPTZ") == 2
-    assert formula(Filter("When", dates, "period", {"by": "date"}), df.schema["When"]).startswith("CASE WHEN [When] < TIMESTAMPTZ")
+    step = formula(Filter("When", dates, "period", {"by": "date"}), df.schema["When"])
+    assert step.startswith("(epoch_us([When]) + CASE WHEN epoch_us([When]) < ") and step.count("TIMESTAMPTZ") == 0
+
+
+@pytest.mark.parametrize(
+    "zone, middle",
+    [
+        ("America/Goose_Bay", dt.datetime(1999, 10, 31)),  # back at 00:01 to 23:01 of the day before
+        ("America/Havana", dt.datetime(2025, 11, 2)),  # 00:00 to 01:00 twice
+        ("Pacific/Apia", dt.datetime(2011, 12, 30)),  # no 30 December
+        ("Australia/Lord_Howe", dt.datetime(2025, 10, 5)),  # half an hour
+        ("Asia/Kathmandu", dt.datetime(1986, 1, 1)),  # +05:30 to +05:45
+        ("America/Vancouver", dt.datetime(2026, 11, 1)),  # other rules in DuckDB
+    ],
+)
+def test_many_periods_of_a_zone_with_odd_clocks_as_a_step(act, zone, middle):
+    """More than four separate periods become the local days of the moments: the offset of each
+    moment comes from the clock changes that Polars knows for the zone, also where a change goes
+    back across midnight, repeats an hour of the same day, skips a day or moves by minutes."""
+    moments = [middle + dt.timedelta(minutes=37 * k) for k in range(-1600, 1600)] + [None]
+    df = pl.DataFrame({"id": range(len(moments)), "When": pl.Series("When", moments).dt.replace_time_zone("UTC").dt.convert_time_zone(zone)})
+    for by in ("date", "week", "month"):
+        offered = sorted(facet(df, [Filter("When", [], "period", {"by": by})], 0)[0]["value"].drop_nulls().to_list())
+        for picked in (offered[::2], offered[1::2], [*offered[::3], None]):
+            for excluded in (False, True):
+                chosen = Filter("When", picked, "period", {"by": by}, excluded=excluded)
+                same_rows(act, df, chosen)
+    dates = sorted(facet(df, [Filter("When", [], "period", {"by": "date"})], 0)[0]["value"].drop_nulls().to_list())
+    assert " IN (" in formula(Filter("When", dates[::2], "period", {"by": "date"}), df.schema["When"])
 
 
 @pytest.mark.parametrize("zone", ["UTC", "America/New_York", "Europe/Berlin"])
