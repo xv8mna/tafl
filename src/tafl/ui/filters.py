@@ -492,13 +492,14 @@ def _without_nanoseconds(text: str) -> tuple[str, int]:
 
 
 def _span_nanoseconds(value: Any) -> int:
-    """The nanoseconds of a stored time span: seconds (a number), or ISO text (PT1H30M)."""
+    """The nanoseconds of a stored time span: seconds (a number, also as text: "3600", as 0.6.3 read
+    it), or ISO text (PT1H30M)."""
     if isinstance(value, dt.timedelta):
         return value // _MICROSECOND * 1000
     if isinstance(value, str):
         found = _SPAN.fullmatch(value)
         if found is None or not any(found.groups()[1:]):
-            raise ValueError(value)
+            return int(Decimal(value.strip()).scaleb(9).to_integral_value())  # not a number: an error, the value is left out
         sign, days, hours, minutes, seconds, fraction = found.groups()
         whole = ((int(days or 0) * 24 + int(hours or 0)) * 60 + int(minutes or 0)) * 60 + int(seconds or 0)
         nanoseconds = whole * 10**9 + int((fraction or "").ljust(9, "0"))

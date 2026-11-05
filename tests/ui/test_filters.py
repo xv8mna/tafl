@@ -1123,6 +1123,17 @@ def test_time_spans_are_stored_with_all_their_digits(act):
     assert same_rows(act, nano, Filter("S", [None])) == []  # empty cells: the step can say that
 
 
+def test_a_time_span_stored_as_the_text_of_a_number_is_seconds(act):
+    """A filter made where the column held texts ("3600"), on a column of time spans after a step:
+    0.6.3 read the text as seconds, 0.6.4 had left it out."""
+    spans = pl.DataFrame({"id": [0, 1], "S": pl.Series([3_600_000_000, 1], dtype=pl.Int64).cast(pl.Duration("us"))})
+    for stored in ("3600", " 3600 ", "3600.0", "3.6e3"):
+        assert same_rows(act, spans, Filter("S", [stored])) == [0], stored
+    for stored in ("1:00:00", "an hour", "nan", "inf"):
+        assert same_rows(act, spans, Filter("S", [stored])) == [], stored
+    assert same_rows(act, spans, Filter("S", ["0.000001", "PT1H"])) == [0, 1]
+
+
 def test_date_times_with_a_time_zone_and_nanoseconds_as_a_step(act):
     """DuckDB has date-times with a time zone only to the microsecond."""
     df = pl.DataFrame({"id": [0, 1], "When": pl.Series([1_735_720_200 * 10**9, 1_735_720_200 * 10**9 + 1]).cast(pl.Datetime("ns")).dt.replace_time_zone("UTC")})
