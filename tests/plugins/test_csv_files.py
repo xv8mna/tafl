@@ -1,4 +1,5 @@
 import datetime as dt
+import subprocess
 import sys
 import time
 from decimal import Decimal
@@ -559,6 +560,45 @@ def test_lists_and_records_stop_the_export_with_their_columns(act, tmp_path):
     assert path.read_text(encoding="utf-8") == "old\n"  # the file stays as it was
     act("csv.export", df.select("Ok"), {"file": str(path)})
     assert path.read_text(encoding="utf-8-sig").splitlines() == ["Ok", "1", "2"]
+
+
+_WIDE = """
+import datetime as dt
+import sys
+from pathlib import Path
+
+import polars as pl
+from tafl.api import ActionError
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+folder = Path(sys.argv[1])
+kinds = [[1.5, None], [dt.time(8, 30, 0, 500000), None], [dt.timedelta(hours=1), None], [b"\\x01", None], ["a", None]]
+df = pl.DataFrame({f"c{i}": kinds[i % 5] for i in range(4_001)})
+registry.actions["csv.export"](df, {"file": str(folder / "wide.csv")}, StubContext())
+lines = (folder / "wide.csv").read_text(encoding="utf-8-sig").splitlines()
+assert lines[1].split(";")[:5] == ["1,5", "08:30:00.500", "1h", "0x01", "a"], lines[1][:80]
+nested = pl.DataFrame({f"L{i}": [[i]] for i in range(4_001)})
+try:
+    registry.actions["csv.export"](nested, {"file": str(folder / "nested.csv")}, StubContext())
+except ActionError as error:
+    assert "L0, L1, L2, L3, L4 and 3,996 more columns have them" in str(error), error
+else:
+    raise AssertionError("no message")
+(folder / "in.csv").write_text(";".join(f"c{i}" for i in range(4_001)) + "\\n1,5" + ";" * 4_000 + "\\n", encoding="utf-8")
+back = registry.actions["csv.import"](None, {"file": str(folder / "in.csv")}, StubContext())
+assert back.width == 4_001 and back["c0"].to_list() == [1.5] and back.schema["c4000"] == pl.String, back.schema
+"""
+
+
+def test_a_wide_table_is_exported_and_imported(tmp_path):
+    """4,001 columns: the checks of the export and the detection of numbers go through every column,
+    and a deep Polars expression would end the process. In a process of its own, so that such an end
+    shows as a failed test."""
+    done = subprocess.run([sys.executable, "-c", _WIDE, str(tmp_path)], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
 
 
 def test_export_writes_decimals_with_15_digits_as_excel_does(act, tmp_path):

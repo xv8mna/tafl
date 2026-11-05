@@ -4,6 +4,8 @@ import datetime as dt
 import decimal
 import os
 import sqlite3
+import subprocess
+import sys
 import time
 import uuid
 
@@ -348,6 +350,49 @@ def test_sqlite_finds_rows_by_hundreds_of_key_columns(db):
     db.export(pairs.with_columns(Net=pl.col("Net") * 10), table="pairs", mode="upsert", key_columns=["a", "b"])
     assert db.context.messages[-1] == ("info", "pairs: updated 4 rows")
     assert db.rows("SELECT a, b, Net FROM pairs ORDER BY Net") == [(1, None, 10), (None, None, 20), (1, 2, 30), (None, 2, 40)]
+
+
+_WIDE_SQLITE = """
+import datetime as dt
+import sqlite3
+import sys
+
+import polars as pl
+from tafl.api import ActionError
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+ctx = StubContext(mode="run", connections={"db": (registry.connectors["sqlite"], {"file": sys.argv[1]})})
+kinds = [[dt.datetime(2025, 1, 1, 8, 30, 0, 500000)], [dt.time(8, 30, 0, 500000)], pl.Series([5], dtype=pl.UInt64), ["a"]]
+df = pl.DataFrame({f"c{i}": kinds[i % 4] for i in range(2_000)})  # the most a SQLite table holds
+export = registry.actions["db.export"]
+export(df, {"connection": "db", "table": "wide"}, ctx)
+export(df, {"connection": "db", "table": "wide", "mode": "upsert", "key_columns": df.columns[:-1]}, ctx)
+assert ctx.messages[-1] == ("info", "wide: updated 1 row"), ctx.messages
+row = sqlite3.connect(sys.argv[1]).execute("SELECT c0, c1, c2, c3 FROM wide").fetchall()
+assert row == [("2025-01-01 08:30:00.500000", "08:30:00.500000", 5, "a")], row
+for data, message in (
+    (pl.DataFrame({f"c{i}": [i] for i in range(4_001)}), "The table has 4,001 columns, but a SQLite table holds at most 2,000"),
+    (pl.DataFrame({f"s{i}": [dt.timedelta(1)] for i in range(1_999)}), "s0, s1, s2, s3, s4 and 1,994 more columns have them"),
+):
+    try:
+        export(data, {"connection": "db", "table": "other"}, ctx)
+    except ActionError as error:
+        assert message in str(error), error
+    else:
+        raise AssertionError("no message")
+"""
+
+
+def test_sqlite_takes_a_table_of_its_most_columns(tmp_path):
+    """2,000 columns, the most a SQLite table holds, also with 1,999 key columns, and more columns
+    or time spans in all columns give their message. The export goes through every column, and a
+    deep Polars expression would end the process: in a process of its own, so that such an end shows
+    as a failed test."""
+    done = subprocess.run([sys.executable, "-c", _WIDE_SQLITE, str(tmp_path / "wide.db")], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
 
 
 def test_sqlite_exact_decimals_keep_their_digits(db, registry):

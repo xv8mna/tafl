@@ -1,5 +1,6 @@
 import decimal
-import time
+import subprocess
+import sys
 
 import openpyxl
 import polars as pl
@@ -120,18 +121,35 @@ def test_whole_numbers_of_128_bits_follow_the_rules_of_decimals(act, tmp_path):
     assert ctx.warnings == [f"Top becomes text: its numbers are too long to be kept exactly, e.g. '{2**128 - 1}'"]
 
 
-def test_many_text_columns_are_read_fast(act, tmp_path):
+_WIDE = """
+import sys
+import time
+
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+columns = {f"c{i}": ["a", None] for i in range(6_000)} | {"Id": pl.Series([2**128 - 1, 5], dtype=pl.UInt128)}
+pl.DataFrame(columns).write_parquet(sys.argv[1])
+ctx = StubContext()
+start = time.perf_counter()
+df = registry.actions["parquet.import"](None, {"file": sys.argv[1]}, ctx)
+seconds = time.perf_counter() - start
+assert seconds < 3, seconds
+assert df.width == 6_001 and df.schema["c0"] == pl.String and df["Id"].to_list() == [str(2**128 - 1), "5"]
+assert ctx.warnings == [f"Id becomes text: its numbers are too long to be kept exactly, e.g. '{2**128 - 1}'"], ctx.warnings
+"""
+
+
+def test_many_text_columns_are_read_fast(tmp_path):
     """The check for long whole numbers asked Polars for the types of all columns again for each
-    text column: the time grew with the square of the columns (6,000 took about 20 s)."""
-    pl.DataFrame({f"c{i}": ["a", None] for i in range(6_000)} | {"Id": pl.Series([2**128 - 1, 5], dtype=pl.UInt128)}).write_parquet(
-        tmp_path / "wide.parquet"
-    )
-    ctx = StubContext()
-    start = time.perf_counter()
-    df = act("parquet.import", None, {"file": str(tmp_path / "wide.parquet")}, ctx)
-    assert time.perf_counter() - start < 3
-    assert df.width == 6_001 and df.schema["c0"] == pl.String and df["Id"].to_list() == [str(2**128 - 1), "5"]
-    assert ctx.warnings == [f"Id becomes text: its numbers are too long to be kept exactly, e.g. '{2**128 - 1}'"]
+    text column: the time grew with the square of the columns (6,000 took about 20 s). In a process
+    of its own, so that a deep Polars expression, which would end the process, shows as a failed
+    test."""
+    done = subprocess.run([sys.executable, "-c", _WIDE, str(tmp_path / "wide.parquet")], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
 
 
 @pytest.mark.parametrize("name", ["x[1]/data.parquet", "Data [old]/data.parquet", "x[1].parquet", "a[b.parquet"])

@@ -1,6 +1,7 @@
 import datetime as dt
 import decimal
 import logging
+import subprocess
 import sys
 from pathlib import Path
 
@@ -165,6 +166,35 @@ def test_numbers_that_excel_rounds_are_counted(act, tmp_path, existing):
         "Excel keeps 15 significant digits of a number, and rounds longer ones: Id has 1 (e.g. 9223372036854775807). To keep "
         "all their digits, change this column to text before this step (Change type / format)."
     ]
+
+
+_WIDE_NUMBERS = """
+import sys
+
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+df = pl.DataFrame({f"c{i}": [9007199254740993, i] for i in range(4_001)})
+ctx = StubContext(mode="run")
+registry.actions["excel.export"](df, {"file": sys.argv[1]}, ctx)
+assert ctx.warnings == [
+    "Excel keeps 15 significant digits of a number, and rounds longer ones: "
+    + ", ".join(f"c{i} has 1 (e.g. 9007199254740993)" for i in range(5))
+    + " and 3,996 more columns have some. To keep all their digits, change these columns to text before this step "
+    "(Change type / format)."
+], ctx.warnings
+"""
+
+
+def test_numbers_that_excel_rounds_are_counted_in_a_wide_table(tmp_path):
+    """4,001 columns of whole numbers: the count looks at all of them at once, and a deep Polars
+    expression would end the process (in a process of its own, so that such an end shows as a
+    failed test)."""
+    done = subprocess.run([sys.executable, "-c", _WIDE_NUMBERS, str(tmp_path / "wide.xlsx")], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
 
 
 class _Point:

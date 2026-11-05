@@ -588,6 +588,35 @@ def test_detect_types_reads_a_decimal_comma_as_the_csv_import_does(project, regi
     assert from_csv.select(pl.exclude("code")).rows() == result.df.select("comma", "point", "amount", "share", "big").rows()
 
 
+_WIDE_DETECTION = """
+import sqlite3
+import sys
+
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+with sqlite3.connect(sys.argv[1]) as con:
+    con.execute("CREATE TABLE wide (" + ", ".join(f"c{i} TEXT" for i in range(2_000)) + ")")
+    con.execute("INSERT INTO wide (c0, c1, c2) VALUES ('1,5', '2.5', '7')")
+con.close()
+ctx = StubContext(connections={"db": (registry.connectors["sqlite"], {"file": sys.argv[1]})})
+out = registry.actions["db.import"](None, {"connection": "db", "mode": "table", "table": "wide", "detect_types": True}, ctx)
+assert out.width == 2_000 and out.row(0)[:4] == (1.5, 2.5, 7, None), out.row(0)[:4]
+assert ctx.messages == [("info", "Decimal comma in c0")], ctx.messages
+"""
+
+
+def test_detect_types_on_a_wide_table(tmp_path):
+    """2,000 text columns, the most a SQLite table holds: the detection looks at all of them at
+    once, and a deep Polars expression would end the process (in a process of its own, so that such
+    an end shows as a failed test)."""
+    done = subprocess.run([sys.executable, "-c", _WIDE_DETECTION, str(tmp_path / "wide.db")], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
+
+
 def test_column_with_mixed_values_becomes_text(project, registry):
     assert import_table(project, registry, table="messy").df["value"].to_list() == ["1", "two", None]
 
