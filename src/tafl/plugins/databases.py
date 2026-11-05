@@ -1300,7 +1300,7 @@ def export_database(df, p, ctx):
             data = data.select(cols(c for c, n in names.items() if n in keys))
         _check_whole_numbers(data, names, types, p.table)
         _check_storable(data, db)
-        _check_beyond_bigint(data, names, types, p.table, db.connector.id)
+        data = _fit_beyond_bigint(data, names, types, p.table, db.connector.id)
         finding = keys if p.mode in ("update", "delete") else []  # key values that only find rows
         data = _fit_lengths(data, names, types, p.table, finding)
         kinds = {name.lower(): kind for name, kind in types.items()}
@@ -1414,18 +1414,18 @@ def _listed(words: list[str], last: str) -> str:
     return words[0] if len(words) == 1 else ", ".join(words[:-1]) + f" {last} " + words[-1]
 
 
-def _check_beyond_bigint(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, connector_id: str) -> None:
-    """Whole numbers beyond 64 bits (UInt64 from Parquet, 128 bits from a plugin): SQLite holds
-    none of them, and a SQL Server column of whole numbers neither (their drivers stop with
-    "Python int too large to convert to SQLite INTEGER" and "int too big to convert"). A SQL
-    Server column of decimals takes them."""
+def _fit_beyond_bigint(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, connector_id: str) -> pl.DataFrame:
+    """Whole numbers beyond 64 bits (UInt64 from Parquet, 128 bits from a plugin), which the drivers
+    can't pass as numbers ("Python int too large to convert to SQLite INTEGER", "int too big to
+    convert"). SQLite holds none of them. In SQL Server, a text column gets their digits as text
+    (its length is checked as for other texts), a decimal column with enough digits gets them
+    exactly, and other columns stop the export with a plain message: whole numbers, float and real
+    (they would round them), a decimal with fewer digits, money, sql_variant and the rest."""
     kinds = {name.lower(): kind for name, kind in types.items()}
+    changes = []
     for source in df.columns:
         target, column = names[source], df[source].alias("value")  # a fixed name, as in _round_half_away
         if column.dtype not in (pl.UInt64, pl.Int128, pl.UInt128) or connector_id not in _BUILT_IN:
-            continue
-        kind = kinds.get(target.lower(), "")
-        if connector_id == "sqlserver" and _kind(kind)[0] not in _WHOLE_NUMBER_TYPES:
             continue
         low, high = column.min(), column.max()  # Python's whole numbers: exact
         if high is None or _BIGINT[0] <= low <= high <= _BIGINT[1]:
@@ -1436,10 +1436,38 @@ def _check_beyond_bigint(df: pl.DataFrame, names: dict[str, str], types: dict[st
                 f"SQLite stores whole numbers {_BIGINT_RANGE}, and {source} has others (e.g. {example}). Change {source} "
                 "to text before this step (Change type / format): a TEXT column keeps all their digits."
             )
+        kind = kinds.get(target.lower(), "")
+        base, size, scale = _kind(kind)
+        if base in _TEXT_KINDS:
+            changes.append(column.cast(pl.String).alias(source))  # the digits of each number
+            continue
+        if base in ("decimal", "numeric"):
+            if max(len(str(abs(low))), len(str(abs(high)))) <= size - scale:
+                continue  # the column holds them exactly
+            raise ActionError(
+                f"The column {target} of {table} holds numbers of up to {size - scale} digits before the decimal point "
+                f"({kind}), but {source} has longer ones (e.g. {example}). Make the column wider in the database, e.g. "
+                "decimal(38, 0)."
+            )
+        if base in _WHOLE_NUMBER_TYPES:
+            raise ActionError(
+                f"The column {target} of {table} holds whole numbers {_BIGINT_RANGE} ({kind}), but {source} has others "
+                f"(e.g. {example}). Change the column's type in the database, e.g. to decimal(38, 0)."
+            )
+        if base in ("float", "real"):
+            raise ActionError(
+                f"The column {target} of {table} holds decimal numbers ({kind}), which keep about {15 if base == 'float' else 7} "
+                f"digits, but {source} has whole numbers with more (e.g. {example}), which it would round. Change the "
+                "column's type in the database, e.g. to decimal(38, 0)."
+            )
         raise ActionError(
-            f"The column {target} of {table} holds whole numbers {_BIGINT_RANGE} ({kind}), but {source} has others "
-            f"(e.g. {example}). Change the column's type in the database, e.g. to decimal(38, 0)."
+            f"The column {target} of {table} ({kind}) can't take whole numbers outside {_BIGINT[0]:,} to {_BIGINT[1]:,}, "
+            f"and {source} has some (e.g. {example}). Change the column's type in the database, e.g. to decimal(38, 0)."
         )
+    return df.with_columns(changes) if changes else df
+
+
+_TEXT_KINDS = ("char", "varchar", "nchar", "nvarchar", "text", "ntext")
 
 
 _TEXT_TYPE = re.compile(r"(n?)(?:var)?char\((\d+)\)( collate \S+_utf8)?")  # a UTF-8 varchar counts bytes

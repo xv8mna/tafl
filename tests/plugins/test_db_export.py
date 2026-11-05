@@ -807,6 +807,57 @@ def test_sqlserver_new_table_holds_whole_numbers_beyond_a_bigint(registry):
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_whole_numbers_beyond_a_bigint_into_other_columns(registry):
+    """The driver's words were the message ("int too big to convert", or a text about the TDS
+    protocol for a decimal(19, 0)). A text column gets the digits, a decimal column with enough
+    digits the exact value; a shorter text, a narrower decimal, float, real and other types stop
+    with a message that names the column and its type."""
+    ctx, name = _sqlserver()
+    data = pl.DataFrame({"N": [1, 2], "Id": pl.Series([2**64 - 1, 5], dtype=pl.UInt64)})
+    stored = {
+        "nvarchar(50)": [str(2**64 - 1), "5"], "varchar(30)": [str(2**64 - 1), "5"], "nvarchar(max)": [str(2**64 - 1), "5"],
+        "decimal(20, 0)": [str(2**64 - 1), "5"], "decimal(38, 2)": [f"{2**64 - 1}.00", "5.00"],
+    }  # fmt: skip
+    refused = {
+        "nvarchar(10)": r"holds texts of up to 10 characters \(nvarchar\(10\)\), but Id has longer ones \(e\.g\. “18446744073709551615”",
+        "decimal(19, 0)": r"holds numbers of up to 19 digits before the decimal point \(decimal\(19,0\)\), but Id has longer ones "
+        r"\(e\.g\. 18446744073709551615\)",
+        "float": r"holds decimal numbers \(float\), which keep about 15 digits, but Id has whole numbers with more \(e\.g\. "
+        r"18446744073709551615\), which it would round",
+        "real": r"holds decimal numbers \(real\), which keep about 7 digits",
+        "sql_variant": r"^The column Id of \S+ \(sql_variant\) can't take whole numbers outside -9,223,372,036,854,775,808 to "
+        r"9,223,372,036,854,775,807, and Id has some \(e\.g\. 18446744073709551615\)",
+        "money": r"\(money\) can't take whole numbers outside",
+    }
+
+    def export(**params):
+        registry.actions["db.export"](data, {"connection": "server", "table": name} | params, ctx)
+
+    try:
+        for kind in [*stored, *refused]:
+            with ctx.database("server") as db:
+                db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                db.execute(f"CREATE TABLE {name} (N int, Id {kind})")
+            if kind in refused:
+                with pytest.raises(ActionError, match=refused[kind]):
+                    export()
+                continue
+            export()
+            with ctx.database("server") as db:
+                assert db.read(f"SELECT CONVERT(nvarchar(45), Id) AS Id FROM {name} ORDER BY N")["Id"].to_list() == stored[kind], kind
+        for kind in ("decimal(20, 0)", "nvarchar(50)"):  # keys of such columns find the rows
+            with ctx.database("server") as db:
+                db.execute(f"DROP TABLE {name}")
+                db.execute(f"CREATE TABLE {name} (N int, Id {kind})")
+            export()
+            export(mode="upsert", key_columns=["Id"])
+            assert ctx.messages[-1] == ("info", f"{name}: updated 2 rows"), kind
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_delete_by_keys_looks_only_at_the_keys(registry):
     """Delete writes only the key values: decimals beside the keys, for a column of whole numbers,
     stopped it ("… holds whole numbers (int), but Price has decimals (e.g. 1.5) …"). As a key, and
