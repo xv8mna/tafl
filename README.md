@@ -432,8 +432,9 @@ always in one transaction: if anything fails, the database stays as it was.
 
 - Columns are matched by name (not case sensitive). Columns the database table doesn't have stop
   the export, or are left out if you choose. Empty key values match empty ones.
-- A missing table is created with fitting types (SQL Server: `INT`/`BIGINT`, `FLOAT`,
-  `DECIMAL(p, s)`, `NVARCHAR(n)`, `DATE`, `DATETIME2`, `TIME`, `BIT`, `VARBINARY(MAX)`; SQLite:
+- A missing table is created with fitting types (SQL Server: `INT`/`BIGINT` (`DECIMAL(20, 0)` or
+  `DECIMAL(38, 0)` for whole numbers beyond `BIGINT`), `FLOAT`, `DECIMAL(p, s)`, `NVARCHAR(n)`,
+  `DATE`, `DATETIME2`, `TIME`, `BIT`, `VARBINARY(MAX)`; SQLite:
   `INTEGER`, `REAL`, `TEXT`, `BLOB`, and for exact decimals `INTEGER` or `REAL` when that keeps
   their digits, else `TEXT`). For other types, create the table yourself first. A temporary
   table (`#name` in SQL Server, `temp.name` in SQLite) can't be the target: it would disappear
@@ -447,7 +448,9 @@ always in one transaction: if anything fails, the database stays as it was.
   rounded to the column's decimal places as SQL Server rounds them (1.005 is 1.01 in a
   `decimal(10,2)`), a `varchar` or `char` column gets the characters its collation's code page
   holds (Łódź becomes Lódz in a `Latin1_General` column and stays Łódź in a Polish or UTF-8 one),
-  and spaces at the end of a text that don't fit are left out.
+  and spaces at the end of a text that don't fit are left out. Binary values for a SQL Server
+  column of text (`varchar`, `nvarchar`, `text`, …) are hex text, `0x0102FF`, as in the CSV
+  export. Existing `text` and `ntext` columns take texts and other values too, in every mode.
 - Date-times with a time zone are written in that zone's local time, without the zone (08:30 in
   Berlin stays 08:30), as in the Excel export. A SQL Server `datetimeoffset` column gets the
   zone's offset with it (08:30 +02:00 in Berlin in summer); a date-time without a zone gets the
@@ -455,11 +458,14 @@ always in one transaction: if anything fails, the database stays as it was.
 - Updating needs one row per key value, as the key column holds it (08:00:01.2 and 08:00:01.7
   are one value in a `datetime2(0)`); duplicates stop the export with an example.
 - Values that the database can't store stop the export with a message that names the column:
-  time spans, lists, records and values of a plugin's own type; whole numbers beyond
-  9,223,372,036,854,775,807 in SQLite and in a SQL Server column of whole numbers; in SQLite, a
-  table of more than 2,000 columns. In SQL Server also: a text or binary value longer than its
-  column (e.g. `nvarchar(50)`; in a UTF-8 `varchar`, longer in bytes), a decimal for a
-  whole-number column, an infinite number (e.g. from a division by zero).
+  time spans, lists, records and values of a plugin's own type; in SQLite, whole numbers beyond
+  9,223,372,036,854,775,807 and a table of more than 2,000 columns. In SQL Server also: a whole
+  number outside a column of whole numbers (the message gives the column's range), or beyond a
+  `bigint` for a `float`, `real`, `money` or narrower `decimal` column (a text column takes such
+  numbers as their digits); whole numbers of more than 38 digits (change them to text first); a
+  text or binary value longer than its column (e.g. `nvarchar(50)`; in a UTF-8 `varchar`, longer
+  in bytes), a decimal for a whole-number column, an infinite number (e.g. from a division by
+  zero).
 - Key columns: SQLite takes up to 1,999 of them. In SQL Server, more than 32 work without the
   index of the temporary table (slower for big tables).
 - 100,000 rows take a second or two with a local SQL Server, less with SQLite.
@@ -805,9 +811,11 @@ calculated again. Tables are Polars frames, and formulas run on a locked-down Du
   same way, from example projects it builds in a temporary folder: run it after a change to the
   window. With picture names (`--list` shows them), it makes only those.
 - `tools\check_statuses.py` builds small random projects, edits them through a session as the
-  window does (offscreen) and compares the status of every table with a new calculation after each
-  edit. Run it before a release (default: 100 seeds, at most 30 minutes; `--help` for the options).
-  A failure prints its seed and the edits up to it; `--shrink` looks for fewer edits that fail.
+  window does (offscreen) and compares the status and the message of every table with a new
+  calculation after each edit, also with "Skip the rest if a table is empty", a parameter in the
+  name of a file, and files that change before Reload data. Run it before a release (default: 100
+  seeds, at most 30 minutes; `--help` for the options). A failure prints its seed and the edits up
+  to it; `--shrink` looks for fewer edits that fail.
 
 ## Reporting problems
 

@@ -612,7 +612,9 @@ blue), and the button says **Filters (2)**.
   same rows: a time period of a date-time with a time zone by the local time of that zone, a
   pattern's `\w`, `\d` and `\s` as the letters, digits and spaces of all languages. Where a step
   can't keep the same rows, the card says why and stays: a pattern with `\b`, or time spans and
-  date-times with a time zone that differ by less than a microsecond.
+  date-times with a time zone that differ by less than a microsecond. Where the step could keep
+  other rows than the card, such as for a pattern or a time period, Tafl first runs it on the
+  data at the selected step: where it would keep other rows, the card says so and stays.
 
 Each table has its own filters. They are saved with the project, but they are no edits: undo
 doesn't change them. A table shows 100 filters at most. More filters from a project file apply
@@ -895,8 +897,9 @@ row, the first line is probably a title, not the column names. Set **Skip lines 
 `1`.
 
 A value with a quote in it must be in quotes, with its quotes doubled: `"24"" Monitor"`. A file
-with `24";Monitor` stops the import with a message that names and shows the line: correct the
-file, or have it exported again in that form.
+with `24";Monitor` stops the import with a message that names and shows the line, and so does a
+value whose quote is never closed: correct the file, or have it exported again in that form. Lines
+may end with CR LF, LF, or CR alone.
 
 **Import Excel files** reads a sheet of an Excel workbook (xlsx, xlsm, xlsb, xls) or an
 OpenDocument spreadsheet (ods), or the workbooks of a folder.
@@ -910,6 +913,8 @@ OpenDocument spreadsheet (ods), or the workbooks of a folder.
 - **Whole numbers as integers** and **Date-times at midnight as dates** (both on): Excel stores
   every number as a decimal number and every date as a date-time. These turn columns with only
   whole numbers into integer columns, and columns whose times are all 00:00 into date columns.
+  Each sheet is converted on its own; a column with dates in one sheet and numbers in another
+  becomes text.
 
 Excel stores a type with each cell, and the import keeps it: nothing else is detected. Text
 cells stay text, also when they look like numbers or dates (`123`, `00017`, `2025-01-31`), and
@@ -956,8 +961,8 @@ does a value with decimal places in a whole-number column when a decimal number 
 `1234567890123456.78` would become `1234567890123456.8`. A date-time with more digits than the
 column holds, such as `08:30:00.0005` in a column of milliseconds (Parquet files can have them),
 makes the column finer, so that every value keeps its digits; when a value of the column doesn't
-fit (nanoseconds reach only from 1677 to 2262), the step stops with a message. A column of lists
-or records can only be filled down or up.
+fit (nanoseconds reach only from 1677 to 2262), the step stops with a message. A column without
+empty cells stays as it is. A column of lists or records can only be filled down or up.
 
 **Filter rows** keeps or removes the rows that match conditions.
 
@@ -987,7 +992,8 @@ the grid shows it with your Windows date format (`31.12.2025`); a date-time as
 a column of binary values that are no text, they look at the hex digits that **Join texts**
 writes, such as `0xFF00`. A column of lists or records (from a Parquet file) can only be *empty*
 or *not empty* here: for other conditions, the message names a formula for **Filter rows by
-formula**, such as `LIST_CONTAINS([Tags], 'a')`.
+formula**, with a value of the type of the items, such as `LIST_CONTAINS([Tags], 'a')` or
+`LIST_CONTAINS([Ids], 1)`.
 
 Tip: empty cells never equal a value, but they count for *does not equal* and *does not
 contain*. To find empty cells, use *is empty*.
@@ -1121,7 +1127,8 @@ January of the year 1 to 31 December 9999 (2958465). With a format of digits onl
 `yyyymmdd`, `ddmmyyyy` or `yyyymmddhhmmss`, the digits of a whole number are read with it, as those
 of a text: 20260131 is 31 January 2026, and a number that lost its leading zero gets it back
 (1012026 with `ddmmyyyy` is 1 January 2026). A text needs exactly the digits of such a format: the
-text `1012026` is no date of `ddmmyyyy`. With such a format, a number with decimal places becomes
+text `1012026` is no date of `ddmmyyyy`. Each part needs all its digits there: `dd` and `mm`, not
+`d` and `m` (the step stops and says so). With such a format, a number with decimal places becomes
 empty with a warning; so do a number like 20260131 without one, NaN and infinity. The rows of the
 step are applied one after the other, so a day number in a text column becomes a date with two
 rows: *Whole number*, then *Date*.
@@ -1278,7 +1285,7 @@ the columns have different types (integer: Jan, Feb, Mar; date: Since)". So no v
 without a message: a date never becomes a number, and true never becomes 1. A column whose values
 are all empty doesn't count, whatever its type: an empty text column, as a CSV import gives it,
 beside whole numbers leaves them whole numbers. With **Leave out empty values**, text with nothing
-but spaces doesn't count either.
+but spaces doesn't count either. Columns of categories (from Parquet files) count as text.
 
 Tips:
 
@@ -1319,10 +1326,10 @@ unlike in **Filter rows**.
 - *Text inside the value* ` GmbH` → (nothing) removes it from the names.
 - *Regular expression* `^(\d{2})\.(\d{2})\.(\d{4})$` → `$3-$2-$1` turns the text `27.02.2026`
   into `2026-02-27`.
-- `$1_$2` is group 1, an underscore and group 2. For a backslash before a digit, write two:
-  `D:\Archiv\\2026\$1` gives `D:\Archiv\2026\` and group 1. A group that the expression doesn't
-  have, such as `$3` with `^(\d{2})\.(\d{2})$`, stops the step with a message that names the
-  group.
+- `$1_$2` is group 1, an underscore and group 2. A group that the expression doesn't have, such
+  as `$3` with `^(\d{2})\.(\d{2})$`, stops the step with a message that names the group.
+- For a backslash before a digit, write two: `D:\Archiv\\2026\$1` gives `D:\Archiv\2026\` and
+  group 1.
 
 A column that is not text becomes text, as **Pivot** and **Split column** write values (`17`, not
 `17.0`), unless *Whole cell value* finds and writes values of its type.
@@ -1445,10 +1452,10 @@ this table. **Columns**: *All columns of all tables (missing values stay empty)*
 columns of this table*. Columns are matched by name. A column with different types in the tables
 gets a type that holds every value, as in **Unpivot**: whole and decimal numbers become decimal
 numbers, dates and date-times date-times. Any other mix becomes text, the same on every PC, as
-**Unpivot** writes it (`2025-12-31`, `2.5`), and the step warns: "“Amount” is text: it has
-different types in the tables (integer, text)". A table in which the column has only empty values
-doesn't count. Lists and records (from Parquet files or plugins) can't be in one column with other
-values: the step stops and says so.
+**Unpivot** writes it (`2025-12-31`, `2.5`; binary values whose bytes are all text as that text),
+and the step warns: "“Amount” is text: it has different types in the tables (integer, text)". A
+table in which the column has only empty values doesn't count. Lists and records (from Parquet
+files or plugins) can't be in one column with other values: the step stops and says so.
 
 **Merge with another table** adds columns from another table, or keeps rows, by matching key
 columns: a lookup as in Excel, or a join as in SQL.
@@ -1490,7 +1497,9 @@ also when this table has no rows. A key of several columns is shown as "(09999, 
 Tips: empty keys never match. A number key and a text key are compared as text, as **Pivot** and
 **Split column** write values (with a warning such as "'Customer' (integer) and 'CustNo' (text)
 are compared as text"): the decimal number 17.0 matches the text `17`, not `17.0`, but the number
-17 doesn't match the text `00017`: keep such keys as text. A date-time is compared as
+17 doesn't match the text `00017`: keep such keys as text. To match texts such as `2.0`, as some
+programs write decimal numbers, first make the text column a decimal number with
+**Change type / format**: then the keys are compared as numbers. A date-time is compared as
 `2025-12-31 08:30:00`, with fractions of a second only when it has some, and with a time zone as
 its local time. Lists and records match only keys of exactly their own type (a record with the
 field a doesn't match one with the field b). *Keep rows without a match* finds missing master
@@ -1685,6 +1694,10 @@ you mean [Net]?)".
   text: "QUARTER needs a date, but [Date] holds text: change its type to a date before this step,
   or write CAST([Date] AS DATE)". **Change type / format** reads dates such as 31.12.2025; CAST
   needs 2025-12-31.
+- `[Time] > TIME '12:00:00'` on a column whose times have digits below a microsecond: "[Time]
+  holds times with nanoseconds, which a formula compares with a time only by = and IN: write
+  CAST([Time] AS TIME), or a time as TIME_NS '12:00:00'". Other times of day are compared with
+  `TIME '12:00:00'` and get an interval, as in `[Time] + INTERVAL 1 HOUR`.
 - `[Status] = "offen"`: "Column [offen] not found": double quotes are for names; texts need single
   quotes.
 - `[Net] * 1,19`: "The result is a structure of several values. …": the comma separates values.
@@ -1704,8 +1717,9 @@ you mean [Net]?)".
   `CAST([Total] AS DOUBLE) * [Total]`. A window sum such as `SUM([Total]) OVER ()` stops with this
   message too when the sum needs more than 38 digits. Two exact decimals with other decimal
   places, such as a whole number of 23 digits and a rate with 18 decimal places, are compared and
-  added with the decimal places their values use; only when these need more than 38 digits
-  together does the formula stop with this message.
+  added with the decimal places their values use (then `CAST([Rate] AS VARCHAR)` shows only those
+  decimal places too); only when these need more than 38 digits together does the formula stop
+  with this message.
 
 ## 6. The project map and groups
 
