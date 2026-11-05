@@ -44,13 +44,19 @@ def replace(df, p, ctx):
     if p.match == "regex":
         for find, _ in pairs:
             _check_regex(find)
+    schema = df.schema  # made once: for a wide table that takes a while
+    typed = {}  # Whole cell value: the values of the pairs in the type of a column, None when one doesn't fit
+    if p.match == "whole":
+        typed = {name: _typed_pairs(pairs, schema[name]) for name in p.columns if schema[name] != pl.String}
+    df = _as_shown(df, [name for name in p.columns if typed.get(name) is None], schema, "Replace")
     updates = []
     for name in p.columns:
-        dtype = df.schema[name]
         if p.match == "whole":
-            updates.append(_replace_whole(name, dtype, pairs, p.case_sensitive, ctx))
+            if schema[name] != pl.String and typed[name] is None:
+                ctx.warn(f"'{name}' was converted to text because a value isn't a {schema[name]}")
+            updates.append(_replace_whole(name, schema[name], typed.get(name), pairs, p.case_sensitive))
         else:
-            text = col(name).cast(pl.String)
+            text = col(name)
             for find, new in pairs:
                 if p.match == "contains" and p.case_sensitive:
                     text = text.str.replace_all(find, new, literal=True)
@@ -79,12 +85,33 @@ def _regex_problem(error: Exception) -> str:
     return found.group(1).strip() if found else str(error).splitlines()[0]
 
 
-def _replace_whole(name: str, dtype: pl.DataType, pairs, case_sensitive: bool, ctx) -> pl.Expr:
+def _as_shown(df: pl.DataFrame, names: list[str], schema: pl.Schema, step: str) -> pl.DataFrame:
+    """``df`` with those of the columns ``names`` that are not text as text, as the grid shows
+    them (see ``dtypes.text_expr``): 17 for 17.0, 2025-12-31 08:30:00, 08:30:00.500, 1d 2h 3m.
+    Binary values are their text, or hex digits (0xFF00) when some of them are no text, as Join
+    texts writes them. Lists, records and a plugin's own values stop the ``step`` with a message.
+    Made once, before the step changes the text: an expression would make the text of decimal
+    numbers again for each use of it."""
+    texts = []
+    for name in dict.fromkeys(names):
+        dtype = schema[name]
+        if dtype == pl.String:
+            continue
+        if dtype.is_nested() or dtype == pl.Object:
+            raise ActionError(f"“{name}” holds {dtypes.type_label(dtype)} values, which {step} can't change")
+        if dtype == pl.Binary and dtypes.bytes_are_text(df[name].alias("value")):  # a fixed name: see tafl.api.names
+            texts.append(col(name).cast(pl.String).alias(name))
+        else:
+            texts.append(dtypes.text_expr(col(name), dtype).alias(name))
+    return df.with_columns(texts) if texts else df
+
+
+def _replace_whole(name: str, dtype: pl.DataType, typed, pairs, case_sensitive: bool) -> pl.Expr:
+    """``typed``: the values of the ``pairs`` in the column's type ``dtype``, or None when the
+    column is text (it was made text, if need be)."""
     column = col(name)
-    typed = _typed_pairs(pairs, dtype) if dtype != pl.String else None
-    if dtype != pl.String and typed is None:
-        ctx.warn(f"'{name}' was converted to text because a value isn't a {dtype}")
-        column, dtype = column.cast(pl.String), pl.String
+    if typed is None:
+        dtype = pl.String
     branches = None
     for index, (find, new) in enumerate(pairs):
         if dtype == pl.String:
@@ -163,11 +190,13 @@ def _fits(value, dtype: pl.Decimal) -> bool:
 def clean(df, p, ctx):
     """Tidies up text: removes surrounding or repeated spaces and line breaks, changes upper/lower
     case, pads values to a fixed length (e.g. postal codes 1234 → 01234). Selected columns that
-    are not text are turned into text."""
-    names = p.columns or [name for name, dtype in df.schema.items() if dtype == pl.String]
+    are not text are turned into text, as the grid shows them (17, not 17.0)."""
+    schema = df.schema  # made once: for a wide table that takes a while
+    names = p.columns or [name for name, dtype in schema.items() if dtype == pl.String]
+    df = _as_shown(df, names, schema, "Clean text")
     updates = []
     for name in names:
-        text = col(name).cast(pl.String)
+        text = col(name)
         if p.line_breaks:
             text = text.str.replace_all(r"\r\n|\r|\n", " ")
         if p.collapse_spaces:

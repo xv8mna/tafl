@@ -1,4 +1,6 @@
 import datetime as dt
+import subprocess
+import sys
 from decimal import Decimal
 
 import polars as pl
@@ -83,3 +85,103 @@ def test_upper_case_writes_sharp_s_as_ss_like_formulas(act):
     assert out["s"].to_list() == ["GRÖSSE", "SS"]
     formula = act("calc.columns", df, {"columns": [{"name": "s", "formula": "UPPER([s])"}]})
     assert formula["s"].to_list() == out["s"].to_list()
+
+
+AS_SHOWN = [  # values of other types, and their text as the grid shows it
+    pytest.param(pl.Series([17.0, 2.5, 1e16, -0.0, None]), ["17", "2.5", "10000000000000000", "0", None], id="decimal numbers"),
+    pytest.param(pl.Series([0.1, 2.0], dtype=pl.Float32), ["0.1", "2"], id="Float32"),
+    pytest.param(
+        pl.Series([dt.datetime(2025, 12, 31, 8, 30), dt.datetime(2025, 12, 31, 8, 30, 0, 500000)]),
+        ["2025-12-31 08:30:00", "2025-12-31 08:30:00.500"],
+        id="date-times",
+    ),
+    pytest.param(
+        pl.Series([dt.datetime(2025, 7, 1, 9, 30)], dtype=pl.Datetime("ns")).dt.replace_time_zone("Europe/Berlin"),
+        ["2025-07-01 09:30:00"],
+        id="time zone",
+    ),
+    pytest.param(pl.Series([dt.time(8, 30, 0, 500000), dt.time(8, 30)]), ["08:30:00.500", "08:30:00"], id="times"),
+    pytest.param(pl.Series([dt.timedelta(days=1, hours=2, minutes=3), dt.timedelta(seconds=1.5)]), ["1d 2h 3m", "1s 500ms"], id="time spans"),
+    pytest.param(pl.Series([b"abc", b"\x00\xff", None]), ["0x616263", "0x00FF", None], id="bytes that are no text"),
+    pytest.param(pl.Series([b"abc", "ä".encode()]), ["abc", "ä"], id="bytes that are text"),
+    pytest.param(pl.Series([Decimal("2.50"), None], dtype=pl.Decimal(10, 2)), ["2.50", None], id="exact decimals"),
+    pytest.param(pl.Series([dt.date(2025, 12, 31)]), ["2025-12-31"], id="dates"),
+]
+
+
+@pytest.mark.parametrize("name", ["v", "*", "^a.*$"])
+@pytest.mark.parametrize(("values", "shown"), AS_SHOWN)
+def test_clean_text_and_replace_change_other_types_as_the_grid_shows_them(act, values, shown, name):
+    """The column becomes text, as before, now with the grid's text: 17, not 17.0; 1e16 as
+    10000000000000000; 08:30:00.500 (Polars' text left out the fractions of a time); a date-time
+    without .000000 and its zone's local time without +02:00. Time spans and bytes that are no
+    text stopped the step with a technical error."""
+    df = pl.DataFrame({name: values, "abc": [0] * values.len()})  # abc: the column that ^a.*$ would find
+    cleaned = act("text.clean", df, {"columns": [name], "trim": "none", "empty_to_null": False})
+    assert cleaned.schema[name] == pl.String and cleaned[name].to_list() == shown
+    for match in ("contains", "regex"):
+        out = replace(act, df, [name], [("§", "-")], match=match)  # finds nothing
+        assert out.schema[name] == pl.String and out[name].to_list() == shown
+    out = replace(act, df, [name], [(r"^", ">")], match="regex")
+    assert out[name].to_list() == [None if text is None else ">" + text for text in shown]
+    ctx = StubContext()
+    out = replace(act, df, [name], [("x", "y")], ctx)  # "x" is no value of the column's type: the column becomes text
+    assert out.schema[name] == pl.String and out[name].to_list() == shown and len(ctx.warnings) == 1
+    assert out["abc"].to_list() == [0] * values.len()
+
+
+def test_replace_of_a_whole_value_finds_the_text_of_the_grid(act):
+    df = pl.DataFrame({"t": [dt.time(8, 30, 0, 500000), dt.time(8, 30)]})
+    out = replace(act, df, ["t"], [("08:30:00.500", "half past")])  # a time column becomes text, as before
+    assert out["t"].to_list() == ["half past", "08:30:00"]  # before, both times were 08:30:00
+
+
+@pytest.mark.parametrize(
+    ("values", "label"),
+    [
+        pytest.param([[1, 2], None], "list", id="lists"),
+        pytest.param(pl.Series([[1, 2]], dtype=pl.Array(pl.Int64, 2)), "list", id="arrays"),
+        pytest.param([{"x": 1, "y": "a"}], "record", id="records"),
+        pytest.param(pl.Series([object()], dtype=pl.Object), "object", id="objects"),
+    ],
+)
+def test_clean_text_and_replace_of_lists_and_records_stop_the_step(act, values, label):
+    """Before: "cannot cast List type", a record written without the names of its fields ({1,"a"}),
+    or "Invalid regular expression: cannot cast 'Object' type"."""
+    df = pl.DataFrame({"Tags": values})
+    with pytest.raises(ActionError) as raised:
+        act("text.clean", df, {"columns": ["Tags"]})
+    assert str(raised.value) == f"“Tags” holds {label} values, which Clean text can't change"
+    for match in ("whole", "contains", "regex"):
+        ctx = StubContext()
+        with pytest.raises(ActionError) as raised:
+            replace(act, df, ["Tags"], [("1", "2")], ctx, match=match)
+        assert str(raised.value) == f"“Tags” holds {label} values, which Replace can't change"
+        assert ctx.warnings == []
+
+
+_WIDE = """
+import time
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+df = pl.DataFrame({f"N {i}": [i + 0.5, 2.0, None] for i in range(4001)})
+params = {"columns": df.columns, "match": "contains", "replacements": [{"find": ".5", "replace": ",5"}]}
+start = time.perf_counter()
+out = registry.actions["text.replace"](df, params, StubContext())
+assert out.row(0)[:2] == ("0,5", "1,5") and out.row(1)[:2] == ("2", "2") and out.row(2)[0] is None, out
+assert set(out.schema.values()) == {pl.String}
+cleaned = registry.actions["text.clean"](df, {"columns": df.columns, "pad_length": 4}, StubContext())
+assert cleaned.row(0)[:2] == ("00.5", "01.5") and cleaned.row(1)[:2] == ("0002", "0002"), cleaned
+print(f"{time.perf_counter() - start:.2f} s")
+"""
+
+
+def test_replace_and_clean_text_of_a_wide_table_of_numbers():
+    """4,000 decimal-number columns become text as the grid shows them, each with its own
+    expression: in a process of its own, so that a stack overflow shows as a failed test."""
+    done = subprocess.run([sys.executable, "-c", _WIDE], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-500:]}"
