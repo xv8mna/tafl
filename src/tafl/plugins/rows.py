@@ -177,6 +177,8 @@ def fill(df, p, ctx):
         if dtype == pl.String:
             column = pl.when(column.str.strip_chars() == "").then(None).otherwise(column)
         if p.method == "value":
+            if (held := _held_values(dtype)) is not None:  # lists, records: Polars made them text, or stopped
+                raise ActionError(_no_typed_value(name, held))
             if dtype not in typed:
                 typed[dtype] = _literal(p.value, dtype, name)
             value = typed[dtype]
@@ -509,8 +511,8 @@ def _year_beyond(value: Any) -> int | None:
     return None if 1 <= year <= 9999 else year
 
 
-def _no_typed_value(column: str) -> str:
-    return f"Column '{column}' holds time spans: a typed value can't be used with it"
+def _no_typed_value(column: str, held: str = "time spans") -> str:
+    return f"Column '{column}' holds {held}: a typed value can't be used with it"
 
 
 def _held_values(dtype: pl.DataType) -> str | None:

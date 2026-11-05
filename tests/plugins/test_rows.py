@@ -776,6 +776,28 @@ def test_the_formula_of_the_message_for_lists_and_records_works(act):
     assert names(act("rows.filter_formula", df, {"condition": formula})) == ["a"]
 
 
+@pytest.mark.parametrize(
+    ("column", "held"), [("Tags", "lists"), ("Sizes", "lists"), ("Pair", "records"), ("Own", "values of a plugin's own type")]
+)
+def test_filling_lists_and_records_with_a_fixed_value_says_that_a_typed_value_cant_be_used(act, column, held):
+    """Before, Polars stopped with "cannot cast List type" or "conversion from `struct[2]` to `str`
+    failed", or made every record text ({1,"a"}) without a word."""
+    message = rf"^Column '{column}' holds {held}: a typed value can't be used with it$"
+    with pytest.raises(ActionError, match=message):
+        act("rows.fill", NESTED, {"columns": [column], "method": "value", "value": "x"})
+    full = pl.DataFrame({column: NESTED[column].head(1).append(NESTED[column].tail(1))})  # no empty field in a record
+    with pytest.raises(ActionError, match=message):
+        act("rows.fill", full, {"columns": [column], "method": "value", "value": "x"})
+
+
+def test_filling_lists_and_records_down_and_up_works(act):
+    for column in ("Tags", "Sizes", "Pair", "Own"):
+        first, second, _ = NESTED[column].to_list()
+        filled = act("rows.fill", NESTED, {"columns": [column], "method": "down"})
+        assert filled.schema[column] == NESTED.schema[column] and filled[column].to_list() == [first, second, second]
+        assert act("rows.fill", NESTED, {"columns": [column], "method": "up"})[column].to_list() == [first, second, None]
+
+
 def test_filling_a_column_of_time_spans_says_that_a_typed_value_cant_be_used(act):
     df = pl.DataFrame({"V": [dt.timedelta(hours=1), None]})
     with pytest.raises(ActionError, match="Column 'V' holds time spans: a typed value can't be used with it"):
