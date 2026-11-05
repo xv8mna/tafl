@@ -7,6 +7,7 @@ the panels to update and schedules a recalculation in the background.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import os
 import re
@@ -107,9 +108,12 @@ class Session(QObject):
         # Tables whose results are out of date (a table they use changed, or Reload data): they
         # are calculated again after the selected table, so that no table shows an old status.
         self._recheck: set[str] = set()
-        # What the tables of the project were before the edit that is being made (see _checkpoint):
-        # what each one calculates (_calculated), and the project as the undo step holds it
-        self._before_edit: tuple[dict[str, tuple], dict[str, Any]] | None = None
+        # What each table of the project calculated (_calculated) before the edit that is being made
+        # (see _checkpoint)
+        self._before_edit: dict[str, tuple] | None = None
+        # Step id -> its settings, action, version and the tables they name (_named_by): kept while
+        # the step has the same settings object (an edit replaces the settings, never changes them)
+        self._step_refs: dict[str, tuple[dict[str, Any], str, int, list[str]]] = {}
         # The table that was selected at the latest edit (of any table), until a calculation that
         # started after that edit reports it: a click on another table stops that calculation
         self._unsettled: str | None = None
@@ -224,6 +228,7 @@ class Session(QObject):
         self._all = False
         self._recheck.clear()
         self._before_edit = None
+        self._step_refs.clear()
         self._unsettled = None
         self._hold(False)
         self._waiting.clear()
@@ -411,18 +416,39 @@ class Session(QObject):
     def users(self, table_ids: Iterable[str], engine: Engine | None = None) -> set[str]:
         """Ids of the tables that use any of ``table_ids``, directly or through other tables, in
         the open project (or in the project of ``engine``)."""
+        if engine is not None:
+            direct: dict[str, set[str]] = {}
+            for link in engine.links():
+                if link.enabled:
+                    direct.setdefault(link.source, set()).add(link.target)
+            return _reached(direct, table_ids)
+        return _reached(self._used_by(self.project), table_ids)
+
+    def _used_by(self, project: Project) -> dict[str, set[str]]:
+        """Table id -> the ids of the tables whose steps (those that are on) use it in ``project``,
+        as ``Engine.links`` finds them."""
+        by_id: dict[str, Table] = {}
+        for table in project.tables:
+            by_id.setdefault(table.id, table)
         direct: dict[str, set[str]] = {}
-        for link in (engine or self.engine).links():
-            if link.enabled:
-                direct.setdefault(link.source, set()).add(link.target)
-        found: set[str] = set()
-        todo = list(table_ids)
-        while todo:
-            for user in direct.get(todo.pop(), ()):
-                if user not in found:
-                    found.add(user)
-                    todo.append(user)
-        return found
+        for table in project.tables:
+            for step in table.steps:
+                if step.enabled:
+                    for ref in self._named_by(step):
+                        if (source := by_id.get(ref) or project.used_table(ref)) is not None:
+                            direct.setdefault(source.id, set()).add(table.id)
+        return direct
+
+    def _named_by(self, step: Step) -> list[str]:
+        """``Engine.step_refs``, kept while the step has the same settings (an edit replaces them,
+        never changes them in place): reading the settings of every step takes long in a big
+        project, and every edit, Undo and Redo asks."""
+        known = self._step_refs.get(step.id)
+        if known is not None and known[0] is step.params and known[1:3] == (step.action, step.version):
+            return known[3]
+        refs = self.engine.step_refs(step)
+        self._step_refs[step.id] = (step.params, step.action, step.version, refs)
+        return refs
 
     def describe(self, step: Step) -> str:
         """The summary of a step for the window: a summary that lists thousands of values is
@@ -1252,7 +1278,7 @@ class Session(QObject):
         self._undo.append(state)
         del self._undo[:-_UNDO_LIMIT]
         self._redo.clear()
-        self._before_edit = _contents(self.project), state["project"]
+        self._before_edit = _contents(self.project)
         self.undo_changed.emit()
 
     def _state(self) -> dict[str, Any]:
@@ -1271,7 +1297,7 @@ class Session(QObject):
         self.table_id = state["table"] if restored.find_table(state["table"] or "") else None
         self.step_id = state["step"]
         self._before_edit = None
-        self._mark_changed(_contents(previous), previous)
+        self._mark_changed(_contents(previous))
         if not (same_parameters and same_connections):  # any table can use them, as after set_parameters
             self._recheck |= set(self.results)
         self._waiting.clear()
@@ -1283,16 +1309,21 @@ class Session(QObject):
 
     # --- helpers -----------------------------------------------------------------------------
 
-    def _mark_changed(self, before: dict[str, tuple], previous: Project | dict[str, Any]) -> None:
+    def _mark_changed(self, before: dict[str, tuple]) -> None:
         """The rule of every edit, Undo and Redo, so that no table keeps an old status: a table
-        whose calculation reads something that changed (``_calculated``; ``before``: of the project
-        before the change, ``previous``) is calculated again, and so are the tables that use it,
-        as they did before or do now (nothing uses a deleted table now, and a renamed one can be
-        used by name). The selected table is calculated anyway, and the tables that use it follow
-        when its result changes (``_on_results``). Not so when its name or its on/off state
-        changed, or when it is skipped: its result doesn't show that, but the tables that use it
-        name it, or the table they use on the way to a table that is off. Only tables with a result
-        are marked: the others are calculated when they are looked at."""
+        whose calculation reads something that changed (``_calculated``; ``before``: of each table
+        before the change) is calculated again, and so are the tables that use it, as they did
+        before or do now (nothing uses a deleted table now, and a renamed one can be used by name).
+        The selected table is calculated anyway, and the tables that use it follow when its result
+        changes (``_on_results``). Not so when its name or its on/off state changed, or when it is
+        skipped: its result doesn't show that, but the tables that use it name it, or the table
+        they use on the way to a table that is off. Only tables with a result are marked: the
+        others are calculated when they are looked at.
+
+        The tables that used a changed table before and don't now are found in the open project
+        too: on their way to it, the first table that changed is one of them, and so they use that
+        one now. Only a table that was deleted or renamed can be used by a table that hasn't
+        changed, and not any more: for that, the tables are looked up as they were then."""
         after = _contents(self.project)
         changed = {id_ for id_ in before.keys() | after.keys() if before.get(id_) != after.get(id_)}
         selected = self.table_id
@@ -1302,18 +1333,32 @@ class Session(QObject):
                 changed.discard(selected)  # only its steps changed
         if not changed:
             return
-        if isinstance(previous, dict):  # as an undo step holds it
-            previous = Project.from_dict(previous)
-        users = self.users(changed) | self.users(changed, Engine(previous, self.registry, self.engine.cache))
+        users = self.users(changed)
+        if before.keys() != after.keys() or any(before[id_][0] != after[id_][0] for id_ in after):
+            users |= _reached(self._used_by(self._as_before(before)), changed)
         self._recheck |= ((changed | users) - {selected}) & set(self.results)
         self._recheck &= set(after)  # a table that is gone isn't calculated again
+
+    def _as_before(self, before: dict[str, tuple]) -> Project:
+        """The open project with the tables and names of ``before``: a table that is still there
+        with its steps now, a deleted one without steps (what it used doesn't matter here)."""
+        now = {table.id: table for table in self.project.tables}
+        tables = []
+        for id_, (name, enabled, _steps) in before.items():
+            table = now.get(id_)
+            if table is None:
+                table = Table(name=name, id=id_, enabled=enabled)
+            elif table.name != name:
+                table = dataclasses.replace(table, name=name)
+            tables.append(table)
+        return Project(tables=tables)
 
     def _edited(self, *, structure: bool = False, step_id: str | None = None, calculate: bool = True) -> None:
         self._waiting.clear()
         self._set_dirty(True)
         if self._before_edit is not None:
             before, self._before_edit = self._before_edit, None
-            self._mark_changed(*before)
+            self._mark_changed(before)
         if structure:
             self.structure_changed.emit()
         if step_id is not None:
@@ -1439,6 +1484,18 @@ def waiting_text(waiting: tuple[str, int, list[str]], *, capital: bool = False) 
 def _calculated(table: Table) -> tuple:
     """What a calculation of the table reads: not its place on the map, group, filters or notes."""
     return table.name, table.enabled, [(s.id, s.action, s.version, s.enabled, s.params) for s in table.steps]
+
+
+def _reached(direct: dict[str, set[str]], table_ids: Iterable[str]) -> set[str]:
+    """The tables that ``direct`` (table id -> the tables that use it) leads to from ``table_ids``."""
+    found: set[str] = set()
+    todo = list(table_ids)
+    while todo:
+        for user in direct.get(todo.pop(), ()):
+            if user not in found:
+                found.add(user)
+                todo.append(user)
+    return found
 
 
 def _contents(project: Project) -> dict[str, tuple]:

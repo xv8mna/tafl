@@ -722,6 +722,25 @@ def used_project(session, settle, tmp_path):
     return session.project.tables
 
 
+def test_an_edit_of_another_table_reads_only_the_settings_that_changed(session, settle, tmp_path, monkeypatch):
+    """To find the tables that use the edited one, the window's thread reads the settings of the
+    steps that changed only, not those of every step (twice), and doesn't build the project as it
+    was before the edit: no table was added, deleted or renamed, so the tables that used the
+    edited one use it, or another edited one, now too. That takes long in a big project."""
+    _orders, other, user, named, second = used_project(session, settle, tmp_path)
+    session.users({other.id})  # what each step names is known from now on
+    read = []
+    step_refs = Engine.step_refs
+    with monkeypatch.context() as patched:
+        patched.setattr(Engine, "step_refs", lambda engine, step: read.append(step.id) or step_refs(engine, step))
+        patched.setattr(Project, "from_dict", classmethod(lambda *_: pytest.fail("the project before the edit was built")))
+        session.set_params(user.steps[0].id, {"table": other.id})  # Other is selected
+    assert read == [user.steps[0].id]
+    assert session._recheck == {user.id, second.id}
+    settle(session)
+    assert [session.table_status(t.id) for t in (user, named, second)] == ["ok"] * 3
+
+
 def test_redo_of_a_delete_after_the_calculation_of_its_undo_leaves_no_old_status(session, settle, tmp_path):
     """Click Orders, Del (Other is selected then), Ctrl+Z, wait for the calculation, Ctrl+Y: the
     tables that use Orders use a table that is gone again."""

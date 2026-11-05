@@ -464,18 +464,24 @@ class Engine:
         result = []
         for target in tables:
             for index, step in enumerate(target.steps):
-                action = self.registry.actions.get(step.action)
-                if action is None:
-                    continue
-                try:
-                    params = action.resolve(action.upgrade(step.params, step.version))
-                except _BROKEN:
-                    _stop_if(self.cancel)
-                    continue
-                for ref in action.table_refs(params):
+                for ref in self.step_refs(step):
                     if (source := self.project.used_table(ref)) is not None:
                         result.append(Link(source.id, target.id, step.id, index, step.enabled))
         return result
+
+    def step_refs(self, step: Step) -> list[str]:
+        """The tables that the settings of a step name, as they are written (ids, or names in a
+        project file written by hand); none when its action is unknown or its settings can't be
+        read."""
+        action = self.registry.actions.get(step.action)
+        if action is None:
+            return []
+        try:
+            params = action.resolve(action.upgrade(step.params, step.version))
+        except _BROKEN:
+            _stop_if(self.cancel)
+            return []
+        return action.table_refs(params)
 
     def dependencies(self, table: str) -> list[str]:
         """Ids of the tables that a table's (enabled) steps use."""
