@@ -1047,6 +1047,7 @@ def test_times_in_lists_and_records_are_read_as_in_0_6_3():
         ("[S].t > [T]", [False, True]),
         ("list_contains(list_transform([LS], x -> x.t), [T])", [True, False]),
         ("[T] > TIME '12:00:00'", [False, True]),  # no list or record read: as TIME
+        ("list_contains(#3, [T])", [True, False]),  # the list by its position (#1 is the row number)
     ):
         assert expressions.evaluate(df, formula).to_list() == values, formula
 

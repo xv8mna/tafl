@@ -632,7 +632,8 @@ def _compared_with_others(tree: object, name: str, alike: Collection[str]) -> bo
 
 def _names(tree: object, name: str) -> bool:
     """Whether DuckDB's parse tree names the column ``name`` in any part of a reference: [S].t is
-    the field t of the record column S (all columns, as COLUMNS(*) does, count too)."""
+    the field t of the record column S (all columns, as COLUMNS(*) does, and a column by its
+    position, as #4, count too)."""
     folded = _fold(name)
     nodes = [tree]
     while nodes:  # not by recursion: a formula can nest deeper than Python goes
@@ -643,7 +644,7 @@ def _names(tree: object, name: str) -> bool:
             names = node.get("column_names")
             if node.get("class") == "COLUMN_REF" and isinstance(names, list) and any(_fold(str(part)) == folded for part in names):
                 return True
-            if node.get("class") == "STAR":
+            if node.get("class") in ("STAR", "POSITIONAL_REFERENCE"):
                 return True
             nodes += node.values()
     return False
