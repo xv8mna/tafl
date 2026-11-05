@@ -397,6 +397,54 @@ def test_filling_nanoseconds_with_a_date_time_beyond_them_says_which_would_chang
     assert near.dtype == pl.Datetime("ns", zone) and near.to_physical()[0] == df["At"].to_physical()[0]
 
 
+LOWEST, HIGHEST = -(2**63), 2**63 - 1  # nanoseconds hold 1677-09-21 00:12:43.145224192 to 2262-04-11 23:47:16.854775807 (UTC)
+
+
+def local_text(moment: int, zone: str | None) -> str:
+    """The local time of a moment (nanoseconds since 1970 in UTC) in a time zone, typed with all
+    its digits, worked out with Python's zoneinfo and whole numbers, not with Polars."""
+    micros, below = divmod(moment, 1000)
+    local = dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(microseconds=micros)
+    if zone is not None:
+        local = local.astimezone(ZoneInfo(zone))
+    return f"{local:%Y-%m-%d %H:%M:%S}.{local.microsecond:06d}{below:03d}"
+
+
+def nanosecond_stamps(moments: list[int | None], zone: str | None) -> pl.Series:
+    """Date-times in nanoseconds of these moments, in a time zone, or without one (the time in UTC)."""
+    utc = pl.Series(moments, dtype=pl.Int64).cast(pl.Datetime("ns", "UTC"))
+    return utc.dt.replace_time_zone(None) if zone is None else utc.dt.convert_time_zone(zone)
+
+
+@pytest.mark.parametrize(
+    ("zone", "moment", "text"),
+    [
+        # Python has the standard time of Lord Howe there, Polars (and so Tafl) its summer time
+        ("Australia/Lord_Howe", HIGHEST - 35_236_854_775_000, "2262-04-12 01:00:00.000000807"),
+        ("Asia/Tokyo", HIGHEST - 10**12, None),  # zones without summer time: Python agrees with Polars
+        ("Pacific/Kiritimati", HIGHEST - 3_600 * 10**9 - 1, None),
+        ("Australia/Brisbane", HIGHEST - 10**12 + 999, None),
+        ("America/New_York", LOWEST + 10**12 + 5, None),  # in 1677 its local mean time: 1677-09-20 19:33:21.145224197
+        ("America/Los_Angeles", LOWEST + 60 * 10**9 + 7, None),
+        ("Asia/Tokyo", LOWEST + 10**12 + 5, None),  # the moment and its local time are both inside: as before
+        ("Europe/Berlin", LOWEST + 10**12 + 999, None),
+    ],
+)
+def test_a_typed_date_time_near_the_ends_of_nanoseconds_is_the_moment_of_its_local_time(act, zone, moment, text):
+    """In a zone east of UTC the local time can be after 2262-04-11 23:47:16.854775807 while the
+    moment is before it, in a zone west of UTC before 1677-09-21 00:12:43.145224192. Polars read
+    such a text in nanoseconds as a time of the other end, in the zone's old local mean time: the
+    moment was 23 min 40 s off in Lord Howe, 3 min 58 s in New York, without a word."""
+    df = pl.DataFrame({"Name": list("abcd"), "At": nanosecond_stamps([moment, moment - 1, moment + 1, None], zone)})
+    text = text or local_text(moment, zone)
+    assert names(flt(act, df, ("At", "=", text))) == ["a"]
+    assert names(flt(act, df, ("At", "<", text))) == ["b"]
+    assert names(flt(act, df, ("At", ">=", text))) == ["a", "c"]
+    assert names(flt(act, df, ("At", "in", f"2025-01-01; {text}"))) == ["a"]
+    filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": text})["At"]
+    assert filled.dtype == pl.Datetime("ns", zone) and filled.to_physical().to_list() == [moment, moment - 1, moment + 1, moment]
+
+
 @pytest.mark.parametrize("unit", ["ns", "us", "ms"])
 def test_a_date_time_parameter_on_a_column_with_a_time_zone_is_a_moment_of_this_pcs_clock(act, unit):
     """As in formulas, where {Now} is this moment: it was the local time of the column's zone

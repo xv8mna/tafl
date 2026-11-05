@@ -440,8 +440,10 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
             return moment
         if dtype.time_unit == "ms" or not re.search(r"\.[0-9]{7}", value):  # no digits below a microsecond
             return moment.cast(dtype)
-        exact = dtypes.parse_datetimes(pl.Series([value]), time_unit="ns")  # with its nanoseconds
-        return exact if dtype.time_zone is None else _in_zone(exact, text, column, dtype.time_zone)
+        # the moment and the digits below its microseconds: the local time itself can be beyond nanoseconds
+        # (2262-04-12 01:00 in Lord Howe is 2262-04-11 14:00 in UTC), where Polars would make it a time of 1677
+        exact = moment.to_physical()[0] * 1000 + _nanoseconds(value)
+        return pl.Series([exact], dtype=pl.Int64).cast(dtype)
     if dtype == pl.Time:
         parsed = dtypes.parse_times(pl.Series([value]))
         if parsed.null_count():
@@ -476,6 +478,13 @@ def _in_zone(parsed: pl.Series, text: str, column: str, zone: str) -> pl.Series:
             raise ActionError(f"'{text}' doesn't happen in the time zone of column '{column}' ({zone}): a clock change skips it")
         raise ActionError(f"'{text}' happens twice in the time zone of column '{column}' ({zone}): a clock change repeats it")
     return moment
+
+
+def _nanoseconds(value: str) -> int:
+    """The digits below a microsecond of a typed date-time: 807 for 2262-04-12 01:00:00.000000807.
+    Polars leaves them out when it reads the text in microseconds."""
+    fraction = re.search(r":[0-9]{2}\.([0-9]+)$", value)
+    return int(fraction.group(1)[6:9].ljust(3, "0")) if fraction else 0
 
 
 def _unit_holds(moment: pl.Series, unit: str) -> bool:
