@@ -768,6 +768,34 @@ def test_sqlserver_says_what_it_cant_store(registry):
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_delete_by_keys_looks_only_at_the_keys(registry):
+    """Delete writes only the key values: decimals beside the keys, for a column of whole numbers,
+    stopped it ("… holds whole numbers (int), but Price has decimals (e.g. 1.5) …"). As a key, and
+    in the modes that write the column, they still stop the export."""
+    ctx, name = _sqlserver()
+
+    def export(df, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
+
+    data = pl.DataFrame({"N": [1], "Price": [1.5]})
+    message = r"holds whole numbers \(int\), but Price has decimals \(e\.g\. 1\.5\)"
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (N int, Price int)")
+            db.execute(f"INSERT INTO {name} VALUES (1, 10), (2, 20)")
+        export(data, mode="delete", key_columns=["N"])
+        assert ctx.messages[-1] == ("info", f"{name}: deleted 1 row")
+        for params in ({"mode": "delete", "key_columns": ["Price"]}, {"mode": "update", "key_columns": ["N"]}, {}):
+            with pytest.raises(ActionError, match=message):
+                export(data, **params)
+        with ctx.database("server") as db:
+            assert db.read(f"SELECT N, Price FROM {name}").rows() == [(2, 20)]
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_finds_rows_by_more_key_columns_than_an_index_holds(registry):
     """An index holds 32 columns (16 before SQL Server 2016): with more keys, the export stopped
     with "The index 'tafl_stage_…_keys' on table '#tafl_stage_…' has 40 columns in the key list".

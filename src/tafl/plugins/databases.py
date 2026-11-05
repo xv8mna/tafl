@@ -1263,11 +1263,11 @@ def export_database(df, p, ctx):
             created, existing = True, list(df.columns)
         names = _target_names(df.columns, existing, p)
         types = db.connector.column_types(db.raw, p.table)
-        _check_whole_numbers(df, names, types, p.table)
         keys = _key_names(p, names) if p.mode in _KEYED else []
         data = df.select(cols(names))
         if p.mode == "delete":  # it writes nothing: only the key values count
             data = data.select(cols(c for c, n in names.items() if n in keys))
+        _check_whole_numbers(data, names, types, p.table)
         _check_storable(data, db)
         _check_beyond_bigint(data, names, types, p.table, db.connector.id)
         finding = keys if p.mode in ("update", "delete") else []  # key values that only find rows
@@ -1322,10 +1322,10 @@ _WHOLE_NUMBER_TYPES = {"tinyint", "smallint", "int", "integer", "bigint", "bit"}
 
 def _check_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str) -> None:
     """The database would cut off decimals that go into a whole-number column (1.5 -> 1) without
-    a word: refuse instead."""
+    a word: refuse instead. Only the columns of ``df``, those the export writes."""
     kinds = {name.lower(): kind for name, kind in types.items()}
-    for source, target in names.items():
-        column = df[source].alias("value")  # a fixed name, as in _round_half_away
+    for source in df.columns:
+        target, column = names[source], df[source].alias("value")  # a fixed name, as in _round_half_away
         if column.dtype.is_float() and kinds.get(target.lower()) in _WHOLE_NUMBER_TYPES:
             values = column.drop_nulls().drop_nans()
             if values.len() and (values != values.round(0)).any():
