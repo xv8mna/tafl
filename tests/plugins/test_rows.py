@@ -671,6 +671,20 @@ def test_filling_a_column_without_empty_cells_leaves_it_as_it_is(act, values, va
             act("rows.fill", df, {"columns": ["V"], "method": "value", "value": "abc"})
 
 
+def test_filling_a_column_of_fixed_values_with_another_one_says_which_it_holds(act):
+    """A column whose values come from a fixed list (an Enum, from a plugin) left its empty cells
+    empty with any other value, without a word."""
+    df = pl.DataFrame({"Size": pl.Series(["S", None, "M"], dtype=pl.Enum(["S", "M", "L"]))})
+    filled = act("rows.fill", df, {"columns": ["Size"], "method": "value", "value": "L"})
+    assert filled.schema == df.schema and filled["Size"].to_list() == ["S", "L", "M"]
+    for value, frame in [("XL", df), (" L", df), ("XL", df.drop_nulls())]:  # also without empty cells: the setting is wrong
+        with pytest.raises(ActionError, match=rf"^'{value}' doesn't fit column 'Size': it holds only these values: 'S', 'M', 'L'$"):
+            act("rows.fill", frame, {"columns": ["Size"], "method": "value", "value": value})
+    many = pl.DataFrame({"N": pl.Series([None], dtype=pl.Enum([f"v{i}" for i in range(12)]))})
+    with pytest.raises(ActionError, match=r"'v0', 'v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9' and 2 more$"):
+        act("rows.fill", many, {"columns": ["N"], "method": "value", "value": "x"})
+
+
 @pytest.mark.parametrize(
     ("cells", "unit", "value"),
     [

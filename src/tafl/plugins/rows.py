@@ -232,6 +232,9 @@ def fill(df, p, ctx):
             if (held := _held_values(dtype)) is not None:  # lists, records: Polars made them text, or stopped
                 raise ActionError(_no_typed_value(name, held))
             value = _typed(p.value, dtype, name, typed)  # a value that the column's type can't take stops the step
+            if isinstance(dtype, pl.Enum) and value not in (held := dtype.categories.to_list()):  # Polars left the cells empty
+                listed = ", ".join(f"'{v}'" for v in held[:10]) + (f" and {len(held) - 10:,} more" if len(held) > 10 else "")
+                raise ActionError(f"'{p.value}' doesn't fit column '{name}': it holds only these values: {listed}")
             if dtype != pl.String and not df[name].null_count():  # nothing to fill: the column stays as it is, its
                 continue  # type too (Polars makes it the type of the value: a whole number 1.5 a decimal number)
             if isinstance(value, _Moment):  # in the column's unit, or in a finer one that holds it
