@@ -173,7 +173,7 @@ def _check_value_type(function: str, name: str, dtype: pl.DataType) -> None:
         return
     if function == "mean" and dtype.is_temporal():
         return
-    kind = "text" if dtype == pl.String else f"a {dtypes.type_label(dtype)} column"
+    kind = "text" if dtype == pl.String else dtypes.with_article(f"{dtypes.type_label(dtype)} column")
     needs = "a number column" if function == "sum" else "a number or date column"
     raise ActionError(f"{_FUNCTION_LABELS[function]} needs {needs}; “{name}” is {kind}")
 

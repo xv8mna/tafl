@@ -263,7 +263,7 @@ def _check_type(calc, dtype: pl.DataType | None) -> None:
         return
     if calc.function != "sum" and dtype.is_temporal():
         return
-    kind = "text" if dtype == pl.String else f"a {dtypes.type_label(dtype)} column"
+    kind = "text" if dtype == pl.String else dtypes.with_article(f"{dtypes.type_label(dtype)} column")
     needs = "a number column" if calc.function == "sum" else "a number or date column"
     raise ActionError(f"{_FUNCTION_LABELS[calc.function]} needs {needs}; {calc.column} is {kind}")
 

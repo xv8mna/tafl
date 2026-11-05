@@ -386,6 +386,12 @@ def type_word(dtype: pl.DataType) -> str:
     return type_label(dtype)
 
 
+def with_article(text: str) -> str:
+    """``text`` with "a" or "an" before it, for a message: "a date column", "an integer column",
+    "an empty column"."""
+    return f"{'an' if text[:1].lower() in tuple('aeiou') else 'a'} {text}"
+
+
 def _common_types(types: list[pl.DataType]) -> list[pl.DataType]:
     """Types that can hold the values of all these types (if the values fit), the best first."""
     if all(t.is_integer() for t in types):

@@ -276,6 +276,14 @@ def test_functions_that_need_numbers(act, column, function, message):
     assert str(raised.value) == message
 
 
+def test_the_type_of_a_column_has_its_article(act):
+    """Before: "“V” is a object column"."""
+    df = pl.DataFrame({"O": ["x", "y"], "V": pl.Series([object(), object()], dtype=pl.Object)})
+    with pytest.raises(ActionError) as raised:
+        pivot(act, df, column="O", value="V")
+    assert str(raised.value) == "Sum needs a number column; “V” is an object column"
+
+
 def names(act, values, **params) -> list[str]:
     df = pl.DataFrame({"K": [1] * len(values), "O": values, "V": list(range(len(values)))}, strict=False)
     return pivot(act, df, rows=["K"], column="O", value="V", function="count", **params).columns[1:]

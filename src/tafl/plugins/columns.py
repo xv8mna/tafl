@@ -160,6 +160,11 @@ def _warn_whole(name: str, source: pl.Series, converted: pl.Series, decimal: str
         )
 
 
+def _kind(dtype: pl.DataType) -> str:
+    """A column of this type in a message: "a date column", "an object column"."""
+    return dtypes.with_article(f"{dtypes.type_label(dtype)} column")
+
+
 def _numbers(s: pl.Series, decimal: str) -> pl.Series:
     """The values as decimal numbers (empty where they aren't numbers)."""
     return dtypes.parse_numbers(s, decimal) if s.dtype == pl.String else s.cast(pl.Float64, strict=False)
@@ -185,7 +190,7 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
                 return dtypes.parse_integers(s, decimal)  # exact, also beyond 15 digits
             return dtypes.parse_numbers(s, decimal)
         if not (source.is_numeric() or source == pl.Boolean):
-            raise ActionError(f"{s.name}: a {source} column can't become a number")
+            raise ActionError(f"{s.name}: {_kind(source)} can't become a number")
         if target == "number":
             return s.cast(pl.Float64)
         if source.is_float() or isinstance(source, pl.Decimal):
@@ -199,7 +204,7 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
         elif source.is_numeric():  # Excel day numbers; with a format of digits such as yyyymmdd, the digits
             parsed = dtypes.numbers_to_datetimes(s, fmt)
         else:
-            raise ActionError(f"{s.name}: a {source} column can't become a date")
+            raise ActionError(f"{s.name}: {_kind(source)} can't become a date")
         if target == "date" and parsed.dtype != pl.Date:
             return parsed.alias("value").dt.date().alias(s.name)  # a fixed name, as in change_type
         return parsed
@@ -210,7 +215,7 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
             return s != 0
         if source == pl.Boolean:
             return s
-        raise ActionError(f"{s.name}: a {source} column can't become true/false")
+        raise ActionError(f"{s.name}: {_kind(source)} can't become true/false")
     raise ActionError(f"Unknown type '{target}'")
 
 

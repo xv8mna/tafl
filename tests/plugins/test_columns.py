@@ -149,6 +149,21 @@ def test_numbers_beyond_excel_days_become_empty_with_a_warning(act):
     assert str(raised.value) == f"Day: 1 value(s) could not be converted to Date, e.g. '20250101'{hint}"
 
 
+def test_columns_that_cant_become_numbers_or_dates_are_named_in_plain_words(act):
+    """Before: "W: a Datetime(time_unit='us', time_zone=None) column can't become a number"."""
+    df = pl.DataFrame({"W": [dt.datetime(2025, 1, 2, 8, 30)], "T": [dt.time(8, 30)], "O": pl.Series([object()], dtype=pl.Object)})
+    for column, target, message in (
+        ("W", "integer", "W: a date-time column can't become a number"),
+        ("W", "number", "W: a date-time column can't become a number"),
+        ("T", "date", "T: a time column can't become a date"),
+        ("O", "number", "O: an object column can't become a number"),
+        ("T", "boolean", "T: a time column can't become true/false"),
+    ):
+        with pytest.raises(ActionError) as raised:
+            change(act, df, column, target)
+        assert str(raised.value) == message
+
+
 def test_long_numbers_keep_all_their_digits(act):
     df = pl.DataFrame(
         {

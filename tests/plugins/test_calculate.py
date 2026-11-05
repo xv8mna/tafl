@@ -207,6 +207,17 @@ def test_aggregate_names_columns_of_the_wrong_type(act, people):
     assert act("calc.aggregate", people, {"calculations": [{"function": "max", "column": "City"}]}).item() == "Köln"
 
 
+def test_the_type_of_a_column_has_its_article(act):
+    """Before: "O is a object column" (and "Sales is a empty column", which is no error now)."""
+    df = pl.DataFrame({"O": pl.Series([object(), object()], dtype=pl.Object), "When": [dt.time(8), None]})
+    with pytest.raises(ActionError, match="^Sum needs a number column; O is an object column$"):
+        act("calc.aggregate", df, {"calculations": [{"function": "sum", "column": "O"}]})
+    with pytest.raises(ActionError, match="^Average needs a number or date column; O is an object column$"):
+        act("calc.aggregate", df, {"calculations": [{"function": "mean", "column": "O"}]})
+    with pytest.raises(ActionError, match="^Sum needs a number column; When is a time column$"):
+        act("calc.aggregate", df, {"calculations": [{"function": "sum", "column": "When"}]})
+
+
 def test_aggregate_sums_beyond_the_whole_numbers_stop_the_step(act):
     """Polars lets a sum of Int64 overflow (-446744073709551616 here): a wrong number would be
     worse than a message."""
