@@ -235,10 +235,10 @@ def fill(df, p, ctx):
         if p.method == "value":
             if (held := _held_values(dtype)) is not None:  # lists, records: Polars made them text, or stopped
                 raise ActionError(_no_typed_value(name, held))
-            value = _typed(p.value, dtype, name, typed)
+            value = _typed(p.value, dtype, name, typed)  # a value that the column's type can't take stops the step
+            if dtype != pl.String and not df[name].null_count():  # nothing to fill: the column stays as it is, its
+                continue  # type too (Polars makes it the type of the value: a whole number 1.5 a decimal number)
             if isinstance(value, _Moment):  # in the column's unit, or in a finer one that holds it
-                if not df[name].null_count():  # nothing to fill: the column stays as it is, also its unit
-                    continue
                 target, value = _moment_fill(df[name], p.value, value, name)
                 updates.append((column if target == dtype else column.cast(target)).fill_null(value).alias(name))
                 continue

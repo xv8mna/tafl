@@ -644,6 +644,34 @@ def test_a_date_time_parameter_with_digits_below_the_unit_of_its_column(act, uni
 
 
 @pytest.mark.parametrize(
+    ("values", "value"),
+    [
+        (pl.Series([1, 2]), "1,5"),  # became decimal numbers
+        (pl.Series([2**60 + 1, 1]), "0,5"),  # and lost the last digit
+        (pl.Series([1, 2]), "99999999999999999999"),  # stopped: "doesn't fit column 'V'"
+        (pl.Series([1, 2], dtype=pl.Int8), "300"),  # became Int16
+        (pl.Series([2**64 - 1], dtype=pl.UInt64), "-1"),  # stopped: with numbers below 0 ...
+        (pl.Series([D("1.50"), D("2.00")], dtype=pl.Decimal(10, 2)), "0,005"),  # got 3 decimal places
+        (pl.Series([D("1.50")], dtype=pl.Decimal(38, 2)), "0," + "1" * 37),  # stopped: too many digits
+        (pl.Series([0.1, 2.0], dtype=pl.Float32), "1,5"),  # became Float64
+        (pl.Series([dt.time(8, 30)]), "08:30:00.0000000005"),  # stopped: no digits below a nanosecond
+        (pl.Series([True, False]), "nein"),
+        (pl.Series([dt.date(2025, 12, 31)]), "1.1.2026"),
+    ],
+)
+def test_filling_a_column_without_empty_cells_leaves_it_as_it_is(act, values, value):
+    """No cell gets the value, but Polars made the column the type of the value, and the checks of
+    what it would change stopped the step. A value that the column's type can't take at all, such
+    as 'abc' for numbers, still stops it: the setting is wrong."""
+    df = pl.DataFrame({"V": values})
+    filled = act("rows.fill", df, {"columns": ["V"], "method": "value", "value": value})
+    assert filled.schema == df.schema and filled.equals(df)
+    if values.dtype.is_numeric():
+        with pytest.raises(ActionError, match=r"^'abc' is not a number \(column 'V'\)$"):
+            act("rows.fill", df, {"columns": ["V"], "method": "value", "value": "abc"})
+
+
+@pytest.mark.parametrize(
     ("cells", "unit", "value"),
     [
         ([nanoseconds_of(dt.datetime(2025, 1, 1), None)], "ms", "2025-01-01 00:00:00.0005"),  # became microseconds
