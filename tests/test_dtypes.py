@@ -458,6 +458,13 @@ def test_type_label_says_list_record_and_object_in_plain_words(values, dtype, la
     assert dtypes.type_label(pl.Series(values, dtype=dtype).dtype) == label
 
 
+@pytest.mark.parametrize("dtype", [pl.Categorical, pl.Enum(["a", "b"])], ids=["Categorical", "Enum"])
+def test_type_label_calls_categories_text(dtype):
+    """The grid shows categories (from Parquet files or plugins) as text. Before: categorical and
+    enum(categories=['a', 'b'])."""
+    assert dtypes.type_label(pl.Series(["a", None], dtype=dtype).dtype) == "text"
+
+
 def test_text_expr_writes_decimal_numbers_with_all_their_digits_and_no_exponent():
     values = [2.0, 1.5, -0.0, 0.1 + 0.2, 1 / 3, 1e16, -1e20, 1e-7, 2.5e-8, 123456789012345.0, 2.0**53, 2.0**53 + 2]
     assert _texts(values) == [

@@ -328,9 +328,10 @@ def midnight_to_date(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def type_label(dtype: pl.DataType) -> str:
-    """The word for a type that the app shows: text, integer, number, date, ... Lists of any
-    length are "list", records (Parquet's structs) "record" and a plugin's own values "object"."""
-    if dtype == pl.String:
+    """The word for a type that the app shows: text, integer, number, date, ... Categories
+    (Polars' Categorical and Enum) are "text", as the grid shows them; lists of any length are
+    "list", records (Parquet's structs) "record" and a plugin's own values "object"."""
+    if dtype == pl.String or isinstance(dtype, (pl.Categorical, pl.Enum)):
         return "text"
     if dtype.is_integer():
         return "integer"
