@@ -154,6 +154,23 @@ def test_texts_need_all_the_digits_of_a_format_of_digits(act):
     assert change(act, separators, "d", "date", "dd.mm.yyyy").to_list() == [dt.date(2026, 1, 1), dt.date(2025, 12, 31)]
 
 
+@pytest.mark.parametrize("fmt", ["dmyyyy", "dmyy", "yyyymd", "yyyymmddhmm"])
+@pytest.mark.parametrize("value", [1012026, "1012026"])
+def test_a_format_of_digits_needs_dd_and_mm(act, fmt, value):
+    """Without separators, a day or month of one or two digits can't be told from the next part.
+    Before, 1012026 with dmyyyy became 10.12.0026 without a message, a number and a text alike."""
+    with pytest.raises(ActionError) as raised:
+        change(act, pl.DataFrame({"v": [value]}), "v", "datetime" if "h" in fmt else "date", fmt)
+    assert str(raised.value).startswith(f"The date format “{fmt}” has no separators") and "use dd and mm" in str(raised.value)
+
+
+def test_d_and_m_with_separators_stay(act):
+    assert change(act, pl.DataFrame({"v": ["1.1.2026", "31.12.2025"]}), "v", "date", "d.m.yyyy").to_list() == [
+        dt.date(2026, 1, 1),
+        dt.date(2025, 12, 31),
+    ]
+
+
 def test_numbers_beyond_excel_days_become_empty_with_a_warning(act):
     """Before, 20250101 became a day in the year 57342 without a warning (an export to Excel then
     stopped), and very big numbers, NaN and infinity stopped with "conversion from f64 to i64

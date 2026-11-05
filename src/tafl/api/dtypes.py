@@ -326,19 +326,20 @@ def is_digit_format(fmt: str) -> bool:
 
 
 def _digit_format(fmt: str) -> int | None:
-    """For a date format of digit codes only (yyyy, yy, mm, dd, hh, ss; also m, d, h, s): the
-    number of digits a number is padded to with leading zeros, or 0 for none (a code such as d
-    reads one or two digits; a four-digit year first can't have lost a zero). None for a format
-    with anything else, such as a separator, a month name or a strftime code."""
+    """For a date format of digit codes only (yyyy, yy, mm, dd, hh, ss): the number of digits a
+    number is padded to with leading zeros, or 0 for none (a four-digit year first can't have lost
+    a zero). None for a format with anything else, such as a separator, a month name or a strftime
+    code; one with d or m instead of dd or mm is an ActionError (see ``_digit_codes``)."""
     tokens = _digit_codes(fmt)
     if tokens is None:
         return None
-    width = _digit_width(tokens)
-    return 0 if width is None or tokens[0].lower() == "yyyy" else width
+    return 0 if tokens[0].lower() == "yyyy" else _digit_width(tokens)
 
 
 def _digit_codes(fmt: str) -> list[str] | None:
-    """The codes of a date format of digit codes only, or None (see ``_digit_format``)."""
+    """The codes of a date format of digit codes only, or None (see ``_digit_format``). Without
+    separators, a code such as d (one or two digits) can't be told apart from the next one: such a
+    format is an ActionError (1012026 with dmyyyy would be 10.12.0026)."""
     if not fmt or "%" in fmt:
         return None
     tokens = _DATE_TOKEN.findall(fmt)
@@ -346,6 +347,11 @@ def _digit_codes(fmt: str) -> list[str] | None:
         kind, length = _token_kind(token), len(token)
         if kind not in ("y", "m", "d", "h", "s") or (kind != "y" and length > 2):
             return None
+    if _digit_width(tokens) is None:
+        raise ActionError(
+            f"The date format “{fmt}” has no separators, so each part needs all its digits: use dd and mm, "
+            "not d and m (and hh, ss and yyyy or yy), e.g. ddmmyyyy"
+        )
     return tokens
 
 
