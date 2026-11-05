@@ -147,14 +147,14 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
         if source == pl.String:
             return s
         if source == pl.Date:
-            return dtypes.format_dates(s, fmt or "dd.mm.yyyy")
+            return _dates_as_text(s, fmt or "dd.mm.yyyy")
         if source == pl.Datetime:
-            return dtypes.format_dates(s, fmt or "dd.mm.yyyy hh:mm:ss")
+            return _dates_as_text(s, fmt or "dd.mm.yyyy hh:mm:ss")
         if source.is_numeric():
             return dtypes.format_numbers(s, fmt, decimal)
         if source == pl.Binary:  # as hex digits, like SQL Server shows them: 0x0102FF (a fixed name, as in change_type)
             return ("0x" + s.alias("value").bin.encode("hex").str.to_uppercase()).alias(s.name)
-        return s.cast(pl.String)
+        return _as_shown(s)
     if target in ("number", "integer"):
         if source == pl.String:
             if target == "integer":
@@ -188,3 +188,52 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
             return s
         raise ActionError(f"{s.name}: a {source} column can't become true/false")
     raise ActionError(f"Unknown type '{target}'")
+
+
+# Two date-times that differ in every part that a date format writes, also in AM/PM and the weekday
+_SAMPLES = pl.Series(["2001-02-03 04:05:06.789012", "2002-03-04 17:16:17.891234"]).str.to_datetime("%Y-%m-%d %H:%M:%S%.f")
+_PROBLEMS: dict[tuple[str, bool, str | None], str] = {}  # of the date formats checked so far: see _format_problem
+
+
+def _dates_as_text(s: pl.Series, fmt: str) -> pl.Series:
+    """Dates or date-times as text with a date format; one that can't write them stops the step."""
+    key = (fmt, s.dtype == pl.Date, s.dtype.time_zone if s.dtype == pl.Datetime else None)
+    if key not in _PROBLEMS:
+        _PROBLEMS[key] = _format_problem(*key)
+    if _PROBLEMS[key]:
+        raise ActionError(f"{s.name}: {_PROBLEMS[key]}")
+    return dtypes.format_dates(s, fmt)
+
+
+def _format_problem(fmt: str, dates: bool, zone: str | None) -> str:
+    """Why dates (``dates``) or date-times (with the time ``zone``) can't be written with the
+    format ``fmt``: a number format such as 0.00, a time for dates, or a format that writes no part
+    of a date (00000: each value would be that text). Empty when they can. It doesn't depend on
+    the values: also a column without any stops the step."""
+    samples = _SAMPLES.dt.date() if dates else _SAMPLES
+    if zone:  # for a format with the zone's name (%Z)
+        samples = samples.dt.replace_time_zone("UTC").dt.convert_time_zone(zone)
+    code = dtypes.to_strftime(fmt)
+    try:
+        texts = samples.dt.strftime(code).to_list()
+    except pl.exceptions.ComputeError:
+        try:
+            _SAMPLES.dt.strftime(code)
+        except pl.exceptions.ComputeError:
+            return (
+                f"{'dates' if dates else 'date-times'} can't be written with the format '{fmt}'. Use codes such as "
+                "dd.mm.yyyy hh:mm:ss, and .000, .000000 or .000000000 for fractions of a second"
+            )
+        return f"the format '{fmt}' has a time, but the column holds dates without a time"
+    if texts[0] == texts[1]:
+        return f"the format '{fmt}' writes no part of a date. Use codes such as dd.mm.yyyy hh:mm:ss"
+    return ""
+
+
+def _as_shown(s: pl.Series) -> pl.Series:
+    """The values as text, as the grid shows them (see ``dtypes.text_expr``): 08:30:00.500 for a
+    time (Polars' cast leaves out the fractions of a second), 1d 2h 3m for a time span (Polars
+    has no cast for it), true and false. Lists, records and a plugin's own values stop the step."""
+    if s.dtype.is_nested() or s.dtype == pl.Object:
+        raise ActionError(f"{s.name}: the column holds {dtypes.type_label(s.dtype)} values, which can't become text")
+    return s.alias("value").to_frame().select(dtypes.text_expr(pl.col("value"), s.dtype)).to_series().alias(s.name)

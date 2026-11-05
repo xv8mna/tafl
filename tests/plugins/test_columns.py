@@ -150,6 +150,69 @@ def test_dates_to_text_with_month_names(act):
     assert change(act, df, "d", "text", "d. mmmm yyyy (dddd)").to_list() == ["31. December 2025 (Wednesday)"]
 
 
+@pytest.mark.parametrize("name", ["v", "*", "^a.*$"])
+def test_time_spans_and_times_to_text_as_the_grid_shows_them(act, name):
+    """A time span stopped with "casting from Duration to String not supported"; a time lost its
+    fractions of a second (08:30:00.500 became 08:30:00, like 08:30:00)."""
+    df = pl.DataFrame({name: [dt.timedelta(days=1, hours=2, minutes=3), dt.timedelta(seconds=1.5), None], "abc": [1, 2, 3]})
+    assert change(act, df, name, "text").to_list() == ["1d 2h 3m", "1s 500ms", None]
+    times = pl.DataFrame({name: [dt.time(8, 30, 0, 500000), dt.time(8, 30), None], "abc": [1, 2, 3]})
+    assert change(act, times, name, "text").to_list() == ["08:30:00.500", "08:30:00", None]
+    assert change(act, df.with_columns(pl.Series(name, [True, False, None])), name, "text").to_list() == ["true", "false", None]
+
+
+@pytest.mark.parametrize(
+    ("values", "label"),
+    [([[1, 2], None], "list"), ([{"x": 1, "y": "a"}, None], "record"), (pl.Series([object(), None], dtype=pl.Object), "object")],
+)
+def test_lists_and_records_cant_become_text(act, values, label):
+    """Before: "cannot cast List type", a record as {1,"a"} without the names of its fields, and
+    "cannot cast 'Object' type"."""
+    with pytest.raises(ActionError) as raised:
+        change(act, pl.DataFrame({"Tags": values}), "Tags", "text")
+    assert str(raised.value) == f"Tags: the column holds {label} values, which can't become text"
+
+
+@pytest.mark.parametrize("dtype", [pl.Date, pl.Datetime("us"), pl.Datetime("ns", "Europe/Berlin")], ids=["date", "date-time", "zone"])
+@pytest.mark.parametrize(
+    ("fmt", "message"),
+    [
+        ("0.00", r"^When: date(-time)?s can't be written with the format '0\.00'\. Use codes such as dd\.mm\.yyyy hh:mm:ss"),
+        ("#,##0.00", r"can't be written with the format '#,##0\.00'"),
+        ("0%", r"can't be written with the format '0%'"),
+        ("hh:mm:ss.00", r"can't be written with the format 'hh:mm:ss\.00'.*\.000, \.000000 or \.000000000 for fractions"),
+        ("00000", r"^When: the format '00000' writes no part of a date\. Use codes such as dd\.mm\.yyyy hh:mm:ss$"),
+        ("#,##0", r"^When: the format '#,##0' writes no part of a date"),
+        ('"day"', r"writes no part of a date"),
+    ],
+    ids=["0.00", "#,##0.00", "0%", "ss.00", "00000", "#,##0", "quoted text"],
+)
+def test_dates_to_text_with_a_format_without_date_codes_stops_the_step(act, dtype, fmt, message):
+    """A number format for dates: Polars stopped with "cannot format timezone-naive Datetime with
+    format '0%.2f'", and a format without codes gave its own text for every value (00000 for each
+    date). Also when the column has no values."""
+    days = pl.Series("When", [dt.datetime(2025, 12, 31, 8, 30), None]).cast(pl.Datetime(dtype.time_unit) if dtype != pl.Date else pl.Date)
+    if dtype != pl.Date and dtype.time_zone:
+        days = days.dt.replace_time_zone(dtype.time_zone)
+    for values in (days, days.clear()):
+        with pytest.raises(ActionError, match=message):
+            change(act, values.to_frame(), "When", "text", fmt)
+
+
+def test_dates_to_text_with_a_time_stops_the_step(act):
+    """A date has no time: Polars stopped with "cannot format Date with format '%d.%m.%Y %H:%M'"."""
+    days = pl.DataFrame({"When": [dt.date(2025, 12, 31)]})
+    for fmt in ("dd.mm.yyyy hh:mm", "yyyy-mm-dd am/pm", "ss.000"):
+        with pytest.raises(ActionError, match=rf"^When: the format '{fmt}' has a time, but the column holds dates without a time$"):
+            change(act, days, "When", "text", fmt)
+    moments = pl.DataFrame({"When": [dt.datetime(2025, 12, 31, 17, 5, 9, 250000)]})
+    assert change(act, moments, "When", "text", "dd.mm.yyyy hh:mm am/pm").to_list() == ["31.12.2025 05:05 PM"]
+    assert change(act, moments, "When", "text", "hh:mm:ss.000").to_list() == ["17:05:09.250"]
+    zoned = moments.with_columns(pl.col("When").dt.replace_time_zone("Europe/Berlin"))
+    assert change(act, zoned, "When", "text", "%Y-%m-%d %H:%M %Z").to_list() == ["2025-12-31 17:05 CET"]
+    assert change(act, days, "When", "text", "dddd").to_list() == ["Wednesday"]  # one part of a date is enough
+
+
 def test_exact_decimals(act):
     amounts = [D("12345678901234.5678"), D("2.5000"), D("-2.5000"), None]
     rates = [D("0.123456789012345678"), D("1.100000000000000000"), None, None]
