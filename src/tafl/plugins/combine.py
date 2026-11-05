@@ -282,21 +282,26 @@ def _compared_keys(left, right, left_on, right_on, ctx):
             target = _number_type(left_type, right_type)
         elif isinstance(left_type, pl.Duration) and isinstance(right_type, pl.Duration):  # other units
             target = pl.Duration("ns" if "ns" in (left_type.time_unit, right_type.time_unit) else "us")
+        elif isinstance(left_type, pl.Duration) or isinstance(right_type, pl.Duration):
+            target = None  # a time span has no text to compare, and no date
         elif left_type.is_temporal() and right_type.is_temporal():
-            target = pl.Datetime("us")
+            target = None if pl.Time in (left_type, right_type) else pl.Datetime("us")  # a time of day has no date
         else:
             target = pl.String
         left_hex, right_hex = _as_hex(left[left_name]), _as_hex(right[right_name])
         left_label, right_label = dtypes.type_label(left_type), dtypes.type_label(right_type)
         keys = f"'{left_name}' ({left_label}) and '{right_name}' ({right_label})"
+        cant = (
+            f"{keys} can't be compared: choose other key columns, or first make one of them text with a formula "
+            f"such as CAST([{left_name}] AS VARCHAR)"
+        )
+        if target is None:  # by the types, also for a key column without values: Polars' cast stops only for values
+            raise ActionError(cant)
         try:
             left = left.with_columns(_cast_key(col(left_name), left_type, target, left_hex).alias(key))
             right = right.with_columns(_cast_key(col(right_name), right_type, target, right_hex).alias(key))
-        except pl.exceptions.InvalidOperationError:  # Polars has no such cast: a duration as text, a time as a date-time
-            raise ActionError(
-                f"{keys} can't be compared: choose other key columns, or first make one of them text with a "
-                f"formula such as CAST([{left_name}] AS VARCHAR)"
-            ) from None
+        except pl.exceptions.InvalidOperationError:  # another cast that Polars doesn't have
+            raise ActionError(cant) from None
         if target == pl.String and not left_label == right_label == "text":  # categories and text: both are called text
             how = " (the binary values as hex digits, 0xFF00)" if left_hex or right_hex else ""
             ctx.warn(f"{keys} are compared as text{how}")
@@ -338,7 +343,7 @@ def _cast_key(column: pl.Expr, dtype: pl.DataType, target: pl.DataType, as_hex: 
     zone's local time), "08:00:00.500".
     Polars' own text differs ("17.0", "1e16", "2025-12-31 08:30:00.000000+01:00") and leaves out
     the fractions of a second of a time. Binary values are text, or hex digits with ``as_hex`` (see
-    ``_as_hex``). A time span has no cast to text: Polars stops, and so does the step."""
+    ``_as_hex``). A time span is never compared as text (``_compared_keys`` stops first)."""
     if target == pl.String and dtype not in (pl.String, pl.Duration) and (dtype != pl.Binary or as_hex):
         return dtypes.text_expr(column, dtype)
     return column.cast(target, strict=False)

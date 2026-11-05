@@ -961,3 +961,25 @@ def test_a_full_join_writes_a_later_key_as_text_when_an_earlier_one_made_the_col
     out = act("table.merge", pl.DataFrame({"A": this}), params, StubContext(tables={"other": other}))
     shown = {int: "1", dt.date: "2025-01-02"}.get(type(this[0]), "2025-01-02 08:30:00")
     assert out.schema["A"] == pl.String and out["A"].to_list() == [shown, "x", added]
+
+
+@pytest.mark.parametrize("how", ["lookup", "full"])
+@pytest.mark.parametrize(
+    ("this", "other", "words"),
+    [
+        pytest.param(pl.Series([None], dtype=pl.Time), pl.Series([dt.datetime(2025, 1, 2, 8)]), "(time) and 'K' (date-time)", id="time, date-time"),
+        pytest.param(pl.Series([None], dtype=pl.Time), pl.Series([dt.date(2025, 1, 2)]), "(time) and 'K' (date)", id="time, date"),
+        pytest.param(pl.Series([None], dtype=pl.Duration("us")), pl.Series(["1h"]), "(duration) and 'K' (text)", id="time span, text"),
+        pytest.param(pl.Series([None], dtype=pl.Duration("us")), pl.Series([dt.date(2025, 1, 2)]), "(duration) and 'K' (date)", id="time span, date"),
+        pytest.param(pl.Series([None], dtype=pl.Duration("us")), pl.Series([5]), "(duration) and 'K' (integer)", id="time span, number"),
+    ],
+)
+def test_keys_that_cant_be_compared_stop_also_without_values(act, how, this, other, words):
+    """The types decide: Polars' cast stops only for values, so a key column without any passed,
+    and a full join then stopped with a technical error ("casting from Time to Datetime not
+    supported")."""
+    params = {"other": "other", "match": [{"column": "A", "other_column": "K"}], "how": how}
+    ctx = StubContext(tables={"other": other.alias("K").to_frame().with_columns(N=pl.lit("n"))})
+    with pytest.raises(ActionError) as raised:
+        act("table.merge", this.alias("A").to_frame(), params, ctx)
+    assert str(raised.value).startswith(f"'A' {words} can't be compared: choose other key columns")
