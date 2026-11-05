@@ -131,6 +131,42 @@ def test_export_binary_values_decimals_and_long_texts(act, tmp_path):
     assert ctx.warnings == ["1 text was cut to 32,767 characters, the most an Excel cell holds"]
 
 
+@pytest.mark.parametrize("existing", ["file", "sheet"])
+def test_numbers_that_excel_rounds_are_counted(act, tmp_path, existing):
+    """Excel keeps 15 significant digits: 9007199254740993 became 9007199254740992 without a
+    word. Whole numbers and exact decimals stay numbers, and the step says how many of them each
+    column has, in a new workbook and in one sheet of an existing one."""
+    D = decimal.Decimal
+    df = pl.DataFrame({
+        "Id": pl.Series([9007199254740993, 9223372036854775807, 5, 10**18, None, -1234567890123456], dtype=pl.Int64),
+        "Big": pl.Series([2**64 - 1, 7, 7, 7, 7, 7], dtype=pl.UInt64),
+        "Amount": pl.Series([D("12345678901234567890.1234"), D("1.5"), D("123456789012345"), None, None, None], dtype=pl.Decimal(38, 4)),
+        "Small": pl.Series([D("12345678.12")] * 6, dtype=pl.Decimal(10, 2)),  # at most 10 digits
+        "Ratio": [0.1 + 0.2, 1e300, 2 / 3, 1.0, None, 123456789012345680.0],  # decimal numbers: Excel's own
+    })  # fmt: skip
+    path = tmp_path / "numbers.xlsx"
+    if existing == "sheet":
+        act("excel.export", pl.DataFrame({"x": [1]}), {"file": str(path), "sheet": "Other"}, StubContext(mode="run"))
+    ctx = StubContext(mode="run")
+    act("excel.export", df, {"file": str(path), "sheet": "Numbers", "existing": existing}, ctx)
+    assert ctx.warnings == [
+        "Excel keeps 15 significant digits of a number, and rounds longer ones: Id has 3 (e.g. 9007199254740993), Big has 1 "
+        "(e.g. 18446744073709551615) and Amount has 1 (e.g. 12345678901234567890.1234). To keep all their digits, change "
+        "these columns to text before this step (Change type / format)."
+    ]
+    cells = openpyxl.load_workbook(path)["Numbers"]
+    assert [cells["A2"].value, cells["B2"].value, cells["C2"].value] == [9007199254740992, 1.844674407370955e19, 1.234567890123457e19]
+    ctx = StubContext(mode="run")
+    act("excel.export", df.select("Id", "Small", "Ratio").with_columns(pl.col("Id").cast(pl.String)), {"file": str(path), "sheet": "Numbers", "existing": existing}, ctx)
+    assert not ctx.warnings and openpyxl.load_workbook(path)["Numbers"]["A2"].value == "9007199254740993"
+    ctx = StubContext(mode="run")
+    act("excel.export", df.slice(1, 1).select("Id"), {"file": str(path), "sheet": "Numbers"}, ctx)
+    assert ctx.warnings == [
+        "Excel keeps 15 significant digits of a number, and rounds longer ones: Id has 1 (e.g. 9223372036854775807). To keep "
+        "all their digits, change this column to text before this step (Change type / format)."
+    ]
+
+
 class _Point:
     """A value of a plugin's own type."""
 

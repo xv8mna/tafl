@@ -334,6 +334,7 @@ def export_excel(df, p, ctx):
     texts = [c for c, t in data.schema.items() if t == pl.String or isinstance(t, (pl.Categorical, pl.Enum))]
     # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
     long = sum(int((data[c].alias("text").cast(pl.String).str.len_chars() > xlsx.MAX_TEXT).sum()) for c in texts)
+    rounded = _beyond_fifteen_digits(df)
     rows = f"{df.height:,} row{'s' if df.height != 1 else ''}"
     if into_sheet:
         replaced = xlsx.replace_sheet(path, sheet, lambda book: _write(data, book, sheet, p), ctx.warn)
@@ -351,6 +352,52 @@ def export_excel(df, p, ctx):
     if long:
         texts = "1 text was" if long == 1 else f"{long:,} texts were"
         ctx.warn(f"{texts} cut to {xlsx.MAX_TEXT:,} characters, the most an Excel cell holds")
+    if rounded:
+        ctx.warn(_rounded_message(rounded))
+
+
+_EXCEL_DIGITS = 15  # the significant digits of a number that Excel keeps
+
+
+def _beyond_fifteen_digits(df: pl.DataFrame) -> dict[str, tuple[int, object]]:
+    """The whole numbers and exact decimals that have more than 15 significant digits, which Excel
+    doesn't keep (9007199254740993 is 9007199254740992 there), by column: how many, and the first.
+    Decimal numbers (Float) are what Excel has itself. Only values from 10^15 on (in units of the
+    last decimal place) can have that many digits: the others are looked at no further."""
+    limits = {
+        name: 10.0 ** (_EXCEL_DIGITS - (dtype.scale if isinstance(dtype, pl.Decimal) else 0))
+        for name, dtype in df.schema.items()
+        if dtype.is_integer() or (isinstance(dtype, pl.Decimal) and (dtype.precision or 38) > _EXCEL_DIGITS)
+    }
+    if not limits:
+        return {}
+    # Working names: the column's own name could be read as a pattern
+    big = df.select((col(name).cast(pl.Float64).abs() >= limit).any().alias(f"c{i}") for i, (name, limit) in enumerate(limits.items()))
+    found = {}
+    for (name, limit), any_big in zip(limits.items(), big.row(0)):
+        if not any_big:
+            continue
+        values = df[name].alias("value")  # a fixed name, as above
+        values = values.filter(values.cast(pl.Float64).abs() >= limit)
+        digits = values.cast(pl.String).str.replace_all(r"[-.]", "").str.strip_chars("0").str.len_chars()
+        lost = values.filter(digits > _EXCEL_DIGITS)
+        if lost.len():
+            found[name] = (lost.len(), lost[0])
+    return found
+
+
+def _rounded_message(rounded: dict[str, tuple[int, object]]) -> str:
+    """The warning about numbers that Excel rounds to 15 significant digits."""
+    parts = [f"{name} has {count:,} (e.g. {example})" for name, (count, example) in rounded.items()]
+    if len(parts) > 5:
+        more = len(parts) - 5
+        parts = [*parts[:5], f"{more:,} more column{'s' if more > 1 else ''} have some"]
+    listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+    these = "this column" if len(rounded) == 1 else "these columns"
+    return (
+        f"Excel keeps 15 significant digits of a number, and rounds longer ones: {listed}. To keep all their digits, "
+        f"change {these} to text before this step (Change type / format)."
+    )
 
 
 def _excel_values(df: pl.DataFrame) -> pl.DataFrame:
