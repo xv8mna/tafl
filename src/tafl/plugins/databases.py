@@ -357,7 +357,7 @@ class SqlServer(Connector):
         if not temporary:  # into the database's own tables the driver's own choice fits the other columns
             texts = [None] * df.width
             for index, (name, dtype) in enumerate(df.schema.items()):
-                if dtype == pl.String and _kind(types.get(name, ""))[0] in _CODE_PAGE_TYPES:
+                if dtype == pl.String and _kind(types.get(name, ""))[0] in (*_CODE_PAGE_TYPES, *_LONG_TEXT_TYPES):
                     texts[index] = _binding(types[name])
             return texts if any(texts) else None
         # The driver can't look up the columns of a #temporary table: it would send texts as 255
@@ -531,10 +531,15 @@ def _odbc_types() -> dict[str, int]:
         "time": pyodbc.SQL_SS_TIME2, "datetimeoffset": _SQL_SS_TIMESTAMPOFFSET, "uniqueidentifier": pyodbc.SQL_GUID,
         "char": pyodbc.SQL_WCHAR, "varchar": pyodbc.SQL_WVARCHAR, "nchar": pyodbc.SQL_WCHAR,
         "nvarchar": pyodbc.SQL_WVARCHAR, "binary": pyodbc.SQL_BINARY, "varbinary": pyodbc.SQL_VARBINARY,
+        "text": pyodbc.SQL_WVARCHAR, "ntext": pyodbc.SQL_WVARCHAR,  # as nvarchar(max): see _LONG_TEXT_TYPES
     }  # fmt: skip
 
 
 _CODE_PAGE_TYPES = ("char", "varchar")  # texts in the code page of the column's collation
+# The old types of long texts. The driver describes them with a size of 2 GB, and with
+# fast_executemany pyodbc then takes that much memory for each value ("There is not enough memory"):
+# texts for them go as Unicode of any length, as for nvarchar(max), which the server converts.
+_LONG_TEXT_TYPES = ("text", "ntext")
 _UNICODE_LIMIT = 4000  # the longest nchar or nvarchar parameter; a longer one is nvarchar(max)
 
 

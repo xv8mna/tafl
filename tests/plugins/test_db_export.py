@@ -807,6 +807,33 @@ def test_sqlserver_new_table_holds_whole_numbers_beyond_a_bigint(registry):
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_text_and_ntext_columns_take_texts(registry):
+    """Every export of texts into a column of the old types text or ntext said "There is not enough
+    memory for this": the driver gave them a size of 2 GB, and that much memory was taken for each
+    value. They go as Unicode of any length now, as for nvarchar(max), which the server converts
+    (a text column keeps the characters of its code page, as a varchar column does)."""
+    ctx, name = _sqlserver()
+    long_text = "y" * 5000
+    data = pl.DataFrame({"N": [1, 2, 3, 4], "T": ["abc", "Łódź", long_text, None], "U": ["abc", "Łódź", long_text, None]})
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (N int, T text, U ntext)")
+            as_varchar = db.read("SELECT CONVERT(varchar(20), N'Łódź') AS t")["t"][0]  # as the server converts it
+        registry.actions["db.export"](data, {"connection": "server", "table": name}, ctx)
+        with ctx.database("server") as db:
+            rows = db.read(f"SELECT N, CAST(T AS varchar(max)) AS T, CAST(U AS nvarchar(max)) AS U FROM {name} ORDER BY N").rows()
+        assert rows == [(1, "abc", "abc"), (2, as_varchar, "Łódź"), (3, long_text, long_text), (4, None, None)]
+        changed = data.with_columns(T=pl.lit("neu"), U=pl.lit("neu"))
+        registry.actions["db.export"](changed, {"connection": "server", "table": name, "mode": "update", "key_columns": ["N"]}, ctx)
+        assert ctx.messages[-1] == ("info", f"{name}: updated 4 rows")
+        with ctx.database("server") as db:
+            assert db.read(f"SELECT DISTINCT CAST(T AS varchar(10)) AS T, CAST(U AS nvarchar(10)) AS U FROM {name}").rows() == [("neu", "neu")]
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_whole_numbers_of_more_than_38_digits(registry):
     """A new table got decimal(38, 0) for them, and the export then said "Make the column wider …,
     e.g. decimal(38, 0)", although 38 digits are the most (the table was rolled back). It stops
