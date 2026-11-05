@@ -978,6 +978,33 @@ def test_functions_for_dates_on_text_say_how_to_change_the_column():
         expressions.evaluate(df, "ROUND([Date], 2) + [n]")
 
 
+def test_a_time_of_day_is_compared_with_a_time():
+    """Polars' times are TIME_NS for DuckDB, which compares them with a time such as TIME '12:00:00'
+    only by = and IN: [T] > TIME '12:00:00' stopped with "Cannot compare values of type TIME_NS and
+    type TIME", also BETWEEN, [T] + INTERVAL 1 HOUR and DATE '2025-01-01' + [T]. Times without
+    nanoseconds go as TIME now; with nanoseconds they keep them, and the message says what to do."""
+    hours = [8 * 3600 * 10**9, 13 * 3600 * 10**9, None]
+    df = pl.DataFrame({
+        "T": pl.Series(hours, dtype=pl.Int64).cast(pl.Time),
+        "N": pl.Series([8 * 3600 * 10**9 + 1, 1, None], dtype=pl.Int64).cast(pl.Time),
+    })  # fmt: skip
+    assert expressions.evaluate(df, "[T] > TIME '12:00:00'").to_list() == [False, True, None]
+    assert expressions.evaluate(df, "[T] BETWEEN TIME '07:00' AND TIME '09:00'").to_list() == [True, False, None]
+    assert expressions.evaluate(df, "[T] + INTERVAL 1 HOUR").to_list() == [dt.time(9), dt.time(14), None]
+    assert expressions.evaluate(df, "STRFTIME(DATE '2025-01-01' + [T], '%H:%M')").to_list() == ["08:00", "13:00", None]
+    assert expressions.evaluate(df, "[T]").cast(pl.Int64).to_list() == hours
+    assert expressions.evaluate(df, "[N]").cast(pl.Int64).to_list() == [8 * 3600 * 10**9 + 1, 1, None]  # with its nanoseconds
+    assert expressions.evaluate(df, "[T] > [N]").to_list() == [False, True, None]  # both as TIME_NS, as before
+    assert expressions.evaluate(df, "[N] = TIME_NS '08:00:00.000000001'").to_list() == [True, False, None]
+    with pytest.raises(ActionError) as raised:
+        expressions.evaluate(df, "[N] > TIME '08:00:00'")
+    assert str(raised.value).startswith(
+        "Formula error: [N] holds times with nanoseconds, which a formula compares with a time only by = and IN: "
+        "write CAST([N] AS TIME), or a time as TIME_NS '12:00:00'"
+    )
+    assert expressions.evaluate(df, "CAST([N] AS TIME) > TIME '08:00:00'").to_list()[1:] == [False, None]
+
+
 def test_the_hint_names_the_column_of_text_that_needs_another_type():
     """It named every column of text in the formula: IIF([Name] = 'x', [TextDate] > DATE ..., false)
     said "write CAST([Name] AS DATE)". A name with ] is written as a formula needs it: [a]]b]."""
@@ -1027,6 +1054,9 @@ columns = {f"d{i}": pl.Series([Decimal("1.5"), Decimal(2)], dtype=pl.Decimal(38,
 decimals = pl.DataFrame({**columns, "Big": pl.Series([Decimal(10**22), Decimal(2)], dtype=pl.Decimal(38, 0))})
 found = expressions.evaluate(decimals, "[Big] = [d0] AND LIST_SUM(LIST_VALUE(*COLUMNS('d.*'))) > 0")
 assert found.to_list() == [False, True], found
+times = pl.DataFrame({f"t{i}": pl.Series([3600 * 10**9, None], dtype=pl.Int64).cast(pl.Time) for i in range(4100)})
+assert expressions.evaluate(times, "COALESCE(*COLUMNS('t.*')) > TIME '00:30:00'").to_list() == [True, None]
+assert expressions.evaluate(times, "[t4099] > TIME '00:30:00' AND #2 IS NOT NULL").to_list() == [True, False]  # all columns
 """
 
 

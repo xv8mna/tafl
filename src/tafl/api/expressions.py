@@ -375,7 +375,7 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
             if wider is None:
                 if isinstance(e, _TooLong):
                     raise ActionError(f"Formula error: {_TOO_LONG}\nFormula: {formula}") from None
-                raise ActionError(_clean_error(e, formula, df.columns, _texts(df))) from None
+                raise ActionError(_clean_error(e, formula, df.columns, _texts(df), _nanosecond_times(df))) from None
             kinds = wider
     if values.len() != df.height:
         raise ActionError(
@@ -472,6 +472,16 @@ def _wider(
 def _texts(df: pl.DataFrame) -> list[str]:
     """The columns of text: _clean_error names them in a hint."""
     return [name for name, dtype in df.schema.items() if dtype == pl.String]
+
+
+def _has_nanoseconds(times: pl.Series) -> bool:
+    """Whether a time of day has digits below a microsecond."""
+    return bool(((times.dt.nanosecond() % 1000) != 0).any())
+
+
+def _nanosecond_times(df: pl.DataFrame) -> list[str]:
+    """The columns of times of day with nanoseconds: _clean_error names them in a hint."""
+    return [name for name, dtype in df.schema.items() if dtype == pl.Time and _has_nanoseconds(df[name].alias("value"))]
 
 
 def _make_input(con: duckdb.DuckDBPyConnection, columns: str, *, table: bool, empty: bool = False) -> None:
@@ -731,6 +741,7 @@ def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, str], dict[s
     changed: list[pl.Series] = []
     unsigned = [name for name, dtype in frame.schema.items() if dtype == pl.UInt64 and name != _ROW]
     wide = any((frame[name].alias("value") > 2**63 - 1).any() for name in unsigned)
+    nanoseconds = any(_has_nanoseconds(frame[name].alias("value")) for name, dtype in frame.schema.items() if dtype == pl.Time)
     for name, dtype in frame.schema.items():
         column = frame[name].alias("value")  # Polars' Series methods would read a name like ^a.*$ as a pattern
         if dtype == pl.UInt128:
@@ -746,6 +757,11 @@ def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, str], dict[s
                 kinds[name] = "HUGEINT"
             else:
                 changed.append(column.cast(pl.Int64).alias(name))
+        elif dtype == pl.Time and not nanoseconds:
+            # Polars' times are TIME_NS for DuckDB, which compares them with a TIME only with = and
+            # IN, and adds no INTERVAL to them; TIME holds them when none has nanoseconds (all of the
+            # columns, as TIME and TIME_NS can't be compared either)
+            kinds[name] = "TIME"
     as_bigint = [] if wide else unsigned
     return (frame.with_columns(changed) if changed else frame), kinds, beyond, as_bigint
 
@@ -993,9 +1009,11 @@ def _first_line(error: BaseException) -> str:
     return (str(error).strip().splitlines() or [type(error).__name__])[0]
 
 
-def _clean_error(error: Exception, formula: str, columns: Sequence[str] = (), texts: Sequence[str] = ()) -> str:
+def _clean_error(
+    error: Exception, formula: str, columns: Sequence[str] = (), texts: Sequence[str] = (), nanos: Sequence[str] = ()
+) -> str:
     """DuckDB's message in plain words. ``texts``: the columns of text, for the hint when a function
-    gets text where it needs a date or a number."""
+    gets text where it needs a date or a number; ``nanos``: the times of day with nanoseconds."""
     text = raw = str(error)
     # An aggregate such as SUM([x]) without OVER (...); a formula has no GROUP BY of its own, unless
     # in a query on __input
@@ -1046,7 +1064,7 @@ def _clean_error(error: Exception, formula: str, columns: Sequence[str] = (), te
     cast = _DECIMAL_CAST.search(text)
     if cast and cast.group(1) == "38":  # two exact decimals whose values need more than 38 digits together
         return f"Formula error: {_TOO_LONG}\nFormula: {formula}"
-    hint = _text_hint(text, raw, formula, texts)
+    hint = _nanosecond_hint(formula, nanos) if "TIME_NS" in text else _text_hint(text, raw, formula, texts)
     if hint:
         return f"Formula error: {hint}\nFormula: {formula}"
     return f"Formula error: {text}\nFormula: {formula}"
@@ -1083,6 +1101,19 @@ def _text_hint(text: str, raw: str, formula: str, texts: Sequence[str]) -> str |
     if operator or (variants and all(any(_NUMERIC.match(kind) for kind in variant) for variant in variants)):
         return _needs("numbers", None if operator else _typed(formula, name), columns)
     return None
+
+
+def _nanosecond_hint(formula: str, nanos: Sequence[str]) -> str:
+    """For a time of day with nanoseconds (TIME_NS for DuckDB), which a formula can compare with a
+    time only with = and IN, and can't add an INTERVAL to."""
+    named = [name for name in _text_columns(formula, nanos, None)] or list(nanos)
+    first = "[" + named[0].replace("]", "]]") + "]" if named else "[Time]"
+    subject = " and ".join("[" + name.replace("]", "]]") + "]" for name in named[:2]) or "a column"
+    holds = "hold" if len(named) > 1 else "holds"
+    return (
+        f"{subject} {holds} times with nanoseconds, which a formula compares with a time only by = and IN: write "
+        f"CAST({first} AS TIME), or a time as TIME_NS '12:00:00'"
+    )
 
 
 def _needs(what: str, function: str | None, columns: Sequence[str]) -> str:
