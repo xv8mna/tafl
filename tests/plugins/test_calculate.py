@@ -85,6 +85,51 @@ def test_join_texts_of_time_spans_and_binary_values(act):
     assert out.row(0) == ("abc, ä",)
 
 
+@pytest.mark.parametrize("name", ["V", "*", "^a.*$"])
+@pytest.mark.parametrize(
+    ("values", "joined"),
+    [
+        pytest.param(pl.Series([2.0, 1e16, -0.0, 0.1 + 0.2, None]), "2|10000000000000000|0|0.30000000000000004", id="decimal numbers"),
+        pytest.param(pl.Series([0.1, 2.0], dtype=pl.Float32), "0.1|2", id="Float32"),
+        pytest.param(pl.Series([dt.time(8, 30, 0, 500000), dt.time(8, 30)]), "08:30:00.500|08:30:00", id="times"),
+        pytest.param(
+            pl.Series([dt.datetime(2025, 12, 31, 8, 30), dt.datetime(2025, 12, 31, 8, 30, 0, 250)]),
+            "2025-12-31 08:30:00|2025-12-31 08:30:00.000250",
+            id="date-times",
+        ),
+        pytest.param(
+            pl.Series([dt.datetime(2025, 12, 31, 8, 30), dt.datetime(2025, 7, 1, 9, 30)]).dt.replace_time_zone("Europe/Berlin"),
+            "2025-12-31 08:30:00|2025-07-01 09:30:00",
+            id="time zone",
+        ),
+        pytest.param(pl.Series([dt.date(2025, 12, 31), None]), "2025-12-31", id="dates"),
+        pytest.param(pl.Series([D("2.50"), D("-0.10")], dtype=pl.Decimal(10, 2)), "2.50|-0.10", id="exact decimals"),
+        pytest.param(pl.Series([True, False]), "true|false", id="true/false"),
+        pytest.param(pl.Series(["b", "a"], dtype=pl.Categorical), "b|a", id="categories"),
+    ],
+)
+def test_join_texts_writes_the_values_as_the_grid_shows_them(act, values, joined, name):
+    """2, not 2.0; a time keeps its fractions of a second (two times gave one text, 08:30:00); a
+    date-time has them only when there are some, and a time zone's local time has no offset.
+    Before, Polars' text: 2.0, 1e+16, -0.0, 08:30:00, 2025-12-31 08:30:00.000000+01:00."""
+    df = pl.DataFrame({"G": ["a"] * values.len(), name: values, "abc": [1] * values.len()})  # abc: what ^a.*$ would find
+    params = {"group_by": ["G"], "calculations": [{"function": "join", "column": name, "name": "J"}], "separator": "|"}
+    assert act("calc.aggregate", df, params).rows() == [("a", joined)]
+
+
+@pytest.mark.parametrize(
+    ("values", "label"),
+    [([[1, 2], [3]], "list"), ([{"x": 1}, {"x": 2}], "record"), (pl.Series([object(), object()], dtype=pl.Object), "object")],
+)
+def test_join_texts_of_lists_and_records_stops_the_step(act, values, label):
+    """Polars stopped with "cannot cast List type", and wrote records as {1}, without the names of
+    their fields."""
+    df = pl.DataFrame({"G": ["a", "b"], "Tags": values})
+    with pytest.raises(ActionError) as raised:
+        act("calc.aggregate", df, {"group_by": ["G"], "calculations": [{"function": "join", "column": "Tags"}]})
+    assert str(raised.value) == f"“Tags” holds {label} values, which Join texts can't join"
+
+
 def test_aggregate(act, people):
     out = act(
         "calc.aggregate",

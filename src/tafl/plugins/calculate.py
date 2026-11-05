@@ -274,8 +274,10 @@ def _aggregation(calc, separator: str, dtype: pl.DataType | None, as_hex: bool) 
             return column.drop_nulls().first()
         case "last":
             return column.drop_nulls().last()
-        case "join":  # time spans have no cast to text, nor have bytes that are no text: as hex digits
-            text = dtypes.text_expr(column, dtype) if dtype == pl.Duration or as_hex else column.cast(pl.String)
+        case "join":  # each value as the grid shows it (17, not 17.0), bytes that are no text as hex digits
+            if dtype is not None and (dtype.is_nested() or dtype == pl.Object):
+                raise ActionError(f"“{calc.column}” holds {dtypes.type_label(dtype)} values, which Join texts can't join")
+            text = column.cast(pl.String) if dtype is None or (dtype == pl.Binary and not as_hex) else dtypes.text_expr(column, dtype)
             return text.drop_nulls().str.join(separator)
     raise ActionError(f"Unknown function '{calc.function}'")
 
