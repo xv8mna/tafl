@@ -566,8 +566,31 @@ def facet(
 
 def formula(f: Filter, dtype: pl.DataType, data: pl.Series | None = None) -> str:
     """The filter as a condition for the step "Filter rows by formula" (same rows). ``data``: the
-    column at the step, for the checks that need its cells. Raises NotAStep for a filter that a
-    step can't say the same way."""
+    column at the step: the condition must keep the rows there that the filter keeps. Raises
+    NotAStep for a filter that a step can't say the same way."""
+    step = _formula(f, dtype, data)
+    if data is not None:
+        _check_rows(f, step, data)
+    return step
+
+
+def _check_rows(f: Filter, step: str, data: pl.Series) -> None:
+    """Whether the step's condition keeps the rows of the card on the column at the step (``data``):
+    for what no rule here foresees, such as letters that DuckDB's tables of Unicode don't know yet."""
+    frame = pl.DataFrame([data.alias(f.column)])
+    kept = condition(f, frame.schema)
+    card = frame.select(kept).to_series() if kept is not None else pl.repeat(True, frame.height, eager=True)
+    try:
+        rows = expressions.evaluate(frame, step, condition=True).fill_null(False)
+    except ActionError:
+        raise NotAStep("the step would stop with an error on these values") from None
+    differ = int((card.alias("card") != rows.alias("step")).sum())
+    if differ:
+        raise NotAStep(f"a step would keep other rows than the filter: {differ:,} of the {frame.height:,} rows here")
+
+
+def _formula(f: Filter, dtype: pl.DataType, data: pl.Series | None) -> str:
+    """``formula`` without the check of its rows."""
     if not f.values and not f.excluded:  # nothing picked yet: the filter keeps all rows
         return "TRUE"
     name = "[" + f.column.replace("]", "]]") + "]"

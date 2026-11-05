@@ -1178,6 +1178,22 @@ def test_the_classes_of_a_pattern_as_a_step_are_those_of_the_card_for_every_char
         assert card ^ step <= unknown, (pattern, [hex(c) for c in sorted(card ^ step - unknown)[:10]])
 
 
+def test_a_step_that_would_keep_other_rows_here_is_not_made():
+    """Add as step runs the step's condition on the column at the step: where its rows differ from
+    the card's, for whatever reason, it says so instead of making the step. Such as a quarter of a
+    moment just before 1970 with nanoseconds (the step's DuckDB takes it to the microsecond, into
+    1970) and a letter that DuckDB's tables of Unicode don't know yet (U+13460, Unicode 16)."""
+    stamps = pl.Series("When", [-1, 5 * 10**9], dtype=pl.Int64).cast(pl.Datetime("ns"))  # 1969-12-31 23:59:59.999999999
+    quarter = Filter("When", ["1969 Q4"], "period", {"by": "quarter"})
+    letters = pl.Series("T", ["abc", "\U00013460", "ä"])
+    word = Filter("T", ["match"], "regex", {"pattern": r"^\w+$"})
+    for chosen, data in ((quarter, stamps), (word, letters)):
+        assert formula(chosen, data.dtype)  # without the column at the step, as before
+        with pytest.raises(NotAStep, match=r"^a step would keep other rows than the filter: 1 of the \d rows here$"):
+            formula(chosen, data.dtype, data)
+    assert formula(word, pl.String, letters.filter(letters != "\U00013460")).startswith("regexp_matches([T]")
+
+
 def test_add_as_step_says_why_a_filter_cant_be_one(session, qtbot):
     df = pl.DataFrame({"T": ["Straße", "abc"], "S": pl.Series([1, 2], dtype=pl.Int64).cast(pl.Duration("ns"))})
     table = session.project.add_table("T")
