@@ -192,42 +192,50 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
 
 # Two date-times that differ in every part that a date format writes, also in AM/PM and the weekday
 _SAMPLES = pl.Series(["2001-02-03 04:05:06.789012", "2002-03-04 17:16:17.891234"]).str.to_datetime("%Y-%m-%d %H:%M:%S%.f")
-_PROBLEMS: dict[tuple[str, bool, str | None], str] = {}  # of the date formats checked so far: see _format_problem
+_FORMATS: dict[tuple[str, bool, str | None], tuple[str, bool]] = {}  # the date formats checked so far: see _format_check
 
 
 def _dates_as_text(s: pl.Series, fmt: str) -> pl.Series:
-    """Dates or date-times as text with a date format; one that can't write them stops the step."""
+    """Dates or date-times as text with a date format; one that can't write them stops the step.
+    With a time in the format, dates are written at midnight (00:00), as Excel writes them."""
     key = (fmt, s.dtype == pl.Date, s.dtype.time_zone if s.dtype == pl.Datetime else None)
-    if key not in _PROBLEMS:
-        _PROBLEMS[key] = _format_problem(*key)
-    if _PROBLEMS[key]:
-        raise ActionError(f"{s.name}: {_PROBLEMS[key]}")
+    if key not in _FORMATS:
+        _FORMATS[key] = _format_check(*key)
+    problem, at_midnight = _FORMATS[key]
+    if problem:
+        raise ActionError(f"{s.name}: {problem}")
+    if at_midnight:
+        s = s.alias("value").cast(pl.Datetime("us")).alias(s.name)  # a fixed name, as in change_type
     return dtypes.format_dates(s, fmt)
 
 
-def _format_problem(fmt: str, dates: bool, zone: str | None) -> str:
-    """Why dates (``dates``) or date-times (with the time ``zone``) can't be written with the
-    format ``fmt``: a number format such as 0.00, a time for dates, or a format that writes no part
-    of a date (00000: each value would be that text). Empty when they can. It doesn't depend on
-    the values: also a column without any stops the step."""
+def _format_check(fmt: str, dates: bool, zone: str | None) -> tuple[str, bool]:
+    """Whether dates (``dates``) or date-times (with the time ``zone``) can be written with the
+    format ``fmt``: why not (a number format such as 0.00, or a format that writes no part of a
+    date: with 00000 each value would be 00000), and whether dates need a time of day for it
+    (they get midnight). It doesn't depend on the values: also a column without any stops the
+    step."""
     samples = _SAMPLES.dt.date() if dates else _SAMPLES
     if zone:  # for a format with the zone's name (%Z)
         samples = samples.dt.replace_time_zone("UTC").dt.convert_time_zone(zone)
     code = dtypes.to_strftime(fmt)
+    texts, at_midnight = None, False
     try:
         texts = samples.dt.strftime(code).to_list()
     except pl.exceptions.ComputeError:
-        try:
-            _SAMPLES.dt.strftime(code)
-        except pl.exceptions.ComputeError:
-            return (
-                f"{'dates' if dates else 'date-times'} can't be written with the format '{fmt}'. Use codes such as "
-                "dd.mm.yyyy hh:mm:ss, and .000, .000000 or .000000000 for fractions of a second"
-            )
-        return f"the format '{fmt}' has a time, but the column holds dates without a time"
-    if texts[0] == texts[1]:
-        return f"the format '{fmt}' writes no part of a date. Use codes such as dd.mm.yyyy hh:mm:ss"
-    return ""
+        if dates:  # a format with a time: the dates at midnight
+            try:
+                texts, at_midnight = samples.cast(pl.Datetime("us")).dt.strftime(code).to_list(), True
+            except pl.exceptions.ComputeError:
+                pass
+    if texts is None:
+        return (
+            f"{'dates' if dates else 'date-times'} can't be written with the format '{fmt}'. Use codes such as "
+            "dd.mm.yyyy hh:mm:ss, and .000, .000000 or .000000000 for fractions of a second"
+        ), False
+    if texts[0] == texts[1]:  # also hh:mm for dates: 00:00 for each one
+        return f"the format '{fmt}' writes no part of a date. Use codes such as dd.mm.yyyy hh:mm:ss", False
+    return "", at_midnight
 
 
 def _as_shown(s: pl.Series) -> pl.Series:

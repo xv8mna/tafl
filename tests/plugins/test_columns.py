@@ -199,18 +199,22 @@ def test_dates_to_text_with_a_format_without_date_codes_stops_the_step(act, dtyp
             change(act, values.to_frame(), "When", "text", fmt)
 
 
-def test_dates_to_text_with_a_time_stops_the_step(act):
-    """A date has no time: Polars stopped with "cannot format Date with format '%d.%m.%Y %H:%M'"."""
-    days = pl.DataFrame({"When": [dt.date(2025, 12, 31)]})
-    for fmt in ("dd.mm.yyyy hh:mm", "yyyy-mm-dd am/pm", "ss.000"):
-        with pytest.raises(ActionError, match=rf"^When: the format '{fmt}' has a time, but the column holds dates without a time$"):
+def test_dates_to_text_with_a_time_are_written_at_midnight(act):
+    """As Excel writes them. Polars stopped with "cannot format Date with format '%d.%m.%Y %H:%M'".
+    A format with nothing but a time writes no part of a date: 00:00 for each one."""
+    days = pl.DataFrame({"When": [dt.date(2025, 12, 31), None]})
+    assert change(act, days, "When", "text", "dd.mm.yyyy hh:mm").to_list() == ["31.12.2025 00:00", None]
+    assert change(act, days, "When", "text", "yyyy-mm-dd hh:mm:ss.000 am/pm").to_list() == ["2025-12-31 12:00:00.000 AM", None]
+    assert change(act, days.clear(), "When", "text", "dd.mm.yyyy hh:mm").to_list() == []
+    for fmt in ("hh:mm", "ss.000", "am/pm"):
+        with pytest.raises(ActionError, match=rf"^When: the format '{fmt}' writes no part of a date\. Use codes such as"):
             change(act, days, "When", "text", fmt)
     moments = pl.DataFrame({"When": [dt.datetime(2025, 12, 31, 17, 5, 9, 250000)]})
     assert change(act, moments, "When", "text", "dd.mm.yyyy hh:mm am/pm").to_list() == ["31.12.2025 05:05 PM"]
     assert change(act, moments, "When", "text", "hh:mm:ss.000").to_list() == ["17:05:09.250"]
     zoned = moments.with_columns(pl.col("When").dt.replace_time_zone("Europe/Berlin"))
     assert change(act, zoned, "When", "text", "%Y-%m-%d %H:%M %Z").to_list() == ["2025-12-31 17:05 CET"]
-    assert change(act, days, "When", "text", "dddd").to_list() == ["Wednesday"]  # one part of a date is enough
+    assert change(act, days, "When", "text", "dddd").to_list() == ["Wednesday", None]  # one part of a date is enough
 
 
 def test_exact_decimals(act):
