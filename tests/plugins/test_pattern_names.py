@@ -259,6 +259,9 @@ case("calc.enumerate groups into N", "N")(lambda r: r.step("calc.enumerate", tab
 case("calc.enumerate groups into N, which is there", "N")(
     lambda r: r.step("calc.enumerate", table(r).with_columns(pl.lit(0).alias(r["N"])), {"name": r["N"], "mode": "groups", "group_by": ["x"]})
 )
+case("calc.enumerate groups by K into K", "K")(
+    lambda r: r.step("calc.enumerate", table(r), {"name": r["K"], "mode": "groups", "group_by": ["x", r["K"]]})
+)
 case("calc.aggregate by K: sum of F", "K")(
     lambda r: r.step("calc.aggregate", table(r), {"group_by": [r["K"]], "calculations": [{"function": "sum", "column": r["F"], "name": "total"}]})
 )

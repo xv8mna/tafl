@@ -61,6 +61,24 @@ def test_number_groups(act):
         act("calc.enumerate", df, {"mode": "groups"})
 
 
+def test_number_the_groups_into_a_group_column(act):
+    """The numbers replace that column, as with "Number the rows". Before, the step stopped with
+    'ColumnNotFoundError: "Region" not found'."""
+    df = pl.DataFrame({"Region": ["N", "S", "N", None], "Amount": [5, 1, 9, 7]})
+    out = act("calc.enumerate", df, {"name": "Region", "mode": "groups", "group_by": ["Region"]})
+    assert out.columns == ["Region", "Amount"] and out["Region"].to_list() == [1, 2, 1, 3]
+    both = df.with_columns(Year=pl.Series([2025, 2025, 2026, 2025]))
+    out = act("calc.enumerate", both, {"name": "Year", "mode": "groups", "group_by": ["Region", "Year"], "start": 10})
+    assert out.rows() == [("N", 5, 10), ("S", 1, 11), ("N", 9, 12), (None, 7, 13)]
+    ordered = act("calc.enumerate", df, {"name": "Region", "mode": "groups", "group_by": ["Region"], "order_by": [{"column": "Amount"}]})
+    assert ordered["Region"].to_list() == [2, 1, 2, 3]  # S has the smallest amount, then N (5 and 9), then the empty region
+    rows = act("calc.enumerate", df, {"name": "Region", "mode": "rows", "group_by": ["Region"]})
+    assert rows.columns == ["Region", "Amount"] and rows["Region"].to_list() == [1, 1, 2, 1]
+    with_no = df.select("Region", pl.lit(0).alias("No"), "Amount")  # another column of that name: replaced at the end, as before
+    other = act("calc.enumerate", with_no, {"name": "No", "mode": "groups", "group_by": ["Region"]})
+    assert other.columns == ["Region", "Amount", "No"] and other["No"].to_list() == [1, 2, 1, 3]
+
+
 def test_join_texts_of_time_spans_and_binary_values(act):
     """They have no cast to text: a raw error of Polars stopped the step."""
     df = pl.DataFrame(

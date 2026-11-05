@@ -9,6 +9,7 @@ import polars as pl
 from tafl.api import ActionError, P, action, col, cols, dtypes, expressions
 
 _ROW = "__etl_row__"
+_NUMBER = "__etl_number__"  # Number rows: the numbers of the groups, until they get their name
 _EXACT = 10**38  # the units of an exact decimal (its digits without the point) are below this
 _PART = 10**19  # a sum of exact decimals is added up in two parts: see _decimal_parts
 _ORDER = [("asc", "Ascending"), ("desc", "Descending")]
@@ -115,12 +116,19 @@ def enumerate_rows(df, p, ctx):
         if partition:
             counter = counter.over(cols(partition))
         work = work.with_columns((counter * p.step + p.start).alias(p.name))
-    else:
+    else:  # the numbers have a working name until the join is done: New column may be a group column
+        number = _NUMBER
+        while number in work.columns:
+            number += "_"
         groups = work.select(cols(p.group_by)).unique(maintain_order=True)
-        groups = groups.with_columns((pl.int_range(pl.len(), dtype=pl.Int64) * p.step + p.start).alias(p.name))
-        if p.name in work.columns:  # the numbers replace a column of that name
-            work = work.drop(col(p.name))
+        groups = groups.with_columns((pl.int_range(pl.len(), dtype=pl.Int64) * p.step + p.start).alias(number))
         work = work.join(groups, on=cols(p.group_by), how="left", nulls_equal=True, maintain_order="left")
+        if p.name in p.group_by:  # the numbers replace that group column, in its place (as with "rows")
+            work = work.with_columns(col(number).alias(p.name)).drop(col(number))
+        else:  # they replace a column of that name, after the other columns
+            if p.name in work.columns:
+                work = work.drop(col(p.name))
+            work = work.rename({number: p.name})
     return work.sort(_ROW).drop(_ROW)
 
 
