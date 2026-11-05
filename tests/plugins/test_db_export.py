@@ -304,6 +304,17 @@ def test_sqlite_keeps_the_fractions_of_a_second(db, registry):
     assert db.context.messages[-1] == ("info", "orders: updated 2 rows")
 
 
+def test_sqlite_date_times_come_back_with_their_nanoseconds(db, registry):
+    """The export writes nanoseconds with nine digits; the import with "Detect numbers and dates"
+    read them as microseconds and cut them (08:30:00.000000001 was 08:30:00)."""
+    second = 1_735_720_200 * 10**9  # 2025-01-01 08:30:00
+    stamps = pl.Series("Stamp", [second + 1, second, second + 500_000_000, None], dtype=pl.Int64).cast(pl.Datetime("ns"))
+    db.export(pl.DataFrame({"OrderNo": [1, 2, 3, 4], "Stamp": stamps}))
+    back = registry.actions["db.import"](None, {"connection": "shop", "table": "orders", "detect_types": True}, db.context)
+    assert back.schema["Stamp"] == pl.Datetime("ns") and back["Stamp"].to_list() == stamps.to_list()
+    assert back["Stamp"].cast(pl.Int64).to_list() == [second + 1, second, second + 500_000_000, None]
+
+
 def test_sqlite_says_what_it_cant_store(db):
     """The driver's words were the message: "Error binding parameter 1: type 'datetime.timedelta'
     is not supported", "Python int too large to convert to SQLite INTEGER", and SQLite's own "too

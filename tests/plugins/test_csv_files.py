@@ -455,6 +455,22 @@ def test_rows_with_more_values_than_the_header(act, tmp_path):
     assert not ctx.warnings
 
 
+def test_date_times_with_nanoseconds_keep_them(act, tmp_path):
+    """2025-01-01 08:30:00.000000001 was read as 08:30:00: the detection kept microseconds only. A
+    column with a date-time beyond the years of nanoseconds keeps microseconds, with a warning."""
+    text = "At;Other\n2025-01-01 08:30:00.000000001;2025-01-01 08:30:00.000000001\n2025-01-01 08:30:00.5;3000-01-01 08:30:00\n"
+    (tmp_path / "ns.csv").write_text(text, encoding="utf-8")
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "ns.csv")}, ctx)
+    assert df.schema == {"At": pl.Datetime("ns"), "Other": pl.Datetime("us")}
+    assert df["At"].cast(pl.Int64).to_list() == [1_735_720_200 * 10**9 + 1, 1_735_720_200 * 10**9 + 500_000_000]
+    assert df["Other"].dt.year().to_list() == [2025, 3000]
+    assert ctx.warnings == [
+        "Other: the digits below a microsecond were cut, e.g. in '2025-01-01 08:30:00.000000001': nanoseconds fit only "
+        "from 1677 to 2262, and the column has date-times beyond"
+    ]
+
+
 def test_a_quote_out_of_place_is_shown_with_its_line(act, tmp_path):
     """Polars' words were the message: "CSV malformed: expected 3 rows, actual 5 rows, in chunk
     starting at row_offset 3, length 39", or "could not parse `"24"x` as dtype `str`"."""

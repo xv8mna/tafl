@@ -547,10 +547,43 @@ def infer_series(s: pl.Series, decimal: str = ",", warn: Callable[[str], None] |
         if values.str.contains(pattern).all():
             parsed = _apply(text, _datetime_expr(_VALUE, fmt))
             if parsed.null_count() == text.null_count():
+                if "%.f" in fmt and values.str.contains(_BELOW_MICROSECONDS).any():
+                    return _with_nanoseconds(s.name, text, values, parsed, fmt, warn)
                 return parsed
     if values.str.to_lowercase().is_in(["true", "false"]).all():
         return _apply(text, _VALUE.str.to_lowercase() == "true")
     return s
+
+
+_BELOW_MICROSECONDS = r"\.[0-9]{6}[0-9]*[1-9]"  # a fraction of a second with digits below a microsecond
+_BELOW_NANOSECONDS = r"\.[0-9]{9}[0-9]*[1-9]"
+# Nanoseconds reach from 1677-09-21 to 2262-04-11 (Int64): those date-times as microseconds, with
+# room for the digits below them
+_NANOSECOND_YEARS = 9_223_372_036_854_774
+
+
+def _with_nanoseconds(
+    name: str, text: pl.Series, values: pl.Series, parsed: pl.Series, fmt: str, warn: Callable[[str], None] | None
+) -> pl.Series:
+    """Date-time texts with digits below a microsecond (``parsed``: as microseconds): a column of
+    nanoseconds that keeps them, when all its date-times are within the years of nanoseconds; else
+    the microseconds, and ``warn`` is told. Polars doesn't refuse a date-time beyond those years as
+    nanoseconds: it would give another one, so the years are checked first."""
+    micros = parsed.cast(pl.Int64)
+    if -_NANOSECOND_YEARS <= micros.min() and micros.max() <= _NANOSECOND_YEARS:
+        exact = _apply(text, _datetime_expr(_VALUE, fmt, "ns"))
+        if exact.null_count() == text.null_count():
+            cut = values.filter(values.str.contains(_BELOW_NANOSECONDS))
+            if cut.len() and warn is not None:
+                warn(f"{name}: the digits below a nanosecond were cut, e.g. in '{cut[0]}'")
+            return exact
+    if warn is not None:
+        example = values.filter(values.str.contains(_BELOW_MICROSECONDS))[0]
+        warn(
+            f"{name}: the digits below a microsecond were cut, e.g. in '{example}': nanoseconds fit only from 1677 to "
+            "2262, and the column has date-times beyond"
+        )
+    return parsed
 
 
 def whole_numbers_to_int(df: pl.DataFrame) -> pl.DataFrame:

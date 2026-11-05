@@ -588,6 +588,23 @@ def test_detect_types_reads_a_decimal_comma_as_the_csv_import_does(project, regi
     assert from_csv.select(pl.exclude("code")).rows() == result.df.select("comma", "point", "amount", "share", "big").rows()
 
 
+def test_detect_types_keeps_nanoseconds(project, registry, tmp_path):
+    """A text column of date-times with nanoseconds became microseconds (08:30:00.000000001 was
+    08:30:00); beyond the years of nanoseconds it keeps microseconds, with a warning."""
+    with closing(sqlite3.connect(tmp_path / "data.db")) as con, con:
+        con.execute("CREATE TABLE stamps (exact TEXT, beyond TEXT)")
+        con.executemany("INSERT INTO stamps VALUES (?, ?)", [("2025-01-01 08:30:00.000000001", "2025-01-01 08:30:00.000000001"),
+                                                               ("2025-01-01 08:30:00", "1600-01-01 00:00:00")])  # fmt: skip
+    result = import_table(project, registry, table="stamps", detect_types=True)
+    assert result.df.schema == {"exact": pl.Datetime("ns"), "beyond": pl.Datetime("us")}
+    assert result.df["exact"].cast(pl.Int64).to_list() == [1_735_720_200 * 10**9 + 1, 1_735_720_200 * 10**9]
+    assert result.df["beyond"].dt.year().to_list() == [2025, 1600]
+    assert [m for m in result.steps[0].messages if m[0] == "warning"] == [
+        ("warning", "beyond: the digits below a microsecond were cut, e.g. in '2025-01-01 08:30:00.000000001': "
+         "nanoseconds fit only from 1677 to 2262, and the column has date-times beyond")
+    ]  # fmt: skip
+
+
 _WIDE_DETECTION = """
 import sqlite3
 import sys

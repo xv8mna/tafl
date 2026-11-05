@@ -2,6 +2,8 @@ import datetime as dt
 import math
 import random
 import struct
+import subprocess
+import sys
 import time
 from decimal import Decimal
 
@@ -61,6 +63,52 @@ def test_infer_types_point_decimal_and_iso_dates():
     out = dtypes.infer_types(df, decimal=".")
     assert out["n"].to_list() == [1234.5, 2.25]
     assert out.schema["d"] == pl.Date
+
+
+def test_detected_date_times_keep_digits_below_a_microsecond():
+    """A text with nanoseconds became a date-time of microseconds without a word: 08:30:00.000000001
+    was 08:30:00. Now the column gets nanoseconds when its date-times fit their years (1677 to
+    2262); else it keeps microseconds, with a warning. Texts without such digits stay as before."""
+    second = 1_735_720_200  # 2025-01-01 08:30:00
+
+    def detect(*texts):
+        warnings = []
+        out = dtypes.infer_series(pl.Series("When", list(texts)), ".", warnings.append)
+        return out, warnings
+
+    out, warnings = detect("2025-01-01 08:30:00.000000001", "2025-01-01 08:30:00.1234567", None, "2025-01-01 08:30:00")
+    assert out.dtype == pl.Datetime("ns") and not warnings
+    assert out.cast(pl.Int64).to_list() == [second * 10**9 + 1, second * 10**9 + 123_456_700, None, second * 10**9]
+    assert detect("2025-01-01T08:30:00.000000001")[0].cast(pl.Int64).to_list() == [second * 10**9 + 1]
+    for texts in (("2025-01-01 08:30:00.5", "2025-01-01 08:30:00.500000000"), ("2025-01-01 08:30:00.123456",)):
+        assert detect(*texts)[0].dtype == pl.Datetime("us")  # nothing below a microsecond: as before
+    out, warnings = detect("2025-01-01 08:30:00.000000001", "3000-01-01 08:30:00")  # 3000 is beyond nanoseconds
+    assert out.dtype == pl.Datetime("us") and out.dt.year().to_list() == [2025, 3000]
+    assert warnings == [
+        "When: the digits below a microsecond were cut, e.g. in '2025-01-01 08:30:00.000000001': nanoseconds fit only "
+        "from 1677 to 2262, and the column has date-times beyond"
+    ]
+    out, warnings = detect("2025-01-01 08:30:00.000000001999", "2025-01-01 08:30:00.000000002")
+    assert out.cast(pl.Int64).to_list() == [second * 10**9 + 1, second * 10**9 + 2]
+    assert warnings == ["When: the digits below a nanosecond were cut, e.g. in '2025-01-01 08:30:00.000000001999'"]
+
+
+_WIDE_NANOSECONDS = """
+import polars as pl
+from tafl.api import dtypes
+
+df = pl.DataFrame({f"c{i}": ["2025-01-01 08:30:00.000000001"] for i in range(4_001)})
+out = dtypes.infer_types(df, ".")
+assert set(out.schema.values()) == {pl.Datetime("ns")}, set(out.schema.values())
+"""
+
+
+def test_detected_nanoseconds_in_a_wide_table():
+    """4,001 columns of date-times with nanoseconds: each is looked at on its own, and a deep Polars
+    expression would end the process (in a process of its own, so that such an end shows as a failed
+    test)."""
+    done = subprocess.run([sys.executable, "-c", _WIDE_NANOSECONDS], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
 
 
 def test_two_digit_year_is_not_read_as_year_25():
