@@ -101,10 +101,13 @@ def merge(df, p, ctx):
     pairs = list(dict.fromkeys((m.column, m.other_column) for m in p.match))  # a row given twice counts once
     right_on = [other_column for _, other_column in pairs]
     left, right, left_on, right_keys, compared = _compared_keys(df, other, [column for column, _ in pairs], right_on, ctx)
+    kept = {}  # full join: a copy of the other table's key columns, for keys written as text (see below)
     if p.how == "full":  # a key of the other table that doesn't fit the compared type would get lost
         for name, other_name, key in compared:
             if right.select((col(other_name).is_not_null() & col(key).is_null()).any()).item():
                 raise ActionError(_no_common_type(df, name, other, other_name, right.schema[key]))
+            kept[key] = _free_name(f"{key}own__", "", {*left.columns, *right.columns, *kept.values()})
+        right = right.with_columns(col(other_name).alias(kept[key]) for _, other_name, key in compared)
     own =list(dict.fromkeys(column for column, _ in pairs))  # this table's key columns, for the message
 
     if p.how in ("matching", "non_matching"):
@@ -122,7 +125,7 @@ def merge(df, p, ctx):
     columns = [c for c in (p.columns or other.columns) if c not in right_on]
     if missing := [c for c in columns if c not in other.columns]:
         raise ActionError(f"Columns not in the other table: {', '.join(missing)}")
-    right = right.select(cols(_once([*right_keys, *columns])))
+    right = right.select(cols(_once([*right_keys, *columns, *kept.values()])))
     if p.how == "full" and p.multiple == "first":
         right = _first_matches(right, right_keys, left.select(cols(_once(left_on))), left_on)
     elif p.how == "lookup" or p.multiple == "first":
@@ -173,8 +176,8 @@ def merge(df, p, ctx):
             as_hex = _as_hex(df[name])
             dtype = out.schema[name]  # not df's: a column that is the key for two may be text after the first
             if dtype == pl.String and out.schema[key] != pl.String:  # text since an earlier key, this one not compared as text
-                own = other.schema[other_name]  # the key as text in its own type: 0.1 for a Float32, a zone's local time
-                text = dtypes.text_expr(_cast_fitting(col(key), out.schema[key], own), own)
+                # the other table's own value as text, with every digit: 0.1 for a Float32, 2^64 - 1, a zone's local time
+                text = dtypes.text_expr(col(kept[key]), other.schema[other_name])
                 out = out.with_columns(pl.coalesce(col(name), text).alias(name))
                 continue
             back = _cast_fitting(col(key), out.schema[key], dtype)
@@ -188,7 +191,7 @@ def merge(df, p, ctx):
                 out = out.with_columns(pl.coalesce(wide, col(key)).alias(name))
     if df.height or added:  # a full join of an empty table: the rows of the other table
         ctx.log(_feedback(p.how, df.height, unmatched, _bytes_as_text(df, missed), other.height, added))
-    return out.drop([key for *_, key in compared])
+    return out.drop([*(key for *_, key in compared), *kept.values()])
 
 
 @action(

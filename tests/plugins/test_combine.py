@@ -983,3 +983,37 @@ def test_keys_that_cant_be_compared_stop_also_without_values(act, how, this, oth
     with pytest.raises(ActionError) as raised:
         act("table.merge", this.alias("A").to_frame(), params, ctx)
     assert str(raised.value).startswith(f"'A' {words} can't be compared: choose other key columns")
+
+
+@pytest.mark.parametrize(
+    ("this", "second", "added"),
+    [
+        pytest.param([1.5], pl.Series([5, 2**64 - 1, 2**64 - 1025], dtype=pl.UInt64), ["18446744073709551615", "18446744073709550591"], id="UInt64"),
+        pytest.param([1.5], pl.Series([5, 2**63 - 1, 2**53 + 1], dtype=pl.Int64), ["9223372036854775807", "9007199254740993"], id="Int64"),
+        pytest.param([1.5], pl.Series([5, 2**127 - 1, -(2**127)], dtype=pl.Int128), [str(2**127 - 1), str(-(2**127))], id="Int128"),
+        pytest.param([1.5], pl.Series([D(5), D("9" * 38), D(1)], dtype=pl.Decimal(38, 0)), ["9" * 38, "1"], id="38 nines"),
+        pytest.param(
+            [1.5],
+            pl.Series([D(5), D("1234567890.1234567891"), D("0.1000000001")], dtype=pl.Decimal(38, 10)),
+            ["1234567890.1234567891", "0.1000000001"],
+            id="exact decimals",
+        ),
+        pytest.param(
+            [dt.date(2025, 1, 2)],
+            pl.Series(["2025-01-03 00:00:00", "2025-01-04 08:30:00.000000001", "2025-01-05 09:00:00"]).str.to_datetime(time_unit="ns"),
+            ["2025-01-04 08:30:00.000000001", "2025-01-05 09:00:00"],
+            id="nanoseconds",
+        ),
+    ],
+)
+def test_a_full_join_writes_a_later_key_as_text_with_all_its_digits(act, this, second, added):
+    """The second pair compares the keys as decimal numbers (or in microseconds), which keep about
+    15 digits: the key of a row only in the other table is written from its own value. Before, it
+    was cast back from the compared one: 2^64 - 1 got lost (an empty key) and 1234567890.1234567891
+    became 1234567890.1234567168."""
+    match = [{"column": "A", "other_column": "K"}, {"column": "A", "other_column": "X"}]
+    params = {"other": "other", "match": match, "how": "full", "multiple": "all"}
+    other = pl.DataFrame({"K": ["x", None, None], "X": second})
+    out = act("table.merge", pl.DataFrame({"A": this}), params, StubContext(tables={"other": other}))
+    assert out.schema["A"] == pl.String and out["A"].to_list()[2:] == added
+    assert out.columns == ["A"]  # no copies of the keys are left
