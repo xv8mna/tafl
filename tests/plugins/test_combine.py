@@ -1030,3 +1030,50 @@ def test_the_hint_of_keys_that_cant_be_compared_names_a_column_that_is_not_text(
         "'A' (text) and 'K' (duration) can't be compared: choose other key columns, or first make one of them text "
         "with a formula such as CAST([K] AS VARCHAR)"
     )
+
+
+SPAN = [dt.timedelta(hours=1), dt.timedelta(0)]
+
+
+@pytest.mark.parametrize(
+    ("this", "other", "named"),
+    [
+        pytest.param([1, 2], SPAN, "K", id="integer, time span"),
+        pytest.param([1.5, 2.0], SPAN, "K", id="number, time span"),
+        pytest.param([dt.date(2025, 1, 2), None], SPAN, "K", id="date, time span"),
+        pytest.param([dt.datetime(2025, 1, 2, 8, 30), None], SPAN, "K", id="date-time, time span"),
+        pytest.param([dt.time(8, 30), None], SPAN, "K", id="time, time span"),
+        pytest.param([True, False], SPAN, "K", id="true/false, time span"),
+        pytest.param([b"a", b"\xff"], SPAN, "K", id="binary, time span"),
+        pytest.param(pl.Series([None, None], dtype=pl.Null), SPAN, "K", id="empty, time span"),
+        pytest.param(["1h", "x"], SPAN, "K", id="text, time span"),
+        pytest.param(SPAN, [1, 2], "A", id="time span, integer"),
+        pytest.param(SPAN, ["1h", "x"], "A", id="time span, text"),
+        pytest.param([dt.time(8, 30), None], [dt.datetime(2025, 1, 2, 8, 30), None], "A", id="time, date-time"),
+    ],
+)
+def test_the_hint_of_keys_that_cant_be_compared_works_when_followed(act, this, other, named):
+    """The hint names a column that, made text with its formula, can be compared: a time span,
+    which nothing else can be compared with. Before, it named this table's column against a time
+    span, and the next run asked for the other one."""
+    params = {"other": "other", "match": [{"column": "A", "other_column": "K"}]}
+    left, right = pl.DataFrame({"A": this}), pl.DataFrame({"K": other})
+    with pytest.raises(ActionError) as raised:
+        act("table.merge", left, params, StubContext(tables={"other": right}))
+    assert str(raised.value).endswith(f"such as CAST([{named}] AS VARCHAR)")
+    as_text = {"columns": [{"name": named, "formula": f"CAST([{named}] AS VARCHAR)"}]}
+    if named == "A":
+        left = act("calc.columns", left, as_text)
+    else:
+        right = act("calc.columns", right, as_text)
+    assert act("table.merge", left, params, StubContext(tables={"other": right})).height == 2
+
+
+def test_the_hint_doubles_a_bracket_in_a_column_name(act):
+    """As a formula needs it: [a]]b] is the column a]b."""
+    params = {"other": "other", "match": [{"column": "a]b", "other_column": "K"}]}
+    with pytest.raises(ActionError) as raised:
+        act("table.merge", pl.DataFrame({"a]b": SPAN}), params, StubContext(tables={"other": pl.DataFrame({"K": [1, 2]})}))
+    assert str(raised.value).endswith("such as CAST([a]]b] AS VARCHAR)")
+    out = act("calc.columns", pl.DataFrame({"a]b": SPAN}), {"columns": [{"name": "a]b", "formula": "CAST([a]]b] AS VARCHAR)"}]})
+    assert out.schema["a]b"] == pl.String
