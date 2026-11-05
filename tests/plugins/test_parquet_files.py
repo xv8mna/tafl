@@ -1,4 +1,5 @@
 import decimal
+import time
 
 import openpyxl
 import polars as pl
@@ -117,6 +118,20 @@ def test_whole_numbers_of_128_bits_follow_the_rules_of_decimals(act, tmp_path):
     assert df.schema == {"Small": pl.Int64, "Id": pl.Decimal(38, 0), "Unsigned": pl.Decimal(38, 0), "Top": pl.String}
     assert df.rows() == [(2**40, D(2**64), D(2**64), str(2**128 - 1)), (None, D(-5), D(5), "5")]
     assert ctx.warnings == [f"Top becomes text: its numbers are too long to be kept exactly, e.g. '{2**128 - 1}'"]
+
+
+def test_many_text_columns_are_read_fast(act, tmp_path):
+    """The check for long whole numbers asked Polars for the types of all columns again for each
+    text column: the time grew with the square of the columns (6,000 took about 20 s)."""
+    pl.DataFrame({f"c{i}": ["a", None] for i in range(6_000)} | {"Id": pl.Series([2**128 - 1, 5], dtype=pl.UInt128)}).write_parquet(
+        tmp_path / "wide.parquet"
+    )
+    ctx = StubContext()
+    start = time.perf_counter()
+    df = act("parquet.import", None, {"file": str(tmp_path / "wide.parquet")}, ctx)
+    assert time.perf_counter() - start < 3
+    assert df.width == 6_001 and df.schema["c0"] == pl.String and df["Id"].to_list() == [str(2**128 - 1), "5"]
+    assert ctx.warnings == [f"Id becomes text: its numbers are too long to be kept exactly, e.g. '{2**128 - 1}'"]
 
 
 @pytest.mark.parametrize("name", ["x[1]/data.parquet", "Data [old]/data.parquet", "x[1].parquet", "a[b.parquet"])

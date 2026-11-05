@@ -133,7 +133,8 @@ def import_csv(df, p, ctx):
         decimal, columns = (p.decimal, {}) if p.decimal != "auto" else _guess_decimal(data, separators[0])
         typed = _detect_types(data, {name: columns.get(name, decimal) for name in data.columns}, ctx.warn)
         others = [name for name, own in columns.items() if own != decimal]
-        decimals.append((decimal, [name for name in others if typed.schema[name].is_numeric()]))  # others stayed text
+        schema = typed.schema  # once: each call builds the types of all columns again
+        decimals.append((decimal, [name for name in others if schema[name].is_numeric()]))  # others stayed text
         return typed
 
     out = combine(parts, p, folder, prepare=detect_types, warn=ctx.warn)

@@ -63,8 +63,9 @@ def import_parquet(df, p, ctx):
 
 def _standard_types(data: pl.DataFrame, warn) -> pl.DataFrame:
     columns = [dtypes.normalize(data[name], exact=True) for name in data.columns]
-    for column in columns:  # whole numbers of 128 bits with more than 38 digits
-        if column.dtype == pl.String and data.schema[column.name].is_integer():
+    # data.schema once: each call builds the types of all columns again
+    for column, dtype in zip(columns, data.schema.values()):  # whole numbers of 128 bits with more than 38 digits
+        if dtype.is_integer() and column.dtype == pl.String:
             # a fixed name: Polars' Series methods would read a name like ^a.*$ as a pattern
             warn(_too_long(column.name, column[column.alias("text").str.len_chars().arg_max()]))
     return data.with_columns(columns)
