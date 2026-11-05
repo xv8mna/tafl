@@ -234,11 +234,11 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool, schema: pl.Schema
         return empty if op == "empty" else ~empty
 
     if op in ("contains", "not_contains", "starts", "ends"):
-        if dtype == pl.Duration:
-            raise ActionError(_no_typed_value(c.column))
-        text, needle = column.cast(pl.String), c.value
-        if dtype == pl.Binary and not dtypes.bytes_are_text(df[c.column]):  # as hex digits, as Join texts writes them
-            text = dtypes.text_expr(column, dtype)
+        needle = c.value
+        if dtype == pl.Binary and dtypes.bytes_are_text(df[c.column]):  # binary values that are all text: that text
+            text = column.cast(pl.String)
+        else:  # their text as Split column and Pivot write it: 17 (Polars: 17.0), 2025-12-31 08:30:00 in a zone's
+            text = dtypes.text_expr(column, dtype)  # local time (Polars: ...08:30:00.000000+01:00), 1d 2h 3m; bytes 0xFF00
         if not case_sensitive:
             text, needle = text.str.to_lowercase(), needle.lower()
         if op == "starts":

@@ -665,11 +665,61 @@ def test_sort_many_texts_like_excel(act):
     assert out["Nr"][:6].to_list() == [1, 2, 3, 11, 12, 13]  # equal values keep their order
 
 
-@pytest.mark.parametrize("operator", ["=", "!=", ">", ">=", "<", "<=", "in", "not_in", "contains", "not_contains", "starts", "ends"])
+@pytest.mark.parametrize("operator", ["=", "!=", ">", ">=", "<", "<=", "in", "not_in"])
 def test_a_column_of_time_spans_says_that_a_typed_value_cant_be_used(act, operator):
     conditions = [{"column": "V", "operator": operator, "value": "1"}]
     with pytest.raises(ActionError, match="Column 'V' holds time spans: a typed value can't be used with it"):
         act("rows.filter", pl.DataFrame({"V": [dt.timedelta(hours=1)]}), {"conditions": conditions})
+
+
+MOMENTS = [dt.datetime(2025, 12, 31, 8, 30), dt.datetime(2025, 12, 31, 9, 15, 0, 500_000), None]
+TEXTS = pl.DataFrame(
+    {
+        "Name": ["a", "b", "c"],
+        "When": MOMENTS,
+        "Berlin": pl.Series(MOMENTS).dt.replace_time_zone("Europe/Berlin"),
+        "Nanos": pl.Series(MOMENTS, dtype=pl.Datetime("ns")) + pl.Series([0, 1, 0], dtype=pl.Duration("ns")),
+        "Start": [dt.time(8, 30), dt.time(8, 30, 0, 500_000), None],
+        "Net": [17.0, 2.5, None],
+        "Big": [1e16, -0.0, None],
+        "Span": [dt.timedelta(days=1, hours=2, minutes=3), dt.timedelta(seconds=1.5), None],
+        "Exact": pl.Series([D("5.00"), D("1.25"), None], dtype=pl.Decimal(10, 2)),
+        "Day": [dt.date(2025, 12, 31), dt.date(2026, 1, 1), None],
+        "Paid": [True, False, None],
+    }
+)
+
+
+@pytest.mark.parametrize(
+    ("column", "operator", "value", "expected"),
+    [
+        ("When", "ends", "08:30:00", "a"),  # Polars wrote 2025-12-31 08:30:00.000000
+        ("When", "ends", "09:15:00.500", "b"),
+        ("When", "contains", "000000", ""),
+        ("Berlin", "ends", "08:30:00", "a"),  # the local time, without +01:00
+        ("Berlin", "contains", "+01", ""),
+        ("Nanos", "ends", ":00.500000001", "b"),
+        ("Nanos", "ends", "08:30:00", "a"),
+        ("Start", "ends", "08:30:00", "a"),  # Polars wrote 08:30:00 for 08:30:00.5 too
+        ("Start", "contains", "00.5", "b"),
+        ("Net", "ends", "17", "a"),  # not 17.0
+        ("Net", "contains", ".0", ""),
+        ("Big", "starts", "10000000000000000", "a"),  # not 1e16
+        ("Big", "contains", "e", ""),
+        ("Big", "not_contains", "-", "abc"),  # 0, not -0.0
+        ("Span", "contains", "2h", "a"),  # it stopped: a typed value couldn't be used with time spans
+        ("Span", "starts", "1D", "a"),
+        ("Span", "ends", "500ms", "b"),
+        ("Span", "not_contains", "d", "bc"),
+        ("Exact", "ends", ".00", "a"),  # as before
+        ("Day", "starts", "2025-12", "a"),
+        ("Paid", "starts", "TR", "a"),
+    ],
+)
+def test_contains_starts_and_ends_look_at_the_text_of_values_that_are_no_text(act, column, operator, value, expected):
+    """As Split column and Pivot write them (``dtypes.text_expr``): Polars' own text has other
+    digits, the offset of a time zone, and no fraction of a second for a time."""
+    assert names(flt(act, TEXTS, (column, operator, value))) == list(expected)
 
 
 def test_filling_a_column_of_time_spans_says_that_a_typed_value_cant_be_used(act):
