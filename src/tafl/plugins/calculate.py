@@ -149,7 +149,8 @@ def enumerate_rows(df, p, ctx):
 )
 def aggregate(df, p, ctx):
     """Groups rows with equal values in the group columns and calculates one result row per
-    group, like GROUP BY in SQL. Groups appear in the order they first occur."""
+    group, like GROUP BY in SQL. Groups appear in the order they first occur. A sum of only
+    empty values is empty, as in SQL (and in Pivot), also for a table without rows."""
     aggregations = []
     wide = []  # sums that might be beyond the type of their values: added up wider, checked below
     for calc in p.calculations:
@@ -160,10 +161,10 @@ def aggregate(df, p, ctx):
         as_hex = dtype == pl.Binary and calc.function == "join" and not dtypes.bytes_are_text(df[calc.column])
         aggregation = _aggregation(calc, p.separator, dtype, as_hex)
         if calc.function == "sum" and dtype in (pl.Int64, pl.UInt64, pl.Duration) and _sums_may_overflow(df[calc.column]):
-            aggregation = col(calc.column).to_physical().cast(pl.Int128).sum()
+            aggregation = _if_values(col(calc.column), col(calc.column).to_physical().cast(pl.Int128).sum())
             wide.append((_result_name(calc), calc.column, dtype))
         elif calc.function == "sum" and isinstance(dtype, pl.Decimal) and _sums_may_overflow(df[calc.column]):
-            aggregation = _decimal_parts(col(calc.column))
+            aggregation = _if_values(col(calc.column), _decimal_parts(col(calc.column)))
             wide.append((_result_name(calc), calc.column, dtype))
         aggregations.append(aggregation.alias(_result_name(calc)))
     names = [*p.group_by, *(a.meta.output_name() for a in aggregations)]
@@ -177,7 +178,7 @@ def aggregate(df, p, ctx):
     for name, column, dtype in wide:
         if isinstance(dtype, pl.Decimal):
             units = _decimal_units(out[name])
-            total = next((u for u in units if abs(u) >= _EXACT), None)
+            total = next((u for u in units if u is not None and abs(u) >= _EXACT), None)
             if total is not None:  # a wrong number would be worse
                 raise ActionError(
                     f"“{name}” is {Decimal(f'{total}E-{dtype.scale}'):,}{where}: too many digits for an exact decimal "
@@ -223,10 +224,18 @@ def _decimal_parts(column: pl.Expr) -> pl.Expr:
     return pl.struct(high.sum().alias("high"), (units - high * pl.lit(_PART, pl.Int128)).sum().alias("low"))
 
 
-def _decimal_units(parts: pl.Series) -> list[int]:
-    """The units of each sum from ``_decimal_parts`` (Python's whole numbers have no limit)."""
+def _decimal_units(parts: pl.Series) -> list[int | None]:
+    """The units of each sum from ``_decimal_parts`` (Python's whole numbers have no limit); None
+    for a sum of only empty values."""
     parts = parts.alias("parts")  # a fixed name, as in _sums_may_overflow: the result can be named like ^a.*$
-    return [high * _PART + low for high, low in zip(parts.struct.field("high"), parts.struct.field("low"), strict=True)]
+    pairs = zip(parts.struct.field("high"), parts.struct.field("low"), strict=True)
+    return [None if high is None else high * _PART + low for high, low in pairs]
+
+
+def _if_values(column: pl.Expr, result: pl.Expr) -> pl.Expr:
+    """``result``, or empty when ``column`` has only empty values (a sum of them is empty, as in
+    SQL, not 0 as Polars gives it)."""
+    return pl.when(column.count() > 0).then(result)
 
 
 def _from_units(units: pl.Expr, scale: int) -> pl.Expr:
@@ -240,7 +249,7 @@ def _check_type(calc, dtype: pl.DataType | None) -> None:
     if dtype is not None and calc.function in ("min", "max") and (dtype.is_nested() or dtype == pl.Object):
         label = _FUNCTION_LABELS[calc.function]
         raise ActionError(f"“{calc.column}” holds {dtypes.type_label(dtype)} values, which {label} can't compare")
-    if dtype is None or calc.function not in ("sum", "mean", "median"):
+    if dtype is None or dtype == pl.Null or calc.function not in ("sum", "mean", "median"):
         return
     if dtype.is_numeric() or dtype in (pl.Boolean, pl.Duration):
         return
@@ -253,9 +262,11 @@ def _check_type(calc, dtype: pl.DataType | None) -> None:
 
 def _aggregation(calc, separator: str, dtype: pl.DataType | None, as_hex: bool) -> pl.Expr:
     column = col(calc.column) if calc.column else None
+    if dtype == pl.Null and calc.function in ("sum", "mean", "median"):  # only empty values: an empty number, as in Pivot
+        column = column.cast(pl.Int64 if calc.function == "sum" else pl.Float64)
     match calc.function:
         case "sum":
-            return column.sum()
+            return _if_values(column, column.sum())
         case "mean":
             return column.mean()
         case "min":

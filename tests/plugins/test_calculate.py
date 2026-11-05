@@ -234,6 +234,46 @@ def test_aggregate_sums_beyond_the_digits_of_exact_decimals_stop_the_step(act):
     assert small.rows() == [(D("1.5"), 2)] and small.schema["Sum of V"] == pl.Decimal(38, 1)
 
 
+def test_a_sum_of_only_empty_values_is_empty(act):
+    """As in SQL and in Pivot, also for a table without rows. Before, Aggregate gave 0, and a column
+    of the type "empty" stopped Sum with "Sales is a empty column"."""
+    df = pl.DataFrame(
+        {
+            "G": ["a", "a", "b"],
+            "Int": pl.Series([None, None, 5], dtype=pl.Int64),
+            "Float": [None, None, 1.5],
+            "Exact": pl.Series([None, None, D("2.50")], dtype=pl.Decimal(10, 2)),
+            "Span": pl.Series([None, None, dt.timedelta(hours=1)], dtype=pl.Duration("us")),
+            "Flag": pl.Series([None, None, True], dtype=pl.Boolean),
+        }
+    )
+    columns = ["Int", "Float", "Exact", "Span", "Flag"]
+    sums = {"calculations": [*({"function": "sum", "column": c, "name": c} for c in columns), {"function": "count", "column": "Int"}]}
+    out = act("calc.aggregate", df, {"group_by": ["G"], **sums})
+    assert out.rows() == [("a", None, None, None, None, None, 0), ("b", 5, 1.5, D("2.50"), dt.timedelta(hours=1), 1, 1)]
+    assert act("calc.aggregate", df.head(2), sums).rows() == [(None, None, None, None, None, 0)]
+    assert act("calc.aggregate", df.clear(), sums).rows() == [(None, None, None, None, None, 0)]  # no rows
+    assert act("calc.aggregate", df.clear(), {"group_by": ["G"], **sums}).height == 0
+
+    big = 2**62  # sums that are added up wider, then checked
+    wide = pl.DataFrame({"G": ["a", "a", "b", "b"], "V": [big, -big + 5, None, None]})
+    assert act("calc.aggregate", wide, {"group_by": ["G"], **sums_of("V")}).rows() == [("a", 5), ("b", None)]
+    exact = pl.Decimal(38, 2)
+    long = pl.Series([D("9" * 36 + ".25"), D("-" + "9" * 36 + ".18"), None, None], dtype=exact)
+    out = act("calc.aggregate", wide.with_columns(V=long), {"group_by": ["G"], **sums_of("V")})
+    assert out.rows() == [("a", D("0.07")), ("b", None)] and out.schema["V"] == exact
+
+    empty = pl.DataFrame({"Sales": pl.Series([None, None], dtype=pl.Null)})
+    calculations = [{"function": f, "column": "Sales", "name": f} for f in ("sum", "mean", "median")]
+    out = act("calc.aggregate", empty, {"calculations": calculations})
+    assert out.rows() == [(None, None, None)]
+    assert out.schema == pl.Schema({"sum": pl.Int64, "mean": pl.Float64, "median": pl.Float64})
+
+
+def sums_of(column: str) -> dict:
+    return {"calculations": [{"function": "sum", "column": column, "name": column}]}
+
+
 def test_aggregate_minimum_and_maximum_of_lists_stop_the_step(act):
     """Polars can't compare lists or records: it gave empty values (as Pivot does now)."""
     df = pl.DataFrame({"K": ["a", "a", "b"], "L": [[3, 1], [2], [5]], "S": [{"a": 1}, {"a": 2}, {"a": 3}]})
