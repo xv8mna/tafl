@@ -160,6 +160,10 @@ def test_numbers_that_excel_rounds_are_counted(act, tmp_path, existing):
     ctx = StubContext(mode="run")
     act("excel.export", df.select("Id", "Small", "Ratio").with_columns(pl.col("Id").cast(pl.String)), {"file": str(path), "sheet": "Numbers", "existing": existing}, ctx)
     assert not ctx.warnings and openpyxl.load_workbook(path)["Numbers"]["A2"].value == "9007199254740993"
+    six = pl.DataFrame({f"N{i}": [10**17 + 1] for i in range(6)})
+    ctx = StubContext(mode="run")
+    act("excel.export", six, {"file": str(tmp_path / "six.xlsx")}, ctx)
+    assert "N4 has 1 (e.g. 100000000000000001) and 1 more column has some. To keep" in ctx.warnings[0]
     ctx = StubContext(mode="run")
     act("excel.export", df.slice(1, 1).select("Id"), {"file": str(path), "sheet": "Numbers"}, ctx)
     assert ctx.warnings == [

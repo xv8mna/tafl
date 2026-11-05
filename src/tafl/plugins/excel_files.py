@@ -391,7 +391,7 @@ def _rounded_message(rounded: dict[str, tuple[int, object]]) -> str:
     parts = [f"{name} has {count:,} (e.g. {example})" for name, (count, example) in rounded.items()]
     if len(parts) > 5:
         more = len(parts) - 5
-        parts = [*parts[:5], f"{more:,} more column{'s' if more > 1 else ''} have some"]
+        parts = [*parts[:5], f"{more:,} more column{'s have' if more > 1 else ' has'} some"]
     listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
     these = "this column" if len(rounded) == 1 else "these columns"
     return (
