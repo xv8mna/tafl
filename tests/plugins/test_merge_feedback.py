@@ -212,6 +212,31 @@ def test_key_values_of_other_types(act, this, other, shown):
 
 
 @pytest.mark.parametrize(
+    ("this", "shown"),
+    [
+        pytest.param(pl.Series([1.5, 1e16]), "10000000000000000", id="decimal numbers"),  # before: 1e+16
+        pytest.param(pl.Series([1.5, 17.0]), "17", id="whole decimal number"),  # before: 17.0
+        pytest.param(pl.Series([True, False]), "false", id="true/false"),  # before: False
+        pytest.param(pl.Series([b"a", b"\x00\xff"]), "0x00FF", id="binary"),  # before: b'\x00\xff'
+        pytest.param(pl.Series([datetime(2025, 1, 1, 1).time(), datetime(2025, 1, 1, 8, 30, 0, 500000).time()]), "08:30:00.500", id="time"),
+        pytest.param(pl.Series([datetime(2025, 1, 2) - datetime(2025, 1, 1), datetime(2025, 1, 2, 2) - datetime(2025, 1, 1)]), "1d 2h", id="time span"),
+        pytest.param(
+            pl.Series([datetime(2025, 1, 1), datetime(2025, 7, 1, 9, 30)]).dt.replace_time_zone("Europe/Berlin"),
+            "2025-07-01 09:30:00",  # before: 2025-07-01 09:30:00+02:00
+            id="time zone",
+        ),
+        pytest.param(pl.Series([[1], [2, 3]]), "[2, 3]", id="lists"),  # they have no such text: as before
+    ],
+)
+def test_keys_without_a_match_are_shown_as_the_grid_shows_them(act, this, shown):
+    df, right = pl.DataFrame({"Key": this}), pl.DataFrame({"Key": this.head(1), "Name": ["x"]})
+    assert info(act, df, right, "lookup") == f"1 of 2 rows matched, 1 without a match: {shown}"
+    two = info(act, df.with_columns(Other=pl.lit("o")), right.with_columns(Other=pl.lit("o")), "lookup", match=[
+        {"column": "Key", "other_column": "Key"}, {"column": "Other", "other_column": "Other"}])
+    assert two == f"1 of 2 rows matched, 1 without a match: ({shown}, o)"
+
+
+@pytest.mark.parametrize(
     ("how", "expected"),
     [
         ("lookup", "None of the 200 rows matched: the other table has no rows"),

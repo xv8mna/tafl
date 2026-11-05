@@ -468,7 +468,7 @@ def _sample(keys: pl.DataFrame) -> str:
     """Up to three distinct values of ``keys`` (rows without a match), in row order, and how many
     other values there are: "09999, 01234, 05555 and 17 more"."""
     first = keys.head(_SAMPLE_ROWS).unique(maintain_order=True)
-    rows = first.head(3).rows()
+    rows = first.head(3)
     if keys.height <= _SAMPLE_ROWS:
         distinct = first.height
     else:
@@ -476,12 +476,23 @@ def _sample(keys: pl.DataFrame) -> str:
         # two keys with one 64-bit hash are too rare to matter.
         hashes = keys.hash_rows()
         distinct = hashes.n_unique()
-        if len(rows) < 3 and distinct > len(rows):  # the first rows have one or two keys (sorted by key)
-            rows = keys[hashes.is_first_distinct().arg_true().head(3).to_list()].rows()
-    shown = [_key_text(row) for row in rows]
+        if rows.height < 3 and distinct > rows.height:  # the first rows have one or two keys (sorted by key)
+            rows = keys[hashes.is_first_distinct().arg_true().head(3).to_list()]
+    shown = [_key_text(row) for row in _as_shown(rows).rows()]
     if distinct > len(shown):
         return f"{', '.join(shown)} and {distinct - len(shown):,} more"
     return f"{', '.join(shown[:-1])} and {shown[-1]}" if len(shown) > 1 else shown[0]
+
+
+def _as_shown(keys: pl.DataFrame) -> pl.DataFrame:
+    """The key values as the grid shows them (see ``dtypes.text_expr``): 17 and 10000000000000000
+    for decimal numbers, true, 0xFF00, 08:30:00.500, 1d 2h 3m, a time zone's local time. Python's
+    text was 17.0, 1e+16, True, b'\\xff\\x00', ... Lists and records, which have no such text, stay
+    as they are."""
+    return keys.select(
+        col(name) if dtype.is_nested() or dtype == pl.Object else dtypes.text_expr(col(name), dtype).alias(name)
+        for name, dtype in keys.schema.items()
+    )
 
 
 def _key_text(values: tuple) -> str:
