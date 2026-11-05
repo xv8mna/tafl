@@ -277,17 +277,19 @@ def _compared_keys(left, right, left_on, right_on, ctx):
         else:
             target = pl.String
         left_hex, right_hex = _as_hex(left[left_name]), _as_hex(right[right_name])
+        left_label, right_label = dtypes.type_label(left_type), dtypes.type_label(right_type)
+        keys = f"'{left_name}' ({left_label}) and '{right_name}' ({right_label})"
         try:
             left = left.with_columns(_cast_key(col(left_name), left_type, target, left_hex).alias(key))
             right = right.with_columns(_cast_key(col(right_name), right_type, target, right_hex).alias(key))
         except pl.exceptions.InvalidOperationError:  # Polars has no such cast: a duration as text, a time as a date-time
             raise ActionError(
-                f"'{left_name}' ({left_type}) and '{right_name}' ({right_type}) can't be compared: choose other "
-                f"key columns, or first make one of them text with a formula such as CAST([{left_name}] AS VARCHAR)"
+                f"{keys} can't be compared: choose other key columns, or first make one of them text with a "
+                f"formula such as CAST([{left_name}] AS VARCHAR)"
             ) from None
-        if target == pl.String:
+        if target == pl.String and not left_label == right_label == "text":  # categories are text, as the grid shows them
             how = " (the binary values as hex digits, 0xFF00)" if left_hex or right_hex else ""
-            ctx.warn(f"'{left_name}' ({left_type}) and '{right_name}' ({right_type}) are compared as text{how}")
+            ctx.warn(f"{keys} are compared as text{how}")
         left_keys[index] = right_keys[index] = key
         compared.append((left_name, right_name, key))
     return left, right, left_keys, right_keys, compared
@@ -381,8 +383,8 @@ def _no_common_type(left: pl.DataFrame, name: str, right: pl.DataFrame, other_na
         pl.Duration: ": a time span in nanoseconds holds up to 292 years",
     }.get(type(compared), "")
     return (
-        f"Full join: the keys '{name}' ({left.schema[name]}) and '{other_name}' ({right.schema[other_name]}) "
-        f"don't fit in one column{why}"
+        f"Full join: the keys '{name}' ({dtypes.type_label(left.schema[name])}) and '{other_name}' "
+        f"({dtypes.type_label(right.schema[other_name])}) don't fit in one column{why}"
     )
 
 

@@ -33,7 +33,7 @@ def test_lookup_keeps_rows_and_takes_first_match(act, ctx):
     assert out.columns == ["Order", "Customer", "City", "Name"]
     assert out["Name"].to_list() == ["Anna", "Ben", None, None]
     assert out.schema["Customer"] == pl.Int64  # compared as text, but the column keeps its type
-    assert ctx.warnings == ["'Customer' (Int64) and 'CustNo' (String) are compared as text"]
+    assert ctx.warnings == ["'Customer' (integer) and 'CustNo' (text) are compared as text"]
 
 
 def test_left_join_uses_all_matches(act, ctx):
@@ -306,7 +306,7 @@ def test_keys_too_long_for_one_column_match_nothing(act):
     params = {"other": "other", "match": [{"column": "Amount", "other_column": "ID"}]}
     assert act("table.merge", df, {**params, "how": "left"}, ctx)["L"].to_list() == ["one", None]
     assert act("table.merge", df, {**params, "how": "inner"}, ctx)["L"].to_list() == ["one"]
-    with pytest.raises(ActionError, match=r"^Full join: the keys 'Amount' \(.*\) and 'ID' \(.*\) don't fit in one"):
+    with pytest.raises(ActionError, match=r"^Full join: the keys 'Amount' \(number\) and 'ID' \(number\) don't fit in one"):
         act("table.merge", df, {**params, "how": "full"}, ctx)
     swapped = StubContext(tables={"other": df.rename({"Amount": "ID"}).with_columns(L=pl.lit("x"))})
     long = pl.DataFrame({"Amount": _ids(["9" * 38, "1"], pl.Decimal(38, 0))})
@@ -379,7 +379,8 @@ def test_full_join_of_dates_times_and_true_false_with_text_keys(act, dtype, this
     ctx = StubContext(tables={"other": pl.DataFrame({"K": texts, "N": ["x", "y"]})})
     out = act("table.merge", df, params, ctx)
     assert out.schema == {"A": dtype, "N": pl.String} and out.rows() == [(values[0], "x"), (values[1], "y")]
-    assert ctx.warnings == [f"'A' ({dtype}) and 'K' (String) are compared as text"]
+    word = {pl.Date: "date", pl.Time: "time", pl.Boolean: "true/false"}.get(dtype, "date-time")
+    assert ctx.warnings == [f"'A' ({word}) and 'K' (text) are compared as text"]
     assert ("info", "The row matched; 1 row of the other table without a match was added") in ctx.messages
     other = StubContext(tables={"other": pl.DataFrame({"K": [texts[0], "x"], "N": ["x", "y"]})})
     out = act("table.merge", df, params, other)  # "x" is no value of this type: the keys become text
@@ -402,7 +403,7 @@ def test_binary_keys_with_bytes_that_are_no_text_are_compared_with_text_as_hex_d
     params = {"other": "other", "match": [{"column": "V", "other_column": "K"}], "how": how}
     ctx = StubContext(tables={"other": pl.DataFrame({"K": ["abc", "0x00FF", "zz"], "N": ["x", "y", "z"]})})
     assert act("table.merge", pl.DataFrame({"V": [b"abc", b"\x00\xff", None]}), params, ctx).rows() == expected
-    assert ctx.warnings == ["'V' (Binary) and 'K' (String) are compared as text (the binary values as hex digits, 0xFF00)"]
+    assert ctx.warnings == ["'V' (binary) and 'K' (text) are compared as text (the binary values as hex digits, 0xFF00)"]
     swapped = {**params, "match": [{"column": "K", "other_column": "V"}], "how": "lookup"}
     other = StubContext(tables={"other": pl.DataFrame({"V": [b"abc", b"\x00\xff"], "N": ["a", "b"]})})
     assert act("table.merge", ctx.tables["other"], swapped, other)["N (2)"].to_list() == [None, "b", None]
@@ -417,11 +418,11 @@ def test_keys_that_cant_be_compared_stop_with_a_message(act, how):
     ctx = StubContext(tables={"other": pl.DataFrame({"K": ["1 day"], "T": [dt.date(2024, 1, 31)]})})
     durations = pl.DataFrame({"A": [dt.timedelta(days=1)]})
     message = r"can't be compared: choose other key columns, or first make one of them text with a formula such as CAST\(\[A\] AS VARCHAR\)$"
-    with pytest.raises(ActionError, match=r"^'A' \(Duration\(time_unit='us'\)\) and 'K' \(String\) " + message):
+    with pytest.raises(ActionError, match=r"^'A' \(duration\) and 'K' \(text\) " + message):  # in plain words
         act("table.merge", durations, params, ctx)
     assert ctx.warnings == []  # not "compared as text"
     times = pl.DataFrame({"A": [dt.time(8)]})
-    with pytest.raises(ActionError, match=r"^'A' \(Time\) and 'T' \(Date\) can't be compared"):
+    with pytest.raises(ActionError, match=r"^'A' \(time\) and 'T' \(date\) can't be compared"):
         act("table.merge", times, {**params, "match": [{"column": "A", "other_column": "T"}]}, ctx)
 
 
@@ -456,7 +457,7 @@ def test_decimal_number_keys_find_the_text_that_the_grid_shows(act, how, name):
     other = pl.DataFrame({"K": AS_SHOWN, "N": ["a", "b", "c", "d"]})
     ctx = StubContext(tables={"other": other})
     out = act("table.merge", this, params, ctx)
-    assert ctx.warnings == [f"'{name}' (Float64) and 'K' (String) are compared as text"]
+    assert ctx.warnings == [f"'{name}' (number) and 'K' (text) are compared as text"]
     expected = {
         "lookup": [(17.0, 1, "a"), (2.5, 2, "b"), (1e16, 3, "c"), (-0.0, 4, "d"), (None, 5, None)],
         "inner": [(17.0, 1, "a"), (2.5, 2, "b"), (1e16, 3, "c"), (-0.0, 4, "d")],
@@ -566,14 +567,19 @@ def test_objects_of_a_plugin_cant_be_keys(act, how):
 
 @pytest.mark.parametrize("how", ["lookup", "full"])
 def test_categories_and_bytes_that_are_text_are_compared_as_their_text(act, how):
-    """As before: a category is its text, and bytes that are all text are that text."""
+    """As before: a category is its text, and bytes that are all text are that text. Categories
+    are text in the grid, so the step doesn't warn about them (before: "'A' (Categorical) and 'K'
+    (String) are compared as text")."""
     params = {"other": "other", "match": [{"column": "A", "other_column": "K"}], "how": how}
     other = StubContext(tables={"other": pl.DataFrame({"K": ["b", "c"], "N": ["x", "y"]})})
-    categories = pl.DataFrame({"A": pl.Series(["a", "b"], dtype=pl.Categorical)})
-    out = act("table.merge", categories, params, other)
-    assert out.schema["A"] == pl.Categorical and out.rows() == [("a", None), ("b", "x"), *([("c", "y")] if how == "full" else [])]
+    for dtype in (pl.Categorical, pl.Enum(["a", "b", "c"])):
+        categories = pl.DataFrame({"A": pl.Series(["a", "b"], dtype=dtype)})
+        out = act("table.merge", categories, params, other)
+        assert out.schema["A"] == dtype and out.rows() == [("a", None), ("b", "x"), *([("c", "y")] if how == "full" else [])]
+    assert other.warnings == []
     out = act("table.merge", pl.DataFrame({"A": [b"a", b"b"]}), params, other)
     assert out.schema["A"] == pl.Binary and out.rows() == [(b"a", None), (b"b", "x"), *([(b"c", "y")] if how == "full" else [])]
+    assert other.warnings == ["'A' (binary) and 'K' (text) are compared as text"]
 
 
 @pytest.mark.parametrize("how", ["lookup", "full"])

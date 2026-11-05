@@ -187,7 +187,7 @@ def test_keys_compared_as_text_warn_and_inform(act):
     out, messages = merge(act, df, other, "left", match=[{"column": "Customer", "other_column": "CustNo"}])
     assert out["Name"].to_list() == ["Anna", "Ben", "Ben B.", None, None]
     assert messages == [
-        ("warning", "'Customer' (Int64) and 'CustNo' (String) are compared as text"),
+        ("warning", "'Customer' (integer) and 'CustNo' (text) are compared as text"),
         ("info", "2 of 4 rows matched, 2 without a match: 3 and (empty)"),
     ]
 
