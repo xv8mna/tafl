@@ -354,8 +354,10 @@ class Session(QObject):
     def table_status(self, table_id: str) -> str:
         """The table's status: "ok", "error", "incomplete" (a step is not filled in yet),
         "waiting" (it uses a table that is incomplete), "disabled" (turned off), "skipped"
-        (uses a table that is off) or "pending" (not calculated yet)."""
-        table = self.project.find_table(table_id)
+        (uses a table that is off) or "pending" (not calculated yet). A table that is gone (the map
+        shows its box a moment longer) has the status of its result, also when another table has
+        its id as a name."""
+        table = self.project.find_table(table_id, by_name=False)
         if table is not None and not table.enabled:
             return "disabled"
         result = self.results.get(table_id)
@@ -583,7 +585,8 @@ class Session(QObject):
         changed = [t for t, r in results.items() if _signature(self.results.get(t)) != _signature(r)]
         self._update_results(results)
         if pending:  # checked again after the selected table, which the timer calculates first
-            self._recheck |= {t for t in results if self.project.find_table(t) is not None}
+            # (not a table that is gone, also when another table has its id as a name)
+            self._recheck |= {t for t in results if self.project.find_table(t, by_name=False) is not None}
         if scope == "table" and changed:  # the tables that use a changed table show old results now
             self._recheck |= (self.users(changed) & set(self.results)) - set(results)
         self.results_changed.emit()

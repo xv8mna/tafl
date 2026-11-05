@@ -254,6 +254,40 @@ def test_the_status_of_a_table_that_is_gone_is_no_error_box(gated, settle, qtbot
     settle(session)
 
 
+def test_the_id_of_a_deleted_table_finds_no_table_named_like_it(gated, settle, qtbot, tmp_path):
+    """Reload data checks the other tables after the selected one; the check of t5 waits, and t5 is
+    deleted meanwhile. The check reports during the timer of the delete, with a result of t5. The
+    table named "t5" (a project file can have that name; it is off here) is another table: t5 is
+    not checked again, and its box on the map, there a moment longer, shows its own status."""
+    session, actions = gated, gated.registry.actions
+    project = Project()
+    tables = [project.add_table(name) for name in ("One", "Two", "Three", "Four", "Gone", "Named")]
+    for table in tables:
+        project.add_step(table, actions["csv.import"], {"file": "a.csv"})
+    gone, named = tables[4], tables[5]
+    project.add_step(gone, actions["test.gate"], {"fail": "no"})
+    named.name, named.enabled = "t5", False
+    assert (gone.id, named.id) == ("t5", "t6")
+    session.open_project(project.save(tmp_path / "p.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    assert session.table_id == "t1" and session.table_status("t5") == "ok"
+    session._timer.setInterval(2_000)  # the report surely comes during the timer
+    HOLD.set()
+    session.reload_sources()
+    qtbot.waitUntil(ENTERED.is_set, timeout=10_000)  # the check of t5 waits in the gate
+    session.delete_tables(["t5"])
+    with qtbot.waitSignal(session.results_changed, timeout=10_000):
+        GO.set()
+    assert session._timer.isActive() and "t5" in session.results  # the report came during the timer
+    assert session.project.find_table("t5") is session.project.table("t6")  # by its name
+    assert "t5" not in session._recheck
+    assert session.table_status("t5") == "ok"  # not "disabled", the status of the table named "t5"
+    HOLD.clear()
+    settle(session)
+
+
 def test_the_check_of_the_selected_table_that_reports_during_the_timer_of_a_redo_leaves_no_old_status(
     gated, settle, qtbot, tmp_path
 ):
