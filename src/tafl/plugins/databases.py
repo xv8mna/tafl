@@ -318,6 +318,8 @@ class SqlServer(Connector):
             if _BIGINT[0] <= low and high <= _BIGINT[1]:
                 return "BIGINT"
             # beyond a bigint (UInt64 from Parquet, 128 bits from a plugin): a decimal holds them exactly
+            if len(str(max(abs(low), abs(high)))) > _MOST_DIGITS:  # beyond every decimal: before the table is made
+                raise ActionError(_beyond_decimals(series.name, high if abs(high) >= abs(low) else low))
             return "DECIMAL(20, 0)" if dtype == pl.UInt64 else "DECIMAL(38, 0)"
         if dtype.is_float():
             return "FLOAT"
@@ -1455,8 +1457,11 @@ def _fit_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str,
             changes.append(column.cast(pl.String).alias(source))  # the digits of each number
             continue
         if base in ("decimal", "numeric"):
-            if max(len(str(abs(low))), len(str(abs(high)))) <= size - scale:
+            digits = max(len(str(abs(low))), len(str(abs(high))))
+            if digits <= size - scale:
                 continue  # the column holds them exactly
+            if digits > _MOST_DIGITS:  # no decimal is wide enough
+                raise ActionError(f"The column {target} of {table} ({kind}): " + _beyond_decimals(source, example))
             raise ActionError(
                 f"The column {target} of {table} holds numbers of up to {size - scale} digits before the decimal point "
                 f"({kind}), but {source} has longer ones (e.g. {example}). Make the column wider in the database, e.g. "
@@ -1476,6 +1481,15 @@ def _fit_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str,
 
 
 _TEXT_KINDS = ("char", "varchar", "nchar", "nvarchar", "text", "ntext")
+_MOST_DIGITS = 38  # of a SQL Server decimal
+
+
+def _beyond_decimals(source: str, example: int) -> str:
+    """The message for whole numbers of more digits than any SQL Server decimal holds."""
+    return (
+        f"SQL Server's decimals hold at most {_MOST_DIGITS} digits, and {source} has whole numbers with more (e.g. "
+        f"{example}). Keep them in a text column: change {source} to text before this step (Change type / format)."
+    )
 # What SQL Server's columns of whole numbers hold (the driver passes only these to them, also to bit)
 _WHOLE_RANGES = {"bit": (0, 1), "tinyint": (0, 255), "smallint": (-(2**15), 2**15 - 1), "int": (-(2**31), 2**31 - 1), "bigint": _BIGINT}
 

@@ -807,6 +807,38 @@ def test_sqlserver_new_table_holds_whole_numbers_beyond_a_bigint(registry):
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_whole_numbers_of_more_than_38_digits(registry):
+    """A new table got decimal(38, 0) for them, and the export then said "Make the column wider …,
+    e.g. decimal(38, 0)", although 38 digits are the most (the table was rolled back). It stops
+    before it makes the table, and says to keep them as text; so for such a column of a table."""
+    ctx, name = _sqlserver()
+    more = r"SQL Server's decimals hold at most 38 digits, and Id has whole numbers with more \(e\.g\. {}\)\. Keep them in a text column"
+
+    def export(df):
+        registry.actions["db.export"](df, {"connection": "server", "table": name}, ctx)
+
+    try:
+        for values, dtype, example in (([2**127 - 1, 5], pl.Int128, 2**127 - 1), ([-(2**127), 5], pl.Int128, -(2**127)), ([2**128 - 1], pl.UInt128, 2**128 - 1)):
+            with pytest.raises(ActionError, match="^" + more.format(example)):
+                export(pl.DataFrame({"Id": pl.Series(values, dtype=dtype)}))
+            with ctx.database("server") as db:
+                assert db.read(f"SELECT OBJECT_ID('{name}') AS id")["id"][0] is None  # no table made
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (Id decimal(38, 0))")
+        with pytest.raises(ActionError, match=rf"^The column Id of {name} \(decimal\(38,0\)\): " + more.format(2**127 - 1)):
+            export(pl.DataFrame({"Id": pl.Series([2**127 - 1], dtype=pl.Int128)}))
+        export(pl.DataFrame({"Id": pl.Series([10**38 - 1], dtype=pl.Int128)}))  # 38 digits fit
+        with ctx.database("server") as db:
+            db.execute(f"DROP TABLE {name}")
+        export(pl.DataFrame({"Id": [str(2**127 - 1)]}))  # as text, as the message says: a column of text
+        with ctx.database("server") as db:
+            assert db.read(f"SELECT Id FROM {name}")["Id"].to_list() == [str(2**127 - 1)]
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_whole_numbers_beyond_a_bigint_into_other_columns(registry):
     """The driver's words were the message ("int too big to convert", or a text about the TDS
     protocol for a decimal(19, 0)). A text column gets the digits, a decimal column with enough
