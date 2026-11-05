@@ -903,6 +903,22 @@ def test_exact_decimals_with_other_decimal_places_are_compared():
     assert expressions.evaluate(df, "CAST([Big] AS DOUBLE) = [Fine]").to_list() == [False, True]
 
 
+def test_a_sum_beyond_38_digits_stops():
+    """DuckDB adds up exact decimals without checking their 38 digits: SUM() OVER () of 6×10^37
+    twice gave a text of 39 digits, while [v] + [v] stopped. Whole numbers of 128 bits keep their
+    39 digits as text, as before."""
+    needs = "the result needs more than 38 digits, decimal places included"
+    whole = pl.DataFrame({"v": pl.Series([Decimal(6 * 10**37)] * 2, dtype=pl.Decimal(38, 0))})
+    scaled = pl.DataFrame({"v": pl.Series([Decimal("6000000000000000000.5")] * 2, dtype=pl.Decimal(38, 19))})
+    for df in (whole, scaled):
+        for formula in ("SUM([v]) OVER ()", "[v] + [v]", "LIST_SUM(LIST_VALUE([v], [v]))"):
+            with pytest.raises(ActionError, match=needs):
+                expressions.evaluate(df, formula)
+    assert expressions.evaluate(whole, "SUM([v]) OVER () - [v]").to_list() == [Decimal(6 * 10**37)] * 2
+    wide = pl.DataFrame({"h": pl.Series([6 * 10**37] * 2, dtype=pl.Int128)})
+    assert expressions.evaluate(wide, "SUM([h]) OVER ()").to_list() == [str(12 * 10**37)] * 2
+
+
 _WIDE_UNSIGNED = """
 from decimal import Decimal
 import polars as pl

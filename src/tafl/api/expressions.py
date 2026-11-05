@@ -429,7 +429,10 @@ def _calculate(
                 pass
         if table or view:
             _clear(con, _VIEW)
-    return result.to_series(0)
+    values = result.to_series(0)
+    if result_type.startswith("DECIMAL(") and _beyond_its_digits(values, result_type):
+        raise ActionError(f"Formula error: {_TOO_LONG}\nFormula: {formula}")
+    return values
 
 
 def _make_input(con: duckdb.DuckDBPyConnection, columns: str, *, table: bool, empty: bool = False) -> None:
@@ -534,6 +537,17 @@ def _uses(tree: object, name: str | None, alike: Collection[str] = ()) -> bool:
                 return True
             nodes += node.values()
     return False
+
+
+def _beyond_its_digits(values: pl.Series, result_type: str) -> bool:
+    """Whether an exact decimal has more digits than its type: DuckDB's SUM adds them up as 128-bit
+    numbers without checking, so 6×10^37 twice gives 39 digits."""
+    if not isinstance(values.dtype, pl.Decimal):
+        return False
+    digits = int(re.match(r"DECIMAL\((\d+)", result_type).group(1))
+    units = values.alias("value").to_physical()  # Polars' Series methods would read a name like ^a.*$ as a pattern
+    high, low = (pl.Series([limit], dtype=pl.Int128) for limit in (10**digits, -(10**digits)))
+    return bool(((units >= high) | (units <= low)).any())
 
 
 def add_columns(df: pl.DataFrame, columns: Sequence[tuple[str, str]]) -> pl.DataFrame:
