@@ -510,6 +510,16 @@ def test_export_keeps_the_fractions_of_a_second_of_times(act, tmp_path, datetime
     assert lines[1:] == [";".join(row) for row in df.select(dtypes.text_expr(pl.all(), pl.Time)).fill_null("").rows()]
 
 
+def test_export_writes_time_spans_as_the_grid_shows_them(act, tmp_path):
+    """A time-span column stopped the export: "datatype duration[μs] cannot be written to CSV"."""
+    span = pl.Series("Span", [dt.timedelta(days=1, hours=2, minutes=3), dt.timedelta(microseconds=1500), None, dt.timedelta(seconds=-5)])
+    exact = pl.Series("Exact", [1, None, None, 2_000_000_000], dtype=pl.Duration("ns"))
+    path = tmp_path / "spans.csv"
+    act("csv.export", pl.DataFrame([span, exact]), {"file": str(path)})
+    assert path.read_text(encoding="utf-8-sig").splitlines() == ["Span;Exact", "1d 2h 3m;1ns", "1500µs;", ";", "-5s;2s"]
+    assert pl.select(dtypes.text_expr(pl.lit(span), pl.Duration)).to_series().to_list() == ["1d 2h 3m", "1500µs", None, "-5s"]
+
+
 def test_export_writes_decimals_with_15_digits_as_excel_does(act, tmp_path):
     values = [0.37 * 3, 1.1 * 3, 0.1, 1 / 3, 1234.5, -0.25, 2.0, 1e-7, 1.5e20, 0.1 + 0.2, -2 / 3]
     values += [225179981368524.5, 1e-20 / 3]

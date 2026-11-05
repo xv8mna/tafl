@@ -256,8 +256,8 @@ def export_csv(df, p, ctx):
     Decimal numbers are written with at most 15 significant digits, as Excel shows and saves
     them: 0.37 * 3 is 1,11 (not 1,1099999999999999). Whole numbers and exact decimals keep all
     their digits. Times keep their fractions of a second (08:30:00.500). Binary values are
-    written as hex text (0x0102FF); infinite and not-a-number values as empty, as in Excel. A
-    table without columns gives an empty file.
+    written as hex text (0x0102FF), time spans as the grid shows them (1d 2h 3m); infinite and
+    not-a-number values as empty, as in Excel. A table without columns gives an empty file.
     """
     path = ctx.resolve_path(p.file)
     separator = _separator(p.delimiter)
@@ -280,6 +280,7 @@ def export_csv(df, p, ctx):
     data = df.with_columns(
         *(_fifteen_digits(df[c]) for c, t in df.schema.items() if t.is_float()),
         *((pl.lit("0x") + col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
+        *(dtypes.text_expr(col(c), t).alias(c) for c, t in df.schema.items() if t == pl.Duration),
     )
     if df.width == 0:  # rows without columns (Polars can't write them): an empty file, as for no rows
         data = pl.DataFrame()
