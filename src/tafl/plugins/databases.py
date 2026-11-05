@@ -1458,6 +1458,10 @@ def _fit_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str,
                 f"SQLite stores whole numbers {_BIGINT_RANGE}, and {source} has others (e.g. {example}). Change {source} "
                 "to text before this step (Change type / format): a TEXT column keeps all their digits."
             )
+        if base not in _TEXT_KINDS and max(len(str(abs(low))), len(str(abs(high)))) > _MOST_DIGITS:
+            # beyond every decimal: whatever the column's type, only a text column takes them
+            longest = low if len(str(abs(low))) >= len(str(abs(high))) else high
+            raise ActionError(f"The column {target} of {table} ({kind}): " + _beyond_decimals(source, longest, existing=True))
         if whole:
             held = "0 and 1" if base == "bit" else f"whole numbers from {least:,} to {most:,}"
             raise ActionError(
@@ -1472,8 +1476,6 @@ def _fit_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str,
             if digits <= size - scale:
                 continue  # the column holds them exactly
             example = low if len(str(abs(low))) >= len(str(abs(high))) else high  # the one with the most digits
-            if digits > _MOST_DIGITS:  # no decimal is wide enough
-                raise ActionError(f"The column {target} of {table} ({kind}): " + _beyond_decimals(source, example, existing=True))
             raise ActionError(
                 f"The column {target} of {table} holds numbers of up to {size - scale} digits before the decimal point "
                 f"({kind}), but {source} has longer ones (e.g. {example}). Make the column wider in the database, e.g. "

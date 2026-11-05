@@ -938,6 +938,35 @@ def test_sqlserver_decimal_columns_name_the_longest_number_and_a_way_that_works(
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_every_column_type_gets_the_text_advice_beyond_38_digits(registry):
+    """An int, bigint, float, real or money column was told "e.g. to decimal(38, 0)" for numbers of
+    more than 38 digits, which failed on the next run. Every type gets the advice of a text column,
+    and that works."""
+    ctx, name = _sqlserver()
+    data = pl.DataFrame({"Id": pl.Series([-(10**38), 10**19], dtype=pl.Int128)})
+    try:
+        for kind in ("int", "bigint", "float", "real", "money", "decimal(10,0)"):
+            with ctx.database("server") as db:
+                db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                db.execute(f"CREATE TABLE {name} (Id {kind})")
+            message = (
+                rf"^The column Id of {name} \({re.escape(kind)}\): SQL Server's decimals hold at most 38 digits, and Id has whole "
+                r"numbers with more \(e\.g\. -100000000000000000000000000000000000000\)\. Keep them in a text column: change the "
+                r"column's type in the database to text, e\.g\. varchar\(40\), and Id to text before this step"
+            )
+            with pytest.raises(ActionError, match=message):
+                registry.actions["db.export"](data, {"connection": "server", "table": name}, ctx)
+            with ctx.database("server") as db:
+                db.execute(f"ALTER TABLE {name} ALTER COLUMN Id varchar(40)")  # as the message says
+            registry.actions["db.export"](data, {"connection": "server", "table": name}, ctx)
+            with ctx.database("server") as db:
+                assert sorted(db.read(f"SELECT Id FROM {name}")["Id"].to_list()) == sorted([str(-(10**38)), str(10**19)]), kind
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_whole_numbers_beyond_a_bigint_into_other_columns(registry):
     """The driver's words were the message ("int too big to convert", or a text about the TDS
     protocol for a decimal(19, 0)). A text column gets the digits, a decimal column with enough
