@@ -28,6 +28,7 @@ from tafl.ui.filters import (
     parse_thresholds,
     range_labels,
     selection,
+    stored_values,
     to_json,
     unusable,
 )
@@ -996,7 +997,7 @@ def test_a_filter_without_a_card_leaves_the_values_of_a_card_in_its_list(window,
 def same_rows(act, df: pl.DataFrame, chosen: Filter) -> list[int]:
     """The rows of the card and of the step that Add as step makes of it: they must be the same."""
     card = apply(df, [chosen])["id"].to_list()
-    condition = formula(chosen, df.schema[chosen.column])
+    condition = formula(chosen, df.schema[chosen.column], df.get_column(chosen.column))
     step = act("rows.filter_formula", df, {"condition": condition, "keep": "keep"})["id"].to_list()
     assert step == card, (chosen, condition)
     return card
@@ -1022,6 +1023,73 @@ def test_time_periods_of_a_column_with_a_time_zone_as_a_step(act, zone):
             same_rows(act, df, Filter("When", [period], "period", {"by": by}, excluded=True))
             if by == "month" and period is not None:
                 assert rows == [row for row, text in enumerate(local) if text == period], (zone, period)
+
+
+@pytest.mark.parametrize("zone", ["UTC", "America/New_York", "Europe/Berlin"])
+def test_a_value_of_a_column_with_a_time_zone_as_a_step(act, zone):
+    """The step's TIMESTAMP dropped the offset: it kept no row, or (in the PC's zone) the other row
+    of a time that the clock change repeats."""
+    df = zoned(zone)
+    for stored in stored_values(df["When"]):
+        assert len(same_rows(act, df, Filter("When", [stored]))) == 1
+        same_rows(act, df, Filter("When", [stored], excluded=True))
+    repeated = pl.Series("When", [dt.datetime(2025, 10, 26, 0, 30), dt.datetime(2025, 10, 26, 1, 30)])  # 02:30 twice in Berlin
+    twice = pl.DataFrame({"id": [0, 1], "When": repeated.dt.replace_time_zone("UTC").dt.convert_time_zone("Europe/Berlin")})
+    assert [same_rows(act, twice, Filter("When", [stored])) for stored in stored_values(twice["When"])] == [[0], [1]]
+    assert same_rows(act, df, Filter("When", ["2025-01-31T23:30:00"])) == [0]  # without an offset: in UTC, as Polars reads it
+    naive = pl.DataFrame({"id": [0], "When": [dt.datetime(2025, 1, 31, 23, 30)]})
+    assert same_rows(act, naive, Filter("When", ["2025-01-31T23:30:00+00:00"])) == []  # an offset doesn't fit
+    assert formula(Filter("When", ["2025-01-31T23:30:00+00:00"]), pl.Datetime) == "FALSE"
+
+
+def test_values_with_nanoseconds_are_stored_with_them(act):
+    """08:30:00 and 08:30:00.000000001 were two values, but both were stored as 08:30:00: the
+    card and the step kept the row of the first one. A filter that 0.6.3 stored keeps its rows."""
+    stamps = pl.Series("When", [1_735_720_200 * 10**9, 1_735_720_200 * 10**9 + 1, -1, None], dtype=pl.Int64).cast(pl.Datetime("ns"))
+    times = pl.Series("T", [8 * 3600 * 10**9, 8 * 3600 * 10**9 + 1, 1, None], dtype=pl.Int64).cast(pl.Time)
+    df = pl.DataFrame({"id": [0, 1, 2, 3], "When": stamps, "T": times})
+    assert stored_values(df["When"]) == ["2025-01-01T08:30:00", "2025-01-01T08:30:00.000000001", "1969-12-31T23:59:59.999999999", None]
+    assert stored_values(df["T"]) == ["08:00:00", "08:00:00.000000001", "00:00:00.000000001", None]
+    for column in ("When", "T"):
+        for row, stored in enumerate(stored_values(df[column])):
+            assert same_rows(act, df, Filter(column, [stored])) == [row]
+    old = {"column": "When", "values": ["2025-01-01T08:30:00"]}  # as 0.6.3 stored either of the two
+    assert same_rows(act, df, Filter.from_dict(old)) == [0]
+    assert from_json(["2025-01-01T08:30:00.000000001"], pl.Datetime("us")) == []  # a value the column can't hold
+
+
+def test_time_spans_are_stored_with_all_their_digits(act):
+    """1 µs made INTERVAL '1e-06 seconds', which stopped the step; 1 ns and 2 ns were both 0.0 (the
+    card kept no row, the step both); 300 years and 1 µs lost the µs. A step has microseconds only:
+    for time spans with nanoseconds, Add as step says that it can't."""
+    micro = pl.DataFrame({"id": [0, 1, 2, 3], "S": pl.Series([1, 2, 9_467_280_000_000_001, -1], dtype=pl.Int64).cast(pl.Duration("us"))})
+    assert stored_values(micro["S"]) == [1e-06, 2e-06, "P109575DT0.000001S", -1e-06]  # seconds as before, where they keep all digits
+    for row, stored in enumerate(stored_values(micro["S"])):
+        assert same_rows(act, micro, Filter("S", [stored])) == [row]
+    assert to_json(dt.timedelta(hours=1)) == 3600.0 and to_json(dt.timedelta(microseconds=1)) == 1e-06
+    assert same_rows(act, micro, Filter("S", [2e-06, "P109575DT0.000001S"], excluded=True)) == [0, 3]
+    nano = pl.DataFrame({"id": [0, 1, 2], "S": pl.Series([1, 2, 1000], dtype=pl.Int64).cast(pl.Duration("ns"))})
+    assert stored_values(nano["S"]) == ["PT0.000000001S", "PT0.000000002S", 1e-06]
+    assert [apply(nano, [Filter("S", [stored])])["id"].to_list() for stored in stored_values(nano["S"])] == [[0], [1], [2]]
+    with pytest.raises(NotAStep, match=r"a step compares time spans only to the microsecond, and a picked value has nanoseconds"):
+        formula(Filter("S", ["PT0.000000002S"]), pl.Duration("ns"))
+    with pytest.raises(NotAStep, match=r"and some in \[S\] have nanoseconds"):  # 1 µs: but 1 ns and 2 ns are 0 µs for the step
+        formula(Filter("S", [1e-06]), pl.Duration("ns"), nano["S"])
+    whole = pl.DataFrame({"id": [0, 1], "S": pl.Series([1000, 2000], dtype=pl.Int64).cast(pl.Duration("ns"))})
+    assert same_rows(act, whole, Filter("S", [1e-06])) == [0]
+    assert same_rows(act, nano, Filter("S", [None])) == []  # empty cells: the step can say that
+
+
+def test_date_times_with_a_time_zone_and_nanoseconds_as_a_step(act):
+    """DuckDB has date-times with a time zone only to the microsecond."""
+    df = pl.DataFrame({"id": [0, 1], "When": pl.Series([1_735_720_200 * 10**9, 1_735_720_200 * 10**9 + 1]).cast(pl.Datetime("ns")).dt.replace_time_zone("UTC")})
+    with pytest.raises(NotAStep, match="a step compares date-times with a time zone only to the microsecond"):
+        formula(Filter("When", stored_values(df["When"])[1:]), df.schema["When"])
+    with pytest.raises(NotAStep, match=r"some in \[When\] have nanoseconds"):
+        formula(Filter("When", stored_values(df["When"])[:1]), df.schema["When"], df["When"])
+    whole = df.with_columns(pl.Series("When", [1_735_720_200 * 10**9, 1_735_720_201 * 10**9]).cast(pl.Datetime("ns")).dt.replace_time_zone("UTC"))
+    assert same_rows(act, whole, Filter("When", stored_values(whole["When"])[1:])) == [1]
+    assert same_rows(act, df, Filter("When", ["2025-01"], "period", {"by": "month"})) == [0, 1]  # after 1970: in the same day
 
 
 TEXTS = pl.DataFrame({"id": range(10), "T": ["Straße", "ä", "abc", "١٢٣", "a b", "a b", "x_y", "Ⓐ", "", None]})
@@ -1068,14 +1136,32 @@ def test_the_classes_of_a_pattern_as_a_step_are_those_of_the_card_for_every_char
 
 
 def test_add_as_step_says_why_a_filter_cant_be_one(session, qtbot):
-    df = pl.DataFrame({"T": ["Straße", "abc"]})
+    df = pl.DataFrame({"T": ["Straße", "abc"], "S": pl.Series([1, 2], dtype=pl.Int64).cast(pl.Duration("ns"))})
     table = session.project.add_table("T")
-    stored = [{"column": "T", "facet": "regex", "options": {"pattern": r"\bab"}, "values": ["match"]}]
+    stored = [{"column": "T", "facet": "regex", "options": {"pattern": r"\bab"}, "values": ["match"]}, {"column": "S", "values": ["PT0.000000001S"]}]
     session.set_filters(table.id, stored)
     pane = FilterPane(session)
     qtbot.addWidget(pane)
     pane.show_data(table.id, df)
-    for index, words in ((0, r"\b and \B"),):
+    for index, words in ((0, r"\b and \B"), (1, "time spans only to the microsecond")):
         pane.add_as_step(index)
         assert pane.cards[index].status.text().startswith("Not added as a step: a step") and words in pane.cards[index].status.text()
     assert session.filters(table.id) == stored and table.steps == []  # the filters stay
+
+
+def test_a_cell_with_nanoseconds_from_the_grid_is_stored_with_them(window, settle, session, registry, tmp_path, monkeypatch):
+    """Show only rows where When is “...” stored the cell without its nanoseconds."""
+    actions = []
+
+    class Menu(QMenu):
+        def exec(self, *args):  # instead of showing it
+            actions.extend(action for action in self.actions() if action.text().startswith("Show only rows"))
+
+    monkeypatch.setattr(data_panel, "QMenu", Menu)
+    stamps = pl.Series("When", [1_735_720_200 * 10**9, 1_735_720_200 * 10**9 + 1], dtype=pl.Int64).cast(pl.Datetime("ns"))
+    panel = saved_project_of(window, settle, session, registry, tmp_path, pl.DataFrame({"When": stamps, "Nr": [1, 2]}))
+    panel._cell_menu(panel.view.visualRect(panel.model.index(1, 0)).center())
+    actions[-1].trigger()
+    assert session.filters(session.table.id) == [{"column": "When", "values": ["2025-01-01T08:30:00.000000001"]}]
+    assert panel.model.frame["Nr"].to_list() == [2]
+    panel.filter_button.setChecked(False)

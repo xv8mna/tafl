@@ -14,11 +14,12 @@ A filter can group the cells of its column first (its mode, called facet here):
 
 A filter is stored with its table in the project file:
 ``{"column": "Date", "facet": "period", "options": {"by": "month"}, "values": ["2025-01"]}``.
-Values are JSON (dates as ISO text, binary data as hex text: 0x0102FF) and are converted to the
-column's type when the filter is used, so a filter keeps working when a step changes a column's
-type. No values = the filter is shown but doesn't filter. ``"except": true`` turns it around: all
-values except these. That keeps a selection of most of many values short (all of them:
-``"values": []``).
+Values are JSON (dates as ISO text, also with nanoseconds: 2025-01-01T08:30:00.000000001, binary
+data as hex text: 0x0102FF, time spans as seconds, or as ISO text where seconds would lose digits:
+PT0.000000001S) and are converted to the column's type when the filter is used, so a filter keeps
+working when a step changes a column's type. No values = the filter is shown but doesn't filter.
+``"except": true`` turns it around: all values except these. That keeps a selection of most of many
+values short (all of them: ``"values": []``).
 """
 
 from __future__ import annotations
@@ -57,6 +58,12 @@ _NEEDS = {
     "length": "text length needs a text column",
     "regex": "a pattern needs a text column",
 }
+_EPOCH = dt.datetime(1970, 1, 1)
+_EPOCH_UTC = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
+_MICROSECOND = dt.timedelta(microseconds=1)
+_UNIT_NS = {"ns": 1, "us": 1_000, "ms": 1_000_000}  # nanoseconds of a time unit of Polars
+_NANOSECONDS = re.compile(r"(:\d{2}\.\d{6})(\d{1,3})(?!\d)")  # the digits of a fraction after the 6th
+_SPAN = re.compile(r"(-)?P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)(?:\.(\d{1,9}))?S)?)?")  # PT1H, P2DT0.000000001S
 # Polars' \w, \d and \s are those of Unicode, RE2's (in DuckDB) those of ASCII: what to write for
 # them in a step. RE2 has no class for Unicode's Alphabetic: Polars' \w is the letters, the marks,
 # Nd, Nl, Pc, the two joiners, and the letters in a circle or a square (Ⓐ, 🄰).
@@ -274,13 +281,14 @@ def pattern_error(pattern: str) -> str | None:
 
 
 def to_json(value: Any) -> Any:
-    """A cell value as it is stored in the project file."""
+    """A cell value as it is stored in the project file. ``stored_values`` keeps the nanoseconds
+    of a column's values, which Python's values don't have."""
     if isinstance(value, (dt.datetime, dt.date, dt.time)):
         return value.isoformat()
     if isinstance(value, Decimal):
         return str(value)
     if isinstance(value, dt.timedelta):
-        return value.total_seconds()
+        return _span_json(value // _MICROSECOND * 1000)
     if isinstance(value, bytes):  # as the step that changes a column's type writes it
         return "0x" + value.hex().upper()
     if isinstance(value, list):
@@ -290,17 +298,90 @@ def to_json(value: Any) -> Any:
     return value
 
 
+def stored_values(values: pl.Series) -> list[Any]:
+    """The cells of a column as a filter stores them (``to_json``), with their nanoseconds:
+    08:30:00.000000001 is not 08:30:00, and 1 ns is not 2 ns."""
+    dtype = values.dtype
+    column = values.alias("value")  # Polars' Series methods would read a name like ^a.*$ as a pattern
+    if dtype == pl.Duration:
+        factor = _UNIT_NS[_unit(dtype)]
+        return [None if count is None else _span_json(count * factor) for count in column.cast(pl.Int64).to_list()]
+    cells = column.to_list()
+    if dtype == pl.Time or (dtype == pl.Datetime and _unit(dtype) == "ns"):
+        below = (column.dt.nanosecond() % 1000).to_list()  # Python's values end at the microsecond (rounded down)
+        return [_with_nanoseconds(cell, extra) if extra else to_json(cell) for cell, extra in zip(cells, below, strict=True)]
+    return [to_json(cell) for cell in cells]
+
+
+def _span_json(nanoseconds: int) -> float | str:
+    """A time span as it is stored: seconds as before, or as ISO text (PT0.000000001S) where they
+    would lose digits."""
+    if nanoseconds % 1000 == 0 and abs(nanoseconds // 1000) < 2**52:  # the microseconds of a float
+        return nanoseconds // 1000 / 1_000_000
+    sign = "-" if nanoseconds < 0 else ""
+    days, rest = divmod(abs(nanoseconds), 86_400 * 10**9)
+    hours, rest = divmod(rest, 3_600 * 10**9)
+    minutes, rest = divmod(rest, 60 * 10**9)
+    seconds, fraction = divmod(rest, 10**9)
+    time = (f"{hours}H" if hours else "") + (f"{minutes}M" if minutes else "")
+    if seconds or fraction or not (days or time):
+        time += str(seconds) + (f".{fraction:09d}".rstrip("0") if fraction else "") + "S"
+    return f"{sign}P" + (f"{days}D" if days else "") + (f"T{time}" if time else "")
+
+
+def _with_nanoseconds(value: dt.datetime | dt.time, nanoseconds: int) -> str:
+    """The ISO text of a date-time or time with the nanoseconds below its microseconds:
+    2025-01-01T08:30:00.000000001 (Python writes the seconds at a fixed place)."""
+    text = value.isoformat(timespec="microseconds")
+    end = 26 if isinstance(value, dt.datetime) else 15  # after the microseconds: 08:30:00.000000
+    return f"{text[:end]}{nanoseconds:03d}{text[end:]}"
+
+
 def from_json(values: list[Any], dtype: pl.DataType) -> list[Any]:
-    """Stored values (without the empty one) in a column's type; values that don't fit are left out."""
+    """Stored values (without the empty one) in a column's type; values that don't fit are left out.
+    Date-times, times and time spans are whole numbers of the column's time unit (since 1970, in UTC
+    with a time zone; since midnight): Python's values have no nanoseconds (see ``_series``)."""
+    convert = _temporal(dtype) or (lambda value: _convert(value, dtype))
     converted = []
     for value in values:
         if value is None:
             continue
         try:
-            converted.append(_convert(value, dtype))
+            converted.append(convert(value))
         except (TypeError, ValueError, ArithmeticError):
             continue
     return converted
+
+
+def _temporal(dtype: pl.DataType) -> Callable[[Any], int] | None:
+    """For date-times, times and time spans: ``_convert``, with the type looked at once."""
+    if dtype == pl.Datetime:
+        zoned, unit = _zone(dtype) is not None, _unit(dtype)
+        return lambda value: _in_unit(_moment(_not_boolean(value), zoned=zoned), unit)
+    if dtype == pl.Time:
+        return lambda value: _time_of_day(_not_boolean(value))
+    if dtype == pl.Duration:
+        unit = _unit(dtype)
+        return lambda value: _in_unit(_span_nanoseconds(_not_boolean(value)), unit)
+    return None
+
+
+def _not_boolean(value: Any) -> Any:
+    if isinstance(value, bool):  # True is an int in Python: don't let it match 1
+        raise ValueError(value)
+    return value
+
+
+def _series(values: list[Any], dtype: pl.DataType) -> pl.Series:
+    """Values of ``from_json`` as a Series of the column's type."""
+    if dtype in (pl.Datetime, pl.Time, pl.Duration):
+        return pl.Series(values, dtype=pl.Int64).cast(dtype)
+    return pl.Series(values, dtype=dtype)
+
+
+def _unit(dtype: Any) -> str:
+    """The time unit of a type of date-times or time spans (also of pl.Datetime itself: "us")."""
+    return getattr(dtype, "time_unit", None) or "us"
 
 
 def _zone(dtype: Any) -> str | None:
@@ -337,13 +418,69 @@ def _convert(value: Any, dtype: pl.DataType) -> Any:
         return exact
     if dtype == pl.Date:
         return value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value)[:10])
-    if dtype == pl.Datetime:
-        return value if isinstance(value, dt.datetime) else dt.datetime.fromisoformat(str(value))
-    if dtype == pl.Time:
-        return value if isinstance(value, dt.time) else dt.time.fromisoformat(str(value))
-    if dtype == pl.Duration:
-        return dt.timedelta(seconds=float(value))
-    return value
+    temporal = _temporal(dtype)
+    return value if temporal is None else temporal(value)
+
+
+def _time_of_day(value: Any) -> int:
+    """The nanoseconds since midnight of a stored time of day."""
+    if isinstance(value, dt.time):
+        text, extra = value.isoformat(), 0
+    else:
+        text, extra = _without_nanoseconds(str(value))
+    time = dt.time.fromisoformat(text)
+    if time.tzinfo is not None:  # a time of day of a column has no time zone
+        raise ValueError(value)
+    return ((time.hour * 60 + time.minute) * 60 + time.second) * 10**9 + time.microsecond * 1000 + extra
+
+
+def _moment(value: Any, *, zoned: bool) -> int:
+    """The nanoseconds since 1970 of a stored date-time (in UTC on a column with a time zone). On
+    such a column a date-time without an offset is one in UTC, as Polars reads it; one with an
+    offset doesn't fit a column without a time zone."""
+    if isinstance(value, dt.datetime):
+        moment, extra = value, 0
+    else:
+        text, extra = _without_nanoseconds(str(value))
+        moment = dt.datetime.fromisoformat(text)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=dt.UTC) if zoned else moment
+    elif not zoned:
+        raise ValueError(value)
+    since = moment - (_EPOCH if moment.tzinfo is None else _EPOCH_UTC)
+    return since // _MICROSECOND * 1000 + extra
+
+
+def _without_nanoseconds(text: str) -> tuple[str, int]:
+    """An ISO date-time or time without the digits after the 6th of its fraction (Python's values
+    end at the microsecond), and those digits as nanoseconds."""
+    found = _NANOSECONDS.search(text)
+    if found is None:
+        return text, 0
+    return text[: found.end(1)] + text[found.end(2) :], int(found.group(2).ljust(3, "0"))
+
+
+def _span_nanoseconds(value: Any) -> int:
+    """The nanoseconds of a stored time span: seconds (a number), or ISO text (PT1H30M)."""
+    if isinstance(value, dt.timedelta):
+        return value // _MICROSECOND * 1000
+    if isinstance(value, str):
+        found = _SPAN.fullmatch(value)
+        if found is None or not any(found.groups()[1:]):
+            raise ValueError(value)
+        sign, days, hours, minutes, seconds, fraction = found.groups()
+        whole = ((int(days or 0) * 24 + int(hours or 0)) * 60 + int(minutes or 0)) * 60 + int(seconds or 0)
+        nanoseconds = whole * 10**9 + int((fraction or "").ljust(9, "0"))
+        return -nanoseconds if sign else nanoseconds
+    return int(Decimal(repr(float(value))).scaleb(9).to_integral_value())  # 1e-06: the digits it was written with
+
+
+def _in_unit(nanoseconds: int, unit: str) -> int:
+    """Nanoseconds as whole numbers of a time unit of Polars; they must fit."""
+    count, rest = divmod(nanoseconds, _UNIT_NS[unit])
+    if rest or not -(2**63) <= count < 2**63:
+        raise ValueError(nanoseconds)
+    return count
 
 
 # --- filtering ------------------------------------------------------------------------------------
@@ -360,7 +497,7 @@ def condition(f: Filter, schema: pl.Schema) -> pl.Expr | None:
     dtype = key_type(f, schema[f.column])
     values = from_json(f.values, dtype)
     try:
-        found = picked.is_in(pl.Series(values, dtype=dtype).implode()) if values else pl.lit(False)
+        found = picked.is_in(_series(values, dtype).implode()) if values else pl.lit(False)
         pl.DataFrame(schema={f.column: schema[f.column]}).select(found)  # Polars compares the types only now
     except (TypeError, ValueError, ArithmeticError, RuntimeError, pl.exceptions.PolarsError):
         found = pl.lit(False)
@@ -398,15 +535,18 @@ def facet(
 # --- as a step ------------------------------------------------------------------------------------
 
 
-def formula(f: Filter, dtype: pl.DataType) -> str:
-    """The filter as a condition for the step "Filter rows by formula" (same rows). Raises
-    NotAStep for a filter that a step can't say the same way."""
+def formula(f: Filter, dtype: pl.DataType, data: pl.Series | None = None) -> str:
+    """The filter as a condition for the step "Filter rows by formula" (same rows). ``data``: the
+    column at the step, for the checks that need its cells. Raises NotAStep for a filter that a
+    step can't say the same way."""
     if not f.values and not f.excluded:  # nothing picked yet: the filter keeps all rows
         return "TRUE"
     name = "[" + f.column.replace("]", "]]") + "]"
     values = from_json(f.values, key_type(f, dtype))
     if f.facet == "values" and dtype == pl.Float32:  # Polars compares them as Float32 values
         values = [_single(v) for v in values]
+    if values:
+        _check_nanoseconds(f, dtype, values, data)
     parts = []
     if values and f.facet == "ranges":
         limits, inclusive = thresholds(f), f.options.get("lower_inclusive", True)
@@ -424,7 +564,8 @@ def formula(f: Filter, dtype: pl.DataType) -> str:
         test = f"regexp_matches({name}, {_sql(_step_pattern(str(f.options.get('pattern') or '')))})"
         parts += [test if value == MATCH else f"NOT {test}" for value in values if value in (MATCH, NO_MATCH)]
     elif values:
-        parts.append(f"{_picked_sql(f, name, dtype)} IN ({', '.join(_sql(v) for v in values)})")
+        kind = key_type(f, dtype)
+        parts.append(f"{_picked_sql(f, name, dtype)} IN ({', '.join(_literal(v, kind) for v in values)})")
     if f.excluded:  # empty cells pass unless they are left out too
         if len(parts) > 1:
             parts = [f"({p})" if " AND " in p else p for p in parts]
@@ -461,6 +602,52 @@ def _local_time(name: str, dtype: pl.DataType) -> str:
     if (problem := _duckdb_problem(f"timezone({_sql(zone)}, TIMESTAMPTZ '2000-01-01 00:00:00+00:00')")) is not None:
         raise NotAStep(f"the step can't use the time zone {zone} of this column ({problem})")
     return f"timezone({_sql(zone)}, {name})"
+
+
+def _check_nanoseconds(f: Filter, dtype: pl.DataType, values: list[Any], data: pl.Series | None) -> None:
+    """In a step (DuckDB), date-times with a time zone and time spans have only microseconds: it can
+    tell their cells apart only where these have no nanoseconds."""
+    if dtype == pl.Duration and _unit(dtype) == "ns":
+        what = "time spans"
+    elif dtype == pl.Datetime and _unit(dtype) == "ns" and _zone(dtype) is not None:
+        what = "date-times with a time zone"
+    else:
+        return
+    if f.facet == "values" and any(value % 1000 for value in values):
+        raise NotAStep(f"a step compares {what} only to the microsecond, and a picked value has nanoseconds")
+    if data is not None and f.facet in ("values", "period"):
+        units = data.alias("value").cast(pl.Int64)  # Polars' Series methods would read a name like ^a.*$ as a pattern
+        below = (units % 1000) != 0
+        if f.facet == "period":  # cut off toward 1970, a moment before 1970 can move into the next day
+            below = below & (units < 0)
+        if below.any():
+            raise NotAStep(f"a step compares {what} only to the microsecond, and some in [{f.column}] have nanoseconds")
+
+
+def _literal(value: Any, dtype: pl.DataType) -> str:
+    """A value of ``from_json`` as a step writes it, in the column's type."""
+    if dtype == pl.Datetime:
+        microseconds, nanoseconds = divmod(value * _UNIT_NS[_unit(dtype)], 1000)
+        moment = _EPOCH + dt.timedelta(microseconds=microseconds)
+        if _zone(dtype) is not None:  # the moment, in UTC (a TIMESTAMP would be in this PC's time zone)
+            return f"TIMESTAMPTZ '{moment.isoformat(sep=' ')}+00:00'"
+        if nanoseconds:
+            return f"TIMESTAMP_NS '{_with_nanoseconds(moment, nanoseconds).replace('T', ' ')}'"
+        return f"TIMESTAMP '{moment.isoformat(sep=' ')}'"
+    if dtype == pl.Time:
+        microseconds, nanoseconds = divmod(value, 1000)
+        time = (dt.datetime.min + dt.timedelta(microseconds=microseconds)).time()
+        return f"TIME_NS '{_with_nanoseconds(time, nanoseconds)}'" if nanoseconds else f"TIME '{time.isoformat()}'"
+    if dtype == pl.Duration:
+        return f"INTERVAL '{_seconds(value * _UNIT_NS[_unit(dtype)] // 1000)} seconds'"
+    return _sql(value)
+
+
+def _seconds(microseconds: int) -> str:
+    """Microseconds as seconds, with all digits and no exponent: 0.000001."""
+    sign = "-" if microseconds < 0 else ""
+    whole, fraction = divmod(abs(microseconds), 1_000_000)
+    return sign + str(whole) + (f".{fraction:06d}".rstrip("0") if fraction else "")
 
 
 def _step_pattern(pattern: str) -> str:
@@ -569,14 +756,14 @@ def _sql(value: Any) -> str:
         return format(value, "f")
     if isinstance(value, int):
         return str(value)
-    if isinstance(value, dt.datetime):
-        return f"TIMESTAMP '{value.isoformat(sep=' ')}'"
+    if isinstance(value, dt.datetime):  # with a time zone: that moment (a TIMESTAMP drops the offset)
+        return f"{'TIMESTAMP' if value.tzinfo is None else 'TIMESTAMPTZ'} '{value.isoformat(sep=' ')}'"
     if isinstance(value, dt.date):
         return f"DATE '{value.isoformat()}'"
     if isinstance(value, dt.time):
         return f"TIME '{value.isoformat()}'"
-    if isinstance(value, dt.timedelta):
-        return f"INTERVAL '{value.total_seconds()} seconds'"
+    if isinstance(value, dt.timedelta):  # without an exponent: DuckDB can't read 1e-06 seconds
+        return f"INTERVAL '{_seconds(value // _MICROSECOND)} seconds'"
     if isinstance(value, bytes):
         return f"from_hex('{value.hex()}')"
     return "'" + str(value).replace("'", "''") + "'"

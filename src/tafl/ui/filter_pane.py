@@ -66,8 +66,8 @@ from .filters import (
     parse_thresholds,
     range_labels,
     selection,
+    stored_values,
     thresholds,
-    to_json,
     unusable,
     value_key,
 )
@@ -106,8 +106,9 @@ class _Values(QAbstractTableModel):
         self.all = []
         texts = table.schema[VALUE] == pl.String
         keys = table.select(dtypes.text_sort_key(col(VALUE))).to_series().to_list() if texts else [None] * table.height
-        for (value, count), key in zip(table.select(VALUE, COUNT).iter_rows(), keys, strict=True):
-            stored = to_json(value)
+        stored_forms = stored_values(table.get_column(VALUE))  # with nanoseconds, which Python's values don't have
+        rows = table.select(VALUE, COUNT).iter_rows()
+        for (value, count), key, stored in zip(rows, keys, stored_forms, strict=True):
             self.all.append([value, count, stored, None, None, applies(stored), key])
         self.filtering = bool(f.values)
         self.total = total
@@ -754,7 +755,7 @@ class FilterPane(QWidget):
             return
         chosen = filters.pop(index)
         try:
-            condition = formula(chosen, self.df.schema[chosen.column])
+            condition = formula(chosen, self.df.schema[chosen.column], self.df.get_column(chosen.column))
         except NotAStep as reason:
             if index < len(self.cards):
                 self.cards[index].status.setText(f"Not added as a step: {reason}.")

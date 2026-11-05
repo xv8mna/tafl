@@ -29,7 +29,7 @@ from tafl.core import Status
 
 from . import theme
 from .filter_pane import FilterPane
-from .filters import Filter, apply, to_json
+from .filters import Filter, apply, stored_values
 from .frame_model import FrameModel
 from .labels import ElidedLabel, WrappedLabel
 from .session import PROTECTED, Session, count, first_error, missing_settings, size_text, waiting_text
@@ -303,8 +303,9 @@ class DataPanel(QWidget):
             value = self.model.value(index.row(), index.column())
             text = "(empty)" if value is None else self.model.text(index.row(), index.column())
             text = text if len(text) <= 40 else text[:40] + "…"
+            stored = stored_values(frame.get_column(column).slice(index.row(), 1))[0]  # with its nanoseconds
             menu.addSeparator()
-            menu.addAction(f"Show only rows where {column} is “{text}”", lambda: self.filter_by(column, [to_json(value)]))
+            menu.addAction(f"Show only rows where {column} is “{text}”", lambda: self.filter_by(column, [stored]))
             menu.addAction(f"Filter by {column}", lambda: self.filter_by(column))
         menu.exec(self.view.viewport().mapToGlobal(pos))
 
