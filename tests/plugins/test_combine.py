@@ -851,3 +851,35 @@ def test_a_full_join_on_two_columns_with_one_column_of_the_other_table_keeps_all
     out = act("table.merge", numbers, params, unpadded)
     assert out.schema == {"ShipTo": pl.Int64, "BillTo": pl.String, "Name": pl.String, "City": pl.String}
     assert out.rows() == [(17, "17", "Anna", "Berlin"), (23, "99", None, None), (42, "42", "Ben", "Wien"), (777, "777", "Cleo", "Bern")]
+
+
+@pytest.mark.parametrize(
+    ("this", "other", "expected"),
+    [
+        pytest.param(
+            [dt.datetime(2025, 1, 2, 8, 30), None],
+            {"K": [True, None], "X": [0, 3]},
+            ["2025-01-02 08:30:00", None, "true", "3"],
+            id="date-time",
+        ),
+        pytest.param(
+            [dt.datetime(2025, 1, 2, 8, 30)],
+            {"K": [True, None], "X": ["x", "2025-01-03 09:00:00"]},
+            ["2025-01-02 08:30:00", "true", "2025-01-03 09:00:00"],
+            id="date-time and a text that fits it",
+        ),
+        pytest.param([17.0, None], {"K": [True, None], "X": ["x", "Berlin"]}, ["17", None, "true", "Berlin"], id="decimal number"),
+    ],
+)
+def test_a_full_join_on_one_column_that_is_the_key_for_two_of_the_other_table(act, this, other, expected):
+    """A row only in the other table with an empty first key gets its second key. The first key
+    had made the column text: the step then stopped with a technical error ("`to_string` operation
+    not supported", "conversion from `str` to `i64` failed in column 'exponent'"), or wrote the
+    second key as 2025-01-03 09:00:00.000000."""
+    match = [{"column": "A", "other_column": "K"}, {"column": "A", "other_column": "X"}]
+    params = {"other": "other", "match": match, "how": "full", "multiple": "all"}
+    out = act("table.merge", pl.DataFrame({"A": this}), params, StubContext(tables={"other": pl.DataFrame(other)}))
+    assert out.schema["A"] == pl.String and out["A"].to_list() == expected
+    texts = {"K": ["2025-01-02 08:30:00", "2025-01-05 10:00:00"], "X": ["2025-01-02 08:30:00", "2025-01-05 10:00:00"]}
+    fits = act("table.merge", pl.DataFrame({"A": [dt.datetime(2025, 1, 2, 8, 30)]}), params, StubContext(tables={"other": pl.DataFrame(texts)}))
+    assert fits["A"].to_list() == [dt.datetime(2025, 1, 2, 8, 30), dt.datetime(2025, 1, 5, 10)]  # both keys fit: a date-time

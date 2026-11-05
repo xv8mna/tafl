@@ -171,12 +171,13 @@ def merge(df, p, ctx):
     if p.how == "full":  # rows only in the other table get its key, in this table's type if it fits
         for name, other_name, key in compared:
             as_hex = _as_hex(df[name])
-            back = _cast_fitting(col(key), out.schema[key], df.schema[name])
-            same = (_cast_key(back, df.schema[name], out.schema[key], as_hex) == col(key)).fill_null(False)
+            dtype = out.schema[name]  # not df's: a column that is the key for two may be text after the first
+            back = _cast_fitting(col(key), out.schema[key], dtype)
+            same = (_cast_key(back, dtype, out.schema[key], as_hex) == col(key)).fill_null(False)
             if out.select((col(name).is_not_null() | col(key).is_null() | same).all()).item():
                 out = out.with_columns(pl.coalesce(col(name), back).alias(name))
             else:
-                wide = _cast_key(col(name), df.schema[name], out.schema[key], as_hex)
+                wide = _cast_key(col(name), dtype, out.schema[key], as_hex)
                 if out.select((col(name).is_not_null() & wide.is_null()).any()).item():
                     raise ActionError(_no_common_type(df, name, other, other_name, out.schema[key]))
                 out = out.with_columns(pl.coalesce(wide, col(key)).alias(name))
