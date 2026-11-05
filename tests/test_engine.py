@@ -414,6 +414,34 @@ def test_a_circle_that_uses_a_table_that_is_off_is_skipped_whatever_is_calculate
         assert all(results[t].first_error.startswith("Circular reference: ") for t in expected)
 
 
+@pytest.mark.parametrize("first_step", ["works", "fails"])
+def test_each_table_of_a_circle_names_the_circle_from_itself_whatever_is_calculated_first(project, registry, first_step):
+    """A imports and appends B, B starts from A; D, outside the circle, starts from A. The window
+    calculates the selected table first, a run the tables in their order. When the import of A
+    fails, A has that error, and B still names the circle."""
+    a, b, d = (project.add_table(name) for name in ("A", "B", "D"))
+    project.add_step(a, "csv.import", {"file": "orders.csv" if first_step == "works" else "missing.csv"})
+    project.add_step(a, "table.append", {"tables": [b.id]})
+    project.add_step(b, "table.derive", {"table": a.id})
+    project.add_step(d, "table.derive", {"table": a.id})
+    engine = Engine(project, registry)
+    for results in (
+        engine.evaluate_all(a.id),
+        engine.evaluate_all(b.id),
+        engine.evaluate_all(d.id),
+        engine.run(mode="preview"),
+        engine.run([b.id], mode="preview"),
+        engine.run([d.id, b.id], mode="preview"),
+    ):
+        assert results[b.id].first_error == "Circular reference: B → A → B"
+        if first_step == "works":
+            assert results[a.id].first_error == "Circular reference: A → B → A"
+        else:
+            assert "missing.csv" in results[a.id].first_error
+        if d.id in results:  # it says what A says
+            assert results[a.id].first_error in results[d.id].first_error
+
+
 def test_a_skipped_table_names_the_first_skipped_table_it_uses(project, registry):
     """Without a circular reference, the table named is the first one that is off or skipped, in
     the order of the steps, also when another one is nearer to the table that is off. The tables

@@ -28,8 +28,8 @@ import threading
 import time
 import traceback
 import uuid
-from collections import Counter, OrderedDict
-from collections.abc import Callable, Iterable, Mapping
+from collections import Counter, OrderedDict, deque
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -579,6 +579,12 @@ class _Evaluation:
         # Table id -> how many links away the nearest table that is off is (0: it is off), or None
         # when it uses no table that is off, directly or through other tables (see _skip_reason)
         self._off_distance: dict[str, int | None] = {}
+        # Table id -> the part of the links it is in (see _part): one of its tables, and the
+        # numbering and the open tables of Tarjan's algorithm
+        self._parts: dict[str, str] = {}
+        self._number: dict[str, int] = {}
+        self._low: dict[str, int] = {}
+        self._open: list[str] = []
 
     def table(self, table_id: str, until: int | None = None) -> TableResult:
         if self.engine.protected:  # every calculation comes here: nothing goes on to the steps
@@ -729,6 +735,66 @@ class _Evaluation:
                         todo.append(used)
         return False
 
+    def _circle(self, table_id: str, used: str) -> list[str] | None:
+        """When table ``used`` uses ``table_id``, directly or through other tables (a circular
+        reference): the circle from ``table_id`` back to itself through ``used``, the shortest in
+        the order of the steps; else None. It comes from the links alone, so each table of a circle
+        names the circle from itself, whichever table is calculated first."""
+        if used == table_id:
+            return [table_id, table_id]
+        part = self._part(table_id)
+        if self._part(used) != part:
+            return None
+        came_from = {used: used}
+        todo = deque([used])
+        while todo:
+            current = todo.popleft()
+            for following in self._used(current):  # the tables of a part are on: they use each other
+                if following in came_from or self._parts[following] != part:
+                    continue
+                came_from[following] = current
+                if following == table_id:
+                    way = [table_id]
+                    while way[-1] != used:
+                        way.append(came_from[way[-1]])
+                    return [table_id, *reversed(way)]
+                todo.append(following)
+        return None  # not reached: the tables of a part reach each other
+
+    def _part(self, table_id: str) -> str:
+        """The strongly connected part of the links that the table is in: tables that use each
+        other, directly or through other tables, are in the same part, named by one of them
+        (Tarjan's algorithm, for the tables a calculation reaches; a table that is off uses nothing)."""
+        if table_id in self._parts:
+            return self._parts[table_id]
+
+        def enter(current: str) -> tuple[str, Iterator[str]]:
+            self._number[current] = self._low[current] = len(self._number)
+            self._open.append(current)
+            return current, iter(self._used(current) if self._tables[current].enabled else ())
+
+        work = [enter(table_id)]
+        while work:
+            current, following = work[-1]
+            for used in following:
+                if used not in self._number:
+                    work.append(enter(used))
+                    break
+                if used not in self._parts:  # open: in the part that is being found
+                    self._low[current] = min(self._low[current], self._number[used])
+            else:
+                work.pop()
+                if work:
+                    parent = work[-1][0]
+                    self._low[parent] = min(self._low[parent], self._low[current])
+                if self._low[current] == self._number[current]:
+                    while True:
+                        member = self._open.pop()
+                        self._parts[member] = current
+                        if member == current:
+                            break
+        return self._parts[table_id]
+
     def _step(
         self, table: Table, index: int, step: Step, df: pl.DataFrame | None, prev_key: str, imported: Imported | None = None
     ) -> StepResult:
@@ -772,6 +838,9 @@ class _Evaluation:
             found = self.project.used_table(ref)
             if found is None:
                 return _error(step, f"Table '{ref}' does not exist")
+            if (circle := self._circle(table.id, found.id)) is not None:
+                text = "Circular reference: " + " → ".join(map(self.engine.table_name, circle))
+                return _error(step, text, inherited=True)
             dependency = self.table(found.id)
             if not dependency.ok:
                 return _error(step, _dependency_error(found.name, dependency), inherited=True)
