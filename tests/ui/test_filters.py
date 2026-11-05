@@ -1282,12 +1282,14 @@ def test_a_step_that_would_keep_other_rows_here_is_not_made():
 
 def test_add_as_step_checks_the_rows_only_where_they_can_differ(monkeypatch):
     """The check of the step's rows took as long as the step: 50,000 texts five seconds on a
-    million rows, on the window's thread. It looks only where the step can differ from the card."""
+    million rows, on the window's thread. It looks only where the step can differ from the card,
+    and at no more than 1,000 picked values."""
     from tafl.ui import filters as module
 
     checked = []
     monkeypatch.setattr(module, "_check_rows", lambda f, step, data: checked.append(f.column))
     zoned = pl.Series([dt.datetime(2025, 1, 1)]).dt.replace_time_zone("Europe/Berlin")
+    many = pl.datetime_range(dt.datetime(2025, 1, 1), dt.datetime(2025, 1, 1, 16, 40), "1m", eager=True).dt.replace_time_zone("UTC")
     columns = {
         "text": (pl.Series(["a"]), Filter("text", ["a"])),
         "whole": (pl.Series([1]), Filter("whole", [1])),
@@ -1301,10 +1303,13 @@ def test_add_as_step_checks_the_rows_only_where_they_can_differ(monkeypatch):
         "nanoseconds": (pl.Series([dt.datetime(2025, 1, 1)], dtype=pl.Datetime("ns")), Filter("nanoseconds", ["2025-01-01T00:00:00"])),
         "time": (pl.Series([dt.time(8)]), Filter("time", ["08:00:00"])),
         "span": (pl.Series([dt.timedelta(hours=1)]), Filter("span", [3600.0])),
+        "a thousand": (many, Filter("a thousand", stored_values(many[:1000]))),
+        "more": (many, Filter("more", stored_values(many))),
     }
     for name, (data, chosen) in columns.items():
         assert formula(chosen, data.dtype, data.alias(name)), name
-    assert checked == ["pattern", "period", "zoned", "nanoseconds", "time", "span"]
+    assert len(many) == 1001
+    assert checked == ["pattern", "period", "zoned", "nanoseconds", "time", "span", "a thousand"]
 
 
 def test_add_as_step_says_why_a_filter_cant_be_one(session, qtbot):

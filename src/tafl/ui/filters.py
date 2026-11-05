@@ -63,6 +63,7 @@ _EPOCH_UTC = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 _MICROSECOND = dt.timedelta(microseconds=1)
 _UNIT_NS = {"ns": 1, "us": 1_000, "ms": 1_000_000}  # nanoseconds of a time unit of Polars
 _DAY_US = 86_400_000_000  # microseconds of a day
+_CHECKED_VALUES = 1_000  # Add as step checks the rows of a step of at most so many picked values (see _may_differ)
 _PERIOD_TEXTS = {  # the periods of the card (Polars): a year before 1 has a -, one after 9999 a + (not in a week)
     "year": re.compile(r"([-+]?[0-9]+)"),
     "quarter": re.compile(r"([-+]?[0-9]+) Q([1-4])"),
@@ -601,7 +602,10 @@ def _may_differ(f: Filter, dtype: pl.DataType) -> bool:
     rules of zones), date-times with a time zone or with nanoseconds, times of day and time spans.
     Not values, ranges and lengths of texts, numbers, dates and other date-times: DuckDB compares
     these as Polars does, and the check would take as long as the step (a second for 20,000 texts
-    on a million rows)."""
+    on a million rows). Not for more than 1,000 picked values either: the check of such a step takes
+    seconds (20,000 date-times with a time zone 2.5), and it writes them as it writes a few."""
+    if len(f.values) > _CHECKED_VALUES:
+        return False
     if f.facet in ("regex", "period") or dtype in (pl.Time, pl.Duration):
         return True
     return dtype == pl.Datetime and (_zone(dtype) is not None or _unit(dtype) == "ns")
@@ -611,8 +615,7 @@ def _check_rows(f: Filter, step: str, data: pl.Series) -> None:
     """Whether the step's condition keeps the rows of the card on the column at the step (``data``):
     for what no rule here foresees, such as letters that DuckDB's tables of Unicode don't know yet."""
     frame = pl.DataFrame([data.alias(f.column)])
-    kept = condition(f, frame.schema)
-    card = frame.select(kept).to_series() if kept is not None else pl.repeat(True, frame.height, eager=True)
+    card = _card_rows(f, frame)
     try:
         rows = expressions.evaluate(frame, step, condition=True).fill_null(False)
     except ActionError:
@@ -620,6 +623,22 @@ def _check_rows(f: Filter, step: str, data: pl.Series) -> None:
     differ = int((card.alias("card") != rows.alias("step")).sum())
     if differ:
         raise NotAStep(f"a step would keep other rows than the filter: {differ:,} of the {frame.height:,} rows here")
+
+
+def _card_rows(f: Filter, frame: pl.DataFrame) -> pl.Series:
+    """The rows that the card keeps (see condition). The period of a date-time is that of its date,
+    in its time zone: the periods of a column of date-times are worked out for each date once (the
+    texts of a million date-times take 0.25 seconds)."""
+    column = frame.get_column(f.column)
+    if f.facet == "period" and column.dtype == pl.Datetime:
+        dates = column.alias("value").dt.date()  # Polars' Series methods would read a name like ^a.*$ as a pattern
+        unique = dates.unique()
+        kept = condition(f, pl.Schema({f.column: pl.Date}))
+        if kept is not None:
+            keeps = pl.DataFrame([unique.alias(f.column)]).select(kept).to_series()
+            return dates.is_in(unique.filter(keeps).implode(), nulls_equal=True)
+    kept = condition(f, frame.schema)
+    return frame.select(kept).to_series() if kept is not None else pl.repeat(True, frame.height, eager=True)
 
 
 def _formula(f: Filter, dtype: pl.DataType, data: pl.Series | None) -> str:
@@ -652,7 +671,7 @@ def _formula(f: Filter, dtype: pl.DataType, data: pl.Series | None) -> str:
         # From when to when the periods are, by Polars' rules of the zone, as the card has them: DuckDB's
         # rules of a zone can differ (America/Vancouver from 2026-11-01)
         by, zone = f.options.get("by", "month"), _zone(dtype)
-        ranges = _joined(limits for period in values if (limits := _period_moments(period, by, zone)) is not None)
+        ranges = _joined(_period_moments(values, by, zone))
         if ranges:
             parts.append(_ranges_sql(name, ranges))
     elif values:
@@ -708,15 +727,15 @@ def _ranges_sql(name: str, ranges: list[tuple[int, int]]) -> str:
     )
 
 
-def _period_moments(period: str, by: str, zone: str) -> tuple[int, int] | None:
-    """The first moment of a period of the card (2026-11, 2026 Q4, 2026-W48, +10000-01, ...) in the
-    time zone ``zone`` and the first moment of the period after it, as microseconds since 1970 (UTC);
-    None for a text that is no period."""
-    days = _period_days(period, by)
-    if days is None:
-        return None
-    first, after = (_first_moment(day * _DAY_US, zone) for day in days)
-    return None if first is None or after is None else (first, after)
+def _period_moments(periods: list[str], by: str, zone: str) -> list[tuple[int, int]]:
+    """For each period of the card (2026-11, 2026 Q4, 2026-W48, +10000-01, ...) in the time zone
+    ``zone``: its first moment and the first moment of the period after it, as microseconds since
+    1970 (UTC). Texts that are no period are left out. Polars works out the moments of all periods
+    at once."""
+    days = [found for period in periods if (found := _period_days(period, by)) is not None]
+    walls = sorted({day for pair in days for day in pair})
+    moments = dict(zip(walls, _first_moments([day * _DAY_US for day in walls], zone), strict=True))
+    return [(moments[start], moments[end]) for start, end in days if moments[start] is not None and moments[end] is not None]
 
 
 def _period_days(period: str, by: str) -> tuple[int, int] | None:
@@ -767,6 +786,16 @@ def _week_one(year: int) -> int:
     """The Monday of week 1 of an ISO year (the week of 4 January), as days since 1970."""
     fourth = _days(year, 1, 4)
     return fourth - (fourth + 3) % 7  # 1970-01-01 was a Thursday
+
+
+def _first_moments(walls: list[int], zone: str) -> list[int | None]:
+    """``_first_moment`` of many local times: Polars converts them together, and those that a clock
+    change skips are looked for one by one."""
+    found = (
+        pl.Series(walls, dtype=pl.Int64).cast(pl.Datetime("us"))
+        .dt.replace_time_zone(zone, ambiguous="earliest", non_existent="null").cast(pl.Int64).to_list()
+    )  # fmt: skip
+    return [_first_moment(wall, zone) if moment is None else moment for wall, moment in zip(walls, found, strict=True)]
 
 
 def _first_moment(wall: int, zone: str) -> int | None:
