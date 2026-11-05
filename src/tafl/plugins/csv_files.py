@@ -255,8 +255,9 @@ def export_csv(df, p, ctx):
 
     Decimal numbers are written with at most 15 significant digits, as Excel shows and saves
     them: 0.37 * 3 is 1,11 (not 1,1099999999999999). Whole numbers and exact decimals keep all
-    their digits. Binary values are written as hex text (0x0102FF); infinite and not-a-number
-    values as empty, as in Excel. A table without columns gives an empty file.
+    their digits. Times keep their fractions of a second (08:30:00.500). Binary values are
+    written as hex text (0x0102FF); infinite and not-a-number values as empty, as in Excel. A
+    table without columns gives an empty file.
     """
     path = ctx.resolve_path(p.file)
     separator = _separator(p.delimiter)
@@ -272,7 +273,7 @@ def export_csv(df, p, ctx):
         decimal_comma=p.decimal == ",",
         date_format=dtypes.to_strftime(p.date_format) or None,
         datetime_format=dtypes.to_strftime(p.datetime_format) or None,
-        time_format="%H:%M:%S",
+        time_format="%H:%M:%S%.f",  # fractions of a second only when there are some, as the grid shows them
         quote_style="always" if p.quote_all else "necessary",
         float_scientific=False,
     )

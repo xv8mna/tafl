@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from tafl.api import ActionError
+from tafl.api import ActionError, dtypes
 from tafl.api.testing import StubContext
 
 THOUSANDS = "Artikel;Menge;Gewicht;Preis\r\nA;1.000;2.500;3,50\r\nB;12.000;1.250;4,25\r\nC;500;10.000;1,99\r\n"
@@ -494,6 +494,20 @@ def test_export_binary_infinite_and_time_values(act, tmp_path):
     act("csv.export", df, {"file": str(path), "decimal": "."})
     lines = path.read_text(encoding="utf-8-sig").splitlines()
     assert lines == ["id;data;ratio;at", "1;0x0102FF;;09:30:00", "2;;;", "3;0x;0.5;23:59:01"]
+
+
+@pytest.mark.parametrize("datetime_format", ["dd.mm.yyyy hh:mm:ss", "yyyy-mm-dd hh:mm", "%Y-%m-%dT%H:%M:%S%.f"])
+def test_export_keeps_the_fractions_of_a_second_of_times(act, tmp_path, datetime_format):
+    """Times were written with whole seconds, whatever the date-time format: 08:30:00.5 was 08:30:00.
+    Now they are written as the grid shows them."""
+    at = pl.Series("At", [dt.time(8, 30, 0, 500000), dt.time(8, 30), dt.time(23, 59, 59, 999999), None, dt.time(0, 0, 0, 1000)])
+    exact = pl.Series("Exact", [30600 * 10**9 + 1, None, None, None, None], dtype=pl.Int64).cast(pl.Time)  # 1 ns
+    df = pl.DataFrame([at, exact])
+    path = tmp_path / "times.csv"
+    act("csv.export", df, {"file": str(path), "datetime_format": datetime_format})
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    assert lines == ["At;Exact", "08:30:00.500;08:30:00.000000001", "08:30:00;", "23:59:59.999999;", ";", "00:00:00.001;"]
+    assert lines[1:] == [";".join(row) for row in df.select(dtypes.text_expr(pl.all(), pl.Time)).fill_null("").rows()]
 
 
 def test_export_writes_decimals_with_15_digits_as_excel_does(act, tmp_path):
