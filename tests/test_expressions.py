@@ -857,8 +857,8 @@ def test_unsigned_128_bit_numbers_mix_with_signed_ones():
         "w": pl.Series([2**127 - 1, 3], dtype=pl.Int128),
     })  # fmt: skip
     for formula in ("[v] + [w]", "[v] - [w]", "-[v]", "-([v] // 2)", "[v] - [v2]", "[v] = [w]", "[v] IN ([w], 1)",
-                    "SUM([v]) OVER ()", "COALESCE([v], [w])"):  # fmt: skip
-        name = "v2" if formula == "[v] - [v2]" else "v"
+                    "SUM([v]) OVER ()", "COALESCE([v], [w])", "subtract(3, [v2])", 'SUBTRACT([v], [v2])', '"-"([v])'):  # fmt: skip
+        name = "v2" if "[v2]" in formula else "v"
         highest = f"{2**128 - 1:,}" if name == "v2" else f"{2**127 + 5:,}"
         with pytest.raises(ActionError) as raised:
             expressions.evaluate(beyond, formula)

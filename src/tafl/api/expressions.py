@@ -517,7 +517,7 @@ def _check_unsigned(
 def _negates(tree: object, name: str) -> bool:
     """Whether DuckDB's parse tree of a formula has a -x whose x uses the column ``name`` (or all
     columns, as COLUMNS(*) does), or an a - x: DuckDB checks the subtraction of unsigned 128-bit
-    numbers only for a small x (3 - (2^128 - 1) gives 4)."""
+    numbers only for a small x (3 - (2^128 - 1) gives 4). Also written subtract(a, x) or "-"(x)."""
     nodes = [tree]
     while nodes:  # not by recursion: a formula can nest deeper than Python goes
         node = nodes.pop()
@@ -525,7 +525,7 @@ def _negates(tree: object, name: str) -> bool:
             nodes += node
         elif isinstance(node, dict):
             children = node.get("children")
-            minus = node.get("class") == "FUNCTION" and node.get("function_name") == "-"
+            minus = node.get("class") == "FUNCTION" and _fold(str(node.get("function_name"))) in ("-", "subtract")
             if minus and isinstance(children, list) and children and _uses(children[-1], name):
                 return True
             nodes += node.values()
