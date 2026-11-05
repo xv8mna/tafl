@@ -63,7 +63,8 @@ _EPOCH_UTC = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 _MICROSECOND = dt.timedelta(microseconds=1)
 _UNIT_NS = {"ns": 1, "us": 1_000, "ms": 1_000_000}  # nanoseconds of a time unit of Polars
 _DAY_US = 86_400_000_000  # microseconds of a day
-_LAST_DAY = 95_000_000  # days from 1970 to about the year 262,000: Polars' calendar ends at 262,143
+_FIRST_DAY = -96_465_292  # -262143-01-01: Polars' calendar begins there (days since 1970)
+_END_DAY = 95_026_237  # +262143-01-01: Polars' calendar ends with +262142-12-31
 _HOUR_US = 3_600_000_000  # microseconds of an hour
 _FEW_RANGES = 4  # more ranges of moments of periods: their local days (see _local_days_sql)
 _MANY_DAYS = 100_000  # more local days of periods: ranges of moments again
@@ -742,8 +743,8 @@ def _picked_sql(f: Filter, name: str) -> str:
     return name
 
 
-def _joined(ranges: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Ranges of moments in order, those that meet as one: 300 days in a row are one range."""
+def _joined(ranges: Iterable[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Ranges (of days or moments) in order, those that meet as one: 300 days in a row are one."""
     joined: list[tuple[int, int]] = []
     for start, end in sorted(ranges):
         if joined and start <= joined[-1][1]:
@@ -753,18 +754,24 @@ def _joined(ranges: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
     return joined
 
 
-def _ranges_sql(name: str, ranges: list[tuple[int, int]]) -> str:
-    """The condition that a moment is in one of ``ranges`` (microseconds, in order, apart). More
-    than four become a binary search with CASE, which DuckDB calculates with a few comparisons per
-    row: 300 ranges on a million rows take 0.2 seconds instead of 1.7."""
+def _ranges_sql(name: str, ranges: list[tuple[float, float]]) -> str:
+    """The condition that a moment is in one of ``ranges`` (microseconds, in order, apart; -inf and
+    inf beyond the ends of Polars' calendar). More than four (a clock change can split a run of
+    periods into three) become a binary search with CASE."""
     if len(ranges) <= 4:
-        each = [f"{name} >= {_moment_sql(start)} AND {name} < {_moment_sql(end)}" for start, end in ranges]
+        each = [_range_condition(name, start, end) for start, end in ranges]
         return each[0] if len(each) == 1 else " OR ".join(f"({condition})" for condition in each)
     middle = len(ranges) // 2
     return (
         f"CASE WHEN {name} < {_moment_sql(ranges[middle][0])} THEN {_ranges_sql(name, ranges[:middle])} "
         f"ELSE {_ranges_sql(name, ranges[middle:])} END"
     )
+
+
+def _range_condition(name: str, start: float, end: float) -> str:
+    bounds = [] if start == -math.inf else [f"{name} >= {_moment_sql(int(start))}"]
+    bounds += [] if end == math.inf else [f"{name} < {_moment_sql(int(end))}"]
+    return " AND ".join(bounds) or f"{name} IS NOT NULL"
 
 
 def _local_days_sql(name: str, days: list[tuple[int, int]], zone: str) -> str | None:
@@ -826,13 +833,13 @@ def _offset_sql(moment: str, offset: int, changes: list[tuple[int, int]]) -> str
     )
 
 
-def _period_moments(days: list[tuple[int, int]], zone: str) -> list[tuple[int, int]]:
-    """The moments of the card's periods (``days``: see _period_days) in the time zone ``zone``, as
-    ranges of microseconds since 1970 (UTC): from the first moment of a period to the first moment
-    of the period after it. Where a clock change soon after midnight turns the clock back to the
-    day before (America/Goose_Bay at 00:01 until 2011), that day goes on after the first moment of
-    the next one: from the change until midnight comes again. Polars works out the moments of all
-    periods at once."""
+def _period_moments(days: list[tuple[int, int]], zone: str) -> list[tuple[float, float]]:
+    """The moments of the card's periods (``days``: see _period_days, also joined) in the time zone
+    ``zone``, as ranges of microseconds since 1970 (UTC): from the first moment of a period to the
+    first moment of the period after it; -inf and inf at the ends of Polars' calendar. Where a clock
+    change soon after midnight turns the clock back to the day before (America/Goose_Bay at 00:01
+    until 2011), that day goes on after the first moment of the next one: from the change until
+    midnight comes again. Polars works out the moments of all periods at once."""
     walls = sorted({day for pair in days for day in pair})
     bounds = dict(zip(walls, _midnights([day * _DAY_US for day in walls], zone), strict=True))
     ranges = []
@@ -852,11 +859,11 @@ def _period_moments(days: list[tuple[int, int]], zone: str) -> list[tuple[int, i
 def _period_days(period: str, by: str) -> tuple[int, int] | None:
     """The first day of a period of the card and the first day of the period after it, as days
     since 1970, in any year (Polars writes 0000, -0001 and +10000); None for a text that is no
-    period, and for a period beyond the years of Polars' calendar (about 262,000), which only a
-    project file can hold: no value of a column is in it. Not with Python's dates: they end at the
-    years 1 and 9999."""
+    period, and for a period beyond the ends of Polars' calendar (-262143-01-01 to +262142-12-31),
+    which only a project file can hold: no value of a column is in it. Not with Python's dates:
+    they end at the years 1 and 9999."""
     days = _calendar_days(period, by)
-    return days if days is not None and -_LAST_DAY <= days[0] and days[1] <= _LAST_DAY else None
+    return days if days is not None and _FIRST_DAY <= days[0] and days[1] <= _END_DAY else None
 
 
 def _calendar_days(period: str, by: str) -> tuple[int, int] | None:
@@ -921,18 +928,24 @@ def _week_one(year: int) -> int:
     return fourth - (fourth + 3) % 7  # 1970-01-01 was a Thursday
 
 
-def _midnights(walls: list[int], zone: str) -> list[tuple[int, int | None, int] | None]:
+def _midnights(walls: list[int], zone: str) -> list[tuple[float, int | None, float] | None]:
     """For local times in ``zone`` (microseconds since 1970): the first moment at or after each
     (see _first_moment); where a clock change after it turns the clock back to before it, the
     moment of that change and the moment the local time is reached again; None where Polars can't
     tell. Polars converts them together; those that a clock change skips are looked for one by one."""
-    series = pl.Series(walls, dtype=pl.Int64).cast(pl.Datetime("us"))
+    inside = [wall for wall in walls if _FIRST_DAY * _DAY_US < wall < _END_DAY * _DAY_US]
+    series = pl.Series(inside, dtype=pl.Int64).cast(pl.Datetime("us"))
     earliest, latest = (
-        series.dt.replace_time_zone(zone, ambiguous=which, non_existent="null").cast(pl.Int64).to_list()
+        dict(zip(inside, series.dt.replace_time_zone(zone, ambiguous=which, non_existent="null").cast(pl.Int64).to_list(), strict=True))
         for which in ("earliest", "latest")
     )
-    found: list[tuple[int, int | None, int] | None] = []
-    for wall, first, again in zip(walls, earliest, latest, strict=True):
+    found: list[tuple[float, int | None, float] | None] = []
+    for wall in walls:
+        if wall not in earliest:  # the first or the last midnight of Polars' calendar: no moment is before or after it
+            end = -math.inf if wall <= _FIRST_DAY * _DAY_US else math.inf
+            found.append((end, None, end))
+            continue
+        first, again = earliest[wall], latest[wall]
         if first is None:  # a clock change skips it
             moment = _first_moment(wall, zone)
             found.append(None if moment is None else (moment, None, moment))
@@ -958,6 +971,8 @@ def _first_moment(wall: int, zone: str) -> int | None:
     that it skips (as midnight in Havana in March) the moment of the change. In microseconds also
     for a column of nanoseconds: Polars' nanoseconds end in the years 1677 and 2262, and there its
     replace_time_zone gives a wrong moment, not an error."""
+    if not (_FIRST_DAY + 1) * _DAY_US < wall - _DAY_US < wall + _DAY_US < (_END_DAY - 1) * _DAY_US:
+        return None  # a skipped midnight next to the ends of Polars' calendar
     found, before, after = (
         pl.Series([wall, wall - _DAY_US, wall + _DAY_US], dtype=pl.Int64).cast(pl.Datetime("us"))
         .dt.replace_time_zone(zone, ambiguous="earliest", non_existent="null").cast(pl.Int64).to_list()

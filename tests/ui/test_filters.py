@@ -20,6 +20,7 @@ from tafl.ui.filters import (
     PERIODS,
     Filter,
     NotAStep,
+    _days,
     apply,
     facet,
     facets_for,
@@ -1116,6 +1117,21 @@ def test_many_periods_of_a_column_with_a_time_zone_as_a_step(act):
     assert formula(Filter("When", in_a_row, "period", {"by": "date"}), df.schema["When"]).count("TIMESTAMPTZ") == 2
     step = formula(Filter("When", dates, "period", {"by": "date"}), df.schema["When"])
     assert step.startswith("(epoch_us([When]) + CASE WHEN epoch_us([When]) < ") and step.count("TIMESTAMPTZ") == 0
+
+
+@pytest.mark.parametrize("zone", ["Asia/Tokyo", "America/New_York", "UTC"])
+def test_periods_at_the_ends_of_polars_calendar_as_a_step(act, zone):
+    """Polars' calendar goes from -262143-01-01 to +262142-12-31; periods of the years 262,072 and
+    later, and -258,132 and earlier, were left out of the step, which then kept other rows."""
+    days = [_days(262100, 3, 1), _days(262142, 12, 31), _days(-262000, 6, 1), _days(-262143, 1, 2), _days(2026, 1, 5)]
+    moments = pl.Series("When", [day * 86_400_000_000 + 43_200_000_000 for day in days], dtype=pl.Int64).cast(pl.Datetime("us"))
+    df = pl.DataFrame({"id": range(len(days)), "When": moments.dt.replace_time_zone("UTC").dt.convert_time_zone(zone)})
+    for by in ("year", "month", "date"):
+        offered = sorted(facet(df, [Filter("When", [], "period", {"by": by})], 0)[0]["value"].drop_nulls().to_list())
+        for picked in ([period] for period in offered):
+            assert same_rows(act, df, Filter("When", picked, "period", {"by": by})), picked
+        for excluded in (False, True):  # five periods apart: the period numbers of the local days
+            same_rows(act, df, Filter("When", offered, "period", {"by": by}, excluded=excluded))
 
 
 def test_a_period_text_that_the_card_never_writes_is_no_period():
