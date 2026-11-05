@@ -871,6 +871,37 @@ def test_sqlserver_keyed_modes_write_text_and_ntext_columns_as_add_does(registry
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_text_and_ntext_columns_take_every_type_in_every_mode(registry):
+    """Add the rows and the replace modes stopped with "There is not enough memory for this" when
+    categories went into a text or ntext column, or numbers, dates and true/false whose first value
+    was empty (the driver gave such a column 2 GB for each value). They are written as Update and
+    Upsert write them."""
+    ctx, name = _sqlserver()
+    data = pl.DataFrame({
+        "N": [1, 2], "C": pl.Series(["b", "a"], dtype=pl.Categorical), "E": pl.Series(["y", "x"], dtype=pl.Enum(["x", "y"])),
+        "I": [None, 5], "F": [None, 1.5], "D": [None, dt.date(2025, 12, 31)], "B": [None, True], "T": [None, dt.datetime(2025, 1, 2, 8, 30)],
+    })  # fmt: skip
+    columns = data.columns[1:]
+    read = f"SELECT N, {', '.join(f'CAST({c} AS nvarchar(max)) AS {c}' for c in columns)} FROM {name} ORDER BY N"
+    expected = [(1, "b", "y", None, None, None, None, None), (2, "a", "x", "5", "1.5", "2025-12-31", "1", "2025-01-02 08:30:00.000")]
+    try:
+        for kind in ("text", "ntext"):
+            for mode in ("insert", "replace", "replace_where", "replace_keys", "update", "upsert"):
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                    db.execute(f"CREATE TABLE {name} (N int, {', '.join(f'{c} {kind}' for c in columns)})")
+                    if mode == "update":
+                        db.execute(f"INSERT INTO {name} (N) VALUES (1), (2)")
+                params = {"connection": "server", "table": name, "mode": mode, "key_columns": ["N"], "condition": "1 = 1"}
+                registry.actions["db.export"](data, params, ctx)
+                with ctx.database("server") as db:
+                    assert db.read(read).rows() == expected, (kind, mode)
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_text_columns_get_binary_values_as_hex_text(registry):
     """Binary values for a column of text were written as their bytes read as characters, without a
     word: b"ab" was 扡 in an nvarchar or ntext column, ab in a varchar one, and ? there in Update
@@ -914,6 +945,50 @@ def test_sqlserver_text_columns_get_binary_values_as_hex_text(registry):
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+_WIDE_SQLSERVER = """
+import sys
+
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+name = sys.argv[2]
+ctx = StubContext(mode="run", connections={"server": (registry.connectors["sqlserver"], {"server": sys.argv[1], "database": "tempdb"})})
+kinds = [[b"ab"], pl.Series([None], dtype=pl.Int64), pl.Series(["a"], dtype=pl.Categorical), pl.Series([None], dtype=pl.Date)]
+df = pl.DataFrame({"N": [1], **{f"c{i}": kinds[i % 4] for i in range(4_100)}})
+types = ["text", "ntext", "varchar(20)", "nvarchar(max)", "varchar(max)"]
+with ctx.database("server") as db:
+    db.execute(f"CREATE TABLE {name} (N int, {', '.join(f'c{i} {types[i % 5]}' for i in range(1_023))})")
+try:
+    for mode in ("insert", "replace_keys"):
+        params = {"connection": "server", "table": name, "mode": mode, "key_columns": ["N"], "extra_columns": "skip"}
+        registry.actions["db.export"](df, params, ctx)
+    assert ctx.messages[-1] == ("info", f"{name}: deleted 1 row, added 1 row"), ctx.messages
+    with ctx.database("server") as db:
+        picked = "CAST(c0 AS varchar(10)) AS a, c1, c2, c3, CAST(c5 AS varchar(10)) AS b, CAST(c6 AS nvarchar(10)) AS c"
+        row = db.read(f"SELECT {picked} FROM {name}").rows()
+    assert row == [("0x6162", None, "a", None, None, "a")], row
+finally:
+    with ctx.database("server") as db:
+        db.execute(f"DROP TABLE {name}")
+"""
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_takes_a_table_of_its_most_columns():
+    """4,100 columns, of which the 1,024 of the table (the most a SQL Server table holds) are
+    written: binary values, categories and empty values of other types into text, ntext and other
+    text columns. The export goes through every column: in a process of its own, so that a deep
+    Polars expression that ends the process shows as a failed test."""
+    name = _sqlserver()[1]
+    done = subprocess.run(
+        [sys.executable, "-c", _WIDE_SQLSERVER, os.environ["TAFL_TEST_SQLSERVER"], name], capture_output=True, text=True, timeout=300
+    )
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
