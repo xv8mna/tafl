@@ -210,46 +210,8 @@ def append(df, p, ctx):
     if p.columns == "this":  # the other columns are left out, whatever their types
         own = set(df.columns)
         others = [other.select(cols([c for c in other.columns if c in own])) for other in others]
-    out = _stacked([df, *others], ctx)
+    out = dtypes.stack([df, *others], ctx.warn)  # as a folder import stacks its files
     return out.select(cols(df.columns)) if p.columns == "this" else out
-
-
-def _stacked(frames: list[pl.DataFrame], ctx) -> pl.DataFrame:
-    """The frames one below the other. A column of other types in other frames gets the type of
-    ``dtypes.common_type`` in each of them; the step says which columns became text. Each column
-    is converted by its own name (Polars' own concat with types would read a name like ^a.*$ as a
-    pattern)."""
-    schemas = [f.schema for f in frames]
-    changes: list[list[pl.Expr]] = [[] for _ in frames]
-    texts = []  # the columns that became text: (name, the words of their types, whether a value would change)
-    for name in dict.fromkeys(c for f in frames for c in f.columns):
-        where = [i for i, schema in enumerate(schemas) if name in schema]
-        if len({schemas[i][name] for i in where}) == 1:
-            continue
-        common = dtypes.common_type([frames[i][name] for i in where])
-        counted = [schemas[i][name] for i, counts in zip(where, common.counted, strict=True) if counts]
-        words = ", ".join(dict.fromkeys(dtypes.type_word(dtype) for dtype in counted))
-        if common.dtype is None:
-            raise ActionError(
-                f"“{name}” has different types in the tables ({words}): lists and records can't be in one column "
-                "with other values. Remove the column from one of the tables before this step."
-            )
-        if common.dtype == pl.String and any(dtype != pl.String for dtype in counted):
-            texts.append((name, words, common.lost is not None))
-        for i, counts in zip(where, common.counted, strict=True):
-            if schemas[i][name] != common.dtype:  # a column with only empty values: empty values of that type
-                change = dtypes.to_common_type(col(name), schemas[i][name], common.dtype) if counts else pl.lit(None, common.dtype)
-                changes[i].append(change.alias(name))
-    for name, words, lost in texts[:3]:
-        if lost:  # e.g. whole numbers beyond 2^53 beside decimal numbers
-            ctx.warn(f"“{name}” is text, so that none of its values changes ({words})")
-        else:
-            ctx.warn(f"“{name}” is text: it has different types in the tables ({words})")
-    if len(texts) > 3:
-        more = ", ".join(f"“{name}”" for name, *_ in texts[3:6]) + (", …" if len(texts) > 6 else "")
-        ctx.warn(f"{len(texts) - 3:,} more columns are text, as their types differ between the tables: {more}")
-    frames = [f.with_columns(change) if change else f for f, change in zip(frames, changes, strict=True)]
-    return pl.concat(frames, how="diagonal")
 
 
 def _free_name(name: str, suffix: str, taken: set[str]) -> str:

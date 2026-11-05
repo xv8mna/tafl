@@ -156,7 +156,7 @@ def import_excel(df, p, ctx):
             data = dtypes.midnight_to_date(data)
         return data
 
-    out = combine(parts, p, folder, sheet_column=p.sheets in _SEVERAL_SHEETS and p.sheet_column, prepare=convert)
+    out = combine(parts, p, folder, sheet_column=p.sheets in _SEVERAL_SHEETS and p.sheet_column, prepare=convert, warn=ctx.warn)
     if len(parts) == 1:
         ctx.log(f"Sheet '{parts[0][1]}'")
     elif parts:

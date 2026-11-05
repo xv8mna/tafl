@@ -136,7 +136,7 @@ def import_csv(df, p, ctx):
         decimals.append((decimal, [name for name in others if typed.schema[name].is_numeric()]))  # others stayed text
         return typed
 
-    out = combine(parts, p, folder, prepare=detect_types)
+    out = combine(parts, p, folder, prepare=detect_types, warn=ctx.warn)
     decimal = [_describe_decimals(*decimals[0])] if decimals else []
     if len(paths) == 1:
         ctx.log(", ".join([f"Encoding {encodings[0]}", f"delimiter {_describe_separator(separators[0])}", *decimal]))

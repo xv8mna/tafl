@@ -52,6 +52,7 @@ from typing import Any
 
 import polars as pl
 
+from . import dtypes
 from . import params as P
 from .context import Context
 from .endpoints import FOLDER, IN, Endpoint, file_endpoint
@@ -213,11 +214,15 @@ def combine(
     folder: Path | None,
     sheet_column: bool = False,
     prepare: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
+    *,
+    warn: Callable[[str], None] | None = None,
 ) -> pl.DataFrame:
     """One table from several files (or sheets): ``parts`` are (file, sheet or None, data).
 
-    Columns are matched by name; a column that is missing in a file stays empty there, and a
-    column with different types in different files gets a type that fits all (often text).
+    Columns are matched by name; a column that is missing in a file stays empty there. A column
+    with different types in different files gets the type that Append gives it
+    (``dtypes.stack``): one that holds all its values, or text, which ``warn`` (the step's
+    ``ctx.warn``) is told about; lists or records beside other values are an ActionError.
     ``prepare`` runs once on all the data (e.g. to detect types); it must keep the rows as
     they are. For a folder, columns with the file name and/or the path below the folder come
     first (as chosen in ``params``); with ``sheet_column``, one with the sheet name. Without
@@ -229,8 +234,9 @@ def combine(
     elif len(frames) == 1:
         data = frames[0]
     else:
+        sources = "sheets" if len({path for path, _, _ in parts}) == 1 else "files"
         try:
-            data = _stacked(frames)
+            data = dtypes.stack(frames, warn, sources)
         except pl.exceptions.PolarsError as error:
             raise ActionError(f"The files don't fit together: {str(error).splitlines()[0]}") from None
     if prepare is not None and frames:
@@ -252,18 +258,6 @@ def combine(
         ]
         columns.append(pl.concat(pieces).alias(name) if pieces else pl.Series(name, [], dtype=pl.String))
     return pl.concat([pl.DataFrame(columns), data], how="horizontal")
-
-
-def _stacked(frames: list[pl.DataFrame]) -> pl.DataFrame:
-    """The frames one below the other, each column in a type that fits all its values. Polars casts
-    a column to that type by its name, which it reads as a pattern (* is all columns): with such a
-    name, the columns get working names for that, and their own names back after it."""
-    if not any(c == "*" or c.startswith("^") and c.endswith("$") for f in frames for c in f.columns):
-        return pl.concat(frames, how="diagonal_relaxed")
-    names = list(dict.fromkeys(c for f in frames for c in f.columns))
-    working = {name: f"column {i}" for i, name in enumerate(names)}
-    out = pl.concat([f.rename({c: working[c] for c in f.columns}) for f in frames], how="diagonal_relaxed")
-    return out.rename(dict(zip(working.values(), names)))
 
 
 def _source_value(extra: str, path: Path, sheet: str | None, folder: Path | None) -> str | None:

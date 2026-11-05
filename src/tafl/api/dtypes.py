@@ -21,6 +21,7 @@ from decimal import ROUND_HALF_UP, Context, Decimal
 import polars as pl
 
 from .errors import ActionError
+from .names import col
 
 TRUE_WORDS = frozenset({"true", "yes", "y", "ja", "j", "wahr", "x", "1"})
 FALSE_WORDS = frozenset({"false", "no", "n", "nein", "falsch", "0"})
@@ -395,6 +396,49 @@ def with_article(text: str) -> str:
     """``text`` with "a" or "an" before it, for a message: "a date column", "an integer column",
     "an empty column"."""
     return f"{'an' if text[:1].lower() in tuple('aeiou') else 'a'} {text}"
+
+
+def stack(frames: list[pl.DataFrame], warn: Callable[[str], None] | None = None, sources: str = "tables") -> pl.DataFrame:
+    """The frames one below the other, their columns matched by name (a frame without a column
+    gets empty values in it). A column of other types in other frames gets the type that
+    ``common_type`` gives, in each of them, and ``warn`` is told which columns became text, with
+    ``sources`` for the frames in its words ("tables", "files", "sheets"): up to three columns,
+    then how many more. A list, record or object column beside another type is an
+    ActionError. Each column is converted by its own name: Polars' own concat with types reads a
+    name like ^a.*$ as a pattern."""
+    schemas = [f.schema for f in frames]
+    changes: list[list[pl.Expr]] = [[] for _ in frames]
+    texts = []  # the columns that became text: (name, the words of their types, whether a value would change)
+    for name in dict.fromkeys(c for f in frames for c in f.columns):
+        where = [i for i, schema in enumerate(schemas) if name in schema]
+        if len({schemas[i][name] for i in where}) == 1:
+            continue
+        common = common_type([frames[i][name] for i in where])
+        counted = [schemas[i][name] for i, counts in zip(where, common.counted, strict=True) if counts]
+        words = ", ".join(dict.fromkeys(type_word(dtype) for dtype in counted))
+        if common.dtype is None:
+            hint = " Remove the column from one of the tables before this step." if sources == "tables" else ""
+            raise ActionError(
+                f"“{name}” has different types in the {sources} ({words}): lists and records can't be in one column "
+                f"with other values.{hint}"
+            )
+        if common.dtype == pl.String and any(dtype != pl.String for dtype in counted):
+            texts.append((name, words, common.lost is not None))
+        for i, counts in zip(where, common.counted, strict=True):
+            if schemas[i][name] != common.dtype:  # a column with only empty values: empty values of that type
+                change = to_common_type(col(name), schemas[i][name], common.dtype) if counts else pl.lit(None, common.dtype)
+                changes[i].append(change.alias(name))
+    if warn is not None:
+        for name, words, lost in texts[:3]:
+            if lost:  # e.g. whole numbers beyond 2^53 beside decimal numbers
+                warn(f"“{name}” is text, so that none of its values changes ({words})")
+            else:
+                warn(f"“{name}” is text: it has different types in the {sources} ({words})")
+        if len(texts) > 3:
+            more = ", ".join(f"“{name}”" for name, *_ in texts[3:6]) + (", …" if len(texts) > 6 else "")
+            warn(f"{len(texts) - 3:,} more columns are text, as their types differ between the {sources}: {more}")
+    frames = [f.with_columns(change) if change else f for f, change in zip(frames, changes, strict=True)]
+    return pl.concat(frames, how="diagonal")
 
 
 def _common_types(types: list[pl.DataType]) -> list[pl.DataType]:

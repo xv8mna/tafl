@@ -58,7 +58,7 @@ def import_parquet(df, p, ctx):
         parts.append((path, None, _read(path, ctx.warn)))
     if len(files) > 1:
         ctx.log(f"{len(files)} files")
-    return combine(parts, p, folder, prepare=lambda data: _standard_types(data, ctx.warn))
+    return combine(parts, p, folder, prepare=lambda data: _standard_types(data, ctx.warn), warn=ctx.warn)
 
 
 def _standard_types(data: pl.DataFrame, warn) -> pl.DataFrame:

@@ -2,6 +2,7 @@
 
 import datetime as dt
 import re
+from decimal import Decimal
 
 import polars as pl
 import pytest
@@ -131,6 +132,42 @@ def test_parquet_files_of_a_folder(act, tmp_path):
     assert out["Nr"].to_list() == [1, 2, 3] and out["Kunde"].to_list() == [None, None, "Huber"]
     single = act("parquet.import", None, {"file": str(tmp_path / "part-1.parquet")})
     assert single.to_dicts() == [{"Nr": 3, "Kunde": "Huber"}]
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected", "dtype", "words"),
+    [
+        ([7], [dt.date(2025, 1, 2)], ["7", "2025-01-02"], pl.String, "integer, date"),  # was 7 and 20090
+        ([dt.date(2025, 1, 2)], [True], ["2025-01-02", "true"], pl.String, "date, true/false"),  # stopped: no supertype
+        (pl.Series([Decimal("2.50")], dtype=pl.Decimal(38, 2)), [1.5], ["2.50", "1.5"], pl.String, "exact decimal, number"),
+        ([7], [1.5], [7.0, 1.5], pl.Float64, ""),  # a type that holds both values: no message
+    ],
+)
+def test_parquet_files_whose_column_has_other_types(act, tmp_path, first, second, expected, dtype, words):
+    """As Append does. Before, a date beside a whole number became a number (20090), an exact
+    decimal beside a decimal number a decimal number, without a message, and a date beside
+    true/false stopped the step with "failed to determine supertype"."""
+    pl.DataFrame({"x": first}).write_parquet(tmp_path / "a.parquet")
+    pl.DataFrame({"x": second}).write_parquet(tmp_path / "b.parquet")
+    ctx = StubContext()
+    out = act("parquet.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out.schema["x"] == dtype and out["x"].to_list() == expected
+    assert ctx.warnings == ([f"“x” is text: it has different types in the files ({words})"] if words else [])
+
+
+def test_excel_sheets_whose_column_has_other_types(act, tmp_path):
+    """Excel stores numbers as decimal numbers: beside text, 5 is "5", as the grid shows it. Before,
+    it was "5.0", without a message."""
+    book = xlsxwriter.Workbook(str(tmp_path / "mixed.xlsx"))
+    for sheet, nr, amount in (("A", 5, 1.5), ("B", "n/a", 2)):
+        page = book.add_worksheet(sheet)
+        page.write_row(0, 0, ["Nr", "Amount"])
+        page.write_row(1, 0, [nr, amount])
+    book.close()
+    ctx = StubContext()
+    out = act("excel.import", None, {"file": str(tmp_path / "mixed.xlsx"), "sheets": "all"}, ctx)
+    assert out.rows() == [("A", "5", 1.5), ("B", "n/a", 2.0)] and out.schema["Nr"] == pl.String
+    assert ctx.warnings == ["“Nr” is text: it has different types in the sheets (number, text)"]
 
 
 def test_files_in_a_folder(act, lake):
