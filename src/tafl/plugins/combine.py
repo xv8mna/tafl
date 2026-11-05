@@ -116,7 +116,7 @@ def merge(df, p, ctx):
         if p.how == "matching" and unmatched:
             missed = _without_match(left, left_on, keys, right_keys, own) if out.height else df.select(cols(own))
         if df.height:
-            ctx.log(_feedback(p.how, df.height, unmatched, missed, other.height))
+            ctx.log(_feedback(p.how, df.height, unmatched, _bytes_as_text(df, missed), other.height))
         return out.drop([key for *_, key in compared])
 
     columns = [c for c in (p.columns or other.columns) if c not in right_on]
@@ -182,7 +182,7 @@ def merge(df, p, ctx):
                     raise ActionError(_no_common_type(df, name, other, other_name, out.schema[key]))
                 out = out.with_columns(pl.coalesce(wide, col(key)).alias(name))
     if df.height or added:  # a full join of an empty table: the rows of the other table
-        ctx.log(_feedback(p.how, df.height, unmatched, missed, other.height, added))
+        ctx.log(_feedback(p.how, df.height, unmatched, _bytes_as_text(df, missed), other.height, added))
     return out.drop([key for *_, key in compared])
 
 
@@ -479,6 +479,16 @@ def _sample(keys: pl.DataFrame) -> str:
     if distinct > len(shown):
         return f"{', '.join(shown)} and {distinct - len(shown):,} more"
     return f"{', '.join(shown[:-1])} and {shown[-1]}" if len(shown) > 1 else shown[0]
+
+
+def _bytes_as_text(df: pl.DataFrame, keys: pl.DataFrame | None) -> pl.DataFrame | None:
+    """This table's key columns ``keys`` of rows without a match, with binary values as their text
+    where all bytes of the column in this table ``df`` are text, as Merge compares them with text
+    keys (see ``_as_hex``). The other binary values are shown as hex digits, 0xFF00."""
+    if keys is None:
+        return None
+    texts = [name for name, dtype in keys.schema.items() if dtype == pl.Binary and not _as_hex(df[name].alias("value"))]
+    return keys.with_columns(col(name).cast(pl.String) for name in texts) if texts else keys
 
 
 def _key_texts(keys: pl.DataFrame) -> pl.DataFrame:

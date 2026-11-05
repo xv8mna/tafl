@@ -237,6 +237,19 @@ def test_keys_without_a_match_are_shown_the_same_on_every_pc(act, this, shown):
     assert two == f"1 of 2 rows matched, 1 without a match: ({shown}, o)"
 
 
+@pytest.mark.parametrize("name", ["Key", "^a.*$"])
+@pytest.mark.parametrize("how", ["lookup", "full", "matching"])
+def test_bytes_that_are_all_text_are_shown_as_their_text(act, how, name):
+    """As Merge compares them with text keys: abc, not 0x616263 (bytes of a column with a value
+    that is no text stay hex digits, 0x00FF)."""
+    match = [{"column": name, "other_column": "Key"}]
+    df = pl.DataFrame({name: [b"x", "Größe".encode()], "abc": [1, 2]})  # abc: the column ^a.*$ would find
+    for other in (pl.DataFrame({"Key": [b"x"], "Name": ["n"]}), pl.DataFrame({"Key": ["x"], "Name": ["n"]})):
+        assert info(act, df, other, how, match=match).endswith(": Größe")
+    hex_digits = pl.DataFrame({name: [b"x", b"\x00\xff"], "abc": [1, 2]})
+    assert info(act, hex_digits, pl.DataFrame({"Key": [b"x"], "Name": ["n"]}), how, match=match).endswith(": 0x00FF")
+
+
 @pytest.mark.parametrize(
     ("how", "expected"),
     [
