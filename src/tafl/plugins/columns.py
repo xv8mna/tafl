@@ -148,8 +148,8 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
             return s
         if source == pl.Date:
             return _dates_as_text(s, fmt or "dd.mm.yyyy")
-        if source == pl.Datetime:
-            return _dates_as_text(s, fmt or "dd.mm.yyyy hh:mm:ss")
+        if source == pl.Datetime:  # by default with fractions of a second when there are some, as the grid shows them
+            return _dates_as_text(s, fmt or "%d.%m.%Y %H:%M:%S%.f")
         if source.is_numeric():
             return dtypes.format_numbers(s, fmt, decimal)
         if source == pl.Binary:  # as hex digits, like SQL Server shows them: 0x0102FF (a fixed name, as in change_type)

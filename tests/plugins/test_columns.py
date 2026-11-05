@@ -199,6 +199,19 @@ def test_dates_to_text_with_a_format_without_date_codes_stops_the_step(act, dtyp
             change(act, values.to_frame(), "When", "text", fmt)
 
 
+def test_date_times_to_text_without_a_format_keep_their_fractions_of_a_second(act):
+    """With as many digits as the grid shows. Before, the default dd.mm.yyyy hh:mm:ss left them
+    out, so that 08:30:00.500 and 08:30:00 gave one text. A format that is typed stays as it is."""
+    texts = ["2025-12-31 08:30:00", "2025-12-31 08:30:00.5", "2025-12-31 08:30:00.000001", "2025-12-31 08:30:00.000000001", None]
+    moments = pl.Series("When", texts).str.to_datetime("%Y-%m-%d %H:%M:%S%.f", time_unit="ns").to_frame()
+    expected = ["31.12.2025 08:30:00", "31.12.2025 08:30:00.500", "31.12.2025 08:30:00.000001", "31.12.2025 08:30:00.000000001", None]
+    assert change(act, moments, "When", "text").to_list() == expected
+    micro = moments.with_columns(pl.col("When").cast(pl.Datetime("us")).dt.replace_time_zone("Europe/Berlin"))
+    assert change(act, micro, "When", "text").to_list() == [*expected[:3], expected[0], None]  # 1 ns is cut by the cast to µs
+    typed = change(act, moments, "When", "text", "dd.mm.yyyy hh:mm:ss")
+    assert typed.to_list() == ["31.12.2025 08:30:00"] * 4 + [None]
+
+
 def test_dates_to_text_with_a_time_are_written_at_midnight(act):
     """As Excel writes them. Polars stopped with "cannot format Date with format '%d.%m.%Y %H:%M'".
     A format with nothing but a time writes no part of a date: 00:00 for each one."""
