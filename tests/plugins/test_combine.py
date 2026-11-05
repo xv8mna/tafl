@@ -1017,3 +1017,16 @@ def test_a_full_join_writes_a_later_key_as_text_with_all_its_digits(act, this, s
     out = act("table.merge", pl.DataFrame({"A": this}), params, StubContext(tables={"other": other}))
     assert out.schema["A"] == pl.String and out["A"].to_list()[2:] == added
     assert out.columns == ["A"]  # no copies of the keys are left
+
+
+def test_the_hint_of_keys_that_cant_be_compared_names_a_column_that_is_not_text(act):
+    """Before: "… make one of them text with a formula such as CAST([A] AS VARCHAR)" for a column A
+    that is text already."""
+    params = {"other": "other", "match": [{"column": "A", "other_column": "K"}]}
+    other = StubContext(tables={"other": pl.DataFrame({"K": [dt.timedelta(hours=1)]})})
+    with pytest.raises(ActionError) as raised:
+        act("table.merge", pl.DataFrame({"A": ["1h"]}), params, other)
+    assert str(raised.value) == (
+        "'A' (text) and 'K' (duration) can't be compared: choose other key columns, or first make one of them text "
+        "with a formula such as CAST([K] AS VARCHAR)"
+    )

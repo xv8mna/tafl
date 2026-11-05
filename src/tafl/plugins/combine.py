@@ -294,9 +294,10 @@ def _compared_keys(left, right, left_on, right_on, ctx):
         left_hex, right_hex = _as_hex(left[left_name]), _as_hex(right[right_name])
         left_label, right_label = dtypes.type_label(left_type), dtypes.type_label(right_type)
         keys = f"'{left_name}' ({left_label}) and '{right_name}' ({right_label})"
+        cast = left_name if left_label != "text" else right_name  # not a column that is text already
         cant = (
             f"{keys} can't be compared: choose other key columns, or first make one of them text with a formula "
-            f"such as CAST([{left_name}] AS VARCHAR)"
+            f"such as CAST([{cast}] AS VARCHAR)"
         )
         if target is None:  # by the types, also for a key column without values: Polars' cast stops only for values
             raise ActionError(cant)
