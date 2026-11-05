@@ -141,6 +141,8 @@ def _read_text_file(path: Path, p, warn: Callable[[str], None]) -> tuple[pl.Data
         raise files.read_error(error, path) from None
     data, encoding = _to_utf8(raw, p.encoding, path.name, warn)
     del raw  # after a byte order mark, ``data`` is a copy: the file would be in memory twice
+    if b"\n" not in data and b"\r" in data:  # the line ends of old Macs: Polars would read it all as one line
+        data = data.replace(b"\r", b"\n")
     if _converted_twice(data, p.skip_lines):  # one line end, not a \r at the end of the last value
         data = re.sub(rb"(?<!\r)\r+\n", b"\r\n", data)  # only from the start of a run: from each \r would take long
     sample = data[:_SAMPLE].decode("utf-8", errors="ignore")

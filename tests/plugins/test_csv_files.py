@@ -493,6 +493,31 @@ def test_a_quote_out_of_place_is_shown_with_its_line(act, tmp_path):
     assert act("csv.import", None, {"file": str(tmp_path / "q.csv")})["Size"].to_list() == ['24" and 27"', '24""', '24" x']  # read as before
 
 
+@pytest.mark.parametrize(
+    ("data", "options", "rows"),
+    [
+        (b"Id;Name;Price\r1;Mouse;5,5\r2;Pad;1\r", {}, [(1, "Mouse", 5.5), (2, "Pad", 1.0)]),
+        (b"Id;Name;Price\r1;Mouse;5,5\r2;Pad;1", {}, [(1, "Mouse", 5.5), (2, "Pad", 1.0)]),  # no line end at the end
+        (b"Id,Name\r1,a\r2,b\r", {"delimiter": ","}, [(1, "a"), (2, "b")]),
+        (b"title\rId;Name\r1;a\r", {"skip_lines": 1, "header": False}, [("Id", "Name"), ("1", "a")]),
+        ("Kunde;Ort\rMüller;Köln\r".encode("cp1252"), {}, [("Müller", "Köln")]),
+        ("Kunde;Ort\rMüller;Köln\r".encode("utf-16"), {}, [("Müller", "Köln")]),
+        (b'Id;Note\r1;"a\rb"\r2;c\r', {"detect_types": False}, [("1", "a\nb"), ("2", "c")]),
+    ],
+)
+def test_a_file_with_carriage_returns_as_line_ends(act, tmp_path, data, options, rows):
+    """A file whose lines end with \\r alone (old Macs) gave no rows and no message: Polars read it
+    as one line, the column names. A file without \\n has \\r as its line end now."""
+    (tmp_path / "cr.csv").write_bytes(data)
+    assert act("csv.import", None, {"file": str(tmp_path / "cr.csv"), **options}).rows() == rows
+
+
+def test_a_quote_out_of_place_in_a_file_with_carriage_returns_as_line_ends(act, tmp_path):
+    (tmp_path / "cr.csv").write_bytes(b'Id;Name;Price\r1;Mouse;5\r2;Monitor 24";99\r3;Pad;1\r')
+    with pytest.raises(ActionError, match=r"^Could not read cr\.csv: line 3 has a quote in a value that doesn't start with one: '2;Monitor"):
+        act("csv.import", None, {"file": str(tmp_path / "cr.csv")})
+
+
 def test_a_quote_that_is_never_closed_is_shown_with_its_line(act, tmp_path):
     """Polars' words were the message, with the rest of the file in them: "could not parse
     `"Mouse;5↵2;Pad;1↵3;Key;2↵` as dtype `str` at column 'column_1' (column number 2)"."""
