@@ -75,7 +75,8 @@ def filter_rows(df, p, ctx):
     (31.12.2025, 2025-12-31 or "today"), times as times (08:30 or 08:30:15). Empty cells never
     equal a value, but they count as "does not equal" and "does not contain".
     """
-    mask_parts = [_condition(df, c, p.case_sensitive) for c in p.conditions]
+    schema = df.schema  # once: Polars makes it anew for every call, with all columns (seconds for thousands)
+    mask_parts = [_condition(df, c, p.case_sensitive, schema) for c in p.conditions]
     mask = pl.all_horizontal(mask_parts) if p.match == "all" else pl.any_horizontal(mask_parts)
     mask = mask.fill_null(False)
     return df.filter(mask if p.keep == "keep" else ~mask)
@@ -167,14 +168,19 @@ def dedupe(df, p, ctx):
 def fill(df, p, ctx):
     """Fills empty cells: with the value above (typical for Excel lists where a group name is
     only written once), the value below, or a fixed value. Empty text counts as empty."""
+    schema = df.schema  # once: Polars makes it anew for every call, with all columns (seconds for thousands)
+    typed: dict[pl.DataType, Any] = {}  # the fixed value for each type of column, read once
     updates = []
     for name in p.columns:
+        dtype = schema[name]
         column = col(name)
-        if df.schema[name] == pl.String:
+        if dtype == pl.String:
             column = pl.when(column.str.strip_chars() == "").then(None).otherwise(column)
         if p.method == "value":
-            value = _literal(p.value, df.schema[name], name)
-            if isinstance(value, Decimal) and not _fits_decimal(value, df.schema[name].scale):
+            if dtype not in typed:
+                typed[dtype] = _literal(p.value, dtype, name)
+            value = typed[dtype]
+            if isinstance(value, Decimal) and not _fits_decimal(value, dtype.scale):
                 raise ActionError(
                     f"'{p.value}' has too many digits for column '{name}': "
                     f"an exact decimal holds {_DECIMAL_DIGITS}, decimal places included"
@@ -194,7 +200,7 @@ def fill(df, p, ctx):
                     f"'{p.value}' doesn't fit column '{name}': with it the column holds decimal numbers, which keep "
                     f"about 15 digits, but it has longer whole numbers (e.g. {rounded} would become {int(float(rounded))})"
                 )
-            if (becomes := _rounded_typed(p.value, value, df.schema[name])) is not None:
+            if (becomes := _rounded_typed(p.value, value, dtype)) is not None:
                 raise ActionError(
                     f"'{p.value}' doesn't fit column '{name}': with it the column holds decimal numbers, which keep "
                     f"about 15 digits, so it would become {becomes}"
@@ -206,18 +212,18 @@ def fill(df, p, ctx):
                 )
             if (year := _year_beyond(value)) is not None:
                 raise ActionError(
-                    f"'{p.value}' doesn't fit column '{name}': in its time zone ({df.schema[name].time_zone}) this moment "
+                    f"'{p.value}' doesn't fit column '{name}': in its time zone ({dtype.time_zone}) this moment "
                     f"is in the year {year}, and date-times reach from the year 1 to 9999"
                 )
-            updates.append(column.fill_null(_for_polars(value, df.schema[name])).alias(name))
+            updates.append(column.fill_null(_for_polars(value, dtype)).alias(name))
         else:
             updates.append(column.fill_null(strategy="forward" if p.method == "down" else "backward").alias(name))
     return df.with_columns(updates)
 
 
-def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool) -> pl.Expr:
+def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool, schema: pl.Schema | None = None) -> pl.Expr:
     column = col(c.column)
-    dtype = df.schema[c.column]
+    dtype = (df.schema if schema is None else schema)[c.column]
     text_column = dtype == pl.String
     op = c.operator
 

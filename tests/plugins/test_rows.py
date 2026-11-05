@@ -1,5 +1,7 @@
 import datetime as dt
 import re
+import subprocess
+import sys
 from decimal import Decimal as D
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -722,3 +724,40 @@ def test_binary_data_with_bytes_that_are_no_text_is_searched_in_its_hex_digits(a
     assert names(flt(act, BINARY, ("V", "contains", "ff"), case_sensitive=True)) == []
     text = pl.DataFrame({"Name": ["a", "b", "c"], "V": [b"abc", "ä".encode(), None]})  # bytes that are all text stay text
     assert names(flt(act, text, ("V", "contains", "Ä"))) == ["b"]
+
+
+_WIDE = """
+import time
+
+import polars as pl
+
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+fill, keep = registry.actions["rows.fill"], registry.actions["rows.filter"]
+texts = pl.DataFrame({f"t{i}": ["a", None, " "] for i in range(4001)})
+numbers = pl.DataFrame({f"n{i}": [1.5, None, 2.0] for i in range(4001)})
+steps = [
+    ("fill texts", fill, texts, {"columns": texts.columns, "method": "value", "value": "x"}, [("a",), ("x",), ("x",)]),
+    ("fill numbers", fill, numbers, {"columns": numbers.columns, "method": "value", "value": "0"}, [(1.5,), (0.0,), (2.0,)]),
+    ("fill down", fill, texts, {"columns": texts.columns, "method": "down"}, [("a",), ("a",), ("a",)]),
+    ("filter", keep, numbers, {"conditions": [{"column": c, "operator": ">", "value": "1,5"} for c in numbers.columns]}, [(2.0,)]),
+]
+for label, action, df, params, rows in steps:
+    start = time.perf_counter()
+    out = action(df, params, StubContext())
+    seconds = time.perf_counter() - start
+    assert out.width == 4001 and out.rows() == [row * 4001 for row in rows], (label, out.shape)
+    assert seconds < 5, f"{label} took {seconds:.1f} s"  # 30 s and more when every column made the table's schema anew
+"""
+
+
+def test_fill_and_filter_many_columns_quickly():
+    """Fill empty values with a fixed value took 9 s for 2,000 columns and 30 s for 4,000 (0.6.2:
+    7 and 23 s), and Filter rows with a condition for each of 4,000 columns 8 s: every column made
+    the schema of the whole table anew. In a process of its own, so that a stack overflow of so
+    many columns shows as a failed test."""
+    done = subprocess.run([sys.executable, "-c", _WIDE], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
