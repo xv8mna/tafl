@@ -57,6 +57,7 @@ from .filters import (
     PERIODS,
     VALUE,
     Filter,
+    NotAStep,
     apply,
     default_options,
     facet,
@@ -746,12 +747,18 @@ class FilterPane(QWidget):
 
     def add_as_step(self, index: int) -> None:
         """Turn the filter into a step after the selected one ("Filter rows by formula"); the
-        filter itself is removed."""
+        filter itself is removed. A filter that a step can't say the same way stays: its card says
+        why."""
         filters = self.filters()
         if not 0 <= index < len(filters) or self.df is None or unusable(filters[index], self.df.schema):
             return
         chosen = filters.pop(index)
-        condition = formula(chosen, self.df.schema[chosen.column])
+        try:
+            condition = formula(chosen, self.df.schema[chosen.column])
+        except NotAStep as reason:
+            if index < len(self.cards):
+                self.cards[index].status.setText(f"Not added as a step: {reason}.")
+            return
         action = self.session.registry.actions["rows.filter_formula"]
         self.session.add_step(action, params={"condition": condition, "keep": "keep"})
         self._save(filters)

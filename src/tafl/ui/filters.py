@@ -35,7 +35,7 @@ from typing import Any
 
 import polars as pl
 
-from tafl.api import col
+from tafl.api import ActionError, col, expressions
 
 VALUE, COUNT = "value", "count"  # the columns of a facet
 MATCH, NO_MATCH = "match", "no match"
@@ -57,6 +57,11 @@ _NEEDS = {
     "length": "text length needs a text column",
     "regex": "a pattern needs a text column",
 }
+
+
+class NotAStep(ValueError):
+    """A filter that the step "Filter rows by formula" can't say: it would keep other rows. The
+    text says why, in plain words."""
 
 
 @dataclass
@@ -282,6 +287,10 @@ def from_json(values: list[Any], dtype: pl.DataType) -> list[Any]:
     return converted
 
 
+def _zone(dtype: Any) -> str | None:
+    return getattr(dtype, "time_zone", None)
+
+
 def _convert(value: Any, dtype: pl.DataType) -> Any:
     if dtype == pl.String:
         return value if isinstance(value, str) else str(value)
@@ -374,7 +383,8 @@ def facet(
 
 
 def formula(f: Filter, dtype: pl.DataType) -> str:
-    """The filter as a condition for the step "Filter rows by formula" (same rows)."""
+    """The filter as a condition for the step "Filter rows by formula" (same rows). Raises
+    NotAStep for a filter that a step can't say the same way."""
     if not f.values and not f.excluded:  # nothing picked yet: the filter keeps all rows
         return "TRUE"
     name = "[" + f.column.replace("]", "]]") + "]"
@@ -398,7 +408,7 @@ def formula(f: Filter, dtype: pl.DataType) -> str:
         test = f"regexp_matches({name}, {_sql(str(f.options.get('pattern') or ''))})"
         parts += [test if value == MATCH else f"NOT {test}" for value in values if value in (MATCH, NO_MATCH)]
     elif values:
-        parts.append(f"{_picked_sql(f, name)} IN ({', '.join(_sql(v) for v in values)})")
+        parts.append(f"{_picked_sql(f, name, dtype)} IN ({', '.join(_sql(v) for v in values)})")
     if f.excluded:  # empty cells pass unless they are left out too
         if len(parts) > 1:
             parts = [f"({p})" if " AND " in p else p for p in parts]
@@ -413,15 +423,38 @@ def formula(f: Filter, dtype: pl.DataType) -> str:
     return " OR ".join(parts) if parts else "FALSE"
 
 
-def _picked_sql(f: Filter, name: str) -> str:
+def _picked_sql(f: Filter, name: str, dtype: pl.DataType) -> str:
     if f.facet == "period":
+        when = _local_time(name, dtype)
         by = f.options.get("by", "month")
         if by == "quarter":
-            return f"year({name}) || ' Q' || quarter({name})"
-        return f"strftime({name}, '{_PERIOD_FORMATS.get(by, '%Y-%m')}')"
+            return f"year({when}) || ' Q' || quarter({when})"
+        return f"strftime({when}, '{_PERIOD_FORMATS.get(by, '%Y-%m')}')"
     if f.facet == "length":
         return f"length({name})"
     return name
+
+
+def _local_time(name: str, dtype: pl.DataType) -> str:
+    """The cells of a date-time column in the time the grid shows: with a time zone, the local time
+    of that zone (in a step they would be in this PC's time zone)."""
+    zone = _zone(dtype) if dtype == pl.Datetime else None
+    if zone is None:
+        return name
+    # Polars' zones are names (it makes Etc/GMT-1 of +01:00): DuckDB should know them all
+    if (problem := _duckdb_problem(f"timezone({_sql(zone)}, TIMESTAMPTZ '2000-01-01 00:00:00+00:00')")) is not None:
+        raise NotAStep(f"the step can't use the time zone {zone} of this column ({problem})")
+    return f"timezone({_sql(zone)}, {name})"
+
+
+def _duckdb_problem(expression: str) -> str | None:
+    """Why DuckDB, which calculates the steps, can't calculate a fixed expression, or None (not
+    kept: an interrupt would be kept as a problem)."""
+    try:
+        expressions.evaluate(pl.DataFrame({"x": [0]}), expression)
+    except ActionError as error:
+        return str(error).splitlines()[0].removeprefix("Formula error: ")
+    return None
 
 
 def _range_sql(name: str, limits: list[float], index: int, lower_inclusive: bool) -> str:

@@ -17,6 +17,7 @@ from tafl.ui import app, data_panel, filter_pane
 from tafl.ui.data_panel import DataPanel
 from tafl.ui.filter_pane import MAX_CARDS, FilterPane
 from tafl.ui.filters import (
+    PERIODS,
     Filter,
     apply,
     facet,
@@ -989,3 +990,34 @@ def test_a_filter_without_a_card_leaves_the_values_of_a_card_in_its_list(window,
     assert card.status.text().endswith("· 1 selected")
     assert [value for value in card.model.applied()] == [first]
     assert panel.model.frame.height == 0
+
+
+def same_rows(act, df: pl.DataFrame, chosen: Filter) -> list[int]:
+    """The rows of the card and of the step that Add as step makes of it: they must be the same."""
+    card = apply(df, [chosen])["id"].to_list()
+    condition = formula(chosen, df.schema[chosen.column])
+    step = act("rows.filter_formula", df, {"condition": condition, "keep": "keep"})["id"].to_list()
+    assert step == card, (chosen, condition)
+    return card
+
+
+def zoned(zone: str) -> pl.DataFrame:
+    """Moments around the ends of months and years, in the time zone ``zone``."""
+    moments = [dt.datetime(2025, 1, 31, 23, 30), dt.datetime(2025, 1, 15, 12), dt.datetime(2025, 3, 31, 22, 30), dt.datetime(2024, 12, 31, 23, 59), dt.datetime(2025, 2, 1, 4, 30), None]  # fmt: skip
+    when = pl.Series("When", moments).dt.replace_time_zone("UTC").dt.convert_time_zone(zone)
+    return pl.DataFrame({"id": range(len(moments)), "When": when})
+
+
+@pytest.mark.parametrize("zone", ["UTC", "America/New_York", "Europe/Berlin", "Asia/Kolkata"])
+def test_time_periods_of_a_column_with_a_time_zone_as_a_step(act, zone):
+    """The card groups by the local time of the column's zone, as the grid shows it; the step
+    took the time in this PC's zone: 2025-01-31 23:30 UTC was February in Berlin."""
+    df = zoned(zone)
+    local = df["When"].dt.strftime("%Y-%m").to_list()
+    for by in PERIODS:
+        periods, _ = facet(df, [Filter("When", [], "period", {"by": by})], 0)
+        for period in periods["value"].to_list():
+            rows = same_rows(act, df, Filter("When", [period], "period", {"by": by}))
+            same_rows(act, df, Filter("When", [period], "period", {"by": by}, excluded=True))
+            if by == "month" and period is not None:
+                assert rows == [row for row, text in enumerate(local) if text == period], (zone, period)
