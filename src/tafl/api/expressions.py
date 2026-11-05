@@ -364,7 +364,8 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     _check_calls(formula)
     _check_names(formula, df.columns)
     con = _connection()
-    frame, kinds, beyond, unsigned = _readable(df if table else _with_row_number(df, formula))
+    exact_times = "time_ns" in {_fold(formula[t.start : t.end]) for t in tokenize(formula) if t.kind == "word"}
+    frame, kinds, beyond, unsigned = _readable(df if table else _with_row_number(df, formula), exact_times=exact_times)
     tried: set[str] = set()
     while True:
         try:
@@ -724,7 +725,9 @@ def _same_reading(sql: str) -> bool:
     return index == len(theirs)
 
 
-def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, str], dict[str, int], list[str]]:
+def _readable(
+    frame: pl.DataFrame, *, exact_times: bool = False
+) -> tuple[pl.DataFrame, dict[str, str], dict[str, int], list[str]]:
     """``frame`` in types that Arrow, which hands it over to DuckDB, has; the types that formulas
     calculate with for the columns that need another one than DuckDB gives them (see _selected);
     the unsigned 128-bit columns with numbers beyond 2^127 - 1, with their highest number; and the
@@ -735,7 +738,10 @@ def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, str], dict[s
     and mixes UHUGEINT with signed numbers as a decimal number. They become Int64 (no cast in
     DuckDB: fast with thousands of columns); unsigned 64-bit ones all become HUGEINT if one of them
     doesn't fit (a list of thousands of BIGINT and HUGEINT columns takes DuckDB gigabytes). Only an
-    unsigned 128-bit column with a number beyond HUGEINT stays UHUGEINT (see _check_unsigned)."""
+    unsigned 128-bit column with a number beyond HUGEINT stays UHUGEINT (see _check_unsigned).
+
+    ``exact_times``: the formula has TIME_NS, which DuckDB compares with a TIME to the
+    microsecond (08:00:00 = TIME_NS '08:00:00.000000001'): the times of day stay TIME_NS."""
     kinds: dict[str, str] = {}
     beyond: dict[str, int] = {}
     changed: list[pl.Series] = []
@@ -757,7 +763,7 @@ def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, str], dict[s
                 kinds[name] = "HUGEINT"
             else:
                 changed.append(column.cast(pl.Int64).alias(name))
-        elif dtype == pl.Time and not nanoseconds:
+        elif dtype == pl.Time and not nanoseconds and not exact_times:
             # Polars' times are TIME_NS for DuckDB, which compares them with a TIME only with = and
             # IN, and adds no INTERVAL to them; TIME holds them when none has nanoseconds (all of the
             # columns, as TIME and TIME_NS can't be compared either)
@@ -1106,9 +1112,14 @@ def _text_hint(text: str, raw: str, formula: str, texts: Sequence[str]) -> str |
 def _nanosecond_hint(formula: str, nanos: Sequence[str]) -> str:
     """For a time of day with nanoseconds (TIME_NS for DuckDB), which a formula can compare with a
     time only with = and IN, and can't add an INTERVAL to."""
+    if not nanos:  # the times are TIME_NS for a formula with TIME_NS (see _readable)
+        return (
+            "a formula with TIME_NS gets the times of day as TIME_NS, which it compares with a TIME only by = and IN: "
+            "write its times all as TIME_NS, such as TIME_NS '12:00:00'"
+        )
     named = [name for name in _text_columns(formula, nanos, None)] or list(nanos)
-    first = "[" + named[0].replace("]", "]]") + "]" if named else "[Time]"
-    subject = " and ".join("[" + name.replace("]", "]]") + "]" for name in named[:2]) or "a column"
+    first = "[" + named[0].replace("]", "]]") + "]"
+    subject = " and ".join("[" + name.replace("]", "]]") + "]" for name in named[:2])
     holds = "hold" if len(named) > 1 else "holds"
     return (
         f"{subject} {holds} times with nanoseconds, which a formula compares with a time only by = and IN: write "

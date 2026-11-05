@@ -982,7 +982,8 @@ def test_a_time_of_day_is_compared_with_a_time():
     """Polars' times are TIME_NS for DuckDB, which compares them with a time such as TIME '12:00:00'
     only by = and IN: [T] > TIME '12:00:00' stopped with "Cannot compare values of type TIME_NS and
     type TIME", also BETWEEN, [T] + INTERVAL 1 HOUR and DATE '2025-01-01' + [T]. Times without
-    nanoseconds go as TIME now; with nanoseconds they keep them, and the message says what to do."""
+    nanoseconds go as TIME now. Times with nanoseconds keep them, and so do the times of a formula with
+    TIME_NS (DuckDB compares a TIME with a TIME_NS to the microsecond); the message says what to do."""
     hours = [8 * 3600 * 10**9, 13 * 3600 * 10**9, None]
     df = pl.DataFrame({
         "T": pl.Series(hours, dtype=pl.Int64).cast(pl.Time),
@@ -996,6 +997,15 @@ def test_a_time_of_day_is_compared_with_a_time():
     assert expressions.evaluate(df, "[N]").cast(pl.Int64).to_list() == [8 * 3600 * 10**9 + 1, 1, None]  # with its nanoseconds
     assert expressions.evaluate(df, "[T] > [N]").to_list() == [False, True, None]  # both as TIME_NS, as before
     assert expressions.evaluate(df, "[N] = TIME_NS '08:00:00.000000001'").to_list() == [True, False, None]
+    plain = df.select("T")
+    assert expressions.evaluate(plain, "[T] = TIME_NS '08:00:00.000000001'").to_list() == [False, False, None]
+    assert expressions.evaluate(plain, "[T] < TIME_NS '08:00:00.000000001'").to_list() == [True, False, None]
+    with pytest.raises(ActionError) as raised:
+        expressions.evaluate(plain, "[T] > TIME '12:00:00' AND [T] <> TIME_NS '08:00:00.000000001'")
+    assert str(raised.value).startswith(
+        "Formula error: a formula with TIME_NS gets the times of day as TIME_NS, which it compares with a TIME only by "
+        "= and IN: write its times all as TIME_NS, such as TIME_NS '12:00:00'"
+    )
     with pytest.raises(ActionError) as raised:
         expressions.evaluate(df, "[N] > TIME '08:00:00'")
     assert str(raised.value).startswith(

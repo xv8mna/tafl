@@ -1101,6 +1101,17 @@ def test_values_with_nanoseconds_are_stored_with_them(act):
     assert from_json(["2025-01-01T08:30:00.000000001"], pl.Datetime("us")) == []  # a value the column can't hold
 
 
+def test_a_time_with_nanoseconds_as_a_step_on_times_without_them(act):
+    """A time of day with nanoseconds in a step, on a column whose times have none: the step's
+    TIME_NS keeps the column's times as TIME_NS, so 08:00:00.000000001 is not 08:00:00."""
+    times = pl.Series("T", [8 * 3600 * 10**9, 13 * 3600 * 10**9, None], dtype=pl.Int64).cast(pl.Time)
+    df = pl.DataFrame({"id": [0, 1, 2], "T": times})
+    for values in (["08:00:00.000000001"], ["08:00:00", "13:00:00.000000001"], ["13:00:00", None]):
+        for excluded in (False, True):
+            same_rows(act, df, Filter("T", values, excluded=excluded))
+    assert same_rows(act, df, Filter("T", ["08:00:00.000000001"])) == []
+
+
 def test_time_spans_are_stored_with_all_their_digits(act):
     """1 µs made INTERVAL '1e-06 seconds', which stopped the step; 1 ns and 2 ns were both 0.0 (the
     card kept no row, the step both); 300 years and 1 µs lost the µs. A step has microseconds only:
