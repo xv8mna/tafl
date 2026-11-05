@@ -80,6 +80,7 @@ _CLASSES = {
     "W": f"[^{_WORD_CHARS}]",
 }
 _IN_CLASS = {"d": r"\p{Nd}", "D": r"\P{Nd}", "s": _SPACE_CHARS, "w": _WORD_CHARS}  # \S and \W can't be part of a [...]
+_REPEAT = re.compile(r"\{\s*\d+\s*(?:,\s*\d*\s*)?\}")  # a counted repetition as Polars reads it, also with spaces
 
 
 class NotAStep(ValueError):
@@ -813,6 +814,10 @@ def _re2_pattern(pattern: str) -> str:
                 if pattern.startswith(start, i):
                     out.append(start)
                     i += 1
+            continue
+        elif char == "{" and (repeat := _REPEAT.match(pattern, i)):  # a{1, 2}: RE2 reads it as text with the spaces
+            out.append(re.sub(r"\s+", "", repeat.group()))
+            i = repeat.end()
             continue
         out.append(char)
         i += 1

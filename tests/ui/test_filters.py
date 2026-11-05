@@ -1178,6 +1178,15 @@ def test_the_classes_of_a_pattern_as_a_step_are_those_of_the_card_for_every_char
         assert card ^ step <= unknown, (pattern, [hex(c) for c in sorted(card ^ step - unknown)[:10]])
 
 
+def test_a_repetition_with_spaces_as_a_step(act):
+    """Polars reads a{1, 2} as one or two a, DuckDB as the text "a{1, 2}": the step kept other rows."""
+    texts = pl.DataFrame({"id": range(5), "T": ["a", "aa", "aaa", "a{1, 2}", "a{ 2 }"]})
+    for pattern, rows in (("^a{1, 2}$", [0, 1]), ("^a{1 ,2}$", [0, 1]), ("^a{ 2 }$", [1]), ("^a{1,}$", [0, 1, 2]), ("^a{ 2 }?$", [1])):
+        assert same_rows(act, texts, Filter("T", ["match"], "regex", {"pattern": pattern})) == rows, pattern
+        same_rows(act, texts, Filter("T", ["no match"], "regex", {"pattern": pattern}))
+    assert "'^a{1,2}$'" in formula(Filter("T", ["match"], "regex", {"pattern": "^a{1, 2}$"}), pl.String)
+
+
 def test_a_step_that_would_keep_other_rows_here_is_not_made():
     """Add as step runs the step's condition on the column at the step: where its rows differ from
     the card's, for whatever reason, it says so instead of making the step. Such as a quarter of a
