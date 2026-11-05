@@ -98,7 +98,19 @@ def filter_rows(df, p, ctx):
     schema = df.schema  # once: Polars makes it anew for every call, with all columns (seconds for thousands)
     typed: dict[tuple[Any, ...], Any] = {}  # each typed value read once for each type of column (see _typed)
     texts = _decimal_texts(df, schema, [c.column for c in p.conditions if c.operator in _TEXT_OPERATORS])
-    mask_parts = [_condition(df, c, p.case_sensitive, schema, ctx.warn, typed, texts) for c in p.conditions]
+    warned: list[tuple[str, str]] = []  # (column, warning): 3 of them in full, the others in one line
+    mask_parts = [
+        _condition(df, c, p.case_sensitive, schema, lambda text, c=c: warned.append((c.column, text)), typed, texts)
+        for c in p.conditions
+    ]
+    for _, text in warned[:3]:
+        ctx.warn(text)
+    if len(warned) > 3:
+        more = len(warned) - 3
+        named = ", ".join(f"'{column}'" for column, _ in warned[3:6]) + (", …" if more > 3 else "")
+        ctx.warn(
+            f"{more:,} more condition{'s compare' if more > 1 else ' compares'} texts character by character: {named}"
+        )
     mask = pl.all_horizontal(mask_parts) if p.match == "all" else pl.any_horizontal(mask_parts)
     mask = mask.fill_null(False)
     return df.filter(mask if p.keep == "keep" else ~mask)

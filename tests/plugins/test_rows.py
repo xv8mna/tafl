@@ -95,6 +95,20 @@ def test_text_compared_in_order_with_a_time_says_that_it_compares_text_and_which
     assert names(act("rows.filter_formula", df, {"condition": formula})) == in_time_order
 
 
+@pytest.mark.parametrize(("count", "last"), [(3, None), (4, "1 more condition compares texts character by character: 'c3'"),
+                                             (6, "3 more conditions compare texts character by character: 'c3', 'c4', 'c5'"),
+                                             (4000, "3,997 more conditions compare texts character by character: 'c3', 'c4', 'c5', …")])
+def test_text_compared_in_order_in_many_conditions_warns_three_times_and_counts_the_others(act, count, last):
+    """One warning for each condition: 4,000 conditions gave 4,000 warnings (827,000 characters),
+    which the step's messages show in one text. As Append does: 3 of them, then one line."""
+    df = pl.DataFrame({f"c{i}": ["1", "2"] for i in range(count)})
+    ctx = StubContext()
+    out = act("rows.filter", df, {"conditions": [{"column": c, "operator": ">", "value": "1"} for c in df.columns]}, ctx)
+    assert out.height == 1  # the rows don't change
+    assert [w.split(",")[0] for w in ctx.warnings[:3]] == [f"Column 'c{i}' holds text" for i in range(3)]
+    assert ctx.warnings[3:] == ([] if last is None else [last])
+
+
 @pytest.mark.parametrize(
     ("operator", "value"),
     [
