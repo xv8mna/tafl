@@ -338,8 +338,8 @@ def test_date_times_and_decimal_numbers_are_split_as_pivot_names_them(act):
 @pytest.mark.parametrize(
     ("series", "label"),
     [
-        (pl.Series("v", [[1, 2], None]), "list(int64)"),
-        (pl.Series("v", [{"a": 1}, None]), "struct({'a': int64})"),
+        (pl.Series("v", [[1, 2], None]), "list"),
+        (pl.Series("v", [{"a": 1}, None]), "record"),
         (pl.Series("v", [dt.timedelta(hours=2), None]), "duration"),
         (pl.Series("v", [b"a,b", None]), "binary"),
     ],

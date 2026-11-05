@@ -328,7 +328,8 @@ def midnight_to_date(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def type_label(dtype: pl.DataType) -> str:
-    """The word for a type that the app shows: text, integer, number, date, ..."""
+    """The word for a type that the app shows: text, integer, number, date, ... Lists of any
+    length are "list", records (Parquet's structs) "record" and a plugin's own values "object"."""
     if dtype == pl.String:
         return "text"
     if dtype.is_integer():
@@ -347,6 +348,12 @@ def type_label(dtype: pl.DataType) -> str:
         return "duration"
     if dtype == pl.Null:
         return "empty"
+    if isinstance(dtype, (pl.List, pl.Array)):
+        return "list"
+    if isinstance(dtype, pl.Struct):
+        return "record"
+    if dtype == pl.Object:
+        return "object"
     return str(dtype).lower()
 
 

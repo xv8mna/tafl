@@ -194,8 +194,8 @@ def test_aggregate_minimum_and_maximum_of_lists_stop_the_step(act):
     df = pl.DataFrame({"K": ["a", "a", "b"], "L": [[3, 1], [2], [5]], "S": [{"a": 1}, {"a": 2}, {"a": 3}]})
     with pytest.raises(ActionError) as raised:
         act("calc.aggregate", df, {"group_by": ["K"], "calculations": [{"function": "min", "column": "L"}]})
-    assert str(raised.value) == "“L” holds list(int64) values, which Minimum can't compare"
-    with pytest.raises(ActionError, match="^“S” holds struct.* values, which Maximum can't compare$"):
+    assert str(raised.value) == "“L” holds list values, which Minimum can't compare"
+    with pytest.raises(ActionError, match="^“S” holds record values, which Maximum can't compare$"):
         act("calc.aggregate", df, {"calculations": [{"function": "max", "column": "S"}]})
     first = act("calc.aggregate", df, {"group_by": ["K"], "calculations": [{"function": "first", "column": "L"}]})
     assert first.rows() == [("a", [3, 1]), ("b", [5])]

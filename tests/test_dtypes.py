@@ -436,6 +436,28 @@ def test_bytes_are_text():
     assert not dtypes.bytes_are_text(pl.Series(["ä".encode()[:1]]))  # half of a character
 
 
+@pytest.mark.parametrize(
+    ("values", "dtype", "label"),
+    [
+        (["a"], pl.String, "text"),
+        ([1], pl.Int64, "integer"),
+        ([1.5], pl.Float64, "number"),
+        ([dt.datetime(2025, 1, 2)], pl.Datetime("us", "UTC"), "date-time"),
+        ([dt.timedelta(1)], pl.Duration("ms"), "duration"),
+        ([None], pl.Null, "empty"),
+        ([["a", "b"]], pl.List(pl.String), "list"),  # Polars' own words were list(string), ...
+        ([[[1]]], pl.List(pl.List(pl.Int64)), "list"),
+        ([[1, 2]], pl.Array(pl.Int64, 2), "list"),
+        ([{"x": 1, "y": "a"}], pl.Struct({"x": pl.Int64, "y": pl.String}), "record"),
+        ([object()], pl.Object, "object"),
+    ],
+)
+def test_type_label_says_list_record_and_object_in_plain_words(values, dtype, label):
+    """The word under a column's name in the grid, and in messages such as "“Tags” holds list
+    values, which can't be split"."""
+    assert dtypes.type_label(pl.Series(values, dtype=dtype).dtype) == label
+
+
 def test_text_expr_writes_decimal_numbers_with_all_their_digits_and_no_exponent():
     values = [2.0, 1.5, -0.0, 0.1 + 0.2, 1 / 3, 1e16, -1e20, 1e-7, 2.5e-8, 123456789012345.0, 2.0**53, 2.0**53 + 2]
     assert _texts(values) == [

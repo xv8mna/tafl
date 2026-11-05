@@ -255,8 +255,8 @@ def test_minimum_and_maximum_of_lists_stop_the_step(act):
     df = pl.DataFrame({"K": ["a", "a", "b"], "O": ["x"] * 3, "L": [[3, 1], [2], [5]], "S": [{"a": 1}, {"a": 2}, {"a": 3}]})
     with pytest.raises(ActionError) as raised:
         pivot(act, df, rows=["K"], column="O", value="L", function="min")
-    assert str(raised.value) == "“L” holds list(int64) values, which Minimum can't compare"
-    with pytest.raises(ActionError, match="^“S” holds struct.* values, which Maximum can't compare$"):
+    assert str(raised.value) == "“L” holds list values, which Minimum can't compare"
+    with pytest.raises(ActionError, match="^“S” holds record values, which Maximum can't compare$"):
         pivot(act, df, rows=["K"], column="O", value="S", function="max")
     assert pivot(act, df, rows=["K"], column="O", value="L", function="first").rows() == [("a", [3, 1]), ("b", [5])]
     assert pivot(act, df, rows=["K"], column="O", value="L", function="count").rows() == [("a", 2), ("b", 1)]
@@ -397,7 +397,7 @@ def test_values_that_cant_become_names(act):
     df = pl.DataFrame({"O": [[1], [2]], "V": [1, 2]})
     with pytest.raises(ActionError) as raised:
         pivot(act, df, column="O", value="V")
-    assert str(raised.value) == "The values of “O” (list(int64)) can't become column names"
+    assert str(raised.value) == "The values of “O” (list) can't become column names"
     with pytest.raises(ActionError, match="can't become column names"):
         pivot(act, pl.DataFrame({"O": [b"\x01"], "V": [1]}), column="O", value="V")
 

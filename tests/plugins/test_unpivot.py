@@ -91,7 +91,7 @@ def test_the_errors(act):
     nested = pl.DataFrame({"K": [1], "L": [[1, 2]], "N": [3]})
     with pytest.raises(ActionError) as raised:
         unpivot(act, nested, columns=["N", "L"])
-    assert str(raised.value) == "“L” holds list(int64) values, which can't be turned into rows"
+    assert str(raised.value) == "“L” holds list values, which can't be turned into rows"
 
 
 def values(act, ctx=None, **columns):
