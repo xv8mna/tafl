@@ -582,7 +582,7 @@ def formula(f: Filter, dtype: pl.DataType, data: pl.Series | None = None) -> str
     calculated (such as a date-time beyond the years that Polars knows): only NotAStep."""
     try:
         step = _formula(f, dtype, data)
-        if data is not None:
+        if data is not None and _may_differ(f, dtype):
             _check_rows(f, step, data)
     except NotAStep:
         raise
@@ -593,6 +593,18 @@ def formula(f: Filter, dtype: pl.DataType, data: pl.Series | None = None) -> str
             raise
         raise NotAStep("a step can't say these values") from None
     return step
+
+
+def _may_differ(f: Filter, dtype: pl.DataType) -> bool:
+    """Whether the step's rows can differ from the card's in a way that no rule here foresees, so
+    that _check_rows looks: patterns (DuckDB's tables of Unicode), periods (calendars and the
+    rules of zones), date-times with a time zone or with nanoseconds, times of day and time spans.
+    Not values, ranges and lengths of texts, numbers, dates and other date-times: DuckDB compares
+    these as Polars does, and the check would take as long as the step (a second for 20,000 texts
+    on a million rows)."""
+    if f.facet in ("regex", "period") or dtype in (pl.Time, pl.Duration):
+        return True
+    return dtype == pl.Datetime and (_zone(dtype) is not None or _unit(dtype) == "ns")
 
 
 def _check_rows(f: Filter, step: str, data: pl.Series) -> None:

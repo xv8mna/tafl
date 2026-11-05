@@ -1257,10 +1257,37 @@ def test_a_step_that_would_keep_other_rows_here_is_not_made():
         with pytest.raises(NotAStep, match=r"^a step would keep other rows than the filter: 1 of the \d rows here$"):
             formula(chosen, data.dtype, data)
     assert formula(word, pl.String, letters.filter(letters != "\U00013460")).startswith("regexp_matches([T]")
-    far = pl.Series("When", [10**16, 0], dtype=pl.Int64).cast(pl.Datetime("ms"))  # the year 318857, and 1970
-    assert apply(pl.DataFrame({"id": [0, 1], "When": far}), [Filter("When", ["1970-01-01T00:00:00"])])["id"].to_list() == [1]
+    far = pl.Series("When", [10**16, 0], dtype=pl.Int64).cast(pl.Datetime("ms")).dt.replace_time_zone("UTC")  # the year 318857, and 1970
+    assert apply(pl.DataFrame({"id": [0, 1], "When": far}), [Filter("When", ["1970-01-01T00:00:00+00:00"])])["id"].to_list() == [1]
     with pytest.raises(NotAStep, match=r"^the step would stop with an error on these values$"):
-        formula(Filter("When", ["1970-01-01T00:00:00"]), far.dtype, far)
+        formula(Filter("When", ["1970-01-01T00:00:00+00:00"]), far.dtype, far)
+
+
+def test_add_as_step_checks_the_rows_only_where_they_can_differ(monkeypatch):
+    """The check of the step's rows took as long as the step: 50,000 texts five seconds on a
+    million rows, on the window's thread. It looks only where the step can differ from the card."""
+    from tafl.ui import filters as module
+
+    checked = []
+    monkeypatch.setattr(module, "_check_rows", lambda f, step, data: checked.append(f.column))
+    zoned = pl.Series([dt.datetime(2025, 1, 1)]).dt.replace_time_zone("Europe/Berlin")
+    columns = {
+        "text": (pl.Series(["a"]), Filter("text", ["a"])),
+        "whole": (pl.Series([1]), Filter("whole", [1])),
+        "number": (pl.Series([1.5]), Filter("number", [1], "ranges", {"thresholds": [1.0]})),
+        "date": (pl.Series([dt.date(2025, 1, 1)]), Filter("date", ["2025-01-01"])),
+        "moment": (pl.Series([dt.datetime(2025, 1, 1)]), Filter("moment", ["2025-01-01T00:00:00"])),
+        "length": (pl.Series(["a"]), Filter("length", [1], "length")),
+        "pattern": (pl.Series(["a"]), Filter("pattern", ["match"], "regex", {"pattern": "a"})),
+        "period": (pl.Series([dt.date(2025, 1, 1)]), Filter("period", ["2025-01"], "period", {"by": "month"})),
+        "zoned": (zoned, Filter("zoned", stored_values(zoned))),
+        "nanoseconds": (pl.Series([dt.datetime(2025, 1, 1)], dtype=pl.Datetime("ns")), Filter("nanoseconds", ["2025-01-01T00:00:00"])),
+        "time": (pl.Series([dt.time(8)]), Filter("time", ["08:00:00"])),
+        "span": (pl.Series([dt.timedelta(hours=1)]), Filter("span", [3600.0])),
+    }
+    for name, (data, chosen) in columns.items():
+        assert formula(chosen, data.dtype, data.alias(name)), name
+    assert checked == ["pattern", "period", "zoned", "nanoseconds", "time", "span"]
 
 
 def test_add_as_step_says_why_a_filter_cant_be_one(session, qtbot):
