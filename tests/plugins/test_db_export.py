@@ -858,6 +858,39 @@ def test_sqlserver_whole_numbers_beyond_a_bigint_into_other_columns(registry):
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_columns_of_whole_numbers_name_their_own_range(registry):
+    """The message gave the range of a bigint for an int, smallint, tinyint or bit column, and a
+    value beyond the column but within a bigint (2^40 into an int) got the driver's message, which
+    names no column. Each column gives its own range, and values within it are written."""
+    ctx, name = _sqlserver()
+    big, beyond_int = pl.Series("Id", [2**64 - 1, 1], dtype=pl.UInt64), pl.Series("Id", [2**40, 1])
+    cases = [
+        ("bit", beyond_int, r"holds 0 and 1 \(bit\), but Id has others \(e\.g\. 1099511627776\)\. Change the column's type in the "
+         r"database, e\.g\. to bigint\."),
+        ("bit", pl.Series("Id", [0, 2]), r"holds 0 and 1 \(bit\), but Id has others \(e\.g\. 2\)\. .* e\.g\. to int\."),
+        ("tinyint", pl.Series("Id", [-1, 5]), r"holds whole numbers from 0 to 255 \(tinyint\), but Id has others \(e\.g\. -1\)"),
+        ("smallint", beyond_int, r"holds whole numbers from -32,768 to 32,767 \(smallint\), but Id has others \(e\.g\. 1099511627776\)"),
+        ("int", big, r"holds whole numbers from -2,147,483,648 to 2,147,483,647 \(int\), but Id has others \(e\.g\. "
+         r"18446744073709551615\)\. Change the column's type in the database, e\.g\. to decimal\(20, 0\)\."),
+        ("bigint", big, r"holds whole numbers from -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807 \(bigint\), but Id has others"),
+    ]  # fmt: skip
+    fits = {"bit": [0, 1], "tinyint": [0, 255], "smallint": [-32768, 32767], "int": [-(2**31), 2**31 - 1], "bigint": [2**63 - 1, 1]}
+    try:
+        for kind, values, message in cases:
+            with ctx.database("server") as db:
+                db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                db.execute(f"CREATE TABLE {name} (Id {kind})")
+            with pytest.raises(ActionError, match=rf"^The column Id of {name} {message}"):
+                registry.actions["db.export"](pl.DataFrame([values]), {"connection": "server", "table": name}, ctx)
+            registry.actions["db.export"](pl.DataFrame({"Id": fits[kind]}), {"connection": "server", "table": name}, ctx)
+            with ctx.database("server") as db:
+                assert sorted(db.read(f"SELECT CAST(Id AS bigint) AS Id FROM {name}")["Id"].to_list()) == sorted(fits[kind]), kind
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_delete_by_keys_looks_only_at_the_keys(registry):
     """Delete writes only the key values: decimals beside the keys, for a column of whole numbers,
     stopped it ("… holds whole numbers (int), but Price has decimals (e.g. 1.5) …"). As a key, and

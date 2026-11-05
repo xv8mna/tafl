@@ -1300,7 +1300,7 @@ def export_database(df, p, ctx):
             data = data.select(cols(c for c, n in names.items() if n in keys))
         _check_whole_numbers(data, names, types, p.table)
         _check_storable(data, db)
-        data = _fit_beyond_bigint(data, names, types, p.table, db.connector.id)
+        data = _fit_whole_numbers(data, names, types, p.table, db.connector.id)
         finding = keys if p.mode in ("update", "delete") else []  # key values that only find rows
         data = _fit_lengths(data, names, types, p.table, finding)
         kinds = {name.lower(): kind for name, kind in types.items()}
@@ -1414,30 +1414,43 @@ def _listed(words: list[str], last: str) -> str:
     return words[0] if len(words) == 1 else ", ".join(words[:-1]) + f" {last} " + words[-1]
 
 
-def _fit_beyond_bigint(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, connector_id: str) -> pl.DataFrame:
-    """Whole numbers beyond 64 bits (UInt64 from Parquet, 128 bits from a plugin), which the drivers
-    can't pass as numbers ("Python int too large to convert to SQLite INTEGER", "int too big to
-    convert"). SQLite holds none of them. In SQL Server, a text column gets their digits as text
-    (its length is checked as for other texts), a decimal column with enough digits gets them
-    exactly, and other columns stop the export with a plain message: whole numbers, float and real
-    (they would round them), a decimal with fewer digits, money, sql_variant and the rest."""
+def _fit_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, connector_id: str) -> pl.DataFrame:
+    """Whole numbers for the columns they go into. A SQL Server column of whole numbers takes those
+    of its own range (bit 0 and 1, tinyint 0 to 255, …): others stop the export with a plain
+    message (the driver's names no column). Whole numbers beyond 64 bits (UInt64 from Parquet, 128
+    bits from a plugin) the drivers can't pass as numbers ("Python int too large to convert to
+    SQLite INTEGER", "int too big to convert"): SQLite holds none of them; in SQL Server, a text
+    column gets their digits as text (its length is checked as for other texts), a decimal column
+    with enough digits gets them exactly, and other columns stop the export with a plain message:
+    float and real (they would round them), a decimal with fewer digits, money, sql_variant and the
+    rest."""
     kinds = {name.lower(): kind for name, kind in types.items()}
     changes = []
     for source in df.columns:
         target, column = names[source], df[source].alias("value")  # a fixed name, as in _round_half_away
-        if column.dtype not in (pl.UInt64, pl.Int128, pl.UInt128) or connector_id not in _BUILT_IN:
+        if not column.dtype.is_integer() or connector_id not in _BUILT_IN:
             continue
+        kind = kinds.get(target.lower(), "")
+        base, size, scale = _kind(kind)
+        whole = connector_id == "sqlserver" and base in _WHOLE_RANGES  # a column of whole numbers: its own range
+        if not whole and column.dtype not in (pl.UInt64, pl.Int128, pl.UInt128):
+            continue  # within 64 bits: the driver passes them, and the database converts them
+        least, most = _WHOLE_RANGES[base] if whole else _BIGINT
         low, high = column.min(), column.max()  # Python's whole numbers: exact
-        if high is None or _BIGINT[0] <= low <= high <= _BIGINT[1]:
+        if high is None or least <= low <= high <= most:
             continue
-        example = high if high > _BIGINT[1] else low
+        example = high if high > most else low
         if connector_id == "sqlite":
             raise ActionError(
                 f"SQLite stores whole numbers {_BIGINT_RANGE}, and {source} has others (e.g. {example}). Change {source} "
                 "to text before this step (Change type / format): a TEXT column keeps all their digits."
             )
-        kind = kinds.get(target.lower(), "")
-        base, size, scale = _kind(kind)
+        if whole:
+            held = "0 and 1" if base == "bit" else f"whole numbers from {least:,} to {most:,}"
+            raise ActionError(
+                f"The column {target} of {table} holds {held} ({kind}), but {source} has others (e.g. {example}). Change "
+                f"the column's type in the database, e.g. to {_fitting_whole_type(low, high, column.dtype)}."
+            )
         if base in _TEXT_KINDS:
             changes.append(column.cast(pl.String).alias(source))  # the digits of each number
             continue
@@ -1448,11 +1461,6 @@ def _fit_beyond_bigint(df: pl.DataFrame, names: dict[str, str], types: dict[str,
                 f"The column {target} of {table} holds numbers of up to {size - scale} digits before the decimal point "
                 f"({kind}), but {source} has longer ones (e.g. {example}). Make the column wider in the database, e.g. "
                 "decimal(38, 0)."
-            )
-        if base in _WHOLE_NUMBER_TYPES:
-            raise ActionError(
-                f"The column {target} of {table} holds whole numbers {_BIGINT_RANGE} ({kind}), but {source} has others "
-                f"(e.g. {example}). Change the column's type in the database, e.g. to decimal(38, 0)."
             )
         if base in ("float", "real"):
             raise ActionError(
@@ -1468,6 +1476,16 @@ def _fit_beyond_bigint(df: pl.DataFrame, names: dict[str, str], types: dict[str,
 
 
 _TEXT_KINDS = ("char", "varchar", "nchar", "nvarchar", "text", "ntext")
+# What SQL Server's columns of whole numbers hold (the driver passes only these to them, also to bit)
+_WHOLE_RANGES = {"bit": (0, 1), "tinyint": (0, 255), "smallint": (-(2**15), 2**15 - 1), "int": (-(2**31), 2**31 - 1), "bigint": _BIGINT}
+
+
+def _fitting_whole_type(low: int, high: int, dtype: pl.DataType) -> str:
+    """A SQL Server type for whole numbers from ``low`` to ``high``, as a new table gets it."""
+    for kind in ("int", "bigint"):
+        if _WHOLE_RANGES[kind][0] <= low and high <= _WHOLE_RANGES[kind][1]:
+            return kind
+    return "decimal(20, 0)" if dtype == pl.UInt64 else "decimal(38, 0)"
 
 
 _TEXT_TYPE = re.compile(r"(n?)(?:var)?char\((\d+)\)( collate \S+_utf8)?")  # a UTF-8 varchar counts bytes
