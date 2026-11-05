@@ -124,6 +124,16 @@ _TOO_LONG = (
 )
 # DuckDB's message when a value doesn't fit into the exact decimal it brings two of them to
 _DECIMAL_CAST = re.compile(r"(?:Casting value .*? to type|Could not cast value .*? to) DECIMAL\((\d+),\s*\d+\)")
+# DuckDB's messages when a function or an operator gets values of a type it doesn't take (see _text_hint)
+_CALL = re.compile(
+    r"No function matches the given name and argument types '([^\n]+)'\. You might need"
+    r"|Could not choose a best candidate function for the function call \"([^\n]+)\"\. In order"
+)
+_COMPARE = re.compile(r"Cannot compare values of type ([^\n]+?) and type ([^\n]+?) - an explicit cast is required")
+_TEMPORAL = re.compile(r"(?:DATE|TIME|TIMESTAMP|INTERVAL)\b|TIME_NS|TIMESTAMP_")
+_NUMERIC = re.compile(r"(?:U?(?:TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT)|FLOAT|DOUBLE|DECIMAL|BIGNUM)\b")
+_ARITHMETIC = {"+", "-", "*", "/", "//", "%", "**", "^"}
+_ALIASES = {"date_part": ("datepart", "extract"), "date_diff": ("datediff",), "date_trunc": ("datetrunc",), "date_sub": ("datesub",)}
 _temp: Path | None = None
 _temp_lock = threading.Lock()
 _connections: dict[int, duckdb.DuckDBPyConnection] = {}  # one per thread, by its id
@@ -359,11 +369,11 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
         # with the decimal places their values use (only then: it changes their text, 1.50 to 1.5)
         narrower = _narrower(frame, kinds) if _DECIMAL_CAST.search(str(e)) else None
         if narrower is None:
-            raise ActionError(_clean_error(e, formula, df.columns)) from None
+            raise ActionError(_clean_error(e, formula, df.columns, _texts(df))) from None
         try:
             values = _calculate(con, frame, narrower, beyond, body, formula, table=table, condition=condition)
         except duckdb.Error as e:
-            raise ActionError(_clean_error(e, formula, df.columns)) from None
+            raise ActionError(_clean_error(e, formula, df.columns, _texts(df))) from None
     if values.len() != df.height:
         raise ActionError(
             "The formula must give one value per row. For totals use the Aggregate action, "
@@ -433,6 +443,11 @@ def _calculate(
     if result_type.startswith("DECIMAL(") and _beyond_its_digits(values, result_type):
         raise ActionError(f"Formula error: {_TOO_LONG}\nFormula: {formula}")
     return values
+
+
+def _texts(df: pl.DataFrame) -> list[str]:
+    """The columns of text: _clean_error names them in a hint."""
+    return [name for name, dtype in df.schema.items() if dtype == pl.String]
 
 
 def _make_input(con: duckdb.DuckDBPyConnection, columns: str, *, table: bool, empty: bool = False) -> None:
@@ -951,8 +966,10 @@ def _first_line(error: BaseException) -> str:
     return (str(error).strip().splitlines() or [type(error).__name__])[0]
 
 
-def _clean_error(error: Exception, formula: str, columns: Sequence[str] = ()) -> str:
-    text = str(error)
+def _clean_error(error: Exception, formula: str, columns: Sequence[str] = (), texts: Sequence[str] = ()) -> str:
+    """DuckDB's message in plain words. ``texts``: the columns of text, for the hint when a function
+    gets text where it needs a date or a number."""
+    text = raw = str(error)
     # An aggregate such as SUM([x]) without OVER (...); a formula has no GROUP BY of its own, unless
     # in a query on __input
     if "must appear in the GROUP BY clause" in text and not re.search(r"\bgroup\s+by\b", formula, re.IGNORECASE):
@@ -1002,9 +1019,127 @@ def _clean_error(error: Exception, formula: str, columns: Sequence[str] = ()) ->
     cast = _DECIMAL_CAST.search(text)
     if cast and cast.group(1) == "38":  # two exact decimals whose values need more than 38 digits together
         return f"Formula error: {_TOO_LONG}\nFormula: {formula}"
-    if "+(" in text and "VARCHAR" in text:
-        text += " — to join text use || or CONCAT()"
+    hint = _text_hint(text, raw, formula, texts)
+    if hint:
+        return f"Formula error: {hint}\nFormula: {formula}"
     return f"Formula error: {text}\nFormula: {formula}"
+
+
+def _text_hint(text: str, raw: str, formula: str, texts: Sequence[str]) -> str | None:
+    """For a function or an operator that gets text where it needs a date or a number: which
+    columns hold text, and what to do. ``raw``: DuckDB's whole message, with the variants of the
+    function it lists."""
+    compare = _COMPARE.search(text)
+    if compare:  # [Date] > DATE '2025-01-01'
+        kinds = [compare.group(1), compare.group(2)]
+        if "VARCHAR" in kinds and any(_TEMPORAL.match(kind) for kind in kinds):
+            return _needs("a date", None, _text_columns(formula, texts, None))
+        return None
+    call = _CALL.search(text)
+    if not call:
+        return None
+    signature = call.group(1) or call.group(2)
+    name, _, arguments = signature.partition("(")
+    kinds = _types(arguments.removesuffix(")"))
+    if "VARCHAR" not in kinds:
+        return None
+    listed = raw.partition("Candidate functions:")[2]
+    variants = [_types(found) for found in re.findall(r"^\s+\S+?\((.*)\) -> ", listed, re.M)]
+    operator = name in _ARITHMETIC
+    columns = _text_columns(formula, texts, name)
+    if any(_TEMPORAL.match(kind) for kind in kinds if kind != "VARCHAR") or (
+        variants and all(any(_TEMPORAL.match(kind) for kind in variant) for variant in variants)
+    ):
+        return _needs("a date", None if operator else _typed(formula, name), columns)
+    if name == "+":
+        return _needs("numbers to add", None, columns)
+    if operator or (variants and all(any(_NUMERIC.match(kind) for kind in variant) for variant in variants)):
+        return _needs("numbers", None if operator else _typed(formula, name), columns)
+    return None
+
+
+def _needs(what: str, function: str | None, columns: Sequence[str]) -> str:
+    """The hint of _text_hint: ``function`` (as typed) needs ``what``, but ``columns`` hold text."""
+    target = "DATE" if what == "a date" else "DOUBLE"
+    if not columns:
+        if what == "numbers to add":
+            return "+ adds numbers, but gets text: to join text use || or CONCAT(); for numbers write CAST(... AS DOUBLE)"
+        subject = f"{function} gets text" if function else "a text is used"
+        return f"{subject} where {what} {'is' if what == 'a date' else 'are'} needed: write CAST(... AS {target})"
+    names = [f"[{name}]" for name in columns]
+    subject = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    one = len(names) == 1
+    holds, its = ("holds", "its") if one else ("hold", "their")
+    kind = ("a date" if one else "dates") if what == "a date" else ("a number" if one else "numbers")
+    change = f"change {its} type to {kind} before this step, or write CAST({names[0]} AS {target})"
+    if what == "numbers to add":
+        return f"{subject} {holds} text: to join text use || or CONCAT(); to add numbers, {change}"
+    if function:
+        return f"{function} needs {what}, but {subject} {holds} text: {change}"
+    return f"{subject} {holds} text, not {what}: {change}"
+
+
+def _typed(formula: str, function: str) -> str:
+    """A function of DuckDB's message as the formula writes it (EXTRACT for date_part)."""
+    names = {function, *_ALIASES.get(function, ())}
+    tokens = tokenize(formula)
+    for index, token in enumerate(tokens):
+        if token.kind == "word" and _fold(formula[token.start : token.end]) in names and _is_call(tokens, index):
+            return formula[token.start : token.end]
+    return function.upper()
+
+
+def _text_columns(formula: str, texts: Sequence[str], function: str | None) -> list[str]:
+    """The columns of text that a function (DuckDB's name) or an operator gets in the formula; when
+    there are none, the columns of text that the formula names."""
+    tokens = tokenize(formula)
+    by_name = {_fold(name): name for name in texts}  # DuckDB ignores the case of A-Z in names
+
+    def column(index: int | None) -> str | None:
+        if index is None:
+            return None
+        token = tokens[index]
+        if token.kind in ("column", "quoted") and token.closed:
+            return by_name.get(_fold(_name(formula, token)))
+        if token.kind == "word" and not _is_call(tokens, index):
+            following = _next(tokens, index)
+            if following is None or following.kind != "string":  # not DATE '2025-01-01'
+                return by_name.get(_fold(formula[token.start : token.end]))
+        return None
+
+    found: list[str | None] = []
+    names = {function, *_ALIASES.get(function, ())} if function else set()
+    for index, token in enumerate(tokens):
+        text = formula[token.start : token.end]
+        if token.kind == "operator" and text == function:
+            found += [column(_previous(tokens, index)), column(_next_index(tokens, index))]
+        elif token.kind == "word" and _fold(text) in names and _is_call(tokens, index):
+            depth = 0
+            for inner in range(_next_index(tokens, index) or index, len(tokens)):
+                depth += {"open": 1, "close": -1}.get(tokens[inner].kind, 0)
+                if depth == 0:
+                    break
+                if depth == 1:
+                    found.append(column(inner))
+    if not any(found):
+        found = [column(index) for index in range(len(tokens))]
+    return list(dict.fromkeys(name for name in found if name is not None))
+
+
+def _types(arguments: str) -> list[str]:
+    """The types of a list of them as DuckDB writes it: VARCHAR, DECIMAL(18,3), TIMESTAMP WITH TIME ZONE."""
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(arguments):
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(arguments[start:index].strip())
+            start = index + 1
+    if arguments[start:].strip():
+        parts.append(arguments[start:].strip())
+    return parts
 
 
 def _missing_column(name: str, formula: str, columns: Sequence[str]) -> str:

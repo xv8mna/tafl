@@ -919,6 +919,46 @@ def test_a_sum_beyond_38_digits_stops():
     assert expressions.evaluate(wide, "SUM([h]) OVER ()").to_list() == [str(12 * 10**37)] * 2
 
 
+def test_functions_for_dates_on_text_say_how_to_change_the_column():
+    """DuckDB's own message listed the variants of the function: "No function matches the given
+    name and argument types 'quarter(VARCHAR)'"."""
+    df = pl.DataFrame({"Date": ["2025-01-31", "2025-02-01"], "When": ["2025-01-31 08:00", None], "n": [1, 2]})
+    for formula, function in {
+        "STRFTIME([Date], '%Y')": "STRFTIME",
+        "DATE_DIFF('day', [Date], DATE '2026-12-31')": "DATE_DIFF",
+        "QUARTER([Date])": "QUARTER",
+        "EXTRACT(YEAR FROM [Date])": "EXTRACT",
+        "datediff('day', [Date], TODAY())": "datediff",
+    }.items():
+        with pytest.raises(ActionError) as raised:
+            expressions.evaluate(df, formula)
+        assert str(raised.value) == (
+            f"Formula error: {function} needs a date, but [Date] holds text: change its type to a date before this "
+            f"step, or write CAST([Date] AS DATE)\nFormula: {formula}"
+        )
+    for formula in ("[Date] > DATE '2025-01-01'", "TODAY() - [Date]", "[Date] + INTERVAL 1 MONTH"):
+        with pytest.raises(ActionError, match=r"^Formula error: \[Date\] holds text, not a date: change its type to a date"):
+            expressions.evaluate(df, formula)
+    with pytest.raises(ActionError, match=r"DATE_DIFF needs a date, but \[Date\] and \[When\] hold text: change their type to dates"):
+        expressions.evaluate(df, "DATE_DIFF('day', [Date], [When])")
+    with pytest.raises(ActionError, match=r"^Formula error: ROUND needs numbers, but \[Date\] holds text"):
+        expressions.evaluate(df, "ROUND([Date], 2) + [n]")
+
+
+def test_plus_on_text_says_how_to_add_numbers():
+    df = pl.DataFrame({"A": ["1", "2"], "B": ["3", "4"], "n": [1, 2]})
+    with pytest.raises(ActionError) as raised:
+        expressions.evaluate(df, "[A] + [B]")
+    assert str(raised.value) == (
+        "Formula error: [A] and [B] hold text: to join text use || or CONCAT(); to add numbers, change their type to "
+        "numbers before this step, or write CAST([A] AS DOUBLE)\nFormula: [A] + [B]"
+    )
+    with pytest.raises(ActionError, match=r"^Formula error: \[A\] holds text: to join text use \|\| or CONCAT\(\); to add numbers"):
+        expressions.evaluate(df, "[A] + [n]")
+    with pytest.raises(ActionError, match=r"^Formula error: \+ adds numbers, but gets text: to join text use \|\|"):
+        expressions.evaluate(df, "CAST([n] AS VARCHAR) + 1")
+
+
 _WIDE_UNSIGNED = """
 from decimal import Decimal
 import polars as pl
