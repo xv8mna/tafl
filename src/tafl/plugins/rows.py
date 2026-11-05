@@ -329,7 +329,7 @@ def _moment_comparison(column: pl.Expr, op: str, moment: _Moment, dtype: pl.Data
     column. (A Python date-time can't be in the year 10000, which 31.12.9999 23:59 in New York is
     in UTC, and its summer times in 2300 aren't Polars'.)"""
     if dtype == pl.Datetime and dtype.time_unit == "ns" and not _NANOSECONDS[0] <= moment.ns <= _NANOSECONDS[1]:
-        micros = moment.ns // 1000  # the microsecond of a moment just after the last nanosecond is not beyond it
+        micros = moment.ns // 1000  # just after the last nanosecond that is the last one's microsecond: the next one
         micros = micros if moment.ns < 0 else max(micros, _NANOSECONDS[1] // 1000 + 1)
         return _COMPARE[op](column, pl.lit(micros, dtype=pl.Datetime("us", dtype.time_zone)))
     number, rest = divmod(moment.ns, _size(dtype))

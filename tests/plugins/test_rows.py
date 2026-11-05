@@ -494,6 +494,21 @@ def test_a_typed_date_time_less_than_a_microsecond_inside_nanoseconds_is_in_nano
         assert filled.dtype == pl.Datetime("ns", zone) and filled.to_physical().to_list() == [moment, other, moment], text
 
 
+def test_a_typed_date_time_just_beyond_nanoseconds_is_beyond_all_of_them(act):
+    """2262-04-11 23:47:16.854775808 is in the microsecond of the last nanosecond: Polars compared
+    in microseconds, so that it equaled the values of that microsecond, and a fill cut it to
+    2262-04-11 23:47:16.854775 without a word."""
+    df = pl.DataFrame({"Name": list("abcde"), "At": nanosecond_stamps([HIGHEST, HIGHEST - 807, LOWEST, LOWEST + 808, None], None)})
+    for value, lower in [("2262-04-11 23:47:16.854775808", "abcd"), ("2262-04-11 23:47:16.8547759", "abcd"), ("1677-09-21 00:12:43.145224191", "")]:
+        assert names(flt(act, df, ("At", "=", value))) == [], value
+        assert names(flt(act, df, ("At", "!=", value))) == ["a", "b", "c", "d", "e"], value
+        assert names(flt(act, df, ("At", "<", value))) == list(lower), value
+        assert names(flt(act, df, ("At", ">=", value))) == [c for c in "abcd" if c not in lower], value
+        assert names(flt(act, df, ("At", "in", value))) == [], value
+        with pytest.raises(ActionError, match=r"its digits below a microsecond need nanoseconds, which reach only from 1677 to 2262$"):
+            act("rows.fill", df.filter(pl.col("Name") == "e"), {"columns": ["At"], "method": "value", "value": value})
+
+
 def nanoseconds_of(local: dt.datetime, zone: str | None) -> int:
     """The moment of a local time in nanoseconds since 1970 in UTC, with Python's zoneinfo and
     whole numbers (a time without a zone: as if it were UTC, as Polars keeps it)."""
