@@ -26,7 +26,7 @@ import shutil
 import string
 import tempfile
 import threading
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -122,6 +122,12 @@ _HUGEINT_MAX = 2**127 - 1
 _TOO_LONG = (
     "the result needs more than 38 digits, decimal places included, more than an exact number holds. "
     "For a decimal number (about 15 digits) write CAST(... AS DOUBLE)"
+)
+# DuckDB's messages for a time of day with nanoseconds (TIME_NS) against one without (TIME): a
+# comparison, BETWEEN, COALESCE, + INTERVAL, DATE + time
+_TIME_MIX = re.compile(
+    r"Cannot (?:compare|mix) values of type (?:TIME_NS and (?:type )?TIME|TIME and (?:type )?TIME_NS)\b"
+    r"|'[-+]\((?:TIME_NS, (?:INTERVAL|DATE)|(?:INTERVAL|DATE), TIME_NS)\)'"
 )
 # DuckDB's message when a value doesn't fit into the exact decimal it brings two of them to
 _DECIMAL_CAST = re.compile(r"(?:Casting value .*? to type|Could not cast value .*? to) DECIMAL\((\d+),\s*\d+\)")
@@ -391,7 +397,19 @@ def _evaluate(df: pl.DataFrame, formula: str, *, condition: bool) -> pl.Series:
     _check_names(formula, df.columns)
     con = _connection()
     exact_times = "time_ns" in {_fold(formula[t.start : t.end]) for t in tokenize(formula) if t.kind == "word"}
-    frame, kinds, beyond, unsigned = _readable(df if table else _with_row_number(df, formula), exact_times=exact_times)
+    parsed: list[dict] = []
+
+    def reads(name: str) -> bool:
+        """Whether the formula reads the column ``name``, by DuckDB's parse tree (made once, when
+        asked): TIME in TIME '12:00:00' is no column named Time."""
+        if not parsed:
+            sql = f"SELECT (\n{body}\n) AS value FROM {_VIEW}"
+            parsed.append(json.loads(con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0]))
+        return bool(parsed[0]["error"]) or _uses(parsed[0], name)
+
+    frame, kinds, beyond, unsigned = _readable(
+        df if table else _with_row_number(df, formula), exact_times=exact_times, reads=reads
+    )
     tried: set[str] = set()
     while True:
         try:
@@ -402,7 +420,7 @@ def _evaluate(df: pl.DataFrame, formula: str, *, condition: bool) -> pl.Series:
             if wider is None:
                 if isinstance(e, _TooLong):
                     raise ActionError(f"Formula error: {_TOO_LONG}\nFormula: {formula}") from None
-                raise ActionError(_clean_error(e, formula, df.columns, _texts(df), _nanosecond_times(df))) from None
+                raise ActionError(_clean_error(e, formula, df.columns, _texts(df), _nanosecond_times(df, formula))) from None
             kinds = wider
     if values.len() != df.height:
         raise ActionError(
@@ -506,9 +524,14 @@ def _has_nanoseconds(times: pl.Series) -> bool:
     return bool(((times.dt.nanosecond() % 1000) != 0).any())
 
 
-def _nanosecond_times(df: pl.DataFrame) -> list[str]:
-    """The columns of times of day with nanoseconds: _clean_error names them in a hint."""
-    return [name for name, dtype in df.schema.items() if dtype == pl.Time and _has_nanoseconds(df[name].alias("value"))]
+def _nanosecond_times(df: pl.DataFrame, formula: str) -> list[str]:
+    """The columns of times of day with nanoseconds that the formula names ([N] or "N"):
+    _clean_error names them in a hint."""
+    named = {_fold(name) for name in column_names(formula)}
+    return [
+        name for name, dtype in df.schema.items()
+        if dtype == pl.Time and _fold(name) in named and _has_nanoseconds(df[name].alias("value"))
+    ]  # fmt: skip
 
 
 def _make_input(con: duckdb.DuckDBPyConnection, columns: str, *, table: bool, empty: bool = False) -> None:
@@ -752,7 +775,7 @@ def _same_reading(sql: str) -> bool:
 
 
 def _readable(
-    frame: pl.DataFrame, *, exact_times: bool = False
+    frame: pl.DataFrame, *, exact_times: bool = False, reads: Callable[[str], bool] = lambda name: True
 ) -> tuple[pl.DataFrame, dict[str, str], dict[str, int], list[str]]:
     """``frame`` in types that Arrow, which hands it over to DuckDB, has; the types that formulas
     calculate with for the columns that need another one than DuckDB gives them (see _selected);
@@ -766,14 +789,17 @@ def _readable(
     doesn't fit (a list of thousands of BIGINT and HUGEINT columns takes DuckDB gigabytes). Only an
     unsigned 128-bit column with a number beyond HUGEINT stays UHUGEINT (see _check_unsigned).
 
-    ``exact_times``: the formula has TIME_NS, which DuckDB compares with a TIME to the
-    microsecond (08:00:00 = TIME_NS '08:00:00.000000001'): the times of day stay TIME_NS."""
+    Times of day without nanoseconds go as TIME (see below), unless the formula reads a time of day
+    with nanoseconds (``reads``: TIME and TIME_NS can't be compared, = compares them to the
+    microsecond) or has TIME_NS (``exact_times``: DuckDB compares a TIME with a TIME_NS to the
+    microsecond, 08:00:00 = TIME_NS '08:00:00.000000001')."""
     kinds: dict[str, str] = {}
     beyond: dict[str, int] = {}
     changed: list[pl.Series] = []
     unsigned = [name for name, dtype in frame.schema.items() if dtype == pl.UInt64 and name != _ROW]
     wide = any((frame[name].alias("value") > 2**63 - 1).any() for name in unsigned)
-    nanoseconds = any(_has_nanoseconds(frame[name].alias("value")) for name, dtype in frame.schema.items() if dtype == pl.Time)
+    with_nanoseconds = {name for name, dtype in frame.schema.items() if dtype == pl.Time and _has_nanoseconds(frame[name].alias("value"))}
+    as_time = not exact_times and not any(reads(name) for name in with_nanoseconds)
     for name, dtype in frame.schema.items():
         column = frame[name].alias("value")  # Polars' Series methods would read a name like ^a.*$ as a pattern
         if dtype == pl.UInt128:
@@ -789,10 +815,9 @@ def _readable(
                 kinds[name] = "HUGEINT"
             else:
                 changed.append(column.cast(pl.Int64).alias(name))
-        elif dtype == pl.Time and not nanoseconds and not exact_times:
+        elif dtype == pl.Time and as_time and name not in with_nanoseconds:
             # Polars' times are TIME_NS for DuckDB, which compares them with a TIME only with = and
-            # IN, and adds no INTERVAL to them; TIME holds them when none has nanoseconds (all of the
-            # columns, as TIME and TIME_NS can't be compared either)
+            # IN, and adds no INTERVAL to them; TIME holds them when they have no nanoseconds
             kinds[name] = "TIME"
     as_bigint = [] if wide else unsigned
     return (frame.with_columns(changed) if changed else frame), kinds, beyond, as_bigint
@@ -1096,7 +1121,7 @@ def _clean_error(
     cast = _DECIMAL_CAST.search(text)
     if cast and cast.group(1) == "38":  # two exact decimals whose values need more than 38 digits together
         return f"Formula error: {_TOO_LONG}\nFormula: {formula}"
-    hint = _nanosecond_hint(formula, nanos) if "TIME_NS" in text else _text_hint(text, raw, formula, texts)
+    hint = _nanosecond_hint(formula, nanos) if _TIME_MIX.search(text) else _text_hint(text, raw, formula, texts)
     if hint:
         return f"Formula error: {hint}\nFormula: {formula}"
     return f"Formula error: {text}\nFormula: {formula}"
@@ -1136,20 +1161,25 @@ def _text_hint(text: str, raw: str, formula: str, texts: Sequence[str]) -> str |
 
 
 def _nanosecond_hint(formula: str, nanos: Sequence[str]) -> str:
-    """For a time of day with nanoseconds (TIME_NS for DuckDB), which a formula can compare with a
-    time only with = and IN, and can't add an INTERVAL to."""
-    if not nanos:  # the times are TIME_NS for a formula with TIME_NS (see _readable)
+    """For a time of day with nanoseconds (TIME_NS for DuckDB) against one without (TIME): a formula
+    compares them only with = and IN, and adds no INTERVAL to TIME_NS. ``nanos``: the columns of
+    times with nanoseconds that the formula names."""
+    if nanos:
+        first = "[" + nanos[0].replace("]", "]]") + "]"
+        subject = " and ".join("[" + name.replace("]", "]]") + "]" for name in nanos[:2])
+        holds = "hold" if len(nanos) > 1 else "holds"
+        return (
+            f"{subject} {holds} times with nanoseconds, which a formula compares with a time only by = and IN: write "
+            f"CAST({first} AS TIME), or a time as TIME_NS '12:00:00'"
+        )
+    if "time_ns" in {_fold(formula[t.start : t.end]) for t in tokenize(formula) if t.kind == "word"}:  # see _readable
         return (
             "a formula with TIME_NS gets the times of day as TIME_NS, which it compares with a TIME only by = and IN: "
             "write its times all as TIME_NS, such as TIME_NS '12:00:00'"
         )
-    named = [name for name in _text_columns(formula, nanos, None)] or list(nanos)
-    first = "[" + named[0].replace("]", "]]") + "]"
-    subject = " and ".join("[" + name.replace("]", "]]") + "]" for name in named[:2])
-    holds = "hold" if len(named) > 1 else "holds"
     return (
-        f"{subject} {holds} times with nanoseconds, which a formula compares with a time only by = and IN: write "
-        f"CAST({first} AS TIME), or a time as TIME_NS '12:00:00'"
+        "a time with nanoseconds is compared with a time only by = and IN: write CAST(... AS TIME), or the time as "
+        "TIME_NS '12:00:00'"
     )
 
 

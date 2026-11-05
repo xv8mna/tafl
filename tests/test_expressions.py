@@ -1028,6 +1028,32 @@ def test_a_time_of_day_is_compared_with_a_time():
     assert expressions.evaluate(df, "CAST([N] AS TIME) > TIME '08:00:00'").to_list()[1:] == [False, None]
 
 
+def test_the_nanosecond_hint_is_for_times_against_times_and_names_their_columns():
+    """Every message of DuckDB with TIME_NS got the hint, and it named a column of times with
+    nanoseconds that the formula didn't use: QUARTER(TIME_NS '12:00:00') said "[N] holds times with
+    nanoseconds". A column of such times named Time, Hour or Interval made [T] > TIME '12:00:00'
+    stop, as the formula's words name it. The hint is for a time with nanoseconds against one
+    without, and names the columns that the formula names; only those decide how [T] is read."""
+    ns = pl.Series([8 * 3600 * 10**9 + 1, 9 * 3600 * 10**9], dtype=pl.Int64).cast(pl.Time)
+    df = pl.DataFrame({"N": ns, "When": [dt.datetime(2025, 1, 1, 8)] * 2, "T": [dt.time(8), dt.time(13)]})
+    for formula, start in (
+        ("QUARTER(TIME_NS '12:00:00')", "Formula error: No function matches the given name and argument types 'quarter(TIME_NS)'"),
+        ("[N] = [When]", "Formula error: Unimplemented type for cast (TIME_NS -> TIMESTAMP)"),
+        ("[N] > TIME '12:00:00'", "Formula error: [N] holds times with nanoseconds, which a formula compares with a time only by = and IN"),
+        ("[T] > TIME '12:00:00' AND [N] IS NOT NULL", "Formula error: [N] holds times with nanoseconds"),
+        ("COALESCE(*COLUMNS('N')) > TIME '12:00:00'", "Formula error: a time with nanoseconds is compared with a time only by = and IN"),
+    ):
+        with pytest.raises(ActionError) as raised:
+            expressions.evaluate(df, formula)
+        assert str(raised.value).startswith(start), (formula, str(raised.value))
+    assert expressions.evaluate(df, "[T] > TIME '12:00:00'").to_list() == [False, True]  # [N] is not read
+    for other in ("Time", "Hour", "Interval"):
+        named = pl.DataFrame({"T": [dt.time(8), dt.time(13)], other: ns})
+        assert expressions.evaluate(named, "[T] > TIME '12:00:00'").to_list() == [False, True], other
+        assert expressions.evaluate(named, "[T] + INTERVAL 1 HOUR").to_list() == [dt.time(9), dt.time(14)], other
+        assert expressions.evaluate(named, f"[T] = [{other}]").to_list() == [False, False], other  # to the nanosecond
+
+
 def test_the_hint_names_the_column_of_text_that_needs_another_type():
     """It named every column of text in the formula: IIF([Name] = 'x', [TextDate] > DATE ..., false)
     said "write CAST([Name] AS DATE)". A name with ] is written as a formula needs it: [a]]b]."""
