@@ -476,7 +476,10 @@ def stack(frames: list[pl.DataFrame], warn: Callable[[str], None] | None = None,
                 warn(f"“{name}” is text: it has different types in the {sources} ({words})")
         if len(texts) > 3:
             more = ", ".join(f"“{name}”" for name, *_ in texts[3:6]) + (", …" if len(texts) > 6 else "")
-            warn(f"{len(texts) - 3:,} more columns are text, as their types differ between the {sources}: {more}")
+            if len(texts) == 4:
+                warn(f"1 more column is text, as its types differ between the {sources}: {more}")
+            else:
+                warn(f"{len(texts) - 3:,} more columns are text, as their types differ between the {sources}: {more}")
     frames = [f.with_columns(change) if change else f for f, change in zip(frames, changes, strict=True)]
     return pl.concat(frames, how="diagonal")
 

@@ -263,6 +263,9 @@ def test_append_says_which_columns_became_text(act):
         "“d” is text: it has different types in the tables (true/false, text)",
         "2 more columns are text, as their types differ between the tables: “e”, “f”",
     ]
+    ctx = StubContext(tables={"o": other.drop("f")})  # one more: in the singular (it said "1 more columns are")
+    act("table.append", df.drop("f"), {"tables": ["o"]}, ctx)
+    assert ctx.warnings[3:] == ["1 more column is text, as its types differ between the tables: “e”"]
 
 
 def test_append_keeps_the_digits_of_whole_numbers_beyond_int64(act):
