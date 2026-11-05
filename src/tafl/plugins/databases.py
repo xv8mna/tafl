@@ -429,14 +429,18 @@ class SqlServer(Connector):
 
     def index_sql(self, stage, keys):
         # Only when SQL Server can index the keys: none of them (n)varchar(max), varbinary(max),
-        # xml, text, ntext, image or a CLR type, and at most 1,700 bytes together (900 before
-        # SQL Server 2016). Without the index, the rows still find each other.
+        # xml, text, ntext, image or a CLR type, at most 1,700 bytes together and at most 32 of
+        # them (900 bytes and 16 keys before SQL Server 2016). Without the index, the rows still
+        # find each other. The index is made by EXEC: SQL Server checks the number of its columns
+        # when it reads the statement, also one that the IF leaves out.
         listed = ", ".join("N'" + key.replace("'", "''") + "'" for key in keys)
         columns = f"FROM tempdb.sys.columns WHERE object_id = OBJECT_ID(N'tempdb..{stage}') AND name IN ({listed})"
-        limit = "CASE WHEN CAST(SERVERPROPERTY('ProductMajorVersion') AS int) >= 13 THEN 1700 ELSE 900 END"
+        newer = "CAST(SERVERPROPERTY('ProductMajorVersion') AS int) >= 13"
+        create = super().index_sql(stage, keys).replace("'", "''")
         return (
             f"IF NOT EXISTS (SELECT 1 {columns} AND (max_length = -1 OR system_type_id IN (34, 35, 99, 240, 241))) "
-            f"AND (SELECT SUM(max_length) {columns}) <= {limit} {super().index_sql(stage, keys)}"
+            f"AND (SELECT SUM(max_length) {columns}) <= CASE WHEN {newer} THEN 1700 ELSE 900 END "
+            f"AND (SELECT COUNT(*) {columns}) <= CASE WHEN {newer} THEN 32 ELSE 16 END EXEC (N'{create}')"
         )
 
     def run_script(self, conn, sql):

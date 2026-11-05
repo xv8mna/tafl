@@ -708,6 +708,26 @@ def test_sqlserver_says_what_it_cant_store(registry):
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_finds_rows_by_more_key_columns_than_an_index_holds(registry):
+    """An index holds 32 columns (16 before SQL Server 2016): with more keys, the export stopped
+    with "The index 'tafl_stage_…_keys' on table '#tafl_stage_…' has 40 columns in the key list".
+    The rows find each other without the index, also by empty keys."""
+    ctx, name = _sqlserver()
+    keys = [f"k{i}" for i in range(40)]
+    first = pl.DataFrame({key: [1, 2, None] for key in keys} | {"Net": [1, 2, 3]})
+    modes = {"update": "updated 3 rows", "upsert": "updated 3 rows", "replace_keys": "deleted 3 rows, added 3 rows", "delete": "deleted 3 rows"}
+    try:
+        registry.actions["db.export"](first, {"connection": "server", "table": name}, ctx)
+        for mode, message in modes.items():
+            changed = first.with_columns(Net=pl.col("Net") * 10)
+            registry.actions["db.export"](changed, {"connection": "server", "table": name, "mode": mode, "key_columns": keys}, ctx)
+            assert ctx.messages[-1] == ("info", f"{name}: {message}"), mode
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_export_mistakes_are_explained(registry):
     ctx, name = _sqlserver()
     new = f"{name}_new"
