@@ -568,7 +568,7 @@ def test_undo_keeps_a_table_it_did_not_touch_out_of_the_calculation(window, sett
     session.set_note(revenue.steps[0].id, "a note")
     settle(session)
     session.undo()
-    assert session._recheck == {revenue.id}  # no table uses it
+    assert session._recheck == set()  # a note isn't calculated; the selected table is calculated anyway
 
 
 @pytest.fixture
@@ -649,6 +649,150 @@ def test_new_parameters_or_connections_refresh_the_tables_not_selected(session, 
         settle(session)
         assert session.table_id == other.id
         assert [session.table_status(t.id) for t in session.project.tables] == statuses == fresh_statuses(session)
+
+
+def shown_and_fresh(session):
+    """{table name: status} as the window shows it, and as a new engine calculates the open
+    project; only the tables that have a result (or are off). For projects without incomplete steps."""
+    project = Project.from_dict(session.project.to_dict(), path=session.project.path)
+    results = Engine(project, session.registry).run(mode=Mode.PREVIEW)
+    shown, fresh = {}, {}
+    for table in project.tables:
+        if table.id in session.results or not table.enabled:
+            result = results[table.id]
+            shown[table.name] = session.table_status(table.id)
+            fresh[table.name] = "disabled" if not table.enabled else "skipped" if result.skipped else "ok" if result.ok else "error"
+    return shown, fresh
+
+
+def used_project(session, settle, tmp_path):
+    """Orders and Other import a.csv; User starts from Orders, Named too, by the name (as a project
+    file written by hand can have it), and Second from User. All calculated, Other selected."""
+    actions = session.registry.actions
+    (tmp_path / "a.csv").write_text("A\n1\n", encoding="utf-8")
+    project = Project()
+    orders, other = project.add_table("Orders"), project.add_table("Other")
+    for table in (orders, other):
+        project.add_step(table, actions["csv.import"], {"file": "a.csv"})
+    user, named, second = project.add_table("User"), project.add_table("Named"), project.add_table("Second")
+    project.add_step(user, actions["table.derive"], {"table": orders.id})
+    project.add_step(named, actions["table.derive"], {"table": "Orders"})
+    project.add_step(second, actions["table.derive"], {"table": user.id})
+    session.open_project(project.save(tmp_path / "used.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    session.select_table(other.id)
+    settle(session)
+    assert set(shown_and_fresh(session)[0].values()) == {"ok"}
+    return session.project.tables
+
+
+def test_redo_of_a_delete_after_the_calculation_of_its_undo_leaves_no_old_status(session, settle, tmp_path):
+    """Click Orders, Del (Other is selected then), Ctrl+Z, wait for the calculation, Ctrl+Y: the
+    tables that use Orders use a table that is gone again."""
+    orders, _other, user, named, second = used_project(session, settle, tmp_path)
+    session.select_table(orders.id)
+    settle(session)
+    session.delete_tables([orders.id])
+    settle(session)
+    session.undo()
+    settle(session)
+    session.redo()
+    settle(session)
+    assert [session.table_status(t.id) for t in (user, named, second)] == ["error"] * 3
+
+
+def test_renaming_the_selected_table_refreshes_a_table_that_uses_it_by_its_name(session, settle, tmp_path):
+    """The result of the renamed table stays the same, but Named, which names it as a project file
+    written by hand can, uses no table now, and again after Undo."""
+    orders, _other, user, named, second = used_project(session, settle, tmp_path)
+    session.select_table(orders.id)
+    settle(session)
+    session.rename_table(orders.id, "Renamed")
+    settle(session)
+    assert [session.table_status(t.id) for t in (user, named, second)] == ["ok", "error", "ok"]
+    session.undo()
+    settle(session)
+    assert [session.table_status(t.id) for t in (user, named, second)] == ["ok", "ok", "ok"]
+
+
+@pytest.mark.parametrize("edit", ["delete", "turn off"])
+def test_an_edit_of_a_step_of_another_table_on_the_map_and_leaving_the_map_at_once_leaves_no_old_status(
+    session, settle, tmp_path, edit
+):
+    """The map's Del deletes the steps of the selected arrows, also of a table that is not selected
+    (arrows selected with Shift+drag or Ctrl+click). Leaving the map at once ends the calculation of
+    all tables that would refresh it."""
+    _orders, other, user, named, second = used_project(session, settle, tmp_path)
+    session.set_overview(True)
+    settle(session)
+    session.select_table(other.id)
+    settle(session)
+    if edit == "delete":
+        session.delete_step(user.steps[0].id)
+    else:
+        session.set_enabled(user.steps[0].id, False)
+    session.set_overview(False)  # Ctrl+1 at once
+    settle(session)
+    assert [session.table_status(t.id) for t in (user, named, second)] == ["error", "ok", "error"]
+
+
+def test_del_on_arrows_into_tables_that_are_not_selected_and_leaving_the_map_at_once(window, settle, session, tmp_path):
+    """Ctrl+click on two arrows selects the table of the last one; Del deletes both steps."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    _orders, other, user, named, second = used_project(session, settle, tmp_path)
+    window.resize(1500, 950)
+    window.show()
+    window.show_map(True)
+    settle(session)
+    view = window.map_view
+    view.rebuild()
+    view.fit()
+    session.select_table(other.id)
+    settle(session)
+    for target in (user, named):
+        edge = next(e for e in view.edges if e.link.target == target.id)
+        point = view.canvas.mapFromScene(edge.path().pointAtPercent(0.5))
+        QTest.mouseClick(view.canvas.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier, point)
+    assert session.table_id == named.id
+    QTest.keyClick(view.canvas, Qt.Key.Key_Delete)
+    assert not user.steps and not named.steps
+    window.show_map(False)  # Ctrl+1 at once
+    settle(session)
+    assert [session.table_status(t.id) for t in (user, named, second)] == ["error"] * 3
+
+
+@pytest.mark.parametrize("view", ["tables", "map", "leaving the map"])
+@pytest.mark.parametrize("edit", ["delete table", "delete step", "turn off", "turn on", "rename"])
+def test_an_edit_of_a_table_that_is_not_selected_its_undo_and_redo_leave_no_old_status(session, settle, tmp_path, edit, view):
+    """Each edit of Orders (or of User's step) while Other is selected, then Undo, Redo, Undo and
+    Redo: every table shows what a new calculation gives it, in the tables view, on the map, and
+    when the map is left at once (that ends the calculation of all tables)."""
+    orders, other, user, *_ = used_project(session, settle, tmp_path)
+    if edit == "turn on":
+        session.set_table_enabled([orders.id], False)
+        settle(session)
+    edits = {
+        "delete table": lambda: session.delete_tables([orders.id]),
+        "delete step": lambda: session.delete_step(user.steps[0].id),
+        "turn off": lambda: session.set_table_enabled([orders.id], False),
+        "turn on": lambda: session.set_table_enabled([orders.id], True),
+        "rename": lambda: session.rename_table(orders.id, "Renamed"),
+    }
+    for operation in (edits[edit], session.undo, session.redo, session.undo, session.redo):
+        if view != "tables":
+            session.set_overview(True)
+            settle(session)
+        operation()
+        if view == "leaving the map":
+            session.set_overview(False)
+        settle(session)
+        assert session.table_id == other.id
+        shown, fresh = shown_and_fresh(session)
+        assert shown == fresh, operation
 
 
 def test_selecting_a_table_calculates_nothing_else_again(window, settle, session, two_inputs, monkeypatch):

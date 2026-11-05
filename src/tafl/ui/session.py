@@ -107,6 +107,9 @@ class Session(QObject):
         # Tables whose results are out of date (a table they use changed, or Reload data): they
         # are calculated again after the selected table, so that no table shows an old status.
         self._recheck: set[str] = set()
+        # What the tables of the project were before the edit that is being made (see _checkpoint):
+        # what each one calculates (_calculated), and the project as the undo step holds it
+        self._before_edit: tuple[dict[str, tuple], dict[str, Any]] | None = None
         # The table that was selected at the latest edit (of any table), until a calculation that
         # started after that edit reports it: a click on another table stops that calculation
         self._unsettled: str | None = None
@@ -220,6 +223,7 @@ class Session(QObject):
         self.results = {}
         self._all = False
         self._recheck.clear()
+        self._before_edit = None
         self._unsettled = None
         self._hold(False)
         self._waiting.clear()
@@ -708,8 +712,6 @@ class Session(QObject):
         if not doomed:
             return
         self._checkpoint()
-        self._recheck |= self.users(doomed) & set(self.results)  # their steps use a table that is gone
-        self._recheck -= doomed
         first = min(i for i, t in enumerate(self.project.tables) if t.id in doomed)
         self.project.tables = [t for t in self.project.tables if t.id not in doomed]
         for table_id in doomed:
@@ -761,8 +763,6 @@ class Session(QObject):
         self._checkpoint()
         for table in tables:
             table.enabled = enabled
-        changed = {t.id for t in tables}
-        self._recheck |= (self.users(changed) | changed) & set(self.results)  # skipped now, or not any more
         self._edited(structure=True)
 
     def set_groups_collapsed(
@@ -1244,9 +1244,12 @@ class Session(QObject):
             self._restore(self._redo.pop())
 
     def _checkpoint(self) -> None:
-        self._undo.append(self._state())
+        """Called before every edit: the undo step, and what ``_edited`` compares with afterwards."""
+        state = self._state()
+        self._undo.append(state)
         del self._undo[:-_UNDO_LIMIT]
         self._redo.clear()
+        self._before_edit = _contents(self.project), state["project"]
         self.undo_changed.emit()
 
     def _state(self) -> dict[str, Any]:
@@ -1254,19 +1257,18 @@ class Session(QObject):
 
     def _restore(self, state: dict[str, Any]) -> None:
         restored = Project.from_dict(state["project"], path=self.project.path)
-        filters = {t.id: t.filters for t in self.project.tables}  # undo is for edits, not for filters
-        before = {t.id: t.to_dict() for t in self.project.tables}
-        same_parameters = [p.to_dict() for p in self.project.parameters] == [p.to_dict() for p in restored.parameters]
-        same_connections = [c.to_dict() for c in self.project.connections] == [c.to_dict() for c in restored.connections]
+        previous = self.project
+        filters = {t.id: t.filters for t in previous.tables}  # undo is for edits, not for filters
+        same_parameters = [p.to_dict() for p in previous.parameters] == [p.to_dict() for p in restored.parameters]
+        same_connections = [c.to_dict() for c in previous.connections] == [c.to_dict() for c in restored.connections]
         for table in restored.tables:
             table.filters = filters.get(table.id, table.filters)
         self.project = restored
         self.engine.project = restored
         self.table_id = state["table"] if restored.find_table(state["table"] or "") else None
         self.step_id = state["step"]
-        after = {t.id: t.to_dict() for t in restored.tables}
-        changed = {id_ for id_ in before.keys() | after.keys() if before.get(id_) != after.get(id_)}
-        self._recheck |= (self.users(changed) | changed) & set(self.results)  # no table keeps an old status
+        self._before_edit = None
+        self._mark_changed(_contents(previous), previous)
         if not (same_parameters and same_connections):  # any table can use them, as after set_parameters
             self._recheck |= set(self.results)
         self._waiting.clear()
@@ -1278,9 +1280,34 @@ class Session(QObject):
 
     # --- helpers -----------------------------------------------------------------------------
 
+    def _mark_changed(self, before: dict[str, tuple], previous: Project | dict[str, Any]) -> None:
+        """The rule of every edit, Undo and Redo, so that no table keeps an old status: a table
+        whose calculation reads something that changed (``_calculated``; ``before``: of the project
+        before the change, ``previous``) is calculated again, and so are the tables that use it,
+        as they did before or do now (nothing uses a deleted table now, and a renamed one can be
+        used by name). The selected table is calculated anyway, and the tables that use it follow
+        when its result changes (``_on_results``), unless its name or its on/off state changed,
+        which its result doesn't show. Only tables with a result are marked: the others are
+        calculated when they are looked at."""
+        after = _contents(self.project)
+        changed = {id_ for id_ in before.keys() | after.keys() if before.get(id_) != after.get(id_)}
+        selected = self.table_id
+        if selected in changed and selected in before and before[selected][:2] == after[selected][:2]:
+            changed.discard(selected)  # only its steps changed
+        if not changed:
+            return
+        if isinstance(previous, dict):  # as an undo step holds it
+            previous = Project.from_dict(previous)
+        users = self.users(changed) | self.users(changed, Engine(previous, self.registry, self.engine.cache))
+        self._recheck |= ((changed | users) - {selected}) & set(self.results)
+        self._recheck &= set(after)  # a table that is gone isn't calculated again
+
     def _edited(self, *, structure: bool = False, step_id: str | None = None, calculate: bool = True) -> None:
         self._waiting.clear()
         self._set_dirty(True)
+        if self._before_edit is not None:
+            before, self._before_edit = self._before_edit, None
+            self._mark_changed(*before)
         if structure:
             self.structure_changed.emit()
         if step_id is not None:
@@ -1406,6 +1433,12 @@ def waiting_text(waiting: tuple[str, int, list[str]], *, capital: bool = False) 
 def _calculated(table: Table) -> tuple:
     """What a calculation of the table reads: not its place on the map, group, filters or notes."""
     return table.name, table.enabled, [(s.id, s.action, s.version, s.enabled, s.params) for s in table.steps]
+
+
+def _contents(project: Project) -> dict[str, tuple]:
+    """``_calculated`` of each table, by id. A step's settings are replaced on an edit, never
+    changed in place (the undo steps share them), so this keeps the settings as they are now."""
+    return {table.id: _calculated(table) for table in project.tables}
 
 
 def _signature(result: TableResult | None) -> tuple | None:
