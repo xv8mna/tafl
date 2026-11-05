@@ -64,7 +64,7 @@ _MICROSECOND = dt.timedelta(microseconds=1)
 _UNIT_NS = {"ns": 1, "us": 1_000, "ms": 1_000_000}  # nanoseconds of a time unit of Polars
 _DAY_US = 86_400_000_000  # microseconds of a day
 _CHECKED_VALUES = 1_000  # Add as step checks the rows of a step of at most so many picked values (see _may_differ)
-_PERIOD_TEXTS = {  # the periods of the card (Polars): a year before 1 has a -, one after 9999 a + (not in a week)
+_PERIOD_TEXTS = {  # the periods of the card (Polars): a year before 0 has a -, one after 9999 a + (not in a week)
     "year": re.compile(r"([-+]?[0-9]+)"),
     "quarter": re.compile(r"([-+]?[0-9]+) Q([1-4])"),
     "month": re.compile(r"([-+]?[0-9]+)-([0-9]{2})"),
@@ -716,7 +716,7 @@ def _joined(ranges: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
 def _ranges_sql(name: str, ranges: list[tuple[int, int]]) -> str:
     """The condition that a moment is in one of ``ranges`` (microseconds, in order, apart). More
     than four become a binary search with CASE, which DuckDB calculates with a few comparisons per
-    row: 300 ranges on a million rows take 0.3 seconds instead of 1.8."""
+    row: 300 ranges on a million rows take 0.2 seconds instead of 1.7."""
     if len(ranges) <= 4:
         each = [f"{name} >= {_moment_sql(start)} AND {name} < {_moment_sql(end)}" for start, end in ranges]
         return each[0] if len(each) == 1 else " OR ".join(f"({condition})" for condition in each)
