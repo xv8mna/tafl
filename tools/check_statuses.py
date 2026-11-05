@@ -1,9 +1,10 @@
 """A random check of the table statuses that the window shows.
 
-It builds small random projects (3 to 8 tables that import files or start from other tables,
-merge and append each other, some of them off, some in a circular reference), edits them through
-a real session as the window does (offscreen: nothing is shown), and each time the session is
-quiet after an operation, compares the status of every table that has one with what a new engine
+It builds small random projects (3 to 8 tables that import files, some through a parameter, or
+start from other tables, merge and append each other and skip their rest when a table is empty,
+some of them off, some in a circular reference), edits them through a real session as the window
+does (offscreen: nothing is shown), and each time the session is quiet after an operation,
+compares the status of every table that has one, its data or its message, with what a new engine
 calculates for the same project. Run it before a release (a seed takes about 3 seconds):
 
     .venv\\Scripts\\python tools\\check_statuses.py                          (seeds 1 to 100, at most 30 minutes)
@@ -14,7 +15,8 @@ calculates for the same project. Run it before a release (a seed takes about 3 s
 The operations are those of the window: click a table, add, change, turn off, move and delete
 steps, add, duplicate, link, rename, turn off and delete tables, Undo and Redo, the project map on
 and off (on it, Del also deletes the steps of arrows into other tables), Calculate all, Run this
-table, Run and Stop, Reload data. Some follow the one before at once or while its calculation runs.
+table, Run and Stop, Reload data, another value of the parameter, and a file that changes before
+Reload data. Some follow the one before at once or while its calculation runs.
 
 A seed gives the same project and the same operations, but the moments at which the calculations
 in the background end can differ: a failure that depends on them may not come again each time.
@@ -42,12 +44,14 @@ from PySide6.QtCore import QEvent, QSettings
 from PySide6.QtWidgets import QApplication
 
 from tafl.api import Mode, P, action
-from tafl.core import Engine, Project, Registry, Table
+from tafl.core import Engine, Parameter, Project, Registry, Table
 from tafl.ui.collector import Collector
 from tafl.ui.session import LINK_KINDS, Session
 
 FILES = {"a.csv": "Id;Name\n1;Anna\n2;Ben\n", "b.csv": "Id;Name\n2;Carla\n3;Dieter\n4;Emil\n"}
 MISSING = "missing.csv"  # a file that isn't there: the import has an error
+# What b.csv can become before Reload data: other rows, no Id column (the merges fail), no rows
+CHANGED_B = ("Id;Name\n2;Carla\n3;Dieter\n4;Emil\n", "Id;Name\n5;Fritz\n", "Key;Name\n1;X\n", "Id;Name\n")
 QUIET_SECONDS = 60  # longer than that busy is a failure
 GAPS = (("then", 55), ("at once", 20), ("while it calculates", 10), ("a moment later", 15))
 MAX_TABLES, MAX_STEPS = 10, 8
@@ -98,6 +102,8 @@ class Operation:
             "map": lambda: f"map {on}",
             "calculate all": lambda: f"calculate all {on}",
             "run": lambda: f"run {args[0]}" if args else "run the project",
+            "parameter": lambda: f"parameter F = {args[0]}",
+            "file and reload": lambda: f"b.csv becomes {_shown(CHANGED_B[self.args[0]])}, then Reload data",
         }
         return texts[kind]() if kind in texts else kind
 
@@ -123,15 +129,18 @@ def _shown(value: Any) -> str:
 
 
 def random_project(rng: random.Random, registry: Registry) -> Project:
-    """3 to 8 tables T1, T2, ...: each imports a file or starts from another table (any table, so
-    circular references happen), then up to 3 more steps; some tables are off."""
+    """3 to 8 tables T1, T2, ...: each imports a file (b.csv also as {F}, a parameter) or starts
+    from another table (any table, so circular references happen), then up to 3 more steps; some
+    tables are off."""
     actions = registry.actions
     project = Project(name="Check")
+    project.parameters = [Parameter("F", "b.csv")]
     tables = [project.add_table(f"T{number}") for number in range(1, rng.randint(3, 8) + 1)]
     names = [t.name for t in tables]
     for table in tables:
         if rng.random() < 0.45:
-            project.add_step(table, actions["csv.import"], {"file": _file(rng)})
+            file = _file(rng)
+            project.add_step(table, actions["csv.import"], {"file": "{F}" if file == "b.csv" and rng.random() < 0.5 else file})
         else:
             project.add_step(table, actions["table.derive"], {"table": rng.choice([n for n in names if n != table.name])})
         for _ in range(rng.randint(0, 3)):
@@ -155,6 +164,13 @@ def _file(rng: random.Random) -> str:
 def random_step(rng: random.Random, names: list[str], own: str) -> tuple[str, dict[str, Any]]:
     """An action and its settings, with the tables it uses by name (``with_ids`` makes them ids)."""
     others = [n for n in names if n != own] or [own]
+    if rng.random() < 0.3:  # a step that skips the rest of the table: of this table, or when another one is empty
+        kind = rng.choice(["skip", "skip other", "no rows"])
+        if kind == "skip":
+            return "flow.skip_if_empty", {"which": "this"}
+        if kind == "skip other":
+            return "flow.skip_if_empty", {"which": "other", "table": rng.choice(others)}
+        return "rows.filter_formula", {"condition": "[Id] > 100"}  # no rows: the next skip of this table skips
     kind = rng.choice(["filter", "filter", "calculate", "merge", "merge", "append", "pause", "incomplete"])
     if kind == "filter":
         return "rows.filter_formula", {"condition": rng.choice(["[Id] > 1", "[Id] < 4", "[Missing] > 1"])}
@@ -199,6 +215,10 @@ def random_operation(rng: random.Random, session: Session) -> Operation:
     project = session.project
     names = [t.name for t in project.tables]
     selected = session.table
+    if rng.random() < 0.06:  # another value of the parameter, or a file that changes before Reload data
+        kind = rng.choice(["parameter", "file and reload"])
+        then = rng.choices([g for g, _ in GAPS], [w for _, w in GAPS])[0]
+        return Operation(kind, _arguments(rng, session, kind), then, rng.uniform(0, 0.2))
     choices: list[tuple[str, int]] = [("undo", 10), ("redo", 6), ("map", 6), ("reload", 2), ("run", 3), ("stop", 1)]
     if names:
         choices += [("select", 14), ("turn tables", 6), ("rename", 3), ("duplicate", 2), ("derived table", 3)]
@@ -243,6 +263,10 @@ def _arguments(rng: random.Random, session: Session, kind: str) -> tuple:
         return (not session.overview,)
     if kind == "run":
         return (rng.choice(names),) if names and rng.random() < 0.7 else ()
+    if kind == "parameter":
+        return (rng.choice(["a.csv", "b.csv", MISSING]),)
+    if kind == "file and reload":
+        return (rng.randrange(len(CHANGED_B)),)
     if kind == "add step":
         return selected.name, *random_step(rng, names, selected.name)
     if kind in ("settings", "step on/off", "move step") or kind == "delete step":
@@ -271,7 +295,7 @@ def _new_settings(rng: random.Random, step, names: list[str], own: str) -> dict[
         if rng.random() < 0.2:
             return {"how": rng.choice(["lookup", "inner", "matching"])}
         return {"other": rng.choice(others), "match": [{"column": "Id", "other_column": "Id"}]}
-    if step.action not in ("table.append", "rows.filter_formula", "calc.columns", "check.pause"):
+    if step.action not in ("table.append", "rows.filter_formula", "calc.columns", "check.pause", "flow.skip_if_empty"):
         return {}
     while True:  # another step of the same action
         action_id, params = random_step(rng, names, own)
@@ -289,6 +313,11 @@ def apply(operation: Operation, session: Session, registry: Registry) -> bool:
     elif kind == "map":
         session.set_overview(args[0])
     elif kind == "reload":
+        session.reload_sources()
+    elif kind == "parameter":
+        session.set_parameters([Parameter("F", args[0])])
+    elif kind == "file and reload":
+        (project.directory / "b.csv").write_text(CHANGED_B[args[0]], encoding="utf-8")
         session.reload_sources()
     elif kind == "calculate all":
         session.calculate_all(args[0])
@@ -452,7 +481,8 @@ class Checker:
 
 
 def wrong_statuses(session: Session, registry: Registry) -> list[str]:
-    """The tables whose status (and for ok, whose data) is not what a new engine calculates."""
+    """The tables whose status is not what a new engine calculates, and those whose data (ok), or
+    whose message (skipped, error, incomplete, waiting) is another one."""
     project = Project.from_dict(session.project.to_dict(), path=session.project.path)
     fresh = Session(registry)  # its statuses come from the new results; it calculates nothing itself
     fresh.project, fresh.engine = project, Engine(project, registry)
@@ -471,6 +501,8 @@ def wrong_statuses(session: Session, registry: Registry) -> list[str]:
                 problems.append(f"{table.name}: ok, but {_size(mine)} instead of {_size(new)}, or other values")
             elif shown == "skipped" and mine.skipped != new.skipped:
                 problems.append(f"{table.name}: skipped, “{mine.skipped}”, right: “{new.skipped}”")
+            elif shown in ("error", "incomplete", "waiting") and mine.first_error != new.first_error:
+                problems.append(f"{table.name}: {shown}, “{mine.first_error}”, right: “{new.first_error}”")
             elif shown == "waiting" and session.waits_for(table.id) != fresh.waits_for(table.id):
                 problems.append(f"{table.name}: waits for {session.waits_for(table.id)}, right: {fresh.waits_for(table.id)}")
     finally:
