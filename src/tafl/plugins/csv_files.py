@@ -257,7 +257,8 @@ def export_csv(df, p, ctx):
     them: 0.37 * 3 is 1,11 (not 1,1099999999999999). Whole numbers and exact decimals keep all
     their digits. Times keep their fractions of a second (08:30:00.500). Binary values are
     written as hex text (0x0102FF), time spans as the grid shows them (1d 2h 3m); infinite and
-    not-a-number values as empty, as in Excel. A table without columns gives an empty file.
+    not-a-number values as empty, as in Excel. A table without columns gives an empty file. A
+    CSV file can't hold lists or records: such columns stop the export.
     """
     path = ctx.resolve_path(p.file)
     separator = _separator(p.delimiter)
@@ -266,6 +267,8 @@ def export_csv(df, p, ctx):
     if p.skip_empty and df.height == 0:
         ctx.log("Not exported: the table is empty")
         return
+    schema = df.schema
+    _check_flat(schema)
     options = dict(
         separator=separator,
         include_header=p.header,
@@ -278,9 +281,9 @@ def export_csv(df, p, ctx):
         float_scientific=False,
     )
     data = df.with_columns(
-        *(_fifteen_digits(df[c]) for c, t in df.schema.items() if t.is_float()),
-        *((pl.lit("0x") + col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in df.schema.items() if t == pl.Binary),
-        *(dtypes.text_expr(col(c), t).alias(c) for c, t in df.schema.items() if t == pl.Duration),
+        *(_fifteen_digits(df[c]) for c, t in schema.items() if t.is_float()),
+        *((pl.lit("0x") + col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c, t in schema.items() if t == pl.Binary),
+        *(dtypes.text_expr(col(c), t).alias(c) for c, t in schema.items() if t == pl.Duration),
     )
     if df.width == 0:  # rows without columns (Polars can't write them): an empty file, as for no rows
         data = pl.DataFrame()
@@ -299,6 +302,34 @@ def export_csv(df, p, ctx):
         ctx.log(f"Wrote an empty file to {path}: the table has no columns")
     else:
         ctx.log(f"Wrote {df.height:,} row{'s' if df.height != 1 else ''} to {path}")
+
+
+def _check_flat(schema: pl.Schema) -> None:
+    """A CSV file holds one text per value: lists, records and values of a plugin's own type stop
+    the export, with the columns that have them (Polars' message names none)."""
+    kinds = {name: _kind(dtype) for name, dtype in schema.items() if dtype.is_nested() or dtype.is_object()}
+    if not kinds:
+        return
+    names, more = list(kinds), len(kinds) - 5
+    shown = names[:5] + ([f"{more:,} more column{'s' if more > 1 else ''}"] if more > 0 else [])
+    raise ActionError(
+        f"A CSV file can't hold {_listed([k for k in _KINDS if k in kinds.values()], 'or')}: {_listed(shown, 'and')} "
+        f"{'has' if len(names) == 1 else 'have'} them. Remove {'this column' if len(names) == 1 else 'these columns'} "
+        "before this step (Keep, remove or reorder columns)."
+    )
+
+
+_KINDS = ("lists", "records", "values of a plugin's own type")
+
+
+def _kind(dtype: pl.DataType) -> str:
+    if dtype.is_object():
+        return _KINDS[2]
+    return _KINDS[1] if isinstance(dtype, pl.Struct) else _KINDS[0]
+
+
+def _listed(words: list[str], last: str) -> str:
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + f" {last} " + words[-1]
 
 
 def _fifteen_digits(s: pl.Series) -> pl.Series:

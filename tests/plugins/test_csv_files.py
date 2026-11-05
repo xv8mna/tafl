@@ -520,6 +520,26 @@ def test_export_writes_time_spans_as_the_grid_shows_them(act, tmp_path):
     assert pl.select(dtypes.text_expr(pl.lit(span), pl.Duration)).to_series().to_list() == ["1d 2h 3m", "1500µs", None, "-5s"]
 
 
+def test_lists_and_records_stop_the_export_with_their_columns(act, tmp_path):
+    """Polars' message named no column: "CSV format does not support nested data"."""
+    path = tmp_path / "out.csv"
+    path.write_text("old\n", encoding="utf-8")
+    df = pl.DataFrame({"Tags": [["a"], []], "Ok": [1, 2], "Pair": [{"x": 1}, None], "Grid": pl.Series([[1, 2], [3, 4]], dtype=pl.Array(pl.Int64, 2))})
+    message = r"^A CSV file can't hold lists or records: Tags, Pair and Grid have them\. Remove these columns before this step"
+    with pytest.raises(ActionError, match=message):
+        act("csv.export", df, {"file": str(path)})
+    with pytest.raises(ActionError, match=r"^A CSV file can't hold records: Pair has them\. Remove this column before"):
+        act("csv.export", df.select("Ok", "Pair"), {"file": str(path)})
+    many = pl.DataFrame({f"L{i}": [[i]] for i in range(7)})
+    with pytest.raises(ActionError, match=r"lists: L0, L1, L2, L3, L4 and 2 more columns have them"):
+        act("csv.export", many, {"file": str(path)})
+    with pytest.raises(ActionError, match=r"lists: L0, L1, L2, L3, L4 and 1 more column have them"):
+        act("csv.export", many.drop("L6"), {"file": str(path)})
+    assert path.read_text(encoding="utf-8") == "old\n"  # the file stays as it was
+    act("csv.export", df.select("Ok"), {"file": str(path)})
+    assert path.read_text(encoding="utf-8-sig").splitlines() == ["Ok", "1", "2"]
+
+
 def test_export_writes_decimals_with_15_digits_as_excel_does(act, tmp_path):
     values = [0.37 * 3, 1.1 * 3, 0.1, 1 / 3, 1234.5, -0.25, 2.0, 1e-7, 1.5e20, 0.1 + 0.2, -2 / 3]
     values += [225179981368524.5, 1e-20 / 3]
