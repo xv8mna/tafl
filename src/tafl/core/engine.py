@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import heapq
 import itertools
 import json
 import threading
@@ -573,6 +574,11 @@ class _Evaluation:
         self.parameters = engine.parameter_values()
         self.keep_results = True  # False: see Engine.run
         self.same_reads: dict[str, list[str]] = {}  # without keep_results: see Engine._same_reads
+        self._tables = {t.id: t for t in self.project.tables}
+        self._uses: dict[str, list[str]] = {}  # table id -> the tables its steps use (Engine.dependencies)
+        # Table id -> how many links away the nearest table that is off is (0: it is off), or None
+        # when it uses no table that is off, directly or through other tables (see _skip_reason)
+        self._off_distance: dict[str, int | None] = {}
 
     def table(self, table_id: str, until: int | None = None) -> TableResult:
         if self.engine.protected:  # every calculation comes here: nothing goes on to the steps
@@ -638,21 +644,90 @@ class _Evaluation:
         result.steps.append(step)
 
     def _skip_reason(self, table: Table) -> str | None:
-        """A table that is off is not calculated, nor is any table that uses a skipped one."""
+        """A table that is off is not calculated, nor is any table that uses one, directly or
+        through other tables: it is skipped, also in a circular reference. That comes from the links
+        of the project alone, not from a calculation, so the order in which the tables are
+        calculated doesn't change it. The tables it uses are calculated first, up to the first one
+        that is skipped."""
         if not table.enabled:
             return "turned off"
-        if table.id in self.stack:  # circular reference: reported by the steps
-            return None
+        skipped = self._distance(table.id) is not None
         self.stack.append(table.id)
         try:
-            for dependency in self.engine.dependencies(table.id):
-                if self.table(dependency).skipped is not None:
-                    name = self.engine.table_name(dependency)
-                    off = not self.project.table(dependency).enabled
-                    return f"uses “{name}”, which is {'turned off' if off else 'skipped'}"
+            for dependency in self._used(table.id):
+                self.table(dependency)
+                if self._off_distance[dependency] is not None:
+                    break
         finally:
             self.stack.pop()
-        return None
+        return self._why_skipped(table.id) if skipped else None
+
+    def _why_skipped(self, table_id: str) -> str:
+        """Names a table it uses that is off or skipped: the first, in the order of its steps, that
+        is nearer to a table that is off than this one, or that doesn't use this table. Without a
+        circular reference, that is the first one that is off or skipped. Following the names
+        leads to a table that is off, also in a circular reference."""
+        distance = self._off_distance[table_id]
+        named = next(
+            used
+            for used in self._used(table_id)
+            if (near := self._off_distance[used]) is not None and (near < distance or not self._reaches(used, table_id))
+        )
+        off = self._off_distance[named] == 0
+        return f"uses “{self.engine.table_name(named)}”, which is {'turned off' if off else 'skipped'}"
+
+    def _used(self, table_id: str) -> list[str]:
+        if table_id not in self._uses:
+            self._uses[table_id] = self.engine.dependencies(table_id)
+        return self._uses[table_id]
+
+    def _distance(self, table_id: str) -> int | None:
+        """``_off_distance`` of a table, worked out with that of the tables it uses."""
+        if table_id in self._off_distance:
+            return self._off_distance[table_id]
+        found, todo = {table_id}, [table_id]  # the table and what it uses, up to tables known already
+        while todo:
+            current = todo.pop()
+            if self._tables[current].enabled:  # a table that is off uses nothing
+                for used in self._used(current):
+                    if used not in found and used not in self._off_distance:
+                        found.add(used)
+                        todo.append(used)
+        users: dict[str, list[str]] = {}
+        nearest: list[tuple[int, str]] = []  # the shortest ways from the tables that are off
+        for current in found:
+            if not self._tables[current].enabled:
+                nearest.append((0, current))
+                continue
+            for used in self._used(current):
+                if used in found:
+                    users.setdefault(used, []).append(current)
+                elif (known := self._off_distance[used]) is not None:
+                    nearest.append((known + 1, current))
+        heapq.heapify(nearest)
+        while nearest:
+            distance, current = heapq.heappop(nearest)
+            if current not in self._off_distance:
+                self._off_distance[current] = distance
+                for user in users.get(current, ()):
+                    heapq.heappush(nearest, (distance + 1, user))
+        for current in found:
+            self._off_distance.setdefault(current, None)
+        return self._off_distance[table_id]
+
+    def _reaches(self, start: str, target: str) -> bool:
+        """Whether table ``start`` uses table ``target``, directly or through other tables."""
+        seen, todo = {start}, [start]
+        while todo:
+            current = todo.pop()
+            if current == target:
+                return True
+            if self._tables[current].enabled:
+                for used in self._used(current):
+                    if used not in seen:
+                        seen.add(used)
+                        todo.append(used)
+        return False
 
     def _step(
         self, table: Table, index: int, step: Step, df: pl.DataFrame | None, prev_key: str, imported: Imported | None = None

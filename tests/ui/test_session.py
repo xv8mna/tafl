@@ -282,3 +282,29 @@ def test_why_a_step_has_no_input(qtbot, settle, session, demo):
     settle(session)
     assert session.input_frame(orders.steps[5]) is None
     assert session.input_problem(orders.steps[5]) == "“Orders” is turned off, so it isn't calculated. Turn it on to see a preview."
+
+
+def test_a_circle_that_uses_a_table_that_is_off_shows_skipped_whichever_table_is_selected(session, settle, tmp_path):
+    """A imports and appends B, B starts from A and appends C, which is off: both are skipped. The
+    selected table is calculated first."""
+    actions = session.registry.actions
+    (tmp_path / "a.csv").write_text("A\n1\n", encoding="utf-8")
+    project = Project()
+    a, b, c = (project.add_table(name) for name in ("A", "B", "C"))
+    project.add_step(a, actions["csv.import"], {"file": "a.csv"})
+    project.add_step(b, actions["table.derive"], {"table": a.id})
+    project.add_step(c, actions["csv.import"], {"file": "a.csv"})
+    project.add_step(b, actions["table.append"], {"tables": [c.id]})
+    project.add_step(a, actions["table.append"], {"tables": [b.id]})
+    session.open_project(project.save(tmp_path / "circle.tafl"), trusted=True)
+    session.calculate_all(True)
+    settle(session)
+    session.calculate_all(False)
+    session.set_table_enabled([c.id], False)  # right-click C: Turn table off
+    settle(session)
+    for table in (a, b, a):
+        session.select_table(table.id)
+        settle(session)
+        assert [session.table_status(t.id) for t in (a, b)] == ["skipped", "skipped"]
+    assert session.results[a.id].skipped == "uses “B”, which is skipped"
+    assert session.results[b.id].skipped == "uses “C”, which is turned off"

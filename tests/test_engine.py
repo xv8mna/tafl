@@ -380,6 +380,57 @@ def test_a_table_that_is_off_is_skipped_with_the_tables_using_it(project, regist
     assert all(r.ok for r in results.values()) and (tmp_path / "out" / "report.csv").exists()
 
 
+@pytest.mark.parametrize("outside", ["off", "skipped"])
+def test_a_circle_that_uses_a_table_that_is_off_is_skipped_whatever_is_calculated_first(project, registry, outside):
+    """A imports and appends B, B starts from A and appends C: a circular reference. C is off (or
+    skipped: it starts from D, which is off), so both are skipped, as any table that uses such a
+    table. The window calculates the selected table first, a run the tables in their order."""
+    a, b, c, d = (project.add_table(name) for name in ("A", "B", "C", "D"))
+    project.add_step(a, "csv.import", {"file": "orders.csv"})
+    project.add_step(a, "table.append", {"tables": [b.id]})
+    project.add_step(b, "table.derive", {"table": a.id})
+    project.add_step(b, "table.append", {"tables": [c.id]})
+    project.add_step(d, "csv.import", {"file": "orders.csv"})
+    if outside == "off":
+        project.add_step(c, "csv.import", {"file": "orders.csv"})
+        c.enabled = False
+    else:
+        project.add_step(c, "table.derive", {"table": d.id})
+        d.enabled = False
+    expected = {a.id: "uses “B”, which is skipped", b.id: f"uses “C”, which is {'turned off' if outside == 'off' else 'skipped'}"}
+    engine = Engine(project, registry)
+    for results in (
+        engine.evaluate_all(a.id),
+        engine.evaluate_all(b.id),
+        {a.id: engine.evaluate(a.id), b.id: engine.evaluate(b.id)},
+        engine.run(mode="preview"),
+        engine.run([a.id], mode="preview"),
+        engine.run([b.id], mode="preview"),
+    ):
+        assert {t: results[t].skipped for t in expected} == expected
+
+    (c if outside == "off" else d).enabled = True  # a circle without a table that is off: an error
+    for results in (engine.evaluate_all(a.id), engine.evaluate_all(b.id)):
+        assert all(results[t].first_error.startswith("Circular reference: ") for t in expected)
+
+
+def test_a_skipped_table_names_the_first_skipped_table_it_uses(project, registry):
+    """Without a circular reference, the table named is the first one that is off or skipped, in
+    the order of the steps, also when another one is nearer to the table that is off. The tables
+    it uses before that one are calculated."""
+    orders = project.tables[0]
+    off, middle, report = (project.add_table(name) for name in ("Off", "Middle", "Report"))
+    project.add_step(off, "csv.import", {"file": "orders.csv"})
+    project.add_step(middle, "table.derive", {"table": off.id})
+    project.add_step(report, "table.derive", {"table": orders.id})
+    project.add_step(report, "table.append", {"tables": [middle.id, off.id]})
+    off.enabled = False
+    results = Engine(project, registry).evaluate_all(report.id)
+    assert results[report.id].skipped == "uses “Middle”, which is skipped"
+    assert results[middle.id].skipped == "uses “Off”, which is turned off"
+    assert results[orders.id].ok
+
+
 def test_a_time_span_on_an_empty_table_is_a_step_error(project, registry):
     """It used to crash inside Polars and stop the calculation."""
     project.tables[0].steps[1].params["condition"] = "[Amount] > 1000"  # keeps no rows
