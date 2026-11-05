@@ -2,6 +2,8 @@ import dataclasses
 import datetime as dt
 import random
 import re
+import subprocess
+import sys
 import threading
 import time
 from decimal import Decimal
@@ -819,3 +821,73 @@ def test_interrupts_while_registering_the_view(people):
         stop.set()
         thread.join()
     assert expressions.evaluate(people, "[Age] + 1").to_list() == [35, 28, 42, 20, 59]
+
+
+def test_unsigned_whole_numbers_are_calculated_as_signed_ones():
+    """DuckDB turns -x of an unsigned number into a big positive one: -1 of a UInt64 column became
+    18446744073709551615, and a condition -[Id] < 0 kept no row. They are calculated as signed
+    numbers, which also keep sums and differences beyond 2^64."""
+    df = pl.DataFrame({
+        "Id": pl.Series([1, 1000, None], dtype=pl.UInt64),
+        "Top": pl.Series([2**64 - 1, 5, None], dtype=pl.UInt64),
+        "Small": pl.Series([1, 2, None], dtype=pl.UInt8),
+        "Mid": pl.Series([1, 2, None], dtype=pl.UInt32),
+    })  # fmt: skip
+    assert expressions.evaluate(df, "-[Id]").to_list() == [-1, -1000, None]
+    assert expressions.evaluate(df, "0 - [Id]").to_list() == [-1, -1000, None]
+    assert expressions.filter_rows(df, "-[Id] < 0")["Id"].to_list() == [1, 1000]
+    assert expressions.evaluate(df, "-[Small] - [Mid]").to_list() == [-2, -4, None]
+    assert expressions.evaluate(df, "-[Top]").to_list() == [Decimal(-(2**64 - 1)), Decimal(-5), None]
+    assert expressions.evaluate(df, "[Top] + 1").to_list() == [Decimal(2**64), Decimal(6), None]
+    assert expressions.evaluate(df, "[Id]").dtype == pl.Int64  # as every formula's whole numbers that fit
+
+
+def test_unsigned_128_bit_numbers_mix_with_signed_ones():
+    """DuckDB mixes UHUGEINT with signed numbers as decimal numbers (2^127 + 5 + 2^127 - 1 became
+    3.4e38, 72 - 9223372036854775807 lost its last digits, 2^127 + 5 = 2^127 - 1 was true), and its
+    -x and a - x can be a big positive number. Numbers up to 2^127 - 1 are calculated as signed
+    ones; beyond them, such a formula stops with a plain message, and the others work as before."""
+    fits = pl.DataFrame({"v": pl.Series([72], dtype=pl.UInt128), "w": pl.Series([2**63 - 1], dtype=pl.Int128)})
+    assert expressions.evaluate(fits, "[v] - [w]").to_list() == [72 - (2**63 - 1)]
+    assert expressions.evaluate(fits, "-[v]").to_list() == [-72]
+    assert expressions.evaluate(fits, "[v] + [w]").to_list() == [Decimal(2**63 + 71)]
+    beyond = pl.DataFrame({
+        "v": pl.Series([2**127 + 5, 3], dtype=pl.UInt128),
+        "v2": pl.Series([2**127 + 5, 2**128 - 1], dtype=pl.UInt128),
+        "w": pl.Series([2**127 - 1, 3], dtype=pl.Int128),
+    })  # fmt: skip
+    for formula in ("[v] + [w]", "[v] - [w]", "-[v]", "-([v] // 2)", "[v] - [v2]", "[v] = [w]", "[v] IN ([w], 1)",
+                    "SUM([v]) OVER ()", "COALESCE([v], [w])"):  # fmt: skip
+        name = "v2" if formula == "[v] - [v2]" else "v"
+        highest = f"{2**128 - 1:,}" if name == "v2" else f"{2**127 + 5:,}"
+        with pytest.raises(ActionError) as raised:
+            expressions.evaluate(beyond, formula)
+        assert str(raised.value) == (
+            f"Formula error: the whole number {highest} in [{name}] is too big (at most {2**127 - 1:,}). "
+            f"For a decimal number write CAST(... AS DOUBLE)\nFormula: {formula}"
+        ), formula
+    assert expressions.evaluate(beyond, "[v] > 6").to_list() == [True, False]
+    assert expressions.evaluate(beyond, "[v] = [v2]").to_list() == [True, False]
+    assert expressions.evaluate(beyond, "[v] // 2").to_list() == [Decimal((2**127 + 5) // 2), Decimal(1)]
+    assert expressions.evaluate(beyond, "[v] % 1000").to_list() == [(2**127 + 5) % 1000, 3]
+    assert expressions.evaluate(beyond, "CAST([v] AS DOUBLE)").to_list() == [2.0**127, 3.0]
+    assert expressions.evaluate(beyond, "TYPEOF([v]) || ' ' || TYPEOF([w])").to_list() == ["UHUGEINT HUGEINT"] * 2
+
+
+_WIDE_UNSIGNED = """
+import polars as pl
+from tafl.api import expressions
+
+whole = pl.DataFrame({f"c{i}": pl.Series([1, 2], dtype=pl.UInt64) for i in range(4100)})
+assert expressions.evaluate(whole, "LIST_SUM(LIST_VALUE(*COLUMNS(*)))").to_list() == [4100, 8200]
+assert expressions.evaluate(whole, "-LIST_SUM(LIST_VALUE(*COLUMNS('c.*')))").to_list() == [-4100, -8200]
+big = whole.with_columns(pl.Series("c0", [2**64 - 1, 2], dtype=pl.UInt64))  # all of them HUGEINT
+assert expressions.evaluate(big, "-LIST_SUM(LIST_VALUE(*COLUMNS('c.*')))").to_list() == [-(2**64 - 1 + 4099), -8200]
+"""
+
+
+def test_a_formula_on_4000_unsigned_columns():
+    """Each such column gets a type of its own in DuckDB, also when a formula reads all of them. In
+    a process of its own, so that an end of the process shows as a failed test."""
+    done = subprocess.run([sys.executable, "-c", _WIDE_UNSIGNED], capture_output=True, encoding="utf-8", errors="replace", timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"

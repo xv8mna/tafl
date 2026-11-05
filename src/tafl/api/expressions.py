@@ -25,7 +25,7 @@ import shutil
 import string
 import tempfile
 import threading
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -117,6 +117,7 @@ _SANDBOX = (
     "a formula can only use the data of the step: no files, network, extensions or settings "
     "(use an import step for files)"
 )
+_HUGEINT_MAX = 2**127 - 1
 _temp: Path | None = None
 _temp_lock = threading.Lock()
 _connections: dict[int, duckdb.DuckDBPyConnection] = {}  # one per thread, by its id
@@ -344,31 +345,53 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     _check_calls(formula)
     _check_names(formula, df.columns)
     con = _connection()
-    order = "rowid" if table else _ROW
-    frame, columns = _readable(df if table else _with_row_number(df, formula))
-    view = not table and columns != "*"  # a view that gives columns their own types back
+    frame, kinds, beyond = _readable(df if table else _with_row_number(df, formula))
     try:
-        try:
-            if table or view:
-                _register(con, frame, _FRAME)
-                _clear(con, _VIEW)
-                con.execute(f'CREATE TEMP {"TABLE" if table else "VIEW"} "{_VIEW}" AS SELECT {columns} FROM "{_FRAME}"')
-            else:
-                _register(con, frame, _VIEW)
-        except duckdb.Error as e:  # e.g. interrupted
-            raise ActionError(_clean_error(e, formula, df.columns)) from None
-        try:
-            # On lines of its own: an error on the line after the formula means it ends too early
-            relation = _query(con, f"SELECT (\n{body}\n) AS value FROM {_VIEW} ORDER BY {order}", formula)
-            result_type = str(relation.types[0])
-            if result_type.startswith("TIMESTAMP WITH TIME ZONE"):  # local time: the grid shows no zones
-                relation = _query(con, f"SELECT CAST((\n{body}\n) AS TIMESTAMP) AS value FROM {_VIEW} ORDER BY {order}", formula)
-                result_type = "TIMESTAMP"
-            elif result_type == "UHUGEINT":  # Arrow would take it for a signed number: from 2^127 on, a negative one
-                relation = _query(con, f"SELECT CAST((\n{body}\n) AS HUGEINT) AS value FROM {_VIEW} ORDER BY {order}", formula)
-                result_type = "HUGEINT"
-        except duckdb.Error as e:
-            raise ActionError(_clean_error(e, formula, df.columns)) from None
+        values = _calculate(con, frame, kinds, beyond, body, formula, table=table, condition=condition)
+    except duckdb.Error as e:
+        raise ActionError(_clean_error(e, formula, df.columns)) from None
+    if values.len() != df.height:
+        raise ActionError(
+            "The formula must give one value per row. For totals use the Aggregate action, "
+            "or a window function such as SUM([Amount]) OVER ()."
+        )
+    return normalize(values)
+
+
+def _calculate(
+    con: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    kinds: dict[str, str],
+    beyond: dict[str, int],
+    body: str,
+    formula: str,
+    *,
+    table: bool,
+    condition: bool,
+) -> pl.Series:
+    """The values of the formula (``body`` as translated) on ``frame``, its columns in the types of
+    ``kinds``. DuckDB's errors are passed on: the caller may try again."""
+    order = "rowid" if table else _ROW
+    columns = _selected(frame.columns, kinds)
+    view = not table and columns != "*"  # a view that gives columns their own types back
+    # On lines of its own: an error on the line after the formula means it ends too early
+    sql = f"SELECT (\n{body}\n) AS value FROM {_VIEW} ORDER BY {order}"
+    try:
+        if table or view:
+            _register(con, frame, _FRAME)
+            if beyond:
+                _check_unsigned(con, sql, formula, frame.columns, kinds, beyond, table=table)
+            _make_input(con, columns, table=table)
+        else:
+            _register(con, frame, _VIEW)
+        relation = _query(con, sql, formula)
+        result_type = str(relation.types[0])
+        if result_type.startswith("TIMESTAMP WITH TIME ZONE"):  # local time: the grid shows no zones
+            relation = _query(con, f"SELECT CAST((\n{body}\n) AS TIMESTAMP) AS value FROM {_VIEW} ORDER BY {order}", formula)
+            result_type = "TIMESTAMP"
+        elif result_type == "UHUGEINT":  # Arrow would take it for a signed number: from 2^127 on, a negative one
+            relation = _query(con, f"SELECT CAST((\n{body}\n) AS HUGEINT) AS value FROM {_VIEW} ORDER BY {order}", formula)
+            result_type = "HUGEINT"
         problem = _unusable_result(result_type)
         if problem:
             raise ActionError(f"Formula error: {problem}\nFormula: {formula}")
@@ -376,8 +399,8 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
             raise ActionError(_not_a_condition(_type_word(result_type)))
         try:
             result = relation.pl(_PART_ROWS)
-        except duckdb.Error as e:
-            raise ActionError(_clean_error(e, formula, df.columns)) from None
+        except duckdb.Error:
+            raise
         except Exception as e:  # e.g. a result type Polars can't take
             raise ActionError(f"Formula error: {_first_line(e)}\nFormula: {formula}") from None
         except BaseException as e:  # a crash inside Polars (Rust) is not an Exception
@@ -392,12 +415,111 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
                 pass
         if table or view:
             _clear(con, _VIEW)
-    if result.height != df.height:
-        raise ActionError(
-            "The formula must give one value per row. For totals use the Aggregate action, "
-            "or a window function such as SUM([Amount]) OVER ()."
+    return result.to_series(0)
+
+
+def _make_input(con: duckdb.DuckDBPyConnection, columns: str, *, table: bool, empty: bool = False) -> None:
+    """The view (or the table) that a formula reads: ``columns`` of the frame, without rows if ``empty``."""
+    _clear(con, _VIEW)
+    rows = " LIMIT 0" if empty else ""
+    con.execute(f'CREATE TEMP {"TABLE" if table else "VIEW"} "{_VIEW}" AS SELECT {columns} FROM "{_FRAME}"{rows}')
+
+
+def _check_unsigned(
+    con: duckdb.DuckDBPyConnection,
+    sql: str,
+    formula: str,
+    names: Sequence[str],
+    kinds: dict[str, str],
+    beyond: dict[str, int],
+    *,
+    table: bool,
+) -> None:
+    """A column of unsigned 128-bit numbers beyond 2^127 - 1 stays UHUGEINT, which DuckDB mixes with
+    signed numbers as decimal numbers (also to compare them: 2^127 + 5 = 2^127 - 1), and whose -x
+    and a - x can be a big positive number: such a formula stops. Other calculations with them work
+    as before: a result beyond 2^127 - 1 stops (see evaluate)."""
+    tree = json.loads(con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0])
+    for name, highest in beyond.items():
+        too_big = (
+            f"Formula error: the whole number {highest:,} in [{name}] is too big (at most {_HUGEINT_MAX:,}). "
+            f"For a decimal number write CAST(... AS DOUBLE)\nFormula: {formula}"
         )
-    return normalize(result.to_series(0))
+        if tree["error"] or _negates(tree, name) or _compared_with_others(tree, name, beyond):
+            raise ActionError(too_big)
+        try:
+            _make_input(con, _selected(names, {**kinds, name: "HUGEINT"}), table=table, empty=True)
+            signed = str(_query(con, sql, formula).types[0])
+        except duckdb.Error:  # it doesn't work with signed numbers: what it does with these is DuckDB's to say
+            continue
+        _make_input(con, _selected(names, kinds), table=table, empty=True)
+        unsigned = str(_query(con, sql, formula).types[0])
+        if unsigned != signed and (unsigned in ("DOUBLE", "FLOAT") or unsigned.startswith("DECIMAL")):
+            raise ActionError(too_big)
+
+
+def _negates(tree: object, name: str) -> bool:
+    """Whether DuckDB's parse tree of a formula has a -x whose x uses the column ``name`` (or all
+    columns, as COLUMNS(*) does), or an a - x: DuckDB checks the subtraction of unsigned 128-bit
+    numbers only for a small x (3 - (2^128 - 1) gives 4)."""
+    nodes = [tree]
+    while nodes:  # not by recursion: a formula can nest deeper than Python goes
+        node = nodes.pop()
+        if isinstance(node, list):
+            nodes += node
+        elif isinstance(node, dict):
+            children = node.get("children")
+            minus = node.get("class") == "FUNCTION" and node.get("function_name") == "-"
+            if minus and isinstance(children, list) and children and _uses(children[-1], name):
+                return True
+            nodes += node.values()
+    return False
+
+
+def _compared_with_others(tree: object, name: str, alike: Collection[str]) -> bool:
+    """Whether DuckDB's parse tree compares the column ``name`` with a column that isn't one of
+    ``alike`` (=, <, BETWEEN, IN, ...)."""
+    nodes = [tree]
+    while nodes:
+        node = nodes.pop()
+        if isinstance(node, list):
+            nodes += node
+        elif isinstance(node, dict):
+            sides: list[object] = []
+            if node.get("class") == "COMPARISON":
+                sides = [node.get("left"), node.get("right")]
+            elif node.get("class") == "BETWEEN":
+                sides = [node.get("input"), node.get("lower"), node.get("upper")]
+            elif node.get("class") == "OPERATOR" and str(node.get("type")) in ("COMPARE_IN", "COMPARE_NOT_IN"):
+                sides = list(node.get("children") or [])
+            elif node.get("class") == "SUBQUERY" and node.get("child"):  # [v] IN (SELECT ...), [v] = ANY (...)
+                sides = [node.get("child"), node.get("subquery")]
+            for index, side in enumerate(sides):
+                if _uses(side, name) and any(_uses(other, None, alike) for other in sides[:index] + sides[index + 1 :]):
+                    return True
+            nodes += node.values()
+    return False
+
+
+def _uses(tree: object, name: str | None, alike: Collection[str] = ()) -> bool:
+    """Whether a part of DuckDB's parse tree uses the column ``name``, or with ``name`` None, a
+    column that isn't one of ``alike`` (all columns, as COLUMNS(*) does, count as both)."""
+    folded = {_fold(other) for other in alike}
+    nodes = [tree]
+    while nodes:
+        node = nodes.pop()
+        if isinstance(node, list):
+            nodes += node
+        elif isinstance(node, dict):
+            names = node.get("column_names")
+            if node.get("class") == "COLUMN_REF" and isinstance(names, list) and names:
+                column = _fold(str(names[-1]))
+                if (column == _fold(name)) if name is not None else (column not in folded):
+                    return True
+            if node.get("class") == "STAR":
+                return True
+            nodes += node.values()
+    return False
 
 
 def add_columns(df: pl.DataFrame, columns: Sequence[tuple[str, str]]) -> pl.DataFrame:
@@ -525,20 +647,47 @@ def _same_reading(sql: str) -> bool:
     return index == len(theirs)
 
 
-def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, str]:
-    """``frame`` in types that Arrow, which hands it over to DuckDB, has, and what to select from it
-    for the columns in their own types: 128-bit whole numbers go as text and become HUGEINT and
-    UHUGEINT again."""
-    wide = {
-        name: "HUGEINT" if dtype == pl.Int128 else "UHUGEINT"
-        for name, dtype in frame.schema.items()
-        if dtype in (pl.Int128, pl.UInt128)
-    }
-    if not wide:
-        return frame, "*"
-    quoted = {name: '"' + name.replace('"', '""') + '"' for name in wide}
-    casts = ", ".join(f"CAST({quoted[name]} AS {kind}) AS {quoted[name]}" for name, kind in wide.items())
-    return frame.with_columns(frame[name].cast(pl.String) for name in wide), f"* REPLACE ({casts})"
+def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, str], dict[str, int]]:
+    """``frame`` in types that Arrow, which hands it over to DuckDB, has; the types that formulas
+    calculate with for the columns that need another one than DuckDB gives them (see _selected);
+    and the unsigned 128-bit columns with numbers beyond 2^127 - 1, with their highest number.
+
+    128-bit whole numbers go as text and become HUGEINT and UHUGEINT again. Unsigned whole numbers
+    are calculated as signed ones: DuckDB turns -x of an unsigned number into a big positive one,
+    and mixes UHUGEINT with signed numbers as a decimal number. They become Int64 (no cast in
+    DuckDB: fast with thousands of columns); unsigned 64-bit ones all become HUGEINT if one of them
+    doesn't fit (a list of thousands of BIGINT and HUGEINT columns takes DuckDB gigabytes). Only an
+    unsigned 128-bit column with a number beyond HUGEINT stays UHUGEINT (see _check_unsigned)."""
+    kinds: dict[str, str] = {}
+    beyond: dict[str, int] = {}
+    changed: list[pl.Series] = []
+    unsigned = [name for name, dtype in frame.schema.items() if dtype == pl.UInt64 and name != _ROW]
+    wide = any((frame[name].alias("value") > 2**63 - 1).any() for name in unsigned)
+    for name, dtype in frame.schema.items():
+        column = frame[name].alias("value")  # Polars' Series methods would read a name like ^a.*$ as a pattern
+        if dtype == pl.UInt128:
+            if (column > _HUGEINT_MAX).any():
+                beyond[name] = column.max()
+            kinds[name] = "UHUGEINT" if name in beyond else "HUGEINT"
+            changed.append(column.cast(pl.String).alias(name))
+        elif dtype == pl.Int128:
+            kinds[name] = "HUGEINT"
+            changed.append(column.cast(pl.String).alias(name))
+        elif dtype in (pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64) and name != _ROW:  # the row number only keeps the order
+            if dtype == pl.UInt64 and wide:
+                kinds[name] = "HUGEINT"
+            else:
+                changed.append(column.cast(pl.Int64).alias(name))
+    return (frame.with_columns(changed) if changed else frame), kinds, beyond
+
+
+def _selected(columns: Sequence[str], kinds: dict[str, str]) -> str:
+    """What to select from the frame that DuckDB gets: its ``columns``, those of ``kinds`` in these
+    types. Each column is named: DuckDB takes long for a * REPLACE (...) of thousands of them."""
+    if not kinds:
+        return "*"
+    quoted = ['"' + name.replace('"', '""') + '"' for name in columns]
+    return ", ".join(f"CAST({q} AS {kinds[name]}) AS {q}" if name in kinds else q for name, q in zip(columns, quoted, strict=True))
 
 
 def _register(con: duckdb.DuckDBPyConnection, frame: pl.DataFrame, name: str) -> None:
