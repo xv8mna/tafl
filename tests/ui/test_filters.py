@@ -1125,7 +1125,7 @@ def test_time_spans_are_stored_with_all_their_digits(act):
 
 def test_a_time_span_stored_as_the_text_of_a_number_is_seconds(act):
     """A filter made where the column held texts ("3600"), on a column of time spans after a step:
-    0.6.3 read the text as seconds, 0.6.4 had left it out."""
+    the text is seconds, as 0.6.3 read it."""
     spans = pl.DataFrame({"id": [0, 1], "S": pl.Series([3_600_000_000, 1], dtype=pl.Int64).cast(pl.Duration("us"))})
     for stored in ("3600", " 3600 ", "3600.0", "3.6e3"):
         assert same_rows(act, spans, Filter("S", [stored])) == [0], stored
@@ -1208,7 +1208,9 @@ def test_a_step_that_would_keep_other_rows_here_is_not_made():
     """Add as step runs the step's condition on the column at the step: where its rows differ from
     the card's, for whatever reason, it says so instead of making the step. Such as a quarter of a
     moment just before 1970 with nanoseconds (the step's DuckDB takes it to the microsecond, into
-    1970) and a letter that DuckDB's tables of Unicode don't know yet (U+13460, Unicode 16)."""
+    1970) and a letter that DuckDB's tables of Unicode don't know yet (U+13460, Unicode 16). Where
+    the step would stop with an error on the column, such as on a date-time beyond DuckDB's years,
+    it says that."""
     stamps = pl.Series("When", [-1, 5 * 10**9], dtype=pl.Int64).cast(pl.Datetime("ns"))  # 1969-12-31 23:59:59.999999999
     quarter = Filter("When", ["1969 Q4"], "period", {"by": "quarter"})
     letters = pl.Series("T", ["abc", "\U00013460", "ä"])
@@ -1218,6 +1220,10 @@ def test_a_step_that_would_keep_other_rows_here_is_not_made():
         with pytest.raises(NotAStep, match=r"^a step would keep other rows than the filter: 1 of the \d rows here$"):
             formula(chosen, data.dtype, data)
     assert formula(word, pl.String, letters.filter(letters != "\U00013460")).startswith("regexp_matches([T]")
+    far = pl.Series("When", [10**16, 0], dtype=pl.Int64).cast(pl.Datetime("ms"))  # the year 318857, and 1970
+    assert apply(pl.DataFrame({"id": [0, 1], "When": far}), [Filter("When", ["1970-01-01T00:00:00"])])["id"].to_list() == [1]
+    with pytest.raises(NotAStep, match=r"^the step would stop with an error on these values$"):
+        formula(Filter("When", ["1970-01-01T00:00:00"]), far.dtype, far)
 
 
 def test_add_as_step_says_why_a_filter_cant_be_one(session, qtbot):

@@ -925,9 +925,9 @@ def test_a_sum_beyond_38_digits_stops():
 def test_exact_decimals_of_other_widths_are_calculated_in_38_digits():
     """DuckDB adds DECIMAL(18,2) and DECIMAL(18,4) in 18 digits: 123456789012345.67 plus a rate
     stopped with "Casting value ... to type DECIMAL(18,4) failed: value is out of range!", also
-    [Id] + 1.5 of a DECIMAL(18,0). A sum of DECIMAL(38,18) values beyond 10^20 stopped with the
-    38-digit message; 0.6.3 gave it as a decimal number. Such a formula is calculated again with each
-    exact decimal in 38 digits, with the decimal places its values use."""
+    [Id] + 1.5 of a DECIMAL(18,0). Such a formula is calculated again with each exact decimal in 38
+    digits, with the decimal places its values use; so is a sum of DECIMAL(38,18) values beyond 10^20,
+    a decimal number as in 0.6.3."""
     df = pl.DataFrame({
         "Amount": pl.Series([Decimal("123456789012345.67"), Decimal(5)], dtype=pl.Decimal(18, 2)),
         "Rate": pl.Series([Decimal("1.2345"), Decimal("5.5")], dtype=pl.Decimal(18, 4)),
@@ -941,9 +941,9 @@ def test_exact_decimals_of_other_widths_are_calculated_in_38_digits():
 
 
 def test_unsigned_64_bit_numbers_below_2_63_keep_results_beyond_int64():
-    """They go to DuckDB as BIGINT (fast): [Id] * 2 of 5,000,000,000,000,000,000 stopped with an
-    overflow of INT64, although 0.6.3 calculated it as an unsigned number. Such a formula is
-    calculated again with the unsigned columns as HUGEINT."""
+    """They go to DuckDB as BIGINT (fast), and [Id] * 2 of 5,000,000,000,000,000,000 is beyond it:
+    such a formula is calculated again with the unsigned columns as HUGEINT, and gives
+    10,000,000,000,000,000,000 as 0.6.3 did."""
     df = pl.DataFrame({"Id": pl.Series([5 * 10**18, 7, None], dtype=pl.UInt64), "n": [1, 2, 3]})
     assert expressions.evaluate(df, "[Id] * 2").to_list() == [Decimal(10**19), Decimal(14), None]
     assert expressions.evaluate(df, "[Id] + [Id] + [n]").to_list() == [Decimal(10**19 + 1), Decimal(16), None]
