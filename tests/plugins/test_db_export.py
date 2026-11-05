@@ -905,10 +905,12 @@ def test_sqlserver_text_and_ntext_columns_take_every_type_in_every_mode(registry
 def test_sqlserver_categories_keep_their_characters_in_char_and_varchar_columns(registry):
     """Categories (e.g. a Parquet file's dictionary column) went into char and varchar columns in the
     code page of this PC in Add the rows and the replace modes, without a word: Łódź was Lódz in a
-    Polish column and 日本 was ?? in a UTF-8 one (Update wrote them right). They go as texts go, and a
-    category too long in bytes for a UTF-8 column stops the export."""
+    Polish column and 日本 was ?? in a UTF-8 one (Update wrote them right), also with categories of a
+    name of their own (Polars' pl.Categories). They go as texts go, and a category too long in bytes for a
+    UTF-8 column stops the export."""
     ctx, name = _sqlserver()
     texts = ["Łódź", "日本"]
+    named = [pl.Categorical(pl.Categories("tafl_test")), pl.Categorical(pl.Categories("tafl_test_8", physical=pl.UInt8))]
     read = f"SELECT CAST(T AS nvarchar(20)) AS T FROM {name} ORDER BY N"
 
     def export(df, mode):
@@ -920,7 +922,7 @@ def test_sqlserver_categories_keep_their_characters_in_char_and_varchar_columns(
             ("char(4) COLLATE Polish_CI_AS", ["Łódź", "??  "]),
             ("varchar(20) COLLATE Latin1_General_100_CI_AS_SC_UTF8", texts),
         ):
-            for dtype in (pl.Categorical, pl.Enum(texts)):
+            for dtype in (pl.Categorical, pl.Enum(texts), *named):
                 for mode in ("insert", "replace_keys", "update"):
                     with ctx.database("server") as db:
                         db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
@@ -933,8 +935,9 @@ def test_sqlserver_categories_keep_their_characters_in_char_and_varchar_columns(
         with ctx.database("server") as db:
             db.execute(f"DROP TABLE {name}")
             db.execute(f"CREATE TABLE {name} (N int, T varchar(5) COLLATE Latin1_General_100_CI_AS_SC_UTF8)")
-        with pytest.raises(ActionError, match="truncated|too long"):  # 4 characters, 8 bytes in UTF-8: not cut
-            export(pl.DataFrame({"N": [1], "T": pl.Series(["ääää"], dtype=pl.Categorical)}), "insert")
+        for dtype in (pl.Categorical, *named):
+            with pytest.raises(ActionError, match="truncated|too long"):  # 4 characters, 8 bytes in UTF-8: not cut
+                export(pl.DataFrame({"N": [1], "T": pl.Series(["ääää"], dtype=dtype)}), "insert")
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
