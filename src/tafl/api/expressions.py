@@ -130,6 +130,9 @@ _CALL = re.compile(
     r"|Could not choose a best candidate function for the function call \"([^\n]+)\"\. In order"
 )
 _COMPARE = re.compile(r"Cannot compare values of type ([^\n]+?) and type ([^\n]+?) - an explicit cast is required")
+_MIX = re.compile(r"Cannot mix values of type ([^\n]+?) and ([^\n]+?) in [^\n]+ - an explicit cast is required")
+_TYPED_LITERALS = {"date", "timestamp", "timestamptz", "time", "timestamp_ns", "time_ns", "interval"}
+_DATES_NOW = {"today", "now", "getdate", "current_date", "current_timestamp", "current_localtimestamp"}
 _TEMPORAL = re.compile(r"(?:DATE|TIME|TIMESTAMP|INTERVAL)\b|TIME_NS|TIMESTAMP_")
 _NUMERIC = re.compile(r"(?:U?(?:TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT)|FLOAT|DOUBLE|DECIMAL|BIGNUM)\b")
 _ARITHMETIC = {"+", "-", "*", "/", "//", "%", "**", "^"}
@@ -1053,11 +1056,11 @@ def _text_hint(text: str, raw: str, formula: str, texts: Sequence[str]) -> str |
     """For a function or an operator that gets text where it needs a date or a number: which
     columns hold text, and what to do. ``raw``: DuckDB's whole message, with the variants of the
     function it lists."""
-    compare = _COMPARE.search(text)
-    if compare:  # [Date] > DATE '2025-01-01'
+    compare = _COMPARE.search(text) or _MIX.search(text)
+    if compare:  # [Date] > DATE '2025-01-01', [Date] BETWEEN DATE ... AND ..., COALESCE([Date], DATE ...)
         kinds = [compare.group(1), compare.group(2)]
         if "VARCHAR" in kinds and any(_TEMPORAL.match(kind) for kind in kinds):
-            return _needs("a date", None, _text_columns(formula, texts, None))
+            return _needs("a date", None, _compared_texts(formula, texts) or _only_text(formula, texts))
         return None
     call = _CALL.search(text)
     if not call:
@@ -1090,7 +1093,7 @@ def _needs(what: str, function: str | None, columns: Sequence[str]) -> str:
             return "+ adds numbers, but gets text: to join text use || or CONCAT(); for numbers write CAST(... AS DOUBLE)"
         subject = f"{function} gets text" if function else "a text is used"
         return f"{subject} where {what} {'is' if what == 'a date' else 'are'} needed: write CAST(... AS {target})"
-    names = [f"[{name}]" for name in columns]
+    names = ["[" + name.replace("]", "]]") + "]" for name in columns]  # as a formula writes them
     subject = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
     one = len(names) == 1
     holds, its = ("holds", "its") if one else ("hold", "their")
@@ -1101,6 +1104,63 @@ def _needs(what: str, function: str | None, columns: Sequence[str]) -> str:
     if function:
         return f"{function} needs {what}, but {subject} {holds} text: {change}"
     return f"{subject} {holds} text, not {what}: {change}"
+
+
+def _compared_texts(formula: str, texts: Sequence[str]) -> list[str]:
+    """The columns of text that the formula compares with a date: with a date or time written in it
+    (DATE '2025-01-01'), with TODAY() and such, or with a column that holds no text."""
+    tokens = tokenize(formula)
+    by_name = {_fold(name): name for name in texts}
+
+    def text_column(index: int | None) -> str | None:
+        token = None if index is None else tokens[index]
+        if token is not None and token.kind in ("column", "quoted") and token.closed:
+            return by_name.get(_fold(_name(formula, token)))
+        if token is not None and token.kind == "word" and not _is_call(tokens, index):
+            return by_name.get(_fold(formula[token.start : token.end]))
+        return None
+
+    def a_date(index: int | None) -> bool:
+        token = None if index is None else tokens[index]
+        if token is None:
+            return False
+        text = _fold(formula[token.start : token.end])
+        if token.kind == "string":  # the text of DATE '2025-01-01'
+            before = _previous(tokens, index)
+            return before is not None and _fold(formula[tokens[before].start : tokens[before].end]) in _TYPED_LITERALS
+        if token.kind == "word" and text in _TYPED_LITERALS:
+            following = _next(tokens, index)
+            return following is not None and following.kind == "string"
+        if token.kind == "word" and text in _DATES_NOW:
+            return True
+        if token.kind == "close":  # TODAY(): the word before its (
+            opening = _matching_open(tokens, index)
+            word = _previous(tokens, opening) if opening is not None else None
+            return word is not None and _fold(formula[tokens[word].start : tokens[word].end]) in _DATES_NOW
+        return token.kind in ("column", "quoted") and token.closed and _fold(_name(formula, token)) not in by_name
+
+    found = []
+    for index, token in enumerate(tokens):
+        if token.kind == "operator" and formula[token.start : token.end] in ("=", "==", "<>", "!=", "<", ">", "<=", ">="):
+            left, right = _previous(tokens, index), _next_index(tokens, index)
+            found += [name for side, other in ((left, right), (right, left)) if (name := text_column(side)) and a_date(other)]
+    return list(dict.fromkeys(found))
+
+
+def _only_text(formula: str, texts: Sequence[str]) -> list[str]:
+    """The column of text that the formula names, if it names only one."""
+    named = _text_columns(formula, texts, None)
+    return named if len(named) == 1 else []
+
+
+def _matching_open(tokens: list[Token], index: int) -> int | None:
+    """The ( of the ) at ``index``."""
+    depth = 0
+    for before in range(index, -1, -1):
+        depth += {"close": 1, "open": -1}.get(tokens[before].kind, 0)
+        if depth == 0:
+            return before
+    return None
 
 
 def _typed(formula: str, function: str) -> str:

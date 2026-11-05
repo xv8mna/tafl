@@ -978,6 +978,27 @@ def test_functions_for_dates_on_text_say_how_to_change_the_column():
         expressions.evaluate(df, "ROUND([Date], 2) + [n]")
 
 
+def test_the_hint_names_the_column_of_text_that_needs_another_type():
+    """It named every column of text in the formula: IIF([Name] = 'x', [TextDate] > DATE ..., false)
+    said "write CAST([Name] AS DATE)". A name with ] is written as a formula needs it: [a]]b]."""
+    df = pl.DataFrame({"Name": ["x", "y"], "TextDate": ["2025-01-31", "2025-02-01"], "a]b": ["2025-01-01", None]})
+    hint = "[TextDate] holds text, not a date: change its type to a date before this step, or write CAST([TextDate] AS DATE)"
+    for formula in (
+        "IIF([Name] = 'x', [TextDate] > DATE '2025-01-01', false)",
+        "[Name] = 'x' AND TODAY() < [TextDate]",
+        "[Name] = 'x' AND [TextDate] > CURRENT_DATE",
+        "[TextDate] BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'",
+        "COALESCE([TextDate], DATE '2025-01-01')",
+    ):
+        with pytest.raises(ActionError) as raised:
+            expressions.evaluate(df, formula)
+        assert str(raised.value) == f"Formula error: {hint}\nFormula: {formula}"
+    with pytest.raises(ActionError, match=r"^Formula error: QUARTER needs a date, but \[a\]\]b\] holds text: .* CAST\(\[a\]\]b\] AS DATE\)"):
+        expressions.evaluate(df, "QUARTER([a]]b])")
+    with pytest.raises(ActionError, match=r"^Formula error: a text is used where a date is needed: write CAST\(\.\.\. AS DATE\)"):
+        expressions.evaluate(df, "CASE WHEN [Name] = 'x' THEN [TextDate] ELSE DATE '2025-01-01' END")  # which one: not told
+
+
 def test_plus_on_text_says_how_to_add_numbers():
     df = pl.DataFrame({"A": ["1", "2"], "B": ["3", "4"], "n": [1, 2]})
     with pytest.raises(ActionError) as raised:
