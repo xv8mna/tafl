@@ -1078,6 +1078,25 @@ def test_periods_and_values_at_the_ends_of_the_years_as_a_step(act, zone):
     assert formula(Filter("When", ["1970-01-01T00:00:00+00:00"]), beyond.dtype, beyond).startswith("[When] IN (TIMESTAMPTZ")
 
 
+@pytest.mark.parametrize(
+    "zone, midnight",
+    [("America/Goose_Bay", dt.datetime(1999, 10, 31)), ("America/Scoresbysund", dt.datetime(2023, 10, 29)), ("America/Havana", dt.datetime(2025, 11, 2))],
+)
+def test_a_day_whose_midnight_a_clock_change_crosses_as_a_step(act, zone, midnight):
+    """Where a clock change soon after midnight turns the clock back to the day before (Goose Bay at
+    00:01 until 2011, 113 zones in some year), that day goes on after the first moment of the next
+    one: the step of a day kept only the rows of its first part. Havana repeats 00:00 to 01:00 of
+    the same day: there the day is one range."""
+    grid = [midnight + dt.timedelta(minutes=10 * k) for k in range(-180, 181)]
+    moments = sorted(grid + [moment - dt.timedelta(microseconds=1) for moment in grid]) + [None]
+    df = pl.DataFrame({"id": range(len(moments)), "When": pl.Series("When", moments).dt.replace_time_zone("UTC").dt.convert_time_zone(zone)})
+    for by in PERIODS:
+        periods, _ = facet(df, [Filter("When", [], "period", {"by": by})], 0)
+        for period in periods["value"].drop_nulls().to_list():
+            for excluded in (False, True):
+                same_rows(act, df, Filter("When", [period], "period", {"by": by}, excluded=excluded))
+
+
 def test_many_periods_of_a_column_with_a_time_zone_as_a_step(act):
     """A step had a range of moments per period: 300 dates took two seconds on a million rows, at
     each calculation. Periods that meet are one range now, and more than four ranges a binary

@@ -728,14 +728,27 @@ def _ranges_sql(name: str, ranges: list[tuple[int, int]]) -> str:
 
 
 def _period_moments(periods: list[str], by: str, zone: str) -> list[tuple[int, int]]:
-    """For each period of the card (2026-11, 2026 Q4, 2026-W48, +10000-01, ...) in the time zone
-    ``zone``: its first moment and the first moment of the period after it, as microseconds since
-    1970 (UTC). Texts that are no period are left out. Polars works out the moments of all periods
-    at once."""
+    """The moments of the card's periods (2026-11, 2026 Q4, 2026-W48, +10000-01, ...) in the time
+    zone ``zone``, as ranges of microseconds since 1970 (UTC): from the first moment of a period to
+    the first moment of the period after it. Where a clock change soon after midnight turns the
+    clock back to the day before (America/Goose_Bay at 00:01 until 2011), that day goes on after
+    the first moment of the next one: from the change until midnight comes again. Texts that are no
+    period are left out. Polars works out the moments of all periods at once."""
     days = [found for period in periods if (found := _period_days(period, by)) is not None]
     walls = sorted({day for pair in days for day in pair})
-    moments = dict(zip(walls, _first_moments([day * _DAY_US for day in walls], zone), strict=True))
-    return [(moments[start], moments[end]) for start, end in days if moments[start] is not None and moments[end] is not None]
+    bounds = dict(zip(walls, _midnights([day * _DAY_US for day in walls], zone), strict=True))
+    ranges = []
+    for start, end in days:
+        if bounds[start] is None or bounds[end] is None:
+            continue
+        (first, back, again), (last, back_end, again_end) = bounds[start], bounds[end]
+        if back is not None:  # the start: from its first midnight to the change, and from midnight again
+            ranges.append((first, back))
+            first = again
+        ranges.append((first, last))
+        if back_end is not None:  # the end: the time before the next midnight comes again
+            ranges.append((back_end, again_end))
+    return ranges
 
 
 def _period_days(period: str, by: str) -> tuple[int, int] | None:
@@ -788,14 +801,35 @@ def _week_one(year: int) -> int:
     return fourth - (fourth + 3) % 7  # 1970-01-01 was a Thursday
 
 
-def _first_moments(walls: list[int], zone: str) -> list[int | None]:
-    """``_first_moment`` of many local times: Polars converts them together, and those that a clock
-    change skips are looked for one by one."""
-    found = (
-        pl.Series(walls, dtype=pl.Int64).cast(pl.Datetime("us"))
-        .dt.replace_time_zone(zone, ambiguous="earliest", non_existent="null").cast(pl.Int64).to_list()
-    )  # fmt: skip
-    return [_first_moment(wall, zone) if moment is None else moment for wall, moment in zip(walls, found, strict=True)]
+def _midnights(walls: list[int], zone: str) -> list[tuple[int, int | None, int] | None]:
+    """For local times in ``zone`` (microseconds since 1970): the first moment at or after each
+    (see _first_moment); where a clock change after it turns the clock back to before it, the
+    moment of that change and the moment the local time is reached again; None where Polars can't
+    tell. Polars converts them together; those that a clock change skips are looked for one by one."""
+    series = pl.Series(walls, dtype=pl.Int64).cast(pl.Datetime("us"))
+    earliest, latest = (
+        series.dt.replace_time_zone(zone, ambiguous=which, non_existent="null").cast(pl.Int64).to_list()
+        for which in ("earliest", "latest")
+    )
+    found: list[tuple[int, int | None, int] | None] = []
+    for wall, first, again in zip(walls, earliest, latest, strict=True):
+        if first is None:  # a clock change skips it
+            moment = _first_moment(wall, zone)
+            found.append(None if moment is None else (moment, None, moment))
+        elif again > first and _local_of(again - 1, zone) < wall:  # the clock goes back to before it
+            low, high = first, again - 1  # the local time of low is at least wall, that of high before it
+            while high - low > 1:
+                middle = (low + high) // 2
+                low, high = (middle, high) if _local_of(middle, zone) >= wall else (low, middle)
+            found.append((first, high, again))
+        else:  # once, or twice with the clock between them never before it (Havana: 00:00 to 01:00 twice)
+            found.append((first, None, first))
+    return found
+
+
+def _local_of(moment: int, zone: str) -> int:
+    """The local time in ``zone`` of a moment (microseconds since 1970, both), by Polars' rules."""
+    return pl.Series([moment], dtype=pl.Int64).cast(pl.Datetime("us", zone)).dt.replace_time_zone(None).cast(pl.Int64)[0]
 
 
 def _first_moment(wall: int, zone: str) -> int | None:
@@ -812,16 +846,12 @@ def _first_moment(wall: int, zone: str) -> int | None:
         return found
     if before is None or after is None:
         return None
-
-    def local_of(moment: int) -> int:
-        return pl.Series([moment], dtype=pl.Int64).cast(pl.Datetime("us", zone)).dt.replace_time_zone(None).cast(pl.Int64)[0]
-
     # The change is after the moment that has local - the later offset, and not after local - the earlier one
     low, high = wall - (wall + _DAY_US - after), wall - (wall - _DAY_US - before)
     while high - low > 1:
         middle = (low + high) // 2
-        low, high = (low, middle) if local_of(middle) >= wall else (middle, high)
-    return high if local_of(high - 1) < wall <= local_of(high) else None
+        low, high = (low, middle) if _local_of(middle, zone) >= wall else (middle, high)
+    return high if _local_of(high - 1, zone) < wall <= _local_of(high, zone) else None
 
 
 def _moment_sql(microseconds: int) -> str:
