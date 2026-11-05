@@ -46,6 +46,17 @@ def test_the_big_example_is_big():
     assert sum(len(t.steps) for t in project.tables) >= 450 and len(project.groups) == 7
 
 
+def test_the_big_example_needs_a_folder(tmp_path, capsys):
+    """Without a folder, the tool wrote examples/big500.tafl into the repository."""
+    make = generator(ROOT / "tools" / "make_big_project.py")
+    with pytest.raises(SystemExit) as stopped:
+        make.main([])
+    assert stopped.value.code == 2 and "usage:" in capsys.readouterr().err
+    make.main([str(tmp_path / "big")])
+    assert len(Project.load(tmp_path / "big" / "big500.tafl").tables) == 75
+    assert sorted(p.name for p in (tmp_path / "big" / "data").iterdir()) == sorted(p.name for p in (ROOT / "examples" / "data").iterdir())
+
+
 def test_the_committed_examples_are_up_to_date(tmp_path):
     """examples/ holds what make_examples.py writes, so the demo opens without changes."""
     committed = {}

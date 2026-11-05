@@ -1,14 +1,14 @@
 """A big project for checking the map: 75 tables, about 460 steps, 7 groups, links between groups.
 
-    .venv\\Scripts\\python tools\\make_big_project.py            (examples\\big500.tafl)
-    .venv\\Scripts\\python tools\\make_big_project.py %TEMP%\\big  (elsewhere, with a copy of the data)
+    .venv\\Scripts\\python tools\\make_big_project.py %TEMP%\\big
 
-Then open big500.tafl in the app (or run it with `tafl run ... --preview`).
+writes big500.tafl into the folder, with a copy of the example data beside it. Then open it in the
+app (or run it with `tafl run ... --preview`).
 """
 
+import argparse
 import random
 import shutil
-import sys
 from pathlib import Path
 
 from tafl.core import EXTENSION, Project, Registry
@@ -101,8 +101,13 @@ def build_project() -> Project:
     return p
 
 
-def main() -> None:
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else EXAMPLES
+def main(argv: list[str] | None = None) -> None:
+    """The folder is required, so that the project never lands in the repository by mistake."""
+    parser = argparse.ArgumentParser(
+        description="Writes big500.tafl, a big project for checking the map, with a copy of the example data."
+    )
+    parser.add_argument("folder", type=Path, help=r"the folder for the project, e.g. %%TEMP%%\big")
+    target = parser.parse_args(argv).folder
     target.mkdir(parents=True, exist_ok=True)
     if target.resolve() != EXAMPLES:
         shutil.copytree(EXAMPLES / "data", target / "data", dirs_exist_ok=True)
