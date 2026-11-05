@@ -216,6 +216,21 @@ def test_long_numbers_keep_all_their_digits(act):
     assert change(act, numbers, "n", "text", "0").to_list() == ["9223372036854775807", "9007199254740993"]
 
 
+def test_warnings_give_different_examples(act):
+    """Before, a value could be an example twice: "e.g. '1.5', '1.5', '2.25'"."""
+    ctx = StubContext()
+    change(act, pl.DataFrame({"v": [1.5, 1.5, 2.25]}), "v", "integer", ctx=ctx)
+    assert ctx.warnings == ["v: 3 value(s) were rounded, e.g. '1.5', '2.25': a whole number has no decimal places (Decimal number and Text keep them)"]
+    ctx = StubContext()
+    change(act, pl.DataFrame({"v": ["x", "x", "y", "x", "z", "w"]}), "v", "number", ctx=ctx)
+    assert ctx.warnings == ["v: 6 value(s) could not be converted to Decimal number, e.g. 'x', 'y', 'z' (now empty)"]
+    ctx = StubContext()
+    change(act, pl.DataFrame({"v": ["12345678901234567890", "12345678901234567890", "1"]}), "v", "number", ctx=ctx)
+    assert ctx.warnings == [
+        "v: 2 value(s) were rounded, e.g. '12345678901234567890': a decimal number keeps about 15 digits (Whole number and Text keep them all)"
+    ]
+
+
 def test_whole_numbers_from_text_read_each_text_once(act, monkeypatch):
     """Reading the number of a text is the slow part: the rounding warning read every text a
     second time (1.5 to 1.7 times as slow as 0.6.3 for a million texts)."""

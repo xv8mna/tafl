@@ -115,7 +115,7 @@ def change_type(df, p, ctx):
         if source.dtype == pl.String:
             failed = failed & (source.str.strip_chars() != "")
         if count := failed.sum():
-            examples = ", ".join(f"'{v}'" for v in source.filter(failed).head(3).to_list())
+            examples = _examples(source.filter(failed))
             message = f"{c.column}: {count:,} value(s) could not be converted to {_TYPE_LABELS[c.type]}, e.g. {examples}"
             hint = ""
             if c.type == "integer" and _numbers(source, p.decimal).filter(failed).is_finite().any():
@@ -145,7 +145,7 @@ def _warn_rounded(name: str, source: pl.Series, converted: pl.Series, decimal: s
     """A decimal number keeps about 15 digits: say which values lost some."""
     rounded = dtypes.float_loses_digits(source, decimal) & converted.is_not_null()
     if rounded.any():
-        examples = ", ".join(f"'{v}'" for v in source.filter(rounded).head(3).to_list())
+        examples = _examples(source.filter(rounded))
         ctx.warn(
             f"{name}: {rounded.sum():,} value(s) were rounded, e.g. {examples}: a decimal number keeps "
             "about 15 digits (Whole number and Text keep them all)"
@@ -157,11 +157,16 @@ def _warn_whole(name: str, source: pl.Series, converted: pl.Series, decimal: str
     ``rounded``: those values, when the conversion gave them already (from text)."""
     rounded = (dtypes.rounded_to_whole(source, decimal) if rounded is None else rounded) & converted.is_not_null()
     if rounded.any():
-        examples = ", ".join(f"'{v}'" for v in source.filter(rounded).head(3).to_list())
+        examples = _examples(source.filter(rounded))
         ctx.warn(
             f"{name}: {rounded.sum():,} value(s) were rounded, e.g. {examples}: a whole number has no decimal "
             "places (Decimal number and Text keep them)"
         )
+
+
+def _examples(values: pl.Series) -> str:
+    """Up to three different ones of these values (named "value"), for a message: '1.5', '2.25'."""
+    return ", ".join(f"'{v}'" for v in values.unique(maintain_order=True).head(3).to_list())
 
 
 def _kind(dtype: pl.DataType) -> str:
