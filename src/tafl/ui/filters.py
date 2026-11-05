@@ -339,25 +339,25 @@ def _zoned_texts(column: pl.Series) -> list[str | None]:
     differ from Polars' (America/Vancouver from 2026-11-01): its offset for Polars' local time would
     make the text another moment."""
     factor = _UNIT_NS[_unit(column.dtype)]
-    moments = column.cast(pl.Int64).to_list()
-    walls = column.dt.replace_time_zone(None).cast(pl.Int64).to_list()  # the local times, in the same unit
-    texts: list[str | None] = []
-    for moment, wall in zip(moments, walls, strict=True):
-        if moment is None:
-            texts.append(None)
-            continue
-        microseconds, nanoseconds = divmod(wall * factor, 1000)
-        local = _EPOCH + dt.timedelta(microseconds=microseconds)
-        text = _with_nanoseconds(local, nanoseconds) if nanoseconds else local.isoformat()
-        texts.append(text + _offset_text((wall - moment) * factor // 10**9))
-    return texts
-
-
-def _offset_text(seconds: int) -> str:
-    """An offset from UTC as Python's isoformat writes it: +01:00, -03:30, +00:53:28."""
-    hours, rest = divmod(abs(seconds), 3600)
-    minutes, rest = divmod(rest, 60)
-    return f"{'-' if seconds < 0 else '+'}{hours:02d}:{minutes:02d}" + (f":{rest:02d}" if rest else "")
+    local = column.dt.replace_time_zone(None)  # the local time, by Polars' rules
+    frame = pl.DataFrame({"local": local, "offset": (local.cast(pl.Int64) - column.cast(pl.Int64)) * factor // 10**9})
+    wall, offset = pl.col("local"), pl.col("offset")
+    nanoseconds = wall.dt.nanosecond()
+    fraction = (  # as Python writes it: 6 digits when there are microseconds; here 9 with nanoseconds
+        pl.when(nanoseconds % 1000 != 0).then(pl.lit(".") + nanoseconds.cast(pl.String).str.zfill(9))
+        .when(nanoseconds != 0).then(pl.lit(".") + (nanoseconds // 1000).cast(pl.String).str.zfill(6))
+        .otherwise(pl.lit(""))
+    )  # fmt: skip
+    seconds = offset.abs()
+    hours, minutes, rest = (seconds // 3600, seconds % 3600 // 60, seconds % 60)
+    offset_text = pl.concat_str(
+        pl.when(offset < 0).then(pl.lit("-")).otherwise(pl.lit("+")),
+        hours.cast(pl.String).str.zfill(2),
+        pl.lit(":"),
+        minutes.cast(pl.String).str.zfill(2),
+        pl.when(rest != 0).then(pl.lit(":") + rest.cast(pl.String).str.zfill(2)).otherwise(pl.lit("")),
+    )  # +01:00, -03:30, +00:53:28
+    return frame.select(pl.concat_str(wall.dt.strftime("%Y-%m-%dT%H:%M:%S"), fraction, offset_text)).to_series().to_list()
 
 
 def _with_nanoseconds(value: dt.datetime | dt.time, nanoseconds: int) -> str:
