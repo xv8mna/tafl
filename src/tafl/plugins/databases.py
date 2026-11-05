@@ -30,6 +30,7 @@ from tafl.api import (
     col,
     cols,
     connector,
+    detection,
     dtypes,
     endpoints,
     parameters,
@@ -1109,9 +1110,21 @@ def import_database(df, p, ctx):
         finally:
             with contextlib.suppress(Exception):  # e.g. a driver in autocommit mode: nothing to roll back
                 db.rollback()
-    if p.detect_types:
-        out = dtypes.infer_types(out, decimal=".", warn=ctx.warn)
-    return out
+    return _detect_types(out, ctx) if p.detect_types else out
+
+
+def _detect_types(df: pl.DataFrame, ctx) -> pl.DataFrame:
+    """Numbers and dates in the text columns, as the CSV import finds them, also amounts
+    (1.234,50 €) and percentages (12,5%). A column whose values show a decimal comma (123,40)
+    has one, and the log names it; the others have a decimal point (1.000 is one)."""
+    _all, own = detection.guess_decimal(df, ".")
+    typed = detection.detect_types(df, {name: own.get(name, ".") for name in df.columns}, ctx.warn)
+    schema = typed.schema  # once: each call builds the types of all columns again
+    commas = [name for name, decimal in own.items() if decimal == "," and schema[name].is_numeric()]
+    if commas:
+        more = f" and {len(commas) - 5:,} more" if len(commas) > 5 else ""
+        ctx.log(f"Decimal comma in {', '.join(commas[:5])}{more}")
+    return typed
 
 
 _EXPORT_MODES = [

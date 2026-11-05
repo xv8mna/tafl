@@ -567,6 +567,27 @@ def test_detect_types_says_why_long_numbers_stay_text(project, registry):
     ]
 
 
+def test_detect_types_reads_a_decimal_comma_as_the_csv_import_does(project, registry, tmp_path):
+    """123,40 stayed text: only a decimal point was read. A column whose values show a decimal
+    comma has one, amounts and percentages become numbers, as in the CSV import; the log names
+    the columns. A column of values like 1.000, which fit both, keeps the decimal point."""
+    rows = [("123,40", "1.5", "1.234,50 €", "12,5%", "1.000", "0815", "1.234.567"), ("7,00", "2.25", "3,00 €", "1%", "2.000", None, "12")]
+    with closing(sqlite3.connect(tmp_path / "data.db")) as con, con:
+        con.execute("CREATE TABLE prices (comma TEXT, point TEXT, amount TEXT, share TEXT, either TEXT, code TEXT, big TEXT)")
+        con.executemany("INSERT INTO prices VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+    result = import_table(project, registry, table="prices", detect_types=True)
+    assert result.df.to_dict(as_series=False) == {
+        "comma": [123.4, 7.0], "point": [1.5, 2.25], "amount": [1234.5, 3.0], "share": [0.125, 0.01],
+        "either": [1.0, 2.0], "code": ["0815", None], "big": [1234567, 12],
+    }  # fmt: skip
+    assert result.steps[0].messages == [("info", "Decimal comma in comma, amount, share, big")]
+    csv = tmp_path / "prices.csv"
+    lines = [";".join(value or "" for value in row[:4] + row[5:]) for row in rows]
+    csv.write_text("\n".join(["comma;point;amount;share;code;big", *lines]) + "\n", encoding="utf-8")
+    from_csv = registry.actions["csv.import"](None, {"file": str(csv)}, StubContext())
+    assert from_csv.select(pl.exclude("code")).rows() == result.df.select("comma", "point", "amount", "share", "big").rows()
+
+
 def test_column_with_mixed_values_becomes_text(project, registry):
     assert import_table(project, registry, table="messy").df["value"].to_list() == ["1", "two", None]
 

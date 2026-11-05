@@ -33,7 +33,7 @@ rows, a step of another table that uses it ends that table too.
 
 from tafl import APP_NAME
 
-from . import dtypes, endpoints, expressions, files, parameters, xlsx
+from . import detection, dtypes, endpoints, expressions, files, parameters, xlsx
 from . import params as P
 from .action import Action, Kind, action, file_fingerprint
 from .context import Context, Mode
@@ -85,6 +85,7 @@ __all__ = [
     "combine",
     "all_results",
     "connector",
+    "detection",
     "dtypes",
     "endpoints",
     "expressions",
