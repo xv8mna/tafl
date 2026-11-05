@@ -1,4 +1,6 @@
 import datetime as dt
+import subprocess
+import sys
 from decimal import Decimal as D
 from zoneinfo import ZoneInfo
 
@@ -180,7 +182,117 @@ def test_append(act):
     a = pl.DataFrame({"x": [1, 2]})
     out = act("table.append", a, {"tables": ["b"]}, ctx)
     assert out.to_dicts() == [{"x": "1", "y": None}, {"x": "2", "y": None}, {"x": "3", "y": True}]
+    assert ctx.warnings == ["“x” is text: it has different types in the tables (integer, text)"]
     assert act("table.append", a, {"tables": ["b"], "columns": "this"}, ctx).columns == ["x"]
+
+
+UTC = ZoneInfo("UTC")
+
+
+@pytest.mark.parametrize(
+    ("this", "other", "expected", "dtype"),
+    [
+        ([7], [1.5], [7.0, 1.5], pl.Float64),
+        ([7], pl.Series([D("2.50")], dtype=pl.Decimal(38, 2)), [D("7.00"), D("2.50")], pl.Decimal(38, 2)),
+        ([dt.date(2025, 1, 2)], [dt.datetime(2025, 1, 3, 8, 30)], [dt.datetime(2025, 1, 2), dt.datetime(2025, 1, 3, 8, 30)], pl.Datetime("us")),
+        (
+            [dt.date(2025, 1, 2)],
+            pl.Series([dt.datetime(2025, 1, 3, 8, 30)], dtype=pl.Datetime("us", "UTC")),
+            [dt.datetime(2025, 1, 2, tzinfo=UTC), dt.datetime(2025, 1, 3, 8, 30, tzinfo=UTC)],
+            pl.Datetime("us", "UTC"),
+        ),
+        (pl.Series([dt.timedelta(seconds=1)], dtype=pl.Duration("ms")), [dt.timedelta(microseconds=5)], [dt.timedelta(seconds=1), dt.timedelta(microseconds=5)], pl.Duration("us")),
+        ([7], pl.Series([None], dtype=pl.String), [7, None], pl.Int64),  # a column with only empty values doesn't count
+        (pl.Series([None], dtype=pl.List(pl.String)), [dt.date(2025, 1, 2)], [None, dt.date(2025, 1, 2)], pl.Date),
+        ([["a", "b"]], pl.Series([None], dtype=pl.Null), [["a", "b"], None], pl.List(pl.String)),
+    ],
+)
+def test_append_keeps_a_type_that_holds_every_value(act, this, other, expected, dtype):
+    """As Unpivot does. Before, Polars found a type of its own, or stopped with a technical error."""
+    ctx = StubContext(tables={"o": pl.DataFrame({"x": other})})
+    out = act("table.append", pl.DataFrame({"x": this}), {"tables": ["o"]}, ctx)
+    assert out.schema["x"] == dtype and out["x"].to_list() == expected
+    assert ctx.messages == []
+
+
+@pytest.mark.parametrize(
+    ("this", "other", "expected", "message"),
+    [
+        ([dt.date(2025, 1, 2)], [7], ["2025-01-02", "7"], "date, integer"),  # was 20090 and 7
+        ([True], [7], ["true", "7"], "true/false, integer"),  # was 1 and 7
+        ([dt.date(2025, 1, 2)], [True], ["2025-01-02", "true"], "date, true/false"),  # stopped: no supertype
+        ([b"\x01\xff"], ["x"], ["0x01FF", "x"], "binary, text"),  # was binary, the text too
+        ([dt.timedelta(days=1, hours=2)], ["x"], ["1d 2h", "x"], "duration, text"),  # stopped
+        ([1.5], pl.Series([D("2.50")], dtype=pl.Decimal(38, 2)), ["1.5", "2.50"], "number, exact decimal"),  # was 1.5, 2.5
+        ([dt.datetime(2025, 1, 2, 8, 30)], ["x"], ["2025-01-02 08:30:00", "x"], "date-time, text"),  # 08:30:00.000000
+        ([2.0], [dt.time(8, 30, 0, 500_000)], ["2", "08:30:00.500"], "number, time"),  # was a number of nanoseconds
+        (
+            [dt.datetime(2025, 1, 2, 8, 30)],
+            pl.Series([dt.datetime(2025, 1, 2, 8, 30)], dtype=pl.Datetime("us", "UTC")),
+            ["2025-01-02 08:30:00", "2025-01-02 08:30:00"],
+            "date-time, date-time (UTC)",
+        ),
+    ],
+)
+def test_append_makes_other_mixes_text_and_says_so(act, this, other, expected, message):
+    ctx = StubContext(tables={"o": pl.DataFrame({"x": other})})
+    out = act("table.append", pl.DataFrame({"x": this}), {"tables": ["o"]}, ctx)
+    assert out.schema["x"] == pl.String and out["x"].to_list() == expected
+    assert ctx.warnings == [f"“x” is text: it has different types in the tables ({message})"]
+
+
+def test_append_says_which_columns_became_text(act):
+    df = pl.DataFrame({"*": [1], "^a.*$": [dt.date(2025, 1, 2)], "abc": [2**53 + 1], "d": [True], "e": [1], "f": [1]})
+    other = pl.DataFrame({"*": [0.5], "^a.*$": [3], "abc": [0.5], "d": ["x"], "e": ["x"], "f": ["x"]})
+    ctx = StubContext(tables={"o": other, "p": other.select("f", "abc")})
+    out = act("table.append", df, {"tables": ["o", "p"]}, ctx)
+    assert out.rows() == [
+        (1.0, "2025-01-02", "9007199254740993", "true", "1", "1"),
+        (0.5, "3", "0.5", "x", "x", "x"),
+        (None, None, "0.5", None, None, "x"),
+    ]
+    assert ctx.warnings == [
+        "“^a.*$” is text: it has different types in the tables (date, integer)",
+        "“abc” is text, so that none of its values changes (integer, number)",
+        "“d” is text: it has different types in the tables (true/false, text)",
+        "2 more columns are text, as their types differ between the tables: “e”, “f”",
+    ]
+
+
+def test_append_of_lists_beside_other_values_stops_with_a_message(act):
+    ctx = StubContext(tables={"o": pl.DataFrame({"Tags": ["x"], "Note": [[1]]})})
+    with pytest.raises(ActionError) as raised:
+        act("table.append", pl.DataFrame({"Tags": [["a", "b"]]}), {"tables": ["o"]}, ctx)
+    assert str(raised.value).startswith("“Tags” has different types in the tables (")
+    assert str(raised.value).endswith(
+        "lists and records can't be in one column with other values. Remove the column from one of the tables before this step."
+    )
+    out = act("table.append", pl.DataFrame({"Tags": ["a"]}), {"tables": ["o"], "columns": "this"}, ctx)
+    assert out.rows() == [("a",), ("x",)]  # Note isn't in this table: its type doesn't matter
+
+
+_APPEND_WIDE = """
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+df = pl.DataFrame({f"M{i}": [i] for i in range(4001)})
+other = pl.DataFrame({f"M{i}": [i + 0.5] if i % 2 else [str(i)] for i in range(4001)})
+ctx = StubContext(tables={"o": other})
+out = registry.actions["table.append"](df, {"tables": ["o"]}, ctx)
+assert out.shape == (2, 4001) and out.schema["M1"] == pl.Float64 and out.schema["M2"] == pl.String, out.schema
+assert out["M1"].to_list() == [1.0, 1.5] and out["M2"].to_list() == ["2", "2"]
+assert len(ctx.warnings) == 4 and ctx.warnings[3].startswith("1,998 more columns are text"), ctx.warnings
+"""
+
+
+def test_append_of_4000_columns_of_other_types():
+    """Each column is converted on its own. In a process of its own, so that a deep Polars
+    expression that overflows the stack shows as a failed test."""
+    done = subprocess.run([sys.executable, "-c", _APPEND_WIDE], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-1500:]}"
 
 
 def test_derive(act):
