@@ -927,6 +927,15 @@ class SQLite(Connector):
     def same(self, left, right):
         return f"{left} IS {right}"
 
+    def matching(self, keys, left="x", right="s"):
+        """Several keys as row values, (x.a, x.b) IS (s.a, s.b): SQLite compares them value by
+        value, as a chain of x.a IS s.a AND …, and uses the index on them as well. It reads such a
+        chain as a tree as deep as there are keys, and stops at 1,000 levels (in a DELETE already at
+        500 keys)."""
+        if len(keys) == 1:
+            return super().matching(keys, left, right)
+        return "({}) IS ({})".format(*(", ".join(f"{side}.{self.quote(k)}" for k in keys) for side in (left, right)))
+
     def temp_table(self, name):
         return "CREATE TEMP TABLE", name
 

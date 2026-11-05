@@ -332,6 +332,24 @@ def test_sqlite_says_what_it_cant_store(db):
     assert db.rows("SELECT c1999 FROM wide") == [(1999,)]
 
 
+def test_sqlite_finds_rows_by_hundreds_of_key_columns(db):
+    """SQLite stopped with "Expression tree is too large (maximum depth 1000)": in a delete with
+    500 key columns, in every mode with 999. Empty key values still match empty ones."""
+    keys = [f"k{i}" for i in range(999)]
+    first = pl.DataFrame({key: [1, 2, None] for key in keys} | {"Net": [1, 2, 3]})
+    db.export(first)
+    modes = {"update": "updated 3 rows", "upsert": "updated 3 rows", "replace_keys": "deleted 3 rows, added 3 rows", "delete": "deleted 3 rows"}
+    for mode, message in modes.items():
+        db.export(first.with_columns(Net=pl.col("Net") * 10), mode=mode, key_columns=keys)
+        assert db.context.messages[-1] == ("info", f"orders: {message}"), mode
+        assert db.rows("SELECT Net FROM orders ORDER BY Net") == ([] if mode == "delete" else [(10,), (20,), (30,)]), mode
+    pairs = pl.DataFrame({"a": [1, None, 1, None], "b": [None, None, 2, 2], "Net": [1, 2, 3, 4]})
+    db.export(pairs, table="pairs")
+    db.export(pairs.with_columns(Net=pl.col("Net") * 10), table="pairs", mode="upsert", key_columns=["a", "b"])
+    assert db.context.messages[-1] == ("info", "pairs: updated 4 rows")
+    assert db.rows("SELECT a, b, Net FROM pairs ORDER BY Net") == [(1, None, 10), (None, None, 20), (1, 2, 30), (None, 2, 40)]
+
+
 def test_sqlite_exact_decimals_keep_their_digits(db, registry):
     """Exact decimals (e.g. from Parquet or SQL Server) go to SQLite as texts with all their
     digits. A new table gets INTEGER or REAL for them when that keeps every value of the type,
