@@ -173,6 +173,36 @@ def test_long_numbers_keep_all_their_digits(act):
     assert change(act, numbers, "n", "text", "0").to_list() == ["9223372036854775807", "9007199254740993"]
 
 
+def test_whole_numbers_say_which_values_were_rounded(act):
+    """Values with decimal places are rounded half away from zero, as in Excel, and now the step
+    says so, as Decimal number does for the digits it can't keep. Before, there was no warning."""
+    df = pl.DataFrame(
+        {
+            "Text": ["1.000,5", "7", "2,0", "-2,5", "x", None, "1,5e0"],
+            "Float": [1000.5, 7.0, 2.0, -2.5, float("nan"), None, 0.25],
+            "Exact": pl.Series([D("1000.50"), D("7"), D("2.00"), D("-2.50"), None, None, D("0.25")], dtype=pl.Decimal(10, 2)),
+            "Whole": pl.Series([1, 2, 3, 4, 5, None, 7], dtype=pl.Int32),
+        }
+    )
+    why = ": a whole number has no decimal places (Decimal number and Text keep them)"
+    ctx = StubContext()
+    assert change(act, df, "Text", "integer", ctx=ctx).to_list() == [1001, 7, 2, -3, None, None, 2]
+    assert ctx.warnings == [
+        "Text: 1 value(s) could not be converted to Whole number, e.g. 'x' (now empty)",
+        f"Text: 3 value(s) were rounded, e.g. '1.000,5', '-2,5', '1,5e0'{why}",
+    ]
+    ctx = StubContext()
+    assert change(act, df, "Float", "integer", ctx=ctx).to_list() == [1001, 7, 2, -3, None, None, 0]
+    assert ctx.warnings[1:] == [f"Float: 3 value(s) were rounded, e.g. '1000.5', '-2.5', '0.25'{why}"]  # after the one of NaN
+    ctx = StubContext()
+    assert change(act, df, "Exact", "integer", ctx=ctx).to_list() == [1001, 7, 2, -3, None, None, 0]
+    assert ctx.warnings == [f"Exact: 3 value(s) were rounded, e.g. '1000.50', '-2.50', '0.25'{why}"]
+    ctx = StubContext()
+    assert change(act, df, "Whole", "integer", ctx=ctx).to_list() == [1, 2, 3, 4, 5, None, 7]
+    assert change(act, pl.DataFrame({"Text": ["1,234.5", "2.0"]}), "Text", "integer", ctx=ctx, decimal=".").to_list() == [1235, 2]
+    assert ctx.warnings == [f"Text: 1 value(s) were rounded, e.g. '1,234.5'{why}"]
+
+
 def test_long_numbers_to_decimal_numbers_warn(act):
     df = pl.DataFrame({"Code": ["1234567890123456789", "12,5"]})
     ctx = StubContext()

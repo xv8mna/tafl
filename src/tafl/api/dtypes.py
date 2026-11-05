@@ -204,6 +204,21 @@ def float_loses_digits(s: pl.Series, decimal: str = ",") -> pl.Series:
     return lost
 
 
+def rounded_to_whole(s: pl.Series, decimal: str = ",") -> pl.Series:
+    """True for the values with decimal places other than zeros (2.5, the text "1.000,5"), which a
+    whole number keeps only rounded (``parse_integers`` for text). False for empty values and for
+    those that are no number."""
+    name, s = s.name, s.alias("value")  # a fixed name, as in _clean_text
+    if s.dtype == pl.String:
+        text = _number_text(_VALUE, decimal)
+        number = text.cast(pl.Float64, strict=False)  # e.g. 1.5e0
+        fraction = pl.when(text.str.contains(_PLAIN_NUMBER)).then(text.str.contains(r"\.[0-9]*[1-9]")).otherwise(number.round(0) != number)
+        return _apply(s, fraction.fill_null(False)).alias(name)
+    if s.dtype.is_float() or isinstance(s.dtype, pl.Decimal):
+        return (s.round(0) != s).fill_null(False).alias(name)  # NaN and infinity are equal to themselves here
+    return pl.repeat(False, s.len(), eager=True).alias(name)
+
+
 def parse_dates(s: pl.Series, fmt: str = "") -> pl.Series:
     """Text -> Date. Without a format, the common formats are recognized (31.12.2025, 31.12.25,
     2025-12-31, 2025/12/31, also with a time)."""

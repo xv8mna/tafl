@@ -124,6 +124,8 @@ def change_type(df, p, ctx):
             ctx.warn(message + " (now empty)" + hint)
         if c.type == "number":
             _warn_rounded(c.column, source, converted, p.decimal, ctx)
+        elif c.type == "integer":
+            _warn_whole(c.column, source, converted, p.decimal, ctx)
         df = df.with_columns(converted.alias(c.column))
     return df
 
@@ -144,6 +146,17 @@ def _warn_rounded(name: str, source: pl.Series, converted: pl.Series, decimal: s
         ctx.warn(
             f"{name}: {rounded.sum():,} value(s) were rounded, e.g. {examples}: a decimal number keeps "
             "about 15 digits (Whole number and Text keep them all)"
+        )
+
+
+def _warn_whole(name: str, source: pl.Series, converted: pl.Series, decimal: str, ctx) -> None:
+    """A whole number has no decimal places: say which values were rounded (half away from zero)."""
+    rounded = dtypes.rounded_to_whole(source, decimal) & converted.is_not_null()
+    if rounded.any():
+        examples = ", ".join(f"'{v}'" for v in source.filter(rounded).head(3).to_list())
+        ctx.warn(
+            f"{name}: {rounded.sum():,} value(s) were rounded, e.g. {examples}: a whole number has no decimal "
+            "places (Decimal number and Text keep them)"
         )
 
 
