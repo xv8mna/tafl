@@ -187,6 +187,13 @@ def test_a_coarser_unit_than_the_columns_have(act):
     assert ctx.messages == []
 
 
+def test_binary_values_that_are_text_become_that_text(act):
+    """As in Clean text, Join texts and Merge; one value that is no text makes all of them hex
+    digits. Before, they were always hex digits."""
+    assert values(act, a=[b"abc", None], b=["x", "y"]).to_list() == ["abc", "x", None, "y"]
+    assert values(act, a=[b"abc", b"\xff"], b=["x", "y"]).to_list() == ["0x616263", "x", "0xFF", "y"]
+
+
 def test_categories_beside_text_are_text_without_a_message(act):
     """Before, Unpivot said "“Value” is text: the columns have different types (text: a, b)"."""
     ctx = StubContext()

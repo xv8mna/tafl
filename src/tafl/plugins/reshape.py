@@ -425,11 +425,10 @@ def unpivot(df, p, ctx):
             ctx.log(f"“{value}” is text, so that no value of “{turned[common.lost]}” changes")
         else:
             ctx.log(f"“{value}” is text: the columns have different types ({_type_groups(df, [c for c in turned if counted[c]])})")
-    casts = [
-        (dtypes.to_common_type(col(c), schema[c], target) if counted[c] else pl.lit(None, dtype=target)).alias(c)
-        for c in turned
-        if schema[c] != target
-    ]
+    casts = []
+    for c in (c for c in turned if schema[c] != target):  # bytes that are all text become that text, as in Clean text
+        cast = dtypes.to_common_type(col(c), schema[c], target, text_bytes=_text_bytes(df[c])) if counted[c] else pl.lit(None, dtype=target)
+        casts.append(cast.alias(c))
 
     # Working names: a new column may have the name of a turned column, which is there until the end
     taken = set(df.columns)
@@ -488,6 +487,11 @@ def _type_groups(df: pl.DataFrame, turned: list[str]) -> str:
 
 def _can_be_text(dtype: pl.DataType) -> bool:
     return not (dtype.is_nested() or dtype == pl.Object)
+
+
+def _text_bytes(s: pl.Series) -> bool:
+    """Whether ``s`` holds binary values that are all text."""
+    return s.dtype == pl.Binary and dtypes.bytes_are_text(s.alias("value"))  # a fixed name, as in _deciding
 
 
 def _is_text(dtype: pl.DataType) -> bool:

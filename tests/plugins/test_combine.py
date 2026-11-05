@@ -282,6 +282,17 @@ def test_append_keeps_the_digits_of_whole_numbers_beyond_int64(act):
     assert ctx.warnings == ["“x” is text, so that none of its values changes (integer)"]
 
 
+def test_append_writes_binary_values_that_are_text_as_that_text(act):
+    """As Clean text, Join texts and Merge do; one value that is no text makes all of them hex digits.
+    Before, they were always hex digits (0x616263)."""
+    ctx = StubContext(tables={"t": pl.DataFrame({"v": ["x"]})})
+    out = act("table.append", pl.DataFrame({"v": [b"abc", "ä".encode(), None]}), {"tables": ["t"]}, ctx)
+    assert out["v"].to_list() == ["abc", "ä", None, "x"]
+    assert ctx.warnings == ["“v” is text: it has different types in the tables (binary, text)"]
+    out = act("table.append", pl.DataFrame({"v": [b"abc", b"\xff\x00"]}), {"tables": ["t"]}, StubContext(tables={"t": pl.DataFrame({"v": ["x"]})}))
+    assert out["v"].to_list() == ["0x616263", "0xFF00", "x"]
+
+
 def test_append_of_categories_beside_text_says_nothing(act):
     """Categories (Parquet's dictionary columns, a plugin's Enum) are text: their values stay. Before,
     the step warned "“Region” is text: it has different types in the tables (text)"."""

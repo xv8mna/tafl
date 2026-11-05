@@ -410,12 +410,13 @@ def common_type(columns: list[pl.Series]) -> CommonType:
     return CommonType(pl.String, counted, first_lost)
 
 
-def to_common_type(expr: pl.Expr, dtype: pl.DataType, target: pl.DataType) -> pl.Expr:
+def to_common_type(expr: pl.Expr, dtype: pl.DataType, target: pl.DataType, *, text_bytes: bool = False) -> pl.Expr:
     """``expr``, of type ``dtype``, in the type that ``common_type`` gave: as text, the same text on
-    every PC (``text_expr``: 2025-12-31, 2.5, 1d 2h 3m); a date as midnight of a date-time's time
-    zone (a plain cast would take midnight in UTC); else empty where a value doesn't fit."""
+    every PC (``text_expr``: 2025-12-31, 2.5, 1d 2h 3m), and binary values with ``text_bytes``
+    (they are all text, see ``bytes_are_text``) as that text; a date as midnight of a date-time's
+    time zone (a plain cast would take midnight in UTC); else empty where a value doesn't fit."""
     if target == pl.String:
-        return text_expr(expr, dtype)
+        return expr.cast(pl.String) if dtype == pl.Binary and text_bytes else text_expr(expr, dtype)
     if dtype == pl.Date and isinstance(target, pl.Datetime) and target.time_zone:  # 9999-12-31 is beyond ns: empty
         local = expr.cast(pl.Datetime(target.time_unit), strict=False)
         return local.dt.replace_time_zone(target.time_zone, ambiguous="earliest", non_existent="null")
@@ -466,7 +467,11 @@ def stack(frames: list[pl.DataFrame], warn: Callable[[str], None] | None = None,
             texts.append((name, words, common.lost is not None))
         for i, counts in zip(where, common.counted, strict=True):
             if schemas[i][name] != common.dtype:  # a column with only empty values: empty values of that type
-                change = to_common_type(col(name), schemas[i][name], common.dtype) if counts else pl.lit(None, common.dtype)
+                if counts:  # bytes that are all text become that text, as in Clean text, Join texts and Merge
+                    text_bytes = schemas[i][name] == pl.Binary and bytes_are_text(frames[i][name].alias("value"))
+                    change = to_common_type(col(name), schemas[i][name], common.dtype, text_bytes=text_bytes)
+                else:
+                    change = pl.lit(None, common.dtype)
                 changes[i].append(change.alias(name))
     if warn is not None:
         for name, words, lost in texts[:3]:
