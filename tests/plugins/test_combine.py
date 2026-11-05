@@ -273,6 +273,18 @@ def test_append_keeps_the_digits_of_whole_numbers_beyond_int64(act):
     assert ctx.warnings == ["“x” is text, so that none of its values changes (integer)"]
 
 
+@pytest.mark.parametrize("first", ["Order", "*"])
+def test_append_only_the_columns_of_this_table_keeps_every_row(act, first):
+    """Also the rows of a table that has none of this table's columns, with empty values, as in
+    0.6.3. Before, they were left out without a message."""
+    orders = pl.DataFrame({first: [1, 2], "Amount": [10.0, 20.0]})
+    march = pl.DataFrame({"order": [3, 4, 5], "amount": [30.0, 40.0, 50.0]})  # the names in lower case
+    ctx = StubContext(tables={"march": march, "april": march.head(1).with_columns(Amount=pl.lit(5.0))})
+    out = act("table.append", orders, {"tables": ["march", "april"], "columns": "this"}, ctx)
+    assert out.rows() == [(1, 10.0), (2, 20.0), (None, None), (None, None), (None, None), (None, 5.0)]
+    assert out.schema == orders.schema and ctx.messages == []
+
+
 def test_append_of_lists_beside_other_values_stops_with_a_message(act):
     ctx = StubContext(tables={"o": pl.DataFrame({"Tags": ["x"], "Note": [[1]]})})
     with pytest.raises(ActionError) as raised:

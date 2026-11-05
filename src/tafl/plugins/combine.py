@@ -209,10 +209,19 @@ def append(df, p, ctx):
     doesn't count. Lists and records can't be in one column with values of another type."""
     others = [ctx.table(t) for t in p.tables]
     if p.columns == "this":  # the other columns are left out, whatever their types
-        own = set(df.columns)
-        others = [other.select(cols([c for c in other.columns if c in own])) for other in others]
+        others = [_only(other, df.columns) for other in others]
     out = dtypes.stack([df, *others], ctx.warn)  # as a folder import stacks its files
     return out.select(cols(df.columns)) if p.columns == "this" else out
+
+
+def _only(frame: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
+    """``frame`` with only those of ``columns`` that it has. With none of them, its rows stay, as
+    empty values of the first one: a frame without columns has no rows."""
+    own = set(columns)
+    kept = [c for c in frame.columns if c in own]
+    if kept or not columns:
+        return frame.select(cols(kept))
+    return pl.repeat(None, frame.height, dtype=pl.Null, eager=True).alias(columns[0]).to_frame()
 
 
 def _free_name(name: str, suffix: str, taken: set[str]) -> str:
