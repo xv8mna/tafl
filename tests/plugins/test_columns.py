@@ -303,29 +303,36 @@ def test_lists_and_records_cant_become_text(act, values, label):
 
 
 @pytest.mark.parametrize("dtype", [pl.Date, pl.Datetime("us"), pl.Datetime("ns", "Europe/Berlin")], ids=["date", "date-time", "zone"])
-@pytest.mark.parametrize(
-    ("fmt", "message"),
-    [
-        ("0.00", r"^When: date(-time)?s can't be written with the format '0\.00'\. Use codes such as dd\.mm\.yyyy hh:mm:ss"),
-        ("#,##0.00", r"can't be written with the format '#,##0\.00'"),
-        ("0%", r"can't be written with the format '0%'"),
-        ("hh:mm:ss.00", r"can't be written with the format 'hh:mm:ss\.00'.*\.000, \.000000 or \.000000000 for fractions"),
-        ("00000", r"^When: the format '00000' writes no part of a date\. Use codes such as dd\.mm\.yyyy hh:mm:ss$"),
-        ("#,##0", r"^When: the format '#,##0' writes no part of a date"),
-        ('"day"', r"writes no part of a date"),
-    ],
-    ids=["0.00", "#,##0.00", "0%", "ss.00", "00000", "#,##0", "quoted text"],
-)
-def test_dates_to_text_with_a_format_without_date_codes_stops_the_step(act, dtype, fmt, message):
-    """A number format for dates: Polars stopped with "cannot format timezone-naive Datetime with
-    format '0%.2f'", and a format without codes gave its own text for every value (00000 for each
-    date). Also when the column has no values."""
-    days = pl.Series("When", [dt.datetime(2025, 12, 31, 8, 30), None]).cast(pl.Datetime(dtype.time_unit) if dtype != pl.Date else pl.Date)
+@pytest.mark.parametrize("fmt", ["0.00", "#,##0.00", "0%", "0.000", "#,##0.000", "0.000000", ".000", "00000", "#,##0", '"day"', "General"])
+def test_dates_to_text_with_a_number_format_stops_the_step(act, dtype, fmt):
+    """Every number format stops in the same way. Before, Polars stopped with "cannot format
+    timezone-naive Datetime with format '0%.2f'"; 0.000 wrote the milliseconds (0.500), and a format
+    without codes gave its own text for every value (00000 for each date). Also when the column
+    has no values."""
+    days = pl.Series("When", [dt.datetime(2025, 12, 31, 8, 30, 0, 500000), None]).cast(pl.Datetime(dtype.time_unit) if dtype != pl.Date else pl.Date)
     if dtype != pl.Date and dtype.time_zone:
         days = days.dt.replace_time_zone(dtype.time_zone)
+    message = f"When: the format '{fmt}' writes no part of a date. Use codes such as dd.mm.yyyy hh:mm:ss"
     for values in (days, days.clear()):
-        with pytest.raises(ActionError, match=message):
+        with pytest.raises(ActionError) as raised:
             change(act, values.to_frame(), "When", "text", fmt)
+        assert str(raised.value) == message
+
+
+@pytest.mark.parametrize("dtype", [pl.Date, pl.Datetime("us")], ids=["date", "date-time"])
+def test_dates_to_text_with_a_format_that_polars_cant_write_stops_the_step(act, dtype):
+    """Fractions of a second have 3, 6 or 9 digits (.000): ss.00 is a date format that can't be
+    written."""
+    days = pl.DataFrame({"When": pl.Series([dt.datetime(2025, 12, 31, 8, 30)]).cast(dtype)})
+    kind = "dates" if dtype == pl.Date else "date-times"
+    with pytest.raises(ActionError) as raised:
+        change(act, days, "When", "text", "hh:mm:ss.00")
+    assert str(raised.value) == (
+        f"When: {kind} can't be written with the format 'hh:mm:ss.00'. Use codes such as dd.mm.yyyy hh:mm:ss, "
+        "and .000, .000000 or .000000000 for fractions of a second"
+    )
+    written = "31.12.2025 00:00:00.000" if dtype == pl.Date else "31.12.2025 08:30:00.000"  # dates at midnight
+    assert change(act, days, "When", "text", "dd.mm.yyyy hh:mm:ss.000").to_list() == [written]
 
 
 def test_date_times_to_text_without_a_format_keep_their_fractions_of_a_second(act):

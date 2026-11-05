@@ -248,6 +248,8 @@ def _format_check(fmt: str, dates: bool, zone: str | None) -> tuple[str, bool]:
     if zone:  # for a format with the zone's name (%Z)
         samples = samples.dt.replace_time_zone("UTC").dt.convert_time_zone(zone)
     code = dtypes.to_strftime(fmt)
+    if not _writes_date_parts(code):  # a number format such as 0.00, 0.000 or 00000 (.000 alone would be the milliseconds)
+        return f"the format '{fmt}' writes no part of a date. Use codes such as dd.mm.yyyy hh:mm:ss", False
     texts, at_midnight = None, False
     try:
         texts = samples.dt.strftime(code).to_list()
@@ -265,6 +267,16 @@ def _format_check(fmt: str, dates: bool, zone: str | None) -> tuple[str, bool]:
     if texts[0] == texts[1]:  # also hh:mm for dates: 00:00 for each one
         return f"the format '{fmt}' writes no part of a date. Use codes such as dd.mm.yyyy hh:mm:ss", False
     return "", at_midnight
+
+
+def _writes_date_parts(code: str) -> bool:
+    """Whether the strftime ``code`` (from ``dtypes.to_strftime``) has a code for a part of a date
+    or time: a % and a letter, but not a fraction of a second alone (%.3f, %f) or %% (a % sign)."""
+    for part in code.replace("%%", "").split("%")[1:]:
+        letter = part.lstrip("-_0^#")[:1]
+        if letter.isalpha() and letter != "f":
+            return True
+    return False
 
 
 def _text_of(s: pl.Series) -> pl.Series:
