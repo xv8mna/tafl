@@ -169,7 +169,8 @@ def _read_text_file(path: Path, p, warn: Callable[[str], None]) -> tuple[pl.Data
                 rows = "1 row has" if cut == 1 else f"{cut:,} rows have" if cut > 1 else "some rows have"
                 warn(f"In {path.name}, {rows} more values than the first row: the extra values were left out")
     except pl.exceptions.PolarsError as e:
-        raise ActionError(f"Could not read {path.name}: {str(e).splitlines()[0]}") from None
+        reason = _stray_quote(data, separator, p.skip_lines) or str(e).splitlines()[0]
+        raise ActionError(f"Could not read {path.name}: {reason}") from None
 
     names: list[str] = []
     if p.header and out.height:
@@ -197,6 +198,41 @@ def _converted_twice(data: bytes, skip_lines: int) -> bool:
             return True
         start, end = end, data.find(b"\r\r\n", end + 3)
     return False
+
+
+def _stray_quote(data: bytes, separator: str, skip_lines: int) -> str | None:
+    """Why Polars can't read the file, when a quote is out of place: in a value that doesn't start
+    with one (24";Monitor: an odd number of them; an even number Polars reads as it is), or after
+    the closing quote of a value ("24"x). The line and its start; None for other faults."""
+    text = data.decode("utf-8", errors="replace")
+    start = 0
+    for _ in range(skip_lines):  # Polars skips them as they are, also in quotes
+        start = text.find("\n", start) + 1
+        if not start:
+            return None
+    s = re.escape(separator)
+    plain = rf'[^"{s}\r\n]*+'
+    field = rf'(?>"(?:[^"]|"")*+"|{plain}(?:"{plain}"{plain})*+)'  # quoted, or plain with pairs of quotes in it
+    end = re.compile(rf"(?:{field}(?:{s}|\r?\n|\Z))*+").match(text, start).end()  # possessive: linear, little memory
+    if end >= len(text):
+        return None
+    if text[end] == '"' and not _QUOTED.match(text, end):  # never closed: Polars reads it to the end
+        return None
+    line = text.count("\n", 0, end) + 1
+    shown = text[text.rfind("\n", 0, end) + 1 :].split("\n", 1)[0].rstrip("\r")
+    shown = shown if len(shown) <= 60 else shown[:60] + "…"
+    if text[end] == '"':
+        return (
+            f"line {line} has a value that goes on after its closing quote: '{shown}'. In a CSV file, a quote in a "
+            'quoted value is doubled ("24"" Monitor"). Correct the file, or export it again in that form.'
+        )
+    return (
+        f"line {line} has a quote in a value that doesn't start with one: '{shown}'. In a CSV file, such a value is "
+        'in quotes and its quotes are doubled ("24""" for 24"). Correct the file, or export it again in that form.'
+    )
+
+
+_QUOTED = re.compile(r'"(?:[^"]|"")*+"')  # a value in quotes, with its quotes doubled
 
 
 def _read_long_rows(data: bytes, options: dict) -> tuple[pl.DataFrame, int]:

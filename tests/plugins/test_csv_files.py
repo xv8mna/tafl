@@ -454,6 +454,27 @@ def test_rows_with_more_values_than_the_header(act, tmp_path):
     assert not ctx.warnings
 
 
+def test_a_quote_out_of_place_is_shown_with_its_line(act, tmp_path):
+    """Polars' words were the message: "CSV malformed: expected 3 rows, actual 5 rows, in chunk
+    starting at row_offset 3, length 39", or "could not parse `"24"x` as dtype `str`"."""
+    inside = "line 4 has a quote in a value that doesn't start with one: '24\";Monitor'. In a CSV file, such a value is in quotes"
+    cases = [
+        ('Size;Item\n1;2\n3;4\n24";Monitor\n5;6\n', {}, inside),
+        ('Size;Item\r\n1;2\r\n3;4\r\n24";Monitor\r\n', {}, inside),
+        ('Title "a\nSize;Item\n24";Monitor\n', {"skip_lines": 1}, "line 3 has a quote in a value"),  # the skipped line counts
+        ('Size,Item\n"1,5",2\n"24"x,y\n', {}, "line 3 has a value that goes on after its closing quote: '\"24\"x,y'. In a CSV file, a quote"),
+        ("Size;Item\n" + "1;2\n" * 100_000 + 'Monitor 24";' + "x" * 80 + "\n", {}, "line 100002 has a quote .*: 'Monitor 24\";" + "x" * 48 + "…'"),
+    ]
+    for text, options, message in cases:
+        (tmp_path / "q.csv").write_text(text, encoding="utf-8", newline="")
+        start = time.perf_counter()
+        with pytest.raises(ActionError, match="^Could not read q.csv: " + message.replace(".", r"\.").replace("\\.*", ".*")):
+            act("csv.import", None, {"file": str(tmp_path / "q.csv"), **options})
+        assert time.perf_counter() - start < 2
+    (tmp_path / "q.csv").write_text('Size;Item\n24" and 27";Monitor\n24"";TV\n"24"" x";Radio\n', encoding="utf-8")
+    assert act("csv.import", None, {"file": str(tmp_path / "q.csv")})["Size"].to_list() == ['24" and 27"', '24""', '24" x']  # read as before
+
+
 def test_a_failed_export_leaves_the_old_file(act, tmp_path, monkeypatch):
     path = tmp_path / "out.csv"
     path.write_text("an older, complete export\n", encoding="utf-8")
