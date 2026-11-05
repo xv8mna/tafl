@@ -114,9 +114,10 @@ In the download's folder, write `tafl.exe` instead of `.venv\Scripts\tafl` (in P
 Only in a source install (they need Python):
 
 - `.venv\Scripts\python examples\make_examples.py` recreates the demo data and project.
-- `.venv\Scripts\python tools\make_big_project.py` creates `examples\big500.tafl`, a big project
-  for trying the map: 75 tables, 460 steps, 7 groups with links between them (press Ctrl+2, then
-  1–7 to jump to a group, or **Collapse all**).
+- `.venv\Scripts\python tools\make_big_project.py <folder>` creates `big500.tafl` in that folder,
+  with a copy of the example data, a big project for trying the map: 75 tables, 460 steps, 7
+  groups with links between them (press Ctrl+2, then 1–7 to jump to a group, or **Collapse
+  all**).
 
 ## Using the app
 
@@ -287,8 +288,10 @@ folder** ("Read: All files in a folder"), with all subfolder levels if you like:
   days, such as an inbox, choose *Skip the rest of the table*.
   A folder that doesn't exist is always an error.
 - All files become **one table**: columns are matched by name, a column missing in a file stays
-  empty there, and a column whose type differs between files gets a type that fits all of them
-  (often text). CSV: delimiter and encoding are detected per file (a file whose first line has
+  empty there, and a column whose type differs between files (or sheets) gets a type that holds
+  all its values, as in *Append* (whole and decimal numbers become decimal numbers, dates and
+  date-times date-times), else text, with a warning; lists and records beside other values stop
+  the import. CSV: delimiter and encoding are detected per file (a file whose first line has
   no delimiter has one column); numbers, dates and the decimal separator once for all files,
   the decimal separator also per column (`0.500` shows a decimal point, `2,5` a comma). A value
   like `1.000` can be one thousand or one: it follows the other numbers of its column, else
@@ -386,7 +389,9 @@ never while you edit.
   run again.
 - CSV: decimal numbers are written with at most 15 significant digits, as Excel shows and saves
   them (`0.37 * 3` gives `1,11`, not `1,1099999999999999`); whole numbers and exact decimals keep
-  all their digits.
+  all their digits. Times keep their fractions of a second (`08:30:00.500`), time spans are
+  written as text that is the same on every PC (`1d 2h 3m`, as *Pivot* writes them), and lists or
+  records stop the export with a message that names them.
 - CSV is for programs. Values are written as they are, and a spreadsheet program that opens the
   file can read a cell that starts with `=` as a formula, also when the text comes from outside.
   For a file that people open, use the Excel export: there, text stays text.
@@ -434,22 +439,29 @@ always in one transaction: if anything fails, the database stays as it was.
   table (`#name` in SQL Server, `temp.name` in SQLite) can't be the target: it would disappear
   when the export ends.
 - Values are stored as their columns hold them, the same way in every mode, and key values
-  compare as the columns do (with their collation). SQL Server cuts fractions of a second to
-  the digits of the column (`datetime2(0)` holds whole seconds), a `date` column keeps only the
-  date, decimals are rounded to the column's decimal places as SQL Server rounds them (1.005 is
-  1.01 in a `decimal(10,2)`), a `varchar` or `char` column gets the characters its collation's
-  code page holds (Łódź becomes Lódz in a `Latin1_General` column and stays Łódź in a Polish or
-  UTF-8 one), and spaces at the end of a text that don't fit are left out.
+  compare as the columns do (with their collation). SQLite keeps fractions of a second
+  (`08:30:00.500000`, nanoseconds with nine digits). SQL Server's ODBC driver passes fractions of
+  a second to the microsecond: finer digits are cut, with a warning when the column could hold
+  them (`datetime2(7)`, `time(7)`). SQL Server cuts fractions of a second to the digits of the
+  column (`datetime2(0)` holds whole seconds), a `date` column keeps only the date, decimals are
+  rounded to the column's decimal places as SQL Server rounds them (1.005 is 1.01 in a
+  `decimal(10,2)`), a `varchar` or `char` column gets the characters its collation's code page
+  holds (Łódź becomes Lódz in a `Latin1_General` column and stays Łódź in a Polish or UTF-8 one),
+  and spaces at the end of a text that don't fit are left out.
 - Date-times with a time zone are written in that zone's local time, without the zone (08:30 in
   Berlin stays 08:30), as in the Excel export. A SQL Server `datetimeoffset` column gets the
   zone's offset with it (08:30 +02:00 in Berlin in summer); a date-time without a zone gets the
   offset of this PC's time zone on its day.
 - Updating needs one row per key value, as the key column holds it (08:00:01.2 and 08:00:01.7
   are one value in a `datetime2(0)`); duplicates stop the export with an example.
-- SQL Server: values that don't fit stop the export with a message that names the column: a
-  text or binary value longer than its column (e.g. `nvarchar(50)`; in a UTF-8 `varchar`,
-  longer in bytes), a decimal for a whole-number column, an infinite number (e.g. from a
-  division by zero).
+- Values that the database can't store stop the export with a message that names the column:
+  time spans, lists, records and values of a plugin's own type; whole numbers beyond
+  9,223,372,036,854,775,807 in SQLite and in a SQL Server column of whole numbers; in SQLite, a
+  table of more than 2,000 columns. In SQL Server also: a text or binary value longer than its
+  column (e.g. `nvarchar(50)`; in a UTF-8 `varchar`, longer in bytes), a decimal for a
+  whole-number column, an infinite number (e.g. from a division by zero).
+- Key columns: SQLite takes up to 1,999 of them. In SQL Server, more than 32 work without the
+  index of the temporary table (slower for big tables).
 - 100,000 rows take a second or two with a local SQL Server, less with SQLite.
 
 **Run SQL command** runs any SQL when the project runs, e.g. `EXEC dbo.RefreshReport` after an
@@ -470,13 +482,21 @@ file is opened for reading only: a query that changes data stops with a message,
 `ATTACH` and a PRAGMA that does more than read, also in a run. A file that a program left
 unfinished stays as it is, and the message says how to repair it.
 
+**Detect numbers and dates in text columns** has a **Decimal separator**: *Detect automatically*
+(for new steps) finds each column's own, also in amounts and percentages, as the CSV import does;
+*Point* or *Comma* reads only numbers and dates with that separator. Steps of projects saved by an
+earlier version have *Point* and read as before. Date-times with nanoseconds keep them.
+
 ## Exporting to Excel
 
 **Export to Excel file** writes the table as an Excel table (filter buttons, and banded rows if
 you pick a table style) with formats for dates and numbers. The Excel table is named after the
 sheet (sheet *Sales* → table `Sales`). Empty and not-a-number values become empty cells;
-date-times with a time zone are written in that zone's local time. Text stays text, exactly as it
-is, in the cells and in the column names, however the file is written: `=1+1` is no formula, and
+date-times with a time zone are written in that zone's local time. Whole numbers and exact
+decimals with more than 15 significant digits stay numbers, which Excel rounds to 15 digits: the
+step warns how many each column has (change such a column to text to keep every digit). Text
+stays text, exactly as it is, in the cells and in the column names, however the file is written:
+`=1+1` is no formula, and
 a column of web addresses is not clickable in the file. A sheet holds 1,048,575 rows
 below its header: a bigger table stops the export (filter it, or export to CSV). A cell holds
 32,767 characters: longer texts, lists and records are cut, with a warning, and a longer column
@@ -784,6 +804,10 @@ calculated again. Tables are Polars frames, and formulas run on a locked-down Du
 - `tools\guide_screenshots.py` makes the pictures of the user guide (`docs\guide\*.png`) in the
   same way, from example projects it builds in a temporary folder: run it after a change to the
   window. With picture names (`--list` shows them), it makes only those.
+- `tools\check_statuses.py` builds small random projects, edits them through a session as the
+  window does (offscreen) and compares the status of every table with a new calculation after each
+  edit. Run it before a release (default: 100 seeds, at most 30 minutes; `--help` for the options).
+  A failure prints its seed and the edits up to it; `--shrink` looks for fewer edits that fail.
 
 ## Reporting problems
 
