@@ -644,6 +644,25 @@ def test_a_date_time_parameter_with_digits_below_the_unit_of_its_column(act, uni
 
 
 @pytest.mark.parametrize(
+    ("cells", "unit", "value"),
+    [
+        ([nanoseconds_of(dt.datetime(2025, 1, 1), None)], "ms", "2025-01-01 00:00:00.0005"),  # became microseconds
+        ([nanoseconds_of(dt.datetime(3000, 1, 1), None)], "ms", "2025-01-01 00:00:00.0000005"),  # stopped: beyond them
+        ([nanoseconds_of(dt.datetime(2025, 1, 1), None) + 1], "ns", "1600-01-01"),  # stopped: the nanoseconds would go
+        ([nanoseconds_of(dt.datetime(2025, 1, 1), None)], "ns", "2025-01-01 00:00:00.0000000005"),  # below a nanosecond
+    ],
+)
+def test_filling_a_date_time_column_without_empty_cells_leaves_it_as_it_is(act, cells, unit, value):
+    """A typed value that needs another unit changed the unit of such a column, or stopped the step,
+    although no cell would get it."""
+    df = pl.DataFrame({"At": stamps_in(cells, unit, None), "Start": pl.Series([8 * 3600 * 10**9]).cast(pl.Time)})
+    filled = act("rows.fill", df, {"columns": ["At"], "method": "value", "value": value})
+    assert filled.schema == df.schema and filled["At"].to_physical().to_list() == df["At"].to_physical().to_list()
+    times = act("rows.fill", df, {"columns": ["Start"], "method": "value", "value": "08:00:00.0000000005"})  # stopped
+    assert times.equals(df)
+
+
+@pytest.mark.parametrize(
     ("cells", "unit", "value", "message"),
     [
         (  # its digits below a microsecond can't be after 2262

@@ -215,6 +215,8 @@ def fill(df, p, ctx):
                 raise ActionError(_no_typed_value(name, held))
             value = _typed(p.value, dtype, name, typed)
             if isinstance(value, _Moment):  # in the column's unit, or in a finer one that holds it
+                if not df[name].null_count():  # nothing to fill: the column stays as it is, also its unit
+                    continue
                 target, value = _moment_fill(df[name], p.value, value, name)
                 updates.append((column if target == dtype else column.cast(target)).fill_null(value).alias(name))
                 continue
