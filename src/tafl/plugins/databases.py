@@ -1465,8 +1465,9 @@ def _fit_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str,
             digits = max(len(str(abs(low))), len(str(abs(high))))
             if digits <= size - scale:
                 continue  # the column holds them exactly
+            example = low if len(str(abs(low))) >= len(str(abs(high))) else high  # the one with the most digits
             if digits > _MOST_DIGITS:  # no decimal is wide enough
-                raise ActionError(f"The column {target} of {table} ({kind}): " + _beyond_decimals(source, example))
+                raise ActionError(f"The column {target} of {table} ({kind}): " + _beyond_decimals(source, example, existing=True))
             raise ActionError(
                 f"The column {target} of {table} holds numbers of up to {size - scale} digits before the decimal point "
                 f"({kind}), but {source} has longer ones (e.g. {example}). Make the column wider in the database, e.g. "
@@ -1489,12 +1490,17 @@ _TEXT_KINDS = ("char", "varchar", "nchar", "nvarchar", "text", "ntext")
 _MOST_DIGITS = 38  # of a SQL Server decimal
 
 
-def _beyond_decimals(source: str, example: int) -> str:
-    """The message for whole numbers of more digits than any SQL Server decimal holds."""
+def _beyond_decimals(source: str, example: int, existing: bool = False) -> str:
+    """The message for whole numbers of more digits than any SQL Server decimal holds. A new table
+    gets a column of text for them when the data's column is text; an ``existing`` column must be
+    changed to text in the database too (a text for its decimal column would be too long)."""
+    keep = f"change the column's type in the database to text, e.g. varchar(40), and {source}" if existing else f"change {source}"
     return (
         f"SQL Server's decimals hold at most {_MOST_DIGITS} digits, and {source} has whole numbers with more (e.g. "
-        f"{example}). Keep them in a text column: change {source} to text before this step (Change type / format)."
+        f"{example}). Keep them in a text column: {keep} to text before this step (Change type / format)."
     )
+
+
 # What SQL Server's columns of whole numbers hold (the driver passes only these to them, also to bit)
 _WHOLE_RANGES = {"bit": (0, 1), "tinyint": (0, 255), "smallint": (-(2**15), 2**15 - 1), "int": (-(2**31), 2**31 - 1), "bigint": _BIGINT}
 

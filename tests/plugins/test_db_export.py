@@ -3,6 +3,7 @@
 import datetime as dt
 import decimal
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -860,6 +861,41 @@ def test_sqlserver_whole_numbers_of_more_than_38_digits(registry):
         export(pl.DataFrame({"Id": [str(2**127 - 1)]}))  # as text, as the message says: a column of text
         with ctx.database("server") as db:
             assert db.read(f"SELECT Id FROM {name}")["Id"].to_list() == [str(2**127 - 1)]
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_decimal_columns_name_the_longest_number_and_a_way_that_works(registry):
+    """For -(10^38) and 10^19 the example was 10000000000000000000, which has 20 digits, and for a
+    decimal(38, 0) column the advice "change Id to text" failed on the next run (a text too long
+    for its column). The example has the most digits, and the advice says to change the column."""
+    ctx, name = _sqlserver()
+    data = pl.DataFrame({"Id": pl.Series([-(10**38), 10**19], dtype=pl.Int128)})
+
+    def export(df):
+        registry.actions["db.export"](df, {"connection": "server", "table": name}, ctx)
+
+    try:
+        for kind in ("decimal(38,0)", "decimal(10,0)"):
+            with ctx.database("server") as db:
+                db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                db.execute(f"CREATE TABLE {name} (Id {kind})")
+            message = (
+                rf"^The column Id of {name} \({re.escape(kind)}\): SQL Server's decimals hold at most 38 digits, and Id has whole numbers "
+                r"with more \(e\.g\. -100000000000000000000000000000000000000\)\. Keep them in a text column: change the column's "
+                r"type in the database to text, e\.g\. varchar\(40\), and Id to text before this step \(Change type / format\)\.$"
+            )
+            with pytest.raises(ActionError, match=message):
+                export(data)
+        with pytest.raises(ActionError, match=r"up to 10 digits before the decimal point \(decimal\(10,0\)\), but Id has longer ones \(e\.g\. 10000000000000000000\)"):
+            export(pl.DataFrame({"Id": pl.Series([10**19, 5], dtype=pl.Int128)}))  # the longest: 20 digits, not 5
+        with ctx.database("server") as db:  # the advice works
+            db.execute(f"ALTER TABLE {name} ALTER COLUMN Id varchar(40)")
+        export(data.with_columns(pl.col("Id").cast(pl.String)))
+        with ctx.database("server") as db:
+            assert sorted(db.read(f"SELECT Id FROM {name}")["Id"].to_list()) == sorted([str(-(10**38)), str(10**19)])
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
