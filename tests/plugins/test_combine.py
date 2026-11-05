@@ -205,6 +205,12 @@ UTC = ZoneInfo("UTC")
         ([7], pl.Series([None], dtype=pl.String), [7, None], pl.Int64),  # a column with only empty values doesn't count
         (pl.Series([None], dtype=pl.List(pl.String)), [dt.date(2025, 1, 2)], [None, dt.date(2025, 1, 2)], pl.Date),
         ([["a", "b"]], pl.Series([None], dtype=pl.Null), [["a", "b"], None], pl.List(pl.String)),
+        (  # a date after 2262 beside nanoseconds with a time zone: microseconds hold both (it stopped)
+            [dt.date(9999, 12, 31)],
+            pl.Series([dt.datetime(2025, 3, 1, 12)], dtype=pl.Datetime("ns")).dt.replace_time_zone("UTC"),
+            [dt.datetime(9999, 12, 31, tzinfo=UTC), dt.datetime(2025, 3, 1, 12, tzinfo=UTC)],
+            pl.Datetime("us", "UTC"),
+        ),
     ],
 )
 def test_append_keeps_a_type_that_holds_every_value(act, this, other, expected, dtype):

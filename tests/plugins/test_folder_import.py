@@ -141,6 +141,13 @@ def test_parquet_files_of_a_folder(act, tmp_path):
         ([dt.date(2025, 1, 2)], [True], ["2025-01-02", "true"], pl.String, "date, true/false"),  # stopped: no supertype
         (pl.Series([Decimal("2.50")], dtype=pl.Decimal(38, 2)), [1.5], ["2.50", "1.5"], pl.String, "exact decimal, number"),
         ([7], [1.5], [7.0, 1.5], pl.Float64, ""),  # a type that holds both values: no message
+        (  # a date after 2262 beside nanoseconds with a time zone: microseconds (it stopped)
+            [dt.date(9999, 12, 31)],
+            pl.Series([dt.datetime(2025, 3, 1, 12)], dtype=pl.Datetime("ns")).dt.replace_time_zone("UTC"),
+            [dt.datetime(9999, 12, 31, tzinfo=dt.UTC), dt.datetime(2025, 3, 1, 12, tzinfo=dt.UTC)],
+            pl.Datetime("us", "UTC"),
+            "",
+        ),
     ],
 )
 def test_parquet_files_whose_column_has_other_types(act, tmp_path, first, second, expected, dtype, words):

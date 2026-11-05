@@ -187,6 +187,17 @@ def test_a_coarser_unit_than_the_columns_have(act):
     assert ctx.messages == []
 
 
+def test_a_coarser_unit_also_with_a_time_zone(act):
+    """A date after 2262 next to nanosecond date-times with a time zone (as pandas writes them to
+    Parquet files). Before, the step stopped with a technical error."""
+    ctx = StubContext()
+    zoned = pl.Series([dt.datetime(2025, 3, 1, 12), None], dtype=pl.Datetime("ns")).dt.replace_time_zone("UTC")
+    out = values(act, ctx, ValidTo=[dt.date(9999, 12, 31), dt.date(2026, 1, 1)], Changed=zoned)
+    utc = dt.UTC
+    assert out.dtype == pl.Datetime("us", "UTC") and ctx.messages == []
+    assert out.to_list() == [dt.datetime(9999, 12, 31, tzinfo=utc), dt.datetime(2025, 3, 1, 12, tzinfo=utc), dt.datetime(2026, 1, 1, tzinfo=utc), None]
+
+
 LOST = "“Value” is text, so that no value of “{}” changes"
 MIXED = "“Value” is text: the columns have different types ({})"
 

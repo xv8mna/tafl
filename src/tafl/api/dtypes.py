@@ -403,8 +403,8 @@ def to_common_type(expr: pl.Expr, dtype: pl.DataType, target: pl.DataType) -> pl
     zone (a plain cast would take midnight in UTC); else empty where a value doesn't fit."""
     if target == pl.String:
         return text_expr(expr, dtype)
-    if dtype == pl.Date and isinstance(target, pl.Datetime) and target.time_zone:
-        local = expr.cast(pl.Datetime(target.time_unit))
+    if dtype == pl.Date and isinstance(target, pl.Datetime) and target.time_zone:  # 9999-12-31 is beyond ns: empty
+        local = expr.cast(pl.Datetime(target.time_unit), strict=False)
         return local.dt.replace_time_zone(target.time_zone, ambiguous="earliest", non_existent="null")
     return expr.cast(target, strict=False)
 
