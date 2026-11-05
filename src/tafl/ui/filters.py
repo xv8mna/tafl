@@ -81,6 +81,7 @@ _CLASSES = {
 }
 _IN_CLASS = {"d": r"\p{Nd}", "D": r"\P{Nd}", "s": _SPACE_CHARS, "w": _WORD_CHARS}  # \S and \W can't be part of a [...]
 _REPEAT = re.compile(r"\{\s*\d+\s*(?:,\s*\d*\s*)?\}")  # a counted repetition as Polars reads it, also with spaces
+_CODE_POINT = re.compile(r"\\[uU](?:\{([0-9A-Fa-f]+)\}|((?<=u)[0-9A-Fa-f]{4}|(?<=U)[0-9A-Fa-f]{8}))")  # \u{E4}, \u00E4
 
 
 class NotAStep(ValueError):
@@ -765,7 +766,11 @@ def _step_pattern(pattern: str) -> str:
     say the same."""
     translated = _re2_pattern(pattern)
     if (problem := _duckdb_problem(f"regexp_matches('', {_sql(translated)})")) is not None:
-        raise NotAStep(f"the step can't read the pattern ({problem})")
+        if re.search(r"invalid perl operator: \(\?[-a-zA-Z]", problem):  # (?x), (?-u), (?R)
+            raise NotAStep("a step knows only the flags i, m, s and U of a pattern, such as (?i)")
+        if "bad repetition operator" in problem:  # a{2}{2}, a**
+            raise NotAStep("a step can't repeat a repetition at once, such as a{2}{2}: write (a{2}){2}")
+        raise NotAStep("a step can't read this pattern as the filter does")
     return translated
 
 
@@ -787,6 +792,10 @@ def _re2_pattern(pattern: str) -> str:
                     raise NotAStep(f"a step can't use \\{letter} inside [ ] as the filter does: write it outside them")
                 out.append(_IN_CLASS[letter] if in_class else _CLASSES[letter])
                 i += 2
+                continue
+            if code := _CODE_POINT.match(pattern, i):  # \u{E4}, ä, \U{E4}: RE2 writes \x{E4}
+                out.append("\\x{" + (code.group(1) or code.group(2)) + "}")
+                i = code.end()
                 continue
             end = i + 2
             if letter in "pPx" and pattern.startswith("{", end):  # \p{Greek}, \x{20AC}: with their braces
@@ -814,6 +823,10 @@ def _re2_pattern(pattern: str) -> str:
                 if pattern.startswith(start, i):
                     out.append(start)
                     i += 1
+            continue
+        elif pattern.startswith("(?<", i) and i + 3 < n and (pattern[i + 3].isalpha() or pattern[i + 3] == "_"):
+            out.append("(?P<")  # a named group: RE2 writes (?P<name>...)
+            i += 3
             continue
         elif char == "{" and (repeat := _REPEAT.match(pattern, i)):  # a{1, 2}: RE2 reads it as text with the spaces
             out.append(re.sub(r"\s+", "", repeat.group()))

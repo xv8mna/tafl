@@ -1140,8 +1140,9 @@ TEXTS = pl.DataFrame({"id": range(10), "T": ["Straße", "ä", "abc", "١٢٣", "
 
 @pytest.mark.parametrize(
     "pattern",
-    [r"^\w+$", r"\d", r"^\d+$", r"\s", r"^\S+$", r"^\W", r"^[\w]+$", r"^[^\d]+$", r"[\d\s]", r"\D", "(?i)STRASSE", r"\p{Greek}", "^$", r"x\_y"],
-)
+    [r"^\w+$", r"\d", r"^\d+$", r"\s", r"^\S+$", r"^\W", r"^[\w]+$", r"^[^\d]+$", r"[\d\s]", r"\D", "(?i)STRASSE", r"\p{Greek}", "^$", r"x\_y",
+     r"\u{E4}", r"ä", r"(?<letter>ä)", r"^(?<w>\w)+$"],  # RE2 writes these \x{E4} and (?P<letter>...)
+)  # fmt: skip
 def test_a_pattern_as_a_step_keeps_the_rows_of_the_card(act, pattern):
     """The card uses Polars, whose \\w, \\d and \\s are the letters, digits and spaces of Unicode; the
     step used them as RE2 (DuckDB) reads them, for ASCII only: ^\\w+$ kept Straße and ä in the card
@@ -1156,9 +1157,14 @@ def test_a_pattern_as_a_step_keeps_the_rows_of_the_card(act, pattern):
     (r"[\S]", r"a step can't use \\S inside \[ \]"),
     (r"[a&&b]", r"a step can't use &&, -- or ~~ inside \[ \]"),
     (r"[a[b]]", r"a step can't use a class inside a class"),
-    (r"\u{E4}", r"the step can't read the pattern"),
+    (r"(?x)a b", r"^a step knows only the flags i, m, s and U of a pattern, such as \(\?i\)$"),
+    (r"(?-u)^\w+$", r"^a step knows only the flags i, m, s and U"),
+    (r"a{2}{2}", r"^a step can't repeat a repetition at once, such as a\{2\}\{2\}: write \(a\{2\}\)\{2\}$"),
+    (r"a**", r"^a step can't repeat a repetition at once"),
 ])  # fmt: skip
 def test_a_pattern_that_a_step_reads_otherwise_is_no_step(pattern, reason):
+    """The reasons are plain words: they said "the step can't read the pattern (invalid perl operator:
+    (?x)" and "(bad repetition operator: {2}{2})"."""
     assert unusable(Filter("T", ["match"], "regex", {"pattern": pattern}), TEXTS.schema) is None  # the card works
     with pytest.raises(NotAStep, match=reason):
         formula(Filter("T", ["match"], "regex", {"pattern": pattern}), pl.String)
