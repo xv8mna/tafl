@@ -521,7 +521,7 @@ def test_export_binary_infinite_and_time_values(act, tmp_path):
 @pytest.mark.parametrize("datetime_format", ["dd.mm.yyyy hh:mm:ss", "yyyy-mm-dd hh:mm", "%Y-%m-%dT%H:%M:%S%.f"])
 def test_export_keeps_the_fractions_of_a_second_of_times(act, tmp_path, datetime_format):
     """Times were written with whole seconds, whatever the date-time format: 08:30:00.5 was 08:30:00.
-    Now they are written as the grid shows them."""
+    Now they keep their fractions, in the text that is the same on every PC (as Pivot writes them)."""
     at = pl.Series("At", [dt.time(8, 30, 0, 500000), dt.time(8, 30), dt.time(23, 59, 59, 999999), None, dt.time(0, 0, 0, 1000)])
     exact = pl.Series("Exact", [30600 * 10**9 + 1, None, None, None, None], dtype=pl.Int64).cast(pl.Time)  # 1 ns
     df = pl.DataFrame([at, exact])
@@ -532,8 +532,9 @@ def test_export_keeps_the_fractions_of_a_second_of_times(act, tmp_path, datetime
     assert lines[1:] == [";".join(row) for row in df.select(dtypes.text_expr(pl.all(), pl.Time)).fill_null("").rows()]
 
 
-def test_export_writes_time_spans_as_the_grid_shows_them(act, tmp_path):
-    """A time-span column stopped the export: "datatype duration[μs] cannot be written to CSV"."""
+def test_export_writes_time_spans_as_text_like_1d_2h_3m(act, tmp_path):
+    """A time-span column stopped the export: "datatype duration[μs] cannot be written to CSV". The
+    text is the same on every PC, as Pivot and Split column write time spans."""
     span = pl.Series("Span", [dt.timedelta(days=1, hours=2, minutes=3), dt.timedelta(microseconds=1500), None, dt.timedelta(seconds=-5)])
     exact = pl.Series("Exact", [1, None, None, 2_000_000_000], dtype=pl.Duration("ns"))
     path = tmp_path / "spans.csv"
