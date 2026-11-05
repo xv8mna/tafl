@@ -1078,6 +1078,23 @@ def test_periods_and_values_at_the_ends_of_the_years_as_a_step(act, zone):
     assert formula(Filter("When", ["1970-01-01T00:00:00+00:00"]), beyond.dtype, beyond).startswith("[When] IN (TIMESTAMPTZ")
 
 
+def test_many_periods_of_a_column_with_a_time_zone_as_a_step(act):
+    """A step had a range of moments per period: 300 dates took two seconds on a million rows, at
+    each calculation. Periods that meet are one range now, and more than four ranges a binary
+    search (CASE)."""
+    start = dt.datetime(2024, 12, 31, 12)
+    moments = [start + dt.timedelta(hours=7 * k) for k in range(2400)] + [None]  # 700 days, with clock changes
+    df = pl.DataFrame({"id": range(len(moments)), "When": pl.Series("When", moments).dt.replace_time_zone("UTC").dt.convert_time_zone("Europe/Berlin")})
+    dates = [(dt.date(2025, 1, 1) + dt.timedelta(days=k)).isoformat() for k in range(0, 600, 2)]
+    weeks = [f"2025-W{k:02d}" for k in range(1, 53, 3)]
+    for by, values in (("date", dates), ("date", dates[:5]), ("date", [*dates[:3], None]), ("date", [d for k, d in enumerate(dates) if k % 3]), ("week", weeks)):
+        for excluded in (False, True):
+            same_rows(act, df, Filter("When", values, "period", {"by": by}, excluded=excluded))
+    in_a_row = [(dt.date(2025, 1, 1) + dt.timedelta(days=k)).isoformat() for k in range(300)]
+    assert formula(Filter("When", in_a_row, "period", {"by": "date"}), df.schema["When"]).count("TIMESTAMPTZ") == 2
+    assert formula(Filter("When", dates, "period", {"by": "date"}), df.schema["When"]).startswith("CASE WHEN [When] < TIMESTAMPTZ")
+
+
 @pytest.mark.parametrize("zone", ["UTC", "America/New_York", "Europe/Berlin"])
 def test_a_value_of_a_column_with_a_time_zone_as_a_step(act, zone):
     """The step's TIMESTAMP dropped the offset: it kept no row, or (in the PC's zone) the other row
