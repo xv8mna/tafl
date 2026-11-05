@@ -1025,6 +1025,33 @@ def test_time_periods_of_a_column_with_a_time_zone_as_a_step(act, zone):
                 assert rows == [row for row, text in enumerate(local) if text == period], (zone, period)
 
 
+@pytest.mark.parametrize(
+    "zone, moments",
+    [
+        ("America/Vancouver", [dt.datetime(2026, 12, 1, 7, 30), dt.datetime(2026, 12, 1, 6, 30), dt.datetime(2026, 11, 1, 7)]),
+        ("Africa/Casablanca", [dt.datetime(2026, 9, 19, 23, 30), dt.datetime(2026, 9, 20, 0, 30), dt.datetime(2026, 12, 31, 23, 30)]),
+        ("America/Havana", [dt.datetime(2025, 3, 9, 4, 59, 59), dt.datetime(2025, 3, 9, 5), dt.datetime(2025, 11, 2, 4, 30)]),  # no 00:00
+        ("Pacific/Apia", [dt.datetime(2011, 12, 30, 9, 59, 59), dt.datetime(2011, 12, 30, 10), dt.datetime(2011, 12, 31, 12)]),  # no 30 Dec
+        ("Europe/Berlin", [dt.datetime(1893, 3, 31, 23, 6, 31), dt.datetime(1893, 3, 31, 23, 6, 32)]),  # the day began at 00:06:32
+    ],
+)
+def test_a_time_period_of_a_zone_whose_rules_duckdb_has_otherwise_as_a_step(act, zone, moments):
+    """DuckDB's rules of a zone can differ from Polars' (America/Vancouver from 2026-11-01): the step
+    took DuckDB's local time, so 2026-11-30 23:30 there was December. A step now keeps each period
+    from its first moment to the first of the next, by Polars' rules, as the card does, also where a
+    clock change skips midnight."""
+    for unit in ("us", "ns"):
+        when = pl.Series("When", [*moments, None], dtype=pl.Datetime(unit)).dt.replace_time_zone("UTC").dt.convert_time_zone(zone)
+        df = pl.DataFrame({"id": range(len(moments) + 1), "When": when})
+        for by in PERIODS:
+            periods, _ = facet(df, [Filter("When", [], "period", {"by": by})], 0)
+            for period in periods["value"].to_list():
+                same_rows(act, df, Filter("When", [period], "period", {"by": by}))
+                same_rows(act, df, Filter("When", [period], "period", {"by": by}, excluded=True))
+    vancouver = pl.DataFrame({"id": [0], "When": pl.Series("When", moments[:1]).dt.replace_time_zone("UTC").dt.convert_time_zone(zone)})
+    assert zone != "America/Vancouver" or same_rows(act, vancouver, Filter("When", ["2026-11"], "period", {"by": "month"})) == [0]
+
+
 @pytest.mark.parametrize("zone", ["UTC", "America/New_York", "Europe/Berlin"])
 def test_a_value_of_a_column_with_a_time_zone_as_a_step(act, zone):
     """The step's TIMESTAMP dropped the offset: it kept no row, or (in the PC's zone) the other row

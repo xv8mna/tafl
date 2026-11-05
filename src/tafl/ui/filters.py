@@ -592,9 +592,17 @@ def formula(f: Filter, dtype: pl.DataType, data: pl.Series | None = None) -> str
     elif values and f.facet == "regex":
         test = f"regexp_matches({name}, {_sql(_step_pattern(str(f.options.get('pattern') or '')))})"
         parts += [test if value == MATCH else f"NOT {test}" for value in values if value in (MATCH, NO_MATCH)]
+    elif values and f.facet == "period" and dtype == pl.Datetime and _zone(dtype) is not None:
+        # From when to when each period is, by Polars' rules of the zone, as the card has them: DuckDB's
+        # rules of a zone can differ (America/Vancouver from 2026-11-01)
+        for period in values:
+            limits = _period_moments(period, f.options.get("by", "month"), dtype)
+            if limits is not None:
+                start, end = (_literal(moment, dtype) for moment in limits)
+                parts.append(f"{name} >= {start} AND {name} < {end}")
     elif values:
         kind = key_type(f, dtype)
-        parts.append(f"{_picked_sql(f, name, dtype)} IN ({', '.join(_literal(v, kind) for v in values)})")
+        parts.append(f"{_picked_sql(f, name)} IN ({', '.join(_literal(v, kind) for v in values)})")
     if f.excluded:  # empty cells pass unless they are left out too
         if len(parts) > 1:
             parts = [f"({p})" if " AND " in p else p for p in parts]
@@ -609,28 +617,76 @@ def formula(f: Filter, dtype: pl.DataType, data: pl.Series | None = None) -> str
     return " OR ".join(parts) if parts else "FALSE"
 
 
-def _picked_sql(f: Filter, name: str, dtype: pl.DataType) -> str:
-    if f.facet == "period":
-        when = _local_time(name, dtype)
+def _picked_sql(f: Filter, name: str) -> str:
+    if f.facet == "period":  # a column without a time zone: its own time
         by = f.options.get("by", "month")
         if by == "quarter":
-            return f"year({when}) || ' Q' || quarter({when})"
-        return f"strftime({when}, '{_PERIOD_FORMATS.get(by, '%Y-%m')}')"
+            return f"year({name}) || ' Q' || quarter({name})"
+        return f"strftime({name}, '{_PERIOD_FORMATS.get(by, '%Y-%m')}')"
     if f.facet == "length":
         return f"length({name})"
     return name
 
 
-def _local_time(name: str, dtype: pl.DataType) -> str:
-    """The cells of a date-time column in the time the grid shows: with a time zone, the local time
-    of that zone (in a step they would be in this PC's time zone)."""
-    zone = _zone(dtype) if dtype == pl.Datetime else None
-    if zone is None:
-        return name
-    # Polars' zones are names (it makes Etc/GMT-1 of +01:00): DuckDB should know them all
-    if (problem := _duckdb_problem(f"timezone({_sql(zone)}, TIMESTAMPTZ '2000-01-01 00:00:00+00:00')")) is not None:
-        raise NotAStep(f"the step can't use the time zone {zone} of this column ({problem})")
-    return f"timezone({_sql(zone)}, {name})"
+def _period_moments(period: str, by: str, dtype: pl.DataType) -> tuple[int, int] | None:
+    """The first moment of a period of the card (2026-11, 2026 Q4, 2026-W48, ...) and of the period
+    after it, in the time unit of a column with a time zone (since 1970, UTC); None for a text that
+    is no period."""
+    try:
+        if by == "year":
+            start = dt.date(int(period), 1, 1)
+            end = dt.date(start.year + 1, 1, 1)
+        elif by == "quarter":
+            year, quarter = map(int, re.fullmatch(r"(-?\d+) Q([1-4])", period).groups())
+            start = dt.date(year, 3 * quarter - 2, 1)
+            end = dt.date(year + 1, 1, 1) if quarter == 4 else dt.date(year, 3 * quarter + 1, 1)
+        elif by == "week":
+            year, week = map(int, re.fullmatch(r"(-?\d+)-W(\d{2})", period).groups())
+            start = dt.date.fromisocalendar(year, week, 1)
+            end = start + dt.timedelta(days=7)
+        elif by == "date":
+            start = dt.date.fromisoformat(period)
+            end = start + dt.timedelta(days=1)
+        else:
+            year, month = map(int, re.fullmatch(r"(-?\d+)-(\d{2})", period).groups())
+            start = dt.date(year, month, 1)
+            end = dt.date(year + 1, 1, 1) if month == 12 else dt.date(year, month + 1, 1)
+    except (AttributeError, TypeError, ValueError, OverflowError):  # no period, or beyond the years of Python
+        return None
+    first, after = (_first_moment(dt.datetime.combine(day, dt.time()), dtype) for day in (start, end))
+    return None if first is None or after is None else (first, after)
+
+
+def _first_moment(local: dt.datetime, dtype: pl.DataType) -> int | None:
+    """The first moment whose local time in the zone of ``dtype`` (by Polars' rules) is ``local`` or
+    later, in its time unit since 1970 (UTC): of a time that a clock change repeats the earlier one,
+    of a time that it skips (as midnight in Havana in March) the moment of the change."""
+    unit, zone = _unit(dtype), _zone(dtype)
+    day = _units(dt.datetime(1970, 1, 2), unit)
+    wall = _units(local, unit)
+    found, before, after = (
+        pl.Series([wall, wall - day, wall + day], dtype=pl.Int64).cast(pl.Datetime(unit))
+        .dt.replace_time_zone(zone, ambiguous="earliest", non_existent="null").cast(pl.Int64).to_list()
+    )  # fmt: skip
+    if found is not None:
+        return found
+    if before is None or after is None:
+        return None
+
+    def local_of(moment: int) -> int:
+        return pl.Series([moment], dtype=pl.Int64).cast(pl.Datetime(unit, zone)).dt.replace_time_zone(None).cast(pl.Int64)[0]
+
+    # The change is after the moment that has local - the later offset, and not after local - the earlier one
+    low, high = wall - (wall + day - after), wall - (wall - day - before)
+    while high - low > 1:
+        middle = (low + high) // 2
+        low, high = (low, middle) if local_of(middle) >= wall else (middle, high)
+    return high if local_of(high - 1) < wall <= local_of(high) else None
+
+
+def _units(moment: dt.datetime, unit: str) -> int:
+    """A naive date-time as whole units of Polars since 1970."""
+    return (moment - _EPOCH) // _MICROSECOND * 1000 // _UNIT_NS[unit]
 
 
 def _check_nanoseconds(f: Filter, dtype: pl.DataType, values: list[Any], data: pl.Series | None) -> None:
