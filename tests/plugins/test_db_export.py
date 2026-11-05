@@ -871,6 +871,52 @@ def test_sqlserver_keyed_modes_write_text_and_ntext_columns_as_add_does(registry
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+def test_sqlserver_text_columns_get_binary_values_as_hex_text(registry):
+    """Binary values for a column of text were written as their bytes read as characters, without a
+    word: b"ab" was 扡 in an nvarchar or ntext column, ab in a varchar one, and ? there in Update
+    and Upsert (into a text column, Add said "There is not enough memory"). Every mode writes them
+    as hex text, as the CSV export does, and binary keys find the rows that hold that text."""
+    ctx, name = _sqlserver()
+    data = pl.DataFrame({"N": [1, 2], "B": [b"\xff\x00", b"ab"]})
+    read = f"SELECT N, CAST(B AS nvarchar(max)) AS B FROM {name} ORDER BY N"
+
+    def export(df, mode, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name, "mode": mode} | params, ctx)
+
+    try:
+        for kind in ("varchar(20)", "nvarchar(20)", "char(6)", "nchar(6)", "varchar(max)", "nvarchar(max)", "text", "ntext"):
+            for mode in ("insert", "replace", "replace_where", "replace_keys", "update", "upsert"):
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                    db.execute(f"CREATE TABLE {name} (N int, B {kind})")
+                    if mode == "update":
+                        db.execute(f"INSERT INTO {name} (N) VALUES (1), (2)")
+                export(data, mode, key_columns=["N"], condition="1 = 1")
+                with ctx.database("server") as db:
+                    assert db.read(read).rows() == [(1, "0xFF00"), (2, "0x6162")], (kind, mode)
+            if kind in ("text", "ntext"):
+                continue  # SQL Server compares no values of these types: no keys
+            export(data.with_columns(N=pl.lit(3)).head(1), "update", key_columns=["B"])
+            assert ctx.messages[-1] == ("info", f"{name}: updated 1 row"), kind
+            export(data.select("B").tail(1), "delete", key_columns=["B"])
+            assert ctx.messages[-1] == ("info", f"{name}: deleted 1 row"), kind
+            with ctx.database("server") as db:
+                assert db.read(read).rows() == [(3, "0xFF00")], kind
+        with ctx.database("server") as db:
+            db.execute(f"DROP TABLE {name}")
+            db.execute(f"CREATE TABLE {name} (N int, B varchar(5))")
+        message = (
+            rf"^The column B of {name} holds texts of up to 5 characters \(varchar\(5\)\), but B has binary values that are "
+            r"longer as the hex text this column gets \(e\.g\. 0xFF00, 6 characters\)\. Make the column longer in the database\.$"
+        )
+        with pytest.raises(ActionError, match=message):
+            export(data, "insert")
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_whole_numbers_of_more_than_38_digits(registry):
     """A new table got decimal(38, 0) for them, and the export then said "Make the column wider …,
     e.g. decimal(38, 0)", although 38 digits are the most (the table was rolled back). It stops

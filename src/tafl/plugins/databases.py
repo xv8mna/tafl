@@ -1284,8 +1284,9 @@ def export_database(df, p, ctx):
     their collation). Date-times with a time zone are written in that zone's local time,
     without the zone (08:30 in Berlin stays 08:30), as in the Excel export; into a SQL Server
     datetimeoffset column with the zone's offset (08:30 +02:00), and there a date-time without
-    a zone gets the offset of this PC's time zone on its day. Runs only when the project is
-    run.
+    a zone gets the offset of this PC's time zone on its day. Binary values for a SQL Server
+    column of text are hex text (0x0102FF), as the CSV export writes them. Runs only when the
+    project is run.
     """
     if p.skip_empty and df.height == 0:
         ctx.log("Not exported: the table is empty")
@@ -1314,8 +1315,9 @@ def export_database(df, p, ctx):
         _check_whole_numbers(data, names, types, p.table)
         _check_storable(data, db)
         data = _fit_whole_numbers(data, names, types, p.table, db.connector.id)
+        data, hexed = _binary_texts(data, names, types, db.connector.id)
         finding = keys if p.mode in ("update", "delete") else []  # key values that only find rows
-        data = _fit_lengths(data, names, types, p.table, finding)
+        data = _fit_lengths(data, names, types, p.table, finding, hexed)
         kinds = {name.lower(): kind for name, kind in types.items()}
         fitted = {c: kinds[names[c].lower()] for c in data.columns if names[c].lower() in kinds}
         cut = _below_microseconds(data, fitted) if db.connector.id == "sqlserver" else []
@@ -1521,20 +1523,44 @@ def _fitting_whole_type(low: int, high: int, dtype: pl.DataType) -> str:
     return "decimal(20, 0)" if dtype == pl.UInt64 else "decimal(38, 0)"
 
 
+def _binary_texts(
+    df: pl.DataFrame, names: dict[str, str], types: dict[str, str], connector_id: str
+) -> tuple[pl.DataFrame, frozenset[str]]:
+    """Binary values for a SQL Server column of text (char, varchar, nchar, nvarchar, text or
+    ntext) as hex text, 0x0102FF, as the CSV export writes them, in every mode: the driver would
+    pass their bytes as the characters of a text, without a word (b"ab" was 扡 in an nvarchar
+    column). Also the names of the columns of ``df`` changed so."""
+    if connector_id != "sqlserver":
+        return df, frozenset()
+    kinds = {name.lower(): kind for name, kind in types.items()}
+    hexed = [
+        c for c, dtype in df.schema.items() if dtype == pl.Binary and _kind(kinds.get(names[c].lower(), ""))[0] in _TEXT_KINDS
+    ]
+    if hexed:
+        df = df.with_columns((pl.lit("0x") + col(c).bin.encode("hex").str.to_uppercase()).alias(c) for c in hexed)
+    return df, frozenset(hexed)
+
+
 _TEXT_TYPE = re.compile(r"(n?)(?:var)?char\((\d+)\)( collate \S+_utf8)?")  # a UTF-8 varchar counts bytes
 _BINARY_TYPE = re.compile(r"(?:var)?binary\((\d+)\)")
 _ASTRAL = r"[\x{10000}-\x{10FFFF}]"  # outside the Basic Multilingual Plane, e.g. an emoji
 
 
 def _fit_lengths(
-    df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, finding: list[str]
+    df: pl.DataFrame,
+    names: dict[str, str],
+    types: dict[str, str],
+    table: str,
+    finding: list[str],
+    hexed: frozenset[str] = frozenset(),
 ) -> pl.DataFrame:
     """Texts and binary values for columns of a limited length, such as nvarchar(50). Spaces
     at the end of a text that don't fit are cut, as SQL Server does (it also leaves them out
     when it compares texts). A value that is still too long would stop the export with a
     message that names no column: refuse with the column and an example first. In the key
     columns ``finding`` (columns of the table), whose values only find rows, such a row is left
-    out instead: no row of the table can have that value."""
+    out instead: no row of the table can have that value. ``hexed``: the columns whose binary
+    values became hex text (``_binary_texts``)."""
     kinds = {name.lower(): kind for name, kind in types.items()}
     changes, unmatched = [], pl.repeat(False, df.height, eager=True)
     for source in sorted(df.columns, key=lambda c: names[c] not in finding):  # the rows left out first
@@ -1571,6 +1597,12 @@ def _fit_lengths(
                 "Shorten them first, or make the column longer in the database."
             )
         shown = example if len(example) <= 40 else example[:40] + "…"
+        if source in hexed:  # hex digits take a character, also a byte in UTF-8
+            raise ActionError(
+                f"The column {target} of {table} holds texts of up to {size:,} characters ({kind.split(' collate ')[0]}), but "
+                f"{source} has binary values that are longer as the hex text this column gets (e.g. {shown}, {length:,} "
+                "characters). Make the column longer in the database."
+            )
         if unit == "bytes":  # a varchar of a UTF-8 collation
             raise ActionError(
                 f"The column {target} of {table} holds texts of up to {size:,} bytes in UTF-8 ({kind.split(' collate ')[0]}), "
