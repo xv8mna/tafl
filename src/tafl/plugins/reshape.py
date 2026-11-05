@@ -420,7 +420,7 @@ def unpivot(df, p, ctx):
     # The type of the value column: a column whose values are all empty (or left out) doesn't count
     common = dtypes.common_type([_deciding(df[c], p.drop_empty) for c in turned])
     target, counted = common.dtype, dict(zip(turned, common.counted, strict=True))
-    if target == pl.String and any(counted[c] and schema[c] != pl.String for c in turned):  # a mix
+    if target == pl.String and any(counted[c] and not _is_text(schema[c]) for c in turned):  # a mix; categories are text
         if common.lost is not None:  # digits or a date out of range
             ctx.log(f"“{value}” is text, so that no value of “{turned[common.lost]}” changes")
         else:

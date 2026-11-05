@@ -449,7 +449,7 @@ def stack(frames: list[pl.DataFrame], warn: Callable[[str], None] | None = None,
                 f"“{name}” has different types in the {sources} ({words}): lists and records can't be in one column "
                 f"with other values.{hint}"
             )
-        if common.dtype == pl.String and any(dtype != pl.String for dtype in counted):
+        if common.dtype == pl.String and not all(_is_text(dtype) for dtype in counted):  # categories are text too
             texts.append((name, words, common.lost is not None))
         for i, counts in zip(where, common.counted, strict=True):
             if schemas[i][name] != common.dtype:  # a column with only empty values: empty values of that type
@@ -466,6 +466,11 @@ def stack(frames: list[pl.DataFrame], warn: Callable[[str], None] | None = None,
             warn(f"{len(texts) - 3:,} more columns are text, as their types differ between the {sources}: {more}")
     frames = [f.with_columns(change) if change else f for f, change in zip(frames, changes, strict=True)]
     return pl.concat(frames, how="diagonal")
+
+
+def _is_text(dtype: pl.DataType) -> bool:
+    """Text, also categories (Parquet's dictionary columns, a plugin's Enum): as text they stay as they are."""
+    return dtype in (pl.String, pl.Categorical) or isinstance(dtype, pl.Enum)
 
 
 def _common_types(types: list[pl.DataType]) -> list[pl.DataType]:

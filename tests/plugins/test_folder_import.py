@@ -162,6 +162,16 @@ def test_parquet_files_whose_column_has_other_types(act, tmp_path, first, second
     assert ctx.warnings == ([f"“x” is text: it has different types in the files ({words})"] if words else [])
 
 
+def test_parquet_files_with_categories_beside_text(act, tmp_path):
+    """A dictionary column (as pandas writes its categories) is text: no warning. Before: "“Region” is
+    text: it has different types in the files (text)"."""
+    pl.DataFrame({"Region": pl.Series(["North", "South"], dtype=pl.Categorical)}).write_parquet(tmp_path / "a.parquet")
+    pl.DataFrame({"Region": ["West"]}).write_parquet(tmp_path / "b.parquet")
+    ctx = StubContext()
+    out = act("parquet.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out.rows() == [("North",), ("South",), ("West",)] and out.schema["Region"] == pl.String and ctx.warnings == []
+
+
 def test_excel_sheets_whose_column_has_other_types(act, tmp_path):
     """Excel stores numbers as decimal numbers: beside text, 5 is "5", as Unpivot writes it. Before,
     it was "5.0", without a message."""

@@ -279,6 +279,19 @@ def test_append_keeps_the_digits_of_whole_numbers_beyond_int64(act):
     assert ctx.warnings == ["“x” is text, so that none of its values changes (integer)"]
 
 
+def test_append_of_categories_beside_text_says_nothing(act):
+    """Categories (Parquet's dictionary columns, a plugin's Enum) are text: their values stay. Before,
+    the step warned "“Region” is text: it has different types in the tables (text)"."""
+    cats = pl.DataFrame({"Region": pl.Series(["North", "South"], dtype=pl.Categorical), "Size": pl.Series(["S"], dtype=pl.Enum(["S"])).extend_constant(None, 1)})
+    ctx = StubContext(tables={"t": pl.DataFrame({"Region": ["West"], "Size": pl.Series(["L"], dtype=pl.Enum(["L"]))})})
+    out = act("table.append", cats, {"tables": ["t"]}, ctx)
+    assert out.schema == pl.Schema({"Region": pl.String, "Size": pl.String})
+    assert out.rows() == [("North", "S"), ("South", None), ("West", "L")] and ctx.messages == []
+    ctx = StubContext(tables={"t": pl.DataFrame({"Region": [7]})})  # beside a number, text with a warning
+    assert act("table.append", cats.select("Region"), {"tables": ["t"]}, ctx)["Region"].to_list() == ["North", "South", "7"]
+    assert len(ctx.warnings) == 1 and ctx.warnings[0].startswith("“Region” is text: it has different types in the tables (")
+
+
 @pytest.mark.parametrize("first", ["Order", "*"])
 def test_append_only_the_columns_of_this_table_keeps_every_row(act, first):
     """Also the rows of a table that has none of this table's columns, with empty values, as in

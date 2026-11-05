@@ -187,6 +187,13 @@ def test_a_coarser_unit_than_the_columns_have(act):
     assert ctx.messages == []
 
 
+def test_categories_beside_text_are_text_without_a_message(act):
+    """Before, Unpivot said "“Value” is text: the columns have different types (text: a, b)"."""
+    ctx = StubContext()
+    out = values(act, ctx, a=pl.Series(["x", None], dtype=pl.Categorical), b=["y", "z"], c=pl.Series(["e", "f"], dtype=pl.Enum(["e", "f"])))
+    assert out.dtype == pl.String and out.to_list() == ["x", "y", "e", None, "z", "f"] and ctx.messages == []
+
+
 def test_a_coarser_unit_also_with_a_time_zone(act):
     """A date after 2262 next to nanosecond date-times with a time zone (as pandas writes them to
     Parquet files). Before, the step stopped with a technical error."""
