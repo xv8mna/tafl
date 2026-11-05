@@ -722,6 +722,60 @@ def test_contains_starts_and_ends_look_at_the_text_of_values_that_are_no_text(ac
     assert names(flt(act, TEXTS, (column, operator, value))) == list(expected)
 
 
+class Thing:
+    """A value of a plugin's own type."""
+
+    def __str__(self):
+        return "thing"
+
+
+NESTED = pl.DataFrame(
+    {
+        "Name": ["a", "b", "c"],
+        "Tags": [["x", "y"], [], None],
+        "Sizes": pl.Series([[1, 2], [3, 4], None], dtype=pl.Array(pl.Int64, 2)),
+        "Pair": [{"x": 1, "y": "a"}, {"x": 2, "y": None}, None],
+        "Own": pl.Series([Thing(), Thing(), None], dtype=pl.Object),
+    }
+)
+
+
+@pytest.mark.parametrize("operator", ["=", "!=", ">", ">=", "<", "<=", "contains", "not_contains", "starts", "ends", "in", "not_in"])
+@pytest.mark.parametrize(
+    ("column", "message"),
+    [
+        ("Tags", r"^Column 'Tags' holds lists, which Filter rows can't compare .*LIST_CONTAINS\(\[Tags\], 'a'\)$"),
+        ("Sizes", r"^Column 'Sizes' holds lists, which Filter rows can't compare .*LIST_CONTAINS\(\[Sizes\], 'a'\)$"),
+        ("Pair", r"^Column 'Pair' holds records, which Filter rows can't compare .*STRUCT_EXTRACT\(\[Pair\], 'x'\) = 1$"),
+        ("Own", r"^Column 'Own' holds values of a plugin's own type, which Filter rows can't compare with a value$"),
+    ],
+)
+def test_lists_and_records_say_that_filter_rows_cant_compare_them(act, operator, column, message):
+    """Before, Polars stopped with "cannot cast List type", "'is_in' cannot check for Struct…" or
+    "cannot cast 'Object' type", and a record was compared as text without a word."""
+    with pytest.raises(ActionError, match=message):
+        flt(act, NESTED, (column, operator, "a"))
+
+
+def test_lists_and_records_can_be_empty_or_not(act):
+    for column in ("Tags", "Sizes", "Pair", "Own"):
+        assert names(flt(act, NESTED, (column, "empty", ""))) == ["c"], column
+        assert names(flt(act, NESTED, (column, "not_empty", ""))) == ["a", "b"], column
+
+
+def test_the_formula_of_the_message_for_lists_and_records_works(act):
+    """What the message proposes, with the name of the column written for a formula."""
+    df = NESTED.rename({"Tags": "Tags]", "Pair": "It's"}).with_columns(pl.Series("It's", [{"it's": 1}, {"it's": 2}, None]))
+    with pytest.raises(ActionError, match=r"LIST_CONTAINS\(\[Tags\]\]\], 'a'\)") as raised:
+        flt(act, df, ("Tags]", "contains", "x"))
+    formula = re.search(r"LIST_CONTAINS\(.*\)", str(raised.value)).group().replace("'a'", "'x'")
+    assert names(act("rows.filter_formula", df, {"condition": formula})) == ["a"]
+    with pytest.raises(ActionError, match=r"STRUCT_EXTRACT\(\[It's\], 'it''s'\) = 1") as raised:
+        flt(act, df, ("It's", "=", "1"))
+    formula = re.search(r"STRUCT_EXTRACT\(.*", str(raised.value)).group()
+    assert names(act("rows.filter_formula", df, {"condition": formula})) == ["a"]
+
+
 def test_filling_a_column_of_time_spans_says_that_a_typed_value_cant_be_used(act):
     df = pl.DataFrame({"V": [dt.timedelta(hours=1), None]})
     with pytest.raises(ActionError, match="Column 'V' holds time spans: a typed value can't be used with it"):

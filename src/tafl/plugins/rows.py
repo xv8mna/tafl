@@ -233,6 +233,9 @@ def _condition(df: pl.DataFrame, c: Any, case_sensitive: bool, schema: pl.Schema
             empty = empty | (column.str.strip_chars() == "")
         return empty if op == "empty" else ~empty
 
+    if _held_values(dtype) is not None:  # lists, records: only whether they are empty
+        raise ActionError(_not_comparable(c.column, dtype))
+
     if op in ("contains", "not_contains", "starts", "ends"):
         needle = c.value
         if dtype == pl.Binary and dtypes.bytes_are_text(df[c.column]):  # binary values that are all text: that text
@@ -508,6 +511,29 @@ def _year_beyond(value: Any) -> int | None:
 
 def _no_typed_value(column: str) -> str:
     return f"Column '{column}' holds time spans: a typed value can't be used with it"
+
+
+def _held_values(dtype: pl.DataType) -> str | None:
+    """What a column holds whose values are no single values, so that no typed value compares with
+    them: lists, records, values of a plugin's own type. None for other columns."""
+    if isinstance(dtype, pl.List | pl.Array):
+        return "lists"
+    if isinstance(dtype, pl.Struct):
+        return "records"
+    return "values of a plugin's own type" if isinstance(dtype, pl.Object) else None
+
+
+def _not_comparable(column: str, dtype: pl.DataType) -> str:
+    """The message of Filter rows for a column of ``_held_values``: what it holds, and the formula
+    that does it."""
+    held, name = _held_values(dtype), "[" + column.replace("]", "]]") + "]"
+    message = f"Column '{column}' holds {held}, which Filter rows can't compare with a value"
+    if held == "lists":
+        return f"{message}: use Filter rows by formula, e.g. LIST_CONTAINS({name}, 'a')"
+    if held == "records" and dtype.fields:
+        field = dtype.fields[0].name.replace("'", "''")
+        return f"{message}: use Filter rows by formula, e.g. STRUCT_EXTRACT({name}, '{field}') = 1"
+    return message
 
 
 def _whole(value: str, dtype: pl.DataType) -> int | None:
