@@ -405,7 +405,7 @@ def _evaluate(df: pl.DataFrame, formula: str, *, condition: bool) -> pl.Series:
         if not parsed:
             sql = f"SELECT (\n{body}\n) AS value FROM {_VIEW}"
             parsed.append(json.loads(con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0]))
-        return bool(parsed[0]["error"]) or _uses(parsed[0], name)
+        return bool(parsed[0]["error"]) or _names(parsed[0], name)
 
     frame, kinds, beyond, unsigned = _readable(
         df if table else _with_row_number(df, formula), exact_times=exact_times, reads=reads
@@ -519,6 +519,17 @@ def _texts(df: pl.DataFrame) -> list[str]:
     return [name for name, dtype in df.schema.items() if dtype == pl.String]
 
 
+def _holds_times(dtype: pl.DataType) -> bool:
+    """Whether a type of lists, arrays or records holds times of day (TIME_NS for DuckDB)."""
+    if dtype == pl.Time:
+        return True
+    if isinstance(dtype, (pl.List, pl.Array)):
+        return _holds_times(dtype.inner)
+    if isinstance(dtype, pl.Struct):
+        return any(_holds_times(field.dtype) for field in dtype.fields)
+    return False
+
+
 def _has_nanoseconds(times: pl.Series) -> bool:
     """Whether a time of day has digits below a microsecond."""
     return bool(((times.dt.nanosecond() % 1000) != 0).any())
@@ -613,6 +624,25 @@ def _compared_with_others(tree: object, name: str, alike: Collection[str]) -> bo
             for index, side in enumerate(sides):
                 if _uses(side, name) and any(_uses(other, None, alike) for other in sides[:index] + sides[index + 1 :]):
                     return True
+            nodes += node.values()
+    return False
+
+
+def _names(tree: object, name: str) -> bool:
+    """Whether DuckDB's parse tree names the column ``name`` in any part of a reference: [S].t is
+    the field t of the record column S (all columns, as COLUMNS(*) does, count too)."""
+    folded = _fold(name)
+    nodes = [tree]
+    while nodes:  # not by recursion: a formula can nest deeper than Python goes
+        node = nodes.pop()
+        if isinstance(node, list):
+            nodes += node
+        elif isinstance(node, dict):
+            names = node.get("column_names")
+            if node.get("class") == "COLUMN_REF" and isinstance(names, list) and any(_fold(str(part)) == folded for part in names):
+                return True
+            if node.get("class") == "STAR":
+                return True
             nodes += node.values()
     return False
 
@@ -790,16 +820,18 @@ def _readable(
     unsigned 128-bit column with a number beyond HUGEINT stays UHUGEINT (see _check_unsigned).
 
     Times of day without nanoseconds go as TIME (see below), unless the formula reads a time of day
-    with nanoseconds (``reads``: TIME and TIME_NS can't be compared, = compares them to the
-    microsecond) or has TIME_NS (``exact_times``: DuckDB compares a TIME with a TIME_NS to the
-    microsecond, 08:00:00 = TIME_NS '08:00:00.000000001')."""
+    with nanoseconds or a list or record of times, which stay TIME_NS (``reads``: TIME and TIME_NS
+    can't be compared, list_contains([L], [T]) stops, = compares them to the microsecond) or has
+    TIME_NS (``exact_times``: DuckDB compares a TIME with a TIME_NS to the microsecond, 08:00:00 =
+    TIME_NS '08:00:00.000000001')."""
     kinds: dict[str, str] = {}
     beyond: dict[str, int] = {}
     changed: list[pl.Series] = []
     unsigned = [name for name, dtype in frame.schema.items() if dtype == pl.UInt64 and name != _ROW]
     wide = any((frame[name].alias("value") > 2**63 - 1).any() for name in unsigned)
     with_nanoseconds = {name for name, dtype in frame.schema.items() if dtype == pl.Time and _has_nanoseconds(frame[name].alias("value"))}
-    as_time = not exact_times and not any(reads(name) for name in with_nanoseconds)
+    nested = {name for name, dtype in frame.schema.items() if dtype.is_nested() and _holds_times(dtype)}
+    as_time = not exact_times and not any(reads(name) for name in with_nanoseconds | nested)
     for name, dtype in frame.schema.items():
         column = frame[name].alias("value")  # Polars' Series methods would read a name like ^a.*$ as a pattern
         if dtype == pl.UInt128:

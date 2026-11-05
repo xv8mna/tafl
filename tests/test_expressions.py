@@ -1028,6 +1028,29 @@ def test_a_time_of_day_is_compared_with_a_time():
     assert expressions.evaluate(df, "CAST([N] AS TIME) > TIME '08:00:00'").to_list()[1:] == [False, None]
 
 
+def test_times_in_lists_and_records_are_read_as_in_0_6_3():
+    """The times of a list or a record stay times with nanoseconds for DuckDB (TIME_NS), and a time
+    column went as TIME: list_contains([L], [T]) stopped with "Cannot deduce template type 'T'",
+    [S].t > [T] with "Cannot compare values of type TIME_NS and type TIME". A formula that reads a
+    list or a record of times gets its times as in 0.6.3."""
+    df = pl.DataFrame({
+        "T": [dt.time(8), dt.time(13)],
+        "L": [[dt.time(8)], [dt.time(9)]],
+        "A": pl.Series([[dt.time(8), dt.time(9)], [dt.time(13), dt.time(14)]], dtype=pl.Array(pl.Time, 2)),
+        "S": [{"t": dt.time(8)}, {"t": dt.time(14)}],
+        "LS": [[{"t": dt.time(8)}], [{"t": dt.time(9)}]],
+    })  # fmt: skip
+    for formula, values in (
+        ("list_contains([L], [T])", [True, False]),
+        ("list_contains([A], [T])", [True, True]),
+        ("struct_extract([S], 't') > [T]", [False, True]),
+        ("[S].t > [T]", [False, True]),
+        ("list_contains(list_transform([LS], x -> x.t), [T])", [True, False]),
+        ("[T] > TIME '12:00:00'", [False, True]),  # no list or record read: as TIME
+    ):
+        assert expressions.evaluate(df, formula).to_list() == values, formula
+
+
 def test_the_nanosecond_hint_is_for_times_against_times_and_names_their_columns():
     """Every message of DuckDB with TIME_NS got the hint, and it named a column of times with
     nanoseconds that the formula didn't use: QUARTER(TIME_NS '12:00:00') said "[N] holds times with
