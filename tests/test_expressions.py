@@ -1061,12 +1061,13 @@ def test_the_nanosecond_hint_is_for_times_against_times_and_names_their_columns(
     and names the columns that the formula names, none where it names [T] too (its CAST would be the
     one that helps); only these columns decide how [T] is read."""
     ns = pl.Series([8 * 3600 * 10**9 + 1, 9 * 3600 * 10**9], dtype=pl.Int64).cast(pl.Time)
-    df = pl.DataFrame({"N": ns, "When": [dt.datetime(2025, 1, 1, 8)] * 2, "T": [dt.time(8), dt.time(13)]})
+    df = pl.DataFrame({"N": ns, "When": [dt.datetime(2025, 1, 1, 8)] * 2, "T": [dt.time(8), dt.time(13)], "S": [{"t": dt.time(8)}, {"t": dt.time(14)}]})
     for formula, start in (
         ("QUARTER(TIME_NS '12:00:00')", "Formula error: No function matches the given name and argument types 'quarter(TIME_NS)'"),
         ("[N] = [When]", "Formula error: Unimplemented type for cast (TIME_NS -> TIMESTAMP)"),
         ("[N] > TIME '12:00:00'", "Formula error: [N] holds times with nanoseconds, which a formula compares with a time only by = and IN"),
         ("[T] > TIME '12:00:00' AND [N] IS NOT NULL", "Formula error: a time with nanoseconds is compared with a time only by"),
+        ("[S].t > TIME '12:00:00' AND [N] IS NOT NULL", "Formula error: a time with nanoseconds is compared with a time only by"),
         ("GREATEST([N], TIME '12:00:00')", "Formula error: [N] holds times with nanoseconds, which a formula compares"),
         ("[N] > TIMETZ '12:00:00+01'", "Formula error: Cannot compare values of type TIME_NS and type TIME WITH TIME ZONE"),
         ("COALESCE(*COLUMNS('N')) > TIME '12:00:00'", "Formula error: a time with nanoseconds is compared with a time only by = and IN"),

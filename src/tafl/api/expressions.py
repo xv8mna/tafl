@@ -538,10 +538,16 @@ def _has_nanoseconds(times: pl.Series) -> bool:
 
 def _nanosecond_times(df: pl.DataFrame, formula: str) -> list[str]:
     """The columns of times of day with nanoseconds that the formula names ([N] or "N"), which
-    _clean_error names in a hint; none where it names a time column without nanoseconds too: these
-    made it TIME_NS (see _readable), so the time that stops can be that one, and a CAST of [N]
-    doesn't help ([T] > TIME '12:00:00' AND [N] IS NOT NULL)."""
+    _clean_error names in a hint; none where it names a time column without nanoseconds too, or a
+    list or record of times, or a column by its position (#4): these made the times TIME_NS (see
+    _readable), so the time that stops can be another one, and a CAST of [N] doesn't help
+    ([T] > TIME '12:00:00' AND [N] IS NOT NULL, [S].t > TIME '12:00:00' AND [N] IS NOT NULL)."""
+    tokens = tokenize(formula)
+    if any(formula[t.start : t.end].endswith("#") and k + 1 < len(tokens) and tokens[k + 1].kind == "number" for k, t in enumerate(tokens)):
+        return []
     named = {_fold(name) for name in column_names(formula)}
+    if any(dtype.is_nested() and _holds_times(dtype) and _fold(name) in named for name, dtype in df.schema.items()):
+        return []
     times = [name for name, dtype in df.schema.items() if dtype == pl.Time and _fold(name) in named]
     nanos = [name for name in times if _has_nanoseconds(df[name].alias("value"))]
     return nanos if len(nanos) == len(times) else []
