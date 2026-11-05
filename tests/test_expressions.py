@@ -940,6 +940,18 @@ def test_exact_decimals_of_other_widths_are_calculated_in_38_digits():
     assert expressions.evaluate(rates, "SUM([v]) OVER ()").to_list() == [1.2e20, 1.2e20]
 
 
+def test_unsigned_64_bit_numbers_below_2_63_keep_results_beyond_int64():
+    """They go to DuckDB as BIGINT (fast): [Id] * 2 of 5,000,000,000,000,000,000 stopped with an
+    overflow of INT64, although 0.6.3 calculated it as an unsigned number. Such a formula is
+    calculated again with the unsigned columns as HUGEINT."""
+    df = pl.DataFrame({"Id": pl.Series([5 * 10**18, 7, None], dtype=pl.UInt64), "n": [1, 2, 3]})
+    assert expressions.evaluate(df, "[Id] * 2").to_list() == [Decimal(10**19), Decimal(14), None]
+    assert expressions.evaluate(df, "[Id] + [Id] + [n]").to_list() == [Decimal(10**19 + 1), Decimal(16), None]
+    assert expressions.evaluate(df, "-[Id]").to_list() == [-5 * 10**18, -7, None]
+    with pytest.raises(ActionError, match=r"Overflow in multiplication of INT64"):  # of a signed column: as before
+        expressions.evaluate(pl.DataFrame({"x": [5 * 10**18]}), "[x] * 2")
+
+
 def test_functions_for_dates_on_text_say_how_to_change_the_column():
     """DuckDB's own message listed the variants of the function: "No function matches the given
     name and argument types 'quarter(VARCHAR)'"."""

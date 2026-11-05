@@ -361,14 +361,14 @@ def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.S
     _check_calls(formula)
     _check_names(formula, df.columns)
     con = _connection()
-    frame, kinds, beyond = _readable(df if table else _with_row_number(df, formula))
+    frame, kinds, beyond, unsigned = _readable(df if table else _with_row_number(df, formula))
     tried: set[str] = set()
     while True:
         try:
             values = _calculate(con, frame, kinds, beyond, body, formula, table=table, condition=condition)
             break
         except (duckdb.Error, _TooLong) as e:
-            wider = _wider(e, frame, kinds, tried)
+            wider = _wider(e, frame, kinds, unsigned, tried)
             if wider is None:
                 if isinstance(e, _TooLong):
                     raise ActionError(f"Formula error: {_TOO_LONG}\nFormula: {formula}") from None
@@ -449,14 +449,20 @@ class _TooLong(Exception):
     """A result of exact decimals with more digits than its type (DuckDB's SUM doesn't check them)."""
 
 
-def _wider(error: Exception, frame: pl.DataFrame, kinds: dict[str, str], tried: set[str]) -> dict[str, str] | None:
+def _wider(
+    error: Exception, frame: pl.DataFrame, kinds: dict[str, str], unsigned: Sequence[str], tried: set[str]
+) -> dict[str, str] | None:
     """The types to try a formula again with after ``error``, once each; None when there are none.
     Exact decimals that DuckDB brings to one type, or that its SUM makes too long: each column as
     DECIMAL(38, the decimal places its values use), as long as they fit (the text of such a decimal
-    loses its last zeros, 1.50 becomes 1.5: only then)."""
+    loses its last zeros, 1.50 becomes 1.5: only then). Unsigned 64-bit numbers below 2^63, which go
+    as BIGINT: as HUGEINT after an overflow, as an unsigned number held them."""
     if (isinstance(error, _TooLong) or _DECIMAL_CAST.search(str(error))) and "decimals" not in tried:
         tried.add("decimals")
         return _decimal_kinds(frame, kinds)
+    if unsigned and "unsigned" not in tried and re.search(r"Overflow in \w+ of INT64", str(error)):
+        tried.add("unsigned")
+        return {**kinds, **dict.fromkeys(unsigned, "HUGEINT")}
     return None
 
 
@@ -705,10 +711,11 @@ def _same_reading(sql: str) -> bool:
     return index == len(theirs)
 
 
-def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, str], dict[str, int]]:
+def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, str], dict[str, int], list[str]]:
     """``frame`` in types that Arrow, which hands it over to DuckDB, has; the types that formulas
     calculate with for the columns that need another one than DuckDB gives them (see _selected);
-    and the unsigned 128-bit columns with numbers beyond 2^127 - 1, with their highest number.
+    the unsigned 128-bit columns with numbers beyond 2^127 - 1, with their highest number; and the
+    unsigned 64-bit columns that go as BIGINT (see _wider).
 
     128-bit whole numbers go as text and become HUGEINT and UHUGEINT again. Unsigned whole numbers
     are calculated as signed ones: DuckDB turns -x of an unsigned number into a big positive one,
@@ -736,7 +743,8 @@ def _readable(frame: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, str], dict[s
                 kinds[name] = "HUGEINT"
             else:
                 changed.append(column.cast(pl.Int64).alias(name))
-    return (frame.with_columns(changed) if changed else frame), kinds, beyond
+    as_bigint = [] if wide else unsigned
+    return (frame.with_columns(changed) if changed else frame), kinds, beyond, as_bigint
 
 
 def _selected(columns: Sequence[str], kinds: dict[str, str]) -> str:
