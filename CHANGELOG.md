@@ -3,11 +3,11 @@
 ## 0.6.4 – unreleased
 
 This version fixes wrong results without a message. Steps that treat numbers, dates and times as
-text now use the same text on every PC, as **Pivot** writes it; columns of different types get a
-type that holds every value; formulas, filters, imports and exports keep unsigned and very long
-whole numbers and fractions of a second; and table statuses stay right after more kinds of edits.
-Many technical errors are now plain messages, and some steps on tables with thousands of columns
-are much faster. Some results of stored projects change: **Results that change** lists them first.
+text now use the same text on every PC, as **Pivot** writes it. Columns of different types get a
+type that holds every value. Formulas, filters, imports and exports keep unsigned and very long
+whole numbers and fractions of a second. Table statuses stay right after more kinds of edits. Many
+technical errors are now plain messages, and some steps on tables with thousands of columns are
+much faster. Some results of stored projects change: **Results that change** lists them first.
 
 ### Results that change
 
@@ -15,350 +15,360 @@ Where a project of 0.6.3 meets one of these changes, it gives other results now,
 with a message that says what to change.
 
 - **Aggregate**: a *Sum* of only empty values is empty, as in SQL and in **Pivot**: in a group
-  whose values are all empty, and for a table without rows. Before, it was 0. *Sum*, *Average*
-  and *Median* of a column of the type *empty* are empty too; before, they stopped the step with
-  messages such as "Sum needs a number column; Sales is a empty column".
+  whose values are all empty, and for a table without rows. Before, it was 0. *Sum*, *Average* and
+  *Median* of a column of the type *empty* are empty too. Before, they stopped the step, for
+  example with "Sum needs a number column; Sales is a empty column".
 - **Merge**: keys of different types, such as a number and a text, are compared as text that is
-  the same on every PC, as **Pivot** and **Split column** write values: the decimal number 17.0
-  is `17`, 1e16 is `10000000000000000` and -0.0 is `0`; a date-time is `2025-12-31 08:30:00`,
-  with fractions of a second only when it has some, and with a time zone as its local time. So
-  the decimal number 17.0 now finds the text `17`, and a text key `17.0` or `2.0` no longer finds
-  the number 17.0 or 2.0 (the text `17` or `2` does). To match texts written that way, first make
-  the text column a decimal number with **Change type**: then the keys are compared as numbers.
-  Before, Tafl compared `17.0`, `1e+16`, `-0.0`, `2025-12-31 08:30:00.000000` and
-  `2025-12-31 08:30:00.000000+01:00`: keys in that form, for example from an earlier **Join
-  texts**, find no match now (the step still warns that the keys are compared as text). A *Full
-  join* gives the added rows of the other table the type of the key column when their key is such
-  a text; otherwise the key column becomes text, as before. A local time that the clocks skip or
-  repeat in the column's zone counts as no date-time there.
+  the same on every PC, as **Pivot** writes values. The decimal number 17.0 is `17`, 1e16 is
+  `10000000000000000` and -0.0 is `0`. Before, Tafl compared `17.0`, `1e+16` and `-0.0`.
+- **Merge**: the decimal number 17.0 now finds the text `17`, and a text key `17.0` or `2.0` no
+  longer finds the number 17.0 or 2.0. To match such texts, first make the text column a decimal
+  number with **Change type**: then the keys are compared as numbers.
+- **Merge**: a date-time key is compared as `2025-12-31 08:30:00`, with fractions of a second only
+  when it has some, and with a time zone as its local time. Before, Tafl compared
+  `2025-12-31 08:30:00.000000` and `2025-12-31 08:30:00.000000+01:00`. Keys in that form, for
+  example from an earlier **Join texts**, find no match now. The step still warns that the keys
+  are compared as text.
+- **Merge**, *Full join* with keys compared as text: the added rows of the other table get the
+  type of the key column when their key is such a text. Otherwise the key column becomes text, as
+  before. A local time that the clocks skip or repeat in the column's zone counts as no date-time
+  there.
 - **Merge**: a time key against a date or date-time key, and a time-span key against a key of
-  another type, stop the step with "… can't be compared: choose other key columns, …" also when
-  the key column has no values. Before, a lookup with such a column found no match, and a *Full
-  join* stopped with a technical error.
-- **Aggregate**, *Join texts*: values that are not text are joined as **Pivot** and **Split
-  column** write them: `2`, `10000000000000000`, `0`, `08:30:00.500`, `2025-12-31 08:30:00`, and a
-  time zone's local time. Before, Tafl wrote `2.0`, `1e+16`, `-0.0`, `08:30:00` (a time lost its
-  fractions of a second, so two different times gave one text), `2025-12-31 08:30:00.000000` and
-  `2025-12-31 08:30:00.000000+01:00`. Lists, records and a plugin's own values stop the step with
-  "“Tags” holds list values, which Join texts can't join". Before, lists and a plugin's values
-  stopped with a technical error, and records were joined as `{1,"a"}`, without the names of
-  their fields.
-- **Clean text** and **Replace**: a column that is not text becomes text, as before, now as
-  **Pivot** and **Split column** write values: decimal numbers as `17` and `10000000000000000`,
-  date-times as `2025-12-31 08:30:00` without `.000000` (a time zone's local time, without the
-  offset), times with their fractions of a second (`08:30:00.500`), time spans as `1d 2h 3m`, and
-  binary values as their text, or as hex digits (`0xFF00`) when some of them are no text. Before,
-  the text was `17.0`, `1E+16` (after *UPPER CASE*), `2025-12-31 08:30:00.000000+01:00` and
-  `08:30:00` without the fractions, and time spans and binary values that are no text stopped the
-  step with a technical error (in **Replace**: "Invalid regular expression: invalid utf8"). Lists,
-  records and a plugin's own values stop the step with "“Tags” holds list values, which Clean text
-  can't change" (or "… which Replace can't change"). Before, lists and a plugin's values stopped
-  with a technical error, and records became `{1,"a"}`.
+  another type, stop the step with "… can't be compared: choose other key columns, …". This holds
+  also when the key column has no values. Before, a lookup with such a column without values found
+  no match. A *Full join* stopped with a technical error, or compared a time span with a text key
+  as text.
+- **Aggregate**, *Join texts*: values that are not text are joined as **Pivot** writes them: `2`,
+  `10000000000000000`, `0`, `08:30:00.500`, `2025-12-31 08:30:00`, a time zone's local time.
+  Before, Tafl wrote `2.0`, `1e+16`, `-0.0`, `2025-12-31 08:30:00.000000` and
+  `2025-12-31 08:30:00.000000+01:00`. A time lost its fractions of a second (`08:30:00`), so two
+  different times gave one text.
+- **Clean text** and **Replace**: a column that is not text becomes text, as before, but now as
+  **Pivot** writes values: `17`, `10000000000000000`, `2025-12-31 08:30:00` (a zone's local time),
+  `08:30:00.500`, `1d 2h 3m`. Binary values become their text, or hex digits (`0xFF00`) when some
+  are no text. Before, the text was `17.0`, `1E+16` (after *UPPER CASE*),
+  `2025-12-31 08:30:00.000000+01:00`, and `08:30:00` for 08:30:00.5.
 - **Filter rows**: *contains*, *does not contain*, *starts with* and *ends with* look at a text of
-  each value that is the same on every PC, as **Pivot** and **Split column** write it: `17` for
-  the decimal number 17, `10000000000000000`, `2025-12-31` for a date and `2025-12-31 08:30:00`
-  for a date-time (in the local time of a column with a time zone), `08:30:00.500` for a time,
-  and `1d 2h 3m` for a time span. It is not the date format of the PC that the grid shows:
-  *contains* `31.12.` finds no date, *contains* `-12-31` does. Before, these operators looked at
-  `17.0`, `1e+16`, `-0.0`, `2025-12-31 08:30:00.000000` (with an offset such as `+01:00` in a
-  column with a time zone), and at `08:30:00` for 08:30:00.5: *ends with* `08:30:00` found no
-  date-time, *contains* `+01` found all of them in Berlin's winter, and a column of time spans
-  stopped the step ("a typed value can't be used with it"). The exact text of decimal numbers takes
-  longer to write: on long tables with many decimal-number columns, these operators can take up to
-  about five times as long as in 0.6.3 (100,000 rows and 200 such columns: 0.9 s, 0.6.3: 0.2 s;
-  300,000 rows and 300 such columns: 1.9 s, 0.6.3: 0.7 s).
-- **Change type** to *Text*: date-times without a format keep the fractions of a second of a
-  value that has some, with 3, 6 or 9 digits (`31.12.2025 08:30:00.500`, `….000001`,
-  `….000000001`), and times keep theirs (`08:30:00.500`). Values without fractions stay
-  `31.12.2025 08:30:00`. Before, the fractions were left out, so that 08:30:00.5 and 08:30:00
-  gave one text, without a message. A format that you type is used as it is.
+  each value that is the same on every PC, as **Pivot** writes it. That is `17` for the decimal
+  number 17, `2025-12-31 08:30:00` for a date-time (the local time of its zone), `08:30:00.500`
+  for a time and `1d 2h 3m` for a time span. So *contains* `31.12.` finds no date (that is the
+  grid's format on this PC), but `-12-31` does.
+- **Filter rows**, these operators in 0.6.3: they looked at `17.0`, `1e+16`, `-0.0`,
+  `2025-12-31 08:30:00.000000` (with `+01:00` in a zone) and `08:30:00` for 08:30:00.5. So *ends
+  with* `08:30:00` found no date-time, and *contains* `+01` found every winter time of Berlin. A
+  column of time spans stopped the step.
+- **Change type** to *Text*: date-times without a format keep the fractions of a second of a value
+  that has some, with 3, 6 or 9 digits (`31.12.2025 08:30:00.500`); times keep theirs too. Values
+  without fractions stay `31.12.2025 08:30:00`. Before, the fractions were left out, so 08:30:00.5
+  and 08:30:00 gave one text. A format that you type is used as it is.
 - **Replace**, *Regular expression*: in **Replace with**, a group number ends where its digits
-  end: `$1_$2` is group 1, an underscore and group 2. Before, `$1_` was read as a group named "1_",
-  which no group can be, so `PA1004` with `^([A-Z]+)([0-9]+)$` became `1004`. A group that the
-  expression doesn't have, such as `$3` or `$name`, stops the step with a message that names the
-  group, also in steps made with 0.6.3. Before, it gave empty text, without a message. `${1}`,
-  `${name}` and `$$` (a `$` sign) work as before. *Whole cell value* and *Text inside the value*
-  read no groups, as before.
+  end: `$1_$2` is group 1, an underscore and group 2. Before, `$1_` was read as a group named
+  "1_", so `PA1004` with `^([A-Z]+)([0-9]+)$` became `1004`. `${1}`, `${name}` and `$$` (a `$`
+  sign) work as before.
+- **Replace**, *Regular expression*: a group that the expression doesn't have, such as `$3` or
+  `$name`, stops the step with a message that names it, also in steps made with 0.6.3. Before, it
+  gave empty text, without a message. *Whole cell value* and *Text inside the value* read no
+  groups.
 - **Replace**, *Regular expression*, a backslash before a digit in **Replace with**: `\1`, `\2`, …
   are groups, as `$1`, `$2`, … are, and a backslash before a digit is written as two (`\\2026`
-  gives `\2026`). Before, a backslash before a digit stayed as it was, so a **Replace with** such
-  as `D:\Archiv\2026\$1`, which 0.6.3 wrote as it was, now stops the step with a message that the
-  expression has no group 2026, and that a backslash before a digit is written as two. Other
-  backslashes (`C:\data\$1`) work as before.
+  gives `\2026`). Before, a backslash before a digit stayed as it was. So `D:\Archiv\2026\$1` now
+  stops the step: the message says that there is no group 2026, and to write two backslashes.
+  Other backslashes (`C:\data\$1`) work as before.
 - **Append other tables**: a column with different types in the tables gets the type that
-  **Unpivot** gives its value column: whole and decimal numbers become decimal numbers, whole
-  numbers and exact decimals exact decimals (also whole numbers beyond
-  9,223,372,036,854,775,807, up to 38 digits), dates and date-times date-times, as long as every
-  value stays as it is. Any other mix becomes text, the same on every PC, as **Unpivot** writes it
-  (`2025-01-02`, `true`, `1d 2h`, `0x01FF`), and the step warns: "“Amount” is text: it has
+  **Unpivot** gives its value column, as long as every value stays as it is. Whole and decimal
+  numbers become decimal numbers, whole numbers and exact decimals exact decimals (up to 38
+  digits), and dates and date-times date-times. A table in which the column has only empty values
+  doesn't count.
+- **Append other tables**: any other mix of types becomes text, the same on every PC, as
+  **Unpivot** writes it (`2025-01-02`, `true`, `1d 2h`). The step warns: "“Amount” is text: it has
   different types in the tables (integer, text)". Binary values whose bytes are all text become
-  that text, as in **Clean text**, **Join texts** and **Merge**; one value that is no text makes
-  all of them hex digits (`0x616263`). A table in which the column has only empty values doesn't
-  count. Lists and records beside other values stop the step with a message that says so. Before,
-  52 of the 105 pairs of 14 types and *empty* stopped the step with a technical error (for example
-  a date beside true/false: "failed to determine supertype"), and others changed values without a
-  message: a date beside a whole number became a number (2025-01-02 was 20090), date-times, times
-  and time spans became counts of microseconds or nanoseconds, true became 1, text beside binary
-  values became binary, exact decimals beside decimal numbers became decimal numbers, and most
-  mixes with text became text without a word. Whole numbers beside unsigned 64-bit numbers (from a
-  Parquet file) became 128-bit numbers, which only a plugin can use.
+  that text; one value that is no text makes all of them hex digits (`0x616263`). Lists and
+  records beside other values stop the step.
+- **Append other tables** in 0.6.3: 52 of the 105 pairs of 14 types and *empty* stopped the step
+  with a technical error, such as a date beside true/false ("failed to determine supertype"). Most
+  mixes with text became text without a word.
+- **Append other tables** in 0.6.3 changed values without a message. A date beside a whole number
+  became a number (2025-01-02 was 20090), date-times, times and time spans counts of microseconds
+  or nanoseconds, and true 1. Text beside binary values became binary, and exact decimals beside
+  decimal numbers decimal numbers. Whole numbers beside unsigned 64-bit numbers became 128-bit
+  numbers, which only a plugin can use.
 - **Import CSV / Excel / Parquet files** of a folder, and several sheets of a workbook: a column
-  with different types in the files (or sheets) follows the rule of **Append**: a type that holds
-  all its values, else text as **Unpivot** writes it, with a warning such as "“Nr” is text: it has
-  different types in the sheets (number, text)". Lists and records beside other values stop the
-  import with a plain message. Before, a date beside a whole number in Parquet files became a
-  number (2025-01-02 was 20090), an exact decimal beside a decimal number became a decimal number,
-  and a number beside text in Excel sheets became text such as `5.0`, all without a message, and a
-  date beside true/false stopped the import with "The files don't fit together: failed to
-  determine supertype of date and bool". (CSV files are read as text and detected together, so
-  their columns never mix types.) In Excel files, **Whole numbers as integers** and **Date-times at
-  midnight as dates** convert each sheet on its own, before the sheets are put together: a sheet of
-  dates beside a sheet of numbers gives `2025-01-31` as text, with the warning. Before, such a date
-  became the number 1738281600000, without a message.
-- **Unpivot**: a column whose values are all empty, whatever its type, no longer decides the type
-  of the value column: an empty text column, as a CSV import gives it, beside whole numbers leaves
+  with different types in the files (or sheets) follows the rule of **Append**. Text gets a
+  warning, such as "“Nr” is text: it has different types in the sheets (number, text)". Lists and
+  records beside other values stop the import. CSV files are read as text and detected together,
+  so their columns never mix types.
+- **Import Excel files** and **Import Parquet files** of several files or sheets in 0.6.3: a date
+  beside a whole number in Parquet files became a number (2025-01-02 was 20090), and an exact
+  decimal beside a decimal number a decimal number. A number beside text in Excel sheets became
+  text such as `5.0`. All this happened without a message. A date beside true/false stopped the
+  import with "The files don't fit together: failed to determine supertype of date and bool".
+- **Import Excel files** with several sheets: **Whole numbers as integers** and **Date-times at
+  midnight as dates** convert each sheet on its own, before the sheets are put together. So a
+  sheet of dates beside a sheet of numbers gives `2025-01-31` as text, with the warning. Before,
+  such a date became the number 1738281600000, without a message.
+- **Import Parquet files**: categories with a name of their own, as Polars 2.0 can write them,
+  become text, as other categories do. Before, they stayed categories.
+- **Unpivot**: a column whose values are all empty no longer decides the type of the value column,
+  whatever its type: an empty text column, as a CSV import gives it, beside whole numbers leaves
   them whole numbers. With **Leave out empty values**, text with nothing but spaces doesn't count
-  either. Before, all values became text, also with **Leave out empty values**; only a column of
-  the type *empty* didn't count. Whole numbers of different types whose values don't all fit
-  9,223,372,036,854,775,807 (unsigned 64-bit numbers of a Parquet file beside ordinary whole
-  numbers) become exact decimals; only numbers of more than 38 digits become text. Before, they
-  became text. Columns of categories (from Parquet files or plugins) beside text are text, without
-  a message. Before, the step said "the columns have different types (categorical: a; text: b)".
+  either. Before, all values became text; only a column of the type *empty* didn't count.
+- **Unpivot**: whole numbers of different types beyond 9,223,372,036,854,775,807 (unsigned 64-bit
+  numbers of a Parquet file beside ordinary ones) become exact decimals; only numbers of more than
+  38 digits become text. Before, they became text.
+- **Unpivot**: columns of categories beside text are text, without a message. Before, the step said
+  "the columns have different types (categorical: a; text: b)".
 - **Formulas** on unsigned whole numbers (see below): bit operators give the results of signed
-  numbers: `~[Flags]` of 5 is -6 (0.6.3: 250 for an 8-bit column), and `[Flags] << 1` of 200 is
+  numbers. `~[Flags]` of 5 is -6 (0.6.3: 250 for an 8-bit column), and `[Flags] << 1` of 200 is
   400 (0.6.3 stopped with "Overflow in left shift (200 << 1)"). For 0.6.3's result of `~`, write
   `~[Flags] & 255`.
 - **Export to CSV**: times keep their fractions of a second, in the text that is the same on every
   PC (`08:30:00.500`; whole seconds stay `08:30:00`). Before, 08:30:00.5 was written as
   `08:30:00`, whatever the date-time format.
 - **Export to database** (SQLite) keeps fractions of a second: a time 08:30:00.5 is stored as
-  `08:30:00.500000`, a date-time with nanoseconds with nine digits
-  (`2025-01-01 08:30:00.000000001`). Whole seconds and microseconds are written as before, so that
-  keys still find the rows of earlier exports. Before, times lost their fractions (`08:30:00`) and
-  date-times their nanoseconds: different values became one value, also as keys (an **Update** by
-  such a key gave all rows of the same second the values of one).
+  `08:30:00.500000`, a date-time with nanoseconds with nine digits. Whole seconds and microseconds
+  are written as before, so that keys still find the rows of earlier exports. Before, times lost
+  their fractions (`08:30:00`) and date-times their nanoseconds. Different values became one, also
+  as keys: an **Update** gave all rows of the same second the values of one.
 - **Export to database** (SQL Server): binary values that go into a column of text (`char`,
-  `varchar`, `nchar`, `nvarchar`, `text`, `ntext`) are written as hex text, such as `0x6162`, as
-  the CSV export writes binary values, in every mode; binary key values find the rows that hold
-  that text, and hex text too long for its column stops the export with a message that names the
-  column. Before, their bytes were read as characters without a message: the bytes of `ab` went
-  into a `varchar` column as `ab` and into an `nvarchar` or `ntext` column as `扡`; **Update** and
-  **Upsert** wrote `?` into `varchar` columns and stopped with "Operand type clash: varbinary(max)
-  is incompatible with text" for `text` and `ntext`, and **Add the rows** into a `text` column with
-  "There is not enough memory for this".
-- **Tables that are off**: when tables use each other in a circle (a circular reference) and one
-  of them uses a table that is off, or skipped, every table of the circle is *skipped*, whichever
-  table you select first, and in `tafl run` whichever tables you run: `tafl run` then ends with
-  exit code 0, as for other skipped tables. The message names the way to the table that is off,
-  for example "uses “C”, which is turned off", and follows edits of the tables on that way. In a
-  project without a circle, the messages are as before. Before, a table of the circle was
-  *skipped* or had the error "Circular reference: B → A → B", by the table that was calculated
-  first: in the window the selected one; `tafl run` gave the error (exit code 1), and
-  `tafl run --table B` skipped it. A circle without such a table is still an error.
-- **Circular reference** through a step after **Skip the rest if a table is empty**: the tables of
-  the circle have the error "Circular reference: …" on every day, also on a day without rows, when
-  that step doesn't run, and `tafl run` ends with exit code 1, for the whole project and for
-  `--table` of each of them. A circular reference is a fault of the project, whatever the data of
-  the day. Before, it depended on the day and on the tables you ran: on a day without rows,
-  `tafl run` ended with 0, and `tafl run --table` with 0 or 1, by the table you named.
+  `varchar`, `nchar`, `nvarchar`, `text`, `ntext`) are written as hex text, such as `0x6162`, in
+  every mode, as the CSV export writes them. Binary keys find the rows that hold that text. Hex
+  text too long for its column stops the export with a message that names the column.
+- **Export to database** (SQL Server), binary values for a column of text in 0.6.3: the bytes were
+  read as characters without a message. `ab` became `ab` in a `varchar` column and `扡` in an
+  `nvarchar` or `ntext` one. **Update** and **Upsert** wrote `?` into `varchar` columns, and `text`
+  and `ntext` columns stopped the export with a technical error or a message about memory.
+- **Tables that are off**: when tables use each other in a circle and one of them uses a table
+  that is off, or skipped, every table of the circle is *skipped*, whichever table you select
+  first. So `tafl run` ends with exit code 0, whichever tables you run. A circle without such a
+  table is still an error.
+- **Tables that are off** in a circle in 0.6.3: a table of the circle was *skipped* or had the
+  error "Circular reference: B → A → B", by the table calculated first. `tafl run` gave the error
+  (exit code 1), and `tafl run --table B` skipped it.
+- **Circular reference** through a step after **Skip the rest if a table is empty**: table A uses B
+  in such a step, and B starts from A. On a day without rows, A skips its rest and is ok, and B
+  has the error "Circular reference: B → A → B", whichever table you select first. `tafl run` ends
+  with exit code 1, also with `--table A` or `--table B`. Before, B was ok or had the error, by the
+  table selected first, and `tafl run` and `tafl run --table A` ended with 0.
+- Some stored steps now stop with a plain message where 0.6.3 gave a result. These are
+  **Change type** to *Date* with `dmyyyy`, `dmyy` or `yyyymd`, and **Change type** of dates to
+  *Text* with a number format such as `0.000`, `00000` or `#,##0`. So are **Filter rows** with a
+  value on a column of lists or records, and **Fill empty values** with a fixed value on a column
+  of records. Their bullets are below.
 
 ### A new setting
 
 - **Import from database**: **Detect numbers and dates in text columns** has a **Decimal
   separator**, shown when detection is on. *Detect automatically*, the choice of a new step, reads
-  numbers as the CSV import does: a column whose values show a decimal comma (`123,40`) has one,
-  amounts (`1.234,50 €`) and percentages (`12,5%` is 0.125) become numbers, whole numbers with
-  thousands separators (`1,000`) become whole numbers, and the step says which columns have a
-  decimal comma ("Decimal comma in Price"); a column whose values fit both (`1.000`) keeps the
-  decimal point. *Point* and *Comma* read only numbers and dates, with that separator. A step
-  saved by an earlier version gets *Point*, which reads as before, so that a project that turned
-  such texts into numbers with its own steps (**Replace**, **Change type**) gives the same
-  results. Before, `123,40` stayed text: only a decimal point was read.
+  numbers as the CSV import does. A column whose values show a decimal comma (`123,40`) has one,
+  and the step names it ("Decimal comma in Price"). Before, `123,40` stayed text: only a decimal
+  point was read.
+- **Import from database**, **Decimal separator** *Detect automatically*: amounts (`1.234,50 €`) and
+  percentages (`12,5%` is 0.125) become numbers, and whole numbers with thousands separators
+  (`1,000`) whole numbers. A column whose values fit both (`1.000`) keeps the decimal point.
+- **Import from database**, **Decimal separator**: *Point* and *Comma* read only numbers and dates,
+  with that separator. A step saved by an earlier version gets *Point*, which reads as before. So a
+  project that turned such texts into numbers with its own steps (**Replace**, **Change type**)
+  gives the same results.
 
 ### Wrong results that are now right
 
-- **Change type** to *Date* or *Date and time*: a whole number such as 20260131 becomes a date
-  with a format of digits only, such as `yyyymmdd` (also `ddmmyyyy`, `yymmdd`,
-  `yyyymmddhhmmss`): its digits are read with the format, as those of the text `20260131`. A
-  number that lost its leading zero gets it back (`1012026` with `ddmmyyyy` is 1 January 2026).
-  Whole decimal numbers, as an Excel import gives them, work the same way; a number with decimal
-  places becomes empty with the usual warning. Before, the format was ignored and every number was
-  an Excel day number: 20260131 became a day in the year 57370 without a message, and 1012026 the
-  30 October 4670. Without a format, or with one that has separators such as `dd.mm.yyyy`, numbers
-  are Excel day numbers, as before. A text read with a format of digits only needs exactly its
-  digits: one with fewer or more becomes empty with the usual warning. Before, the text `1012026`
-  with `ddmmyyyy` became 10.12.0026, and `10126` with `ddmmyy` 10.12.2006, without a warning. Such
-  a format needs `dd` and `mm`: `dmyyyy`, `dmyy` or `yyyymd` stop the step with "The date format
-  “dmyyyy” has no separators, so each part needs all its digits: use dd and mm, not d and m (and
-  hh, ss and yyyy or yy), e.g. ddmmyyyy". Before, the number 1012026 with `dmyyyy` became
-  30.10.4670, and the text `1012026` 10.12.0026, without a message.
+- **Change type** to *Date* or *Date and time*: with a format of digits only, such as `yyyymmdd`,
+  `ddmmyyyy`, `yymmdd` or `yyyymmddhhmmss`, a whole number is read as its digits. So 20260131 with
+  `yyyymmdd` is 31 January 2026, and 1012026 with `ddmmyyyy` is 1 January 2026: the lost leading
+  zero comes back. Whole decimal numbers, as an Excel import gives them, work the same way.
+- **Change type** to *Date*, numbers with a format of digits only: a number with decimal places
+  becomes empty with the usual warning. Before, the format was ignored: 20260131 became a day in
+  the year 57370, and 1012026 the 30 October 4670, without a message. Without a format, or with
+  separators such as `dd.mm.yyyy`, numbers are Excel day numbers, as before.
+- **Change type** to *Date*: a text read with a format of digits only needs exactly its digits.
+  One with fewer or more becomes empty with the usual warning. Before, the text `1012026` with
+  `ddmmyyyy` became 10.12.0026, and `10126` with `ddmmyy` 10.12.2006, without a warning.
+- **Change type** to *Date*: a format of digits only needs `dd` and `mm`. So `dmyyyy`, `dmyy` or
+  `yyyymd` stop the step with "The date format “dmyyyy” has no separators, so each part needs all
+  its digits: use dd and mm, not d and m (…), e.g. ddmmyyyy". Before, the number 1012026 with
+  `dmyyyy` became 30.10.4670, and the text `1012026` 10.12.0026, without a message.
 - **Change type** to *Date*: a number whose Excel day is not in the years 1 to 9999 (above
-  2958465, which is 31.12.9999), NaN and infinity become empty with the usual warning, which adds
-  for such numbers: "Numbers are Excel day numbers, up to 2,958,465 (31.12.9999): for a number
-  such as 20260131, give the format yyyymmdd". With *stop with an error*, the step stops with that
-  message. Before, 20250101 became a day in the year 57342 without a warning (an export to Excel
-  then stopped), and very big numbers, NaN and infinity stopped the step with "conversion from f64
-  to i64 failed", also with *become empty*.
+  2958465, which is 31.12.9999), NaN and infinity become empty with the usual warning. For such
+  numbers it adds: "Numbers are Excel day numbers, up to 2,958,465 (31.12.9999): for a number such
+  as 20260131, give the format yyyymmdd". With *stop with an error*, the step stops with that
+  message.
+- **Change type** to *Date* in 0.6.3: 20250101 became a day in the year 57342 without a warning,
+  and an export to Excel then stopped. Very big numbers, NaN and infinity stopped the step with
+  "conversion from f64 to i64 failed", also with *become empty*.
 - **Change type** to *Whole number* says how many values it rounded, with up to three of them:
   "Amount: 2 value(s) were rounded, e.g. '2.5', '-0.5': a whole number has no decimal places
   (Decimal number and Text keep them)". Values are rounded half away from zero, as before (the
   text `1.000,5` becomes 1001). Before, there was no warning.
 - **Formulas** on unsigned whole numbers (Parquet files of other programs can have them, for
   example unsigned 64-bit IDs): `-[Id]` is -1 for the Id 1, and `-[Id] < 0` keeps those rows.
-  Before, it was 18446744073709551615, and the condition kept no row, without a message. The
-  numbers are now calculated as signed ones, so `[Id] + 1` on 18,446,744,073,709,551,615 and
-  `0 - [Id]` give the right number. Before, they stopped with "Overflow in addition of UINT64" and
-  "Overflow in subtraction of UINT64".
+  Before, it was 18446744073709551615, and the condition kept no row, without a message.
+- **Formulas** on unsigned whole numbers are now calculated as signed ones, so `[Id] + 1` on
+  18,446,744,073,709,551,615 and `0 - [Id]` give the right number. Before, they stopped with
+  "Overflow in addition of UINT64" and "Overflow in subtraction of UINT64".
 - **Formulas** on unsigned 128-bit whole numbers (only a plugin makes them): up to
-  170,141,183,460,469,231,731,687,303,715,884,105,727 they are calculated as signed numbers, so
+  170,141,183,460,469,231,731,687,303,715,884,105,727 they are calculated as signed numbers. So
   `[v] - [w]` with a signed 64-bit number keeps all its digits, `-[v]` is negative, and
   `SUM([v]) OVER ()` is a whole number. Before, the difference gave a rounded decimal number
-  (-9.223372036854776e+18), the sum a decimal number (72.0), and `-[v]` stopped with "the whole
-  number 340,282,366,920,938,463,463,374,607,431,768,211,384 is too big". A column with a bigger
-  number stops a formula that mixes it with signed numbers, compares it with another column, or
-  takes `-x` or `a - x` of it (also written `subtract(a, x)`), with a plain message that names the
-  column and its highest number. Before, such a formula gave a rounded decimal number, a wrong
-  comparison (2^127 + 5 = 2^127 - 1 was true) or a wrong number (`-[v]` gave 2^128 - v), without a
-  message.
-- **Formulas**: `SUM([v]) OVER ()` of exact decimals whose sum needs more than 38 digits, also with
-  only the decimal places that the values use, stops with the plain message "the result needs more
-  than 38 digits …", as `[v] + [v]` does. Before, it gave a text of 39 digits
-  (120000000000000000000000000000000000000), without a message. Whole numbers of a plugin's 128-bit
-  columns still keep a sum of 39 digits as text.
+  (-9.223372036854776e+18), and the sum a decimal number (72.0). `-[v]` stopped with "the whole
+  number 340,282,366,920,938,463,463,374,607,431,768,211,384 is too big".
+- **Formulas** on a column of unsigned 128-bit whole numbers with a bigger number stop with a plain
+  message that names the column and its highest number. This is so for a formula that mixes the
+  column with signed numbers, compares it with another column, or takes `-x` or `a - x` of it (also
+  `subtract(a, x)`). Before, such a formula gave a rounded decimal number, a wrong comparison
+  (2^127 + 5 = 2^127 - 1 was true) or a wrong number (`-[v]` gave 2^128 - v), without a message.
+- **Formulas**: `SUM([v]) OVER ()` of exact decimals stops with the plain message "the result needs
+  more than 38 digits …" when the sum needs more digits, also with only the decimal places that the
+  values use. Before, it gave a text of 39 digits (120000000000000000000000000000000000000),
+  without a message.
+- **Formulas**: a window sum of exact decimals that fits only with the decimal places that the
+  values use is a decimal number (about 15 digits), as in 0.6.3. Whole numbers of a plugin's
+  128-bit columns still keep a sum of 39 digits as text.
 - **Pivot** and **Aggregate**: a sum of whole numbers of 128 bits (only a plugin makes them) beyond
-  their range stops the step with the plain message that other whole numbers give ("… too big for
-  a whole number (at most 170,141,183,460,469,231,731,687,303,715,884,105,727)"). Before, the sum
+  their range stops the step. The message is the one that other whole numbers give: "… too big for
+  a whole number (at most 170,141,183,460,469,231,731,687,303,715,884,105,727)". Before, the sum
   wrapped around without a message: 2^127 − 1 + 5 gave
   −170141183460469231731687303715884105724, and 2^128 − 1 + 2 gave 1.
-- **Instant filters**: **Add as step** keeps the rows of the card:
-  - for a time period (year, quarter, month, week, date) of a date-time with a time zone, by the
-    local time of its zone, as the card groups it. Before, the step used this PC's time zone:
-    2025-01-31 23:30 UTC was February in Berlin, so the January of a UTC column kept other rows;
-  - for a value of such a column. Before, the step kept no row (it read
-    `TIMESTAMP '2025-01-31 23:30:00+00:00'` without its offset), or, with the PC in the column's
-    zone, the other row of a time that a clock change repeats;
-  - for a value with nanoseconds, such as 08:30:00.000000001, of a date-time or a time of day.
-    Before, 08:30:00 and 08:30:00.000000001 were two values in the card but stored as one, so the
-    card and the step kept the row of 08:30:00. The same for **Show only rows where …** in the
-    grid;
-  - for a time span. Before, 1 µs made a step that stopped with "extract specifier "e" not
-    recognized", 1 ns and 2 ns were both stored as 0 s (the card kept no row, the step both), and
-    300 years and 1 µs lost the µs (the card kept no row);
-  - for a pattern with `\w`, `\d` or `\s`: the letters, digits and spaces of all languages, as the
-    card has them. Before, the step took those of ASCII only: `^\w+$` kept Straße and ä in the
-    card only, `\d` the Arabic-Indic digits ١٢٣. The same for a pattern with spaces in a
-    repetition, such as `^a{1, 2}$`: before, the step read it as the text "a{1, 2}". A named group
-    `(?<name>…)` and a character written `\u{E4}` or `\u00E4` become steps too: before, these
-    steps stopped with "invalid perl operator" and "invalid escape sequence".
-
-  Where a step can't keep the same rows, the card says why ("Not added as a step: …") and no step
-  is made: a pattern with `\b` or `\B`, with a flag other than i, m, s and U such as `(?x)`, or
-  with a repetition of a repetition such as `a{2}{2}` (before, the step stopped with "invalid perl
-  operator" or "bad repetition operator"), and time spans or date-times with a time zone that
-  differ by less than a microsecond (a step compares these to the microsecond). Where a step could
-  keep other rows than the card (patterns, time periods, date-times with a time zone or with
-  nanoseconds, times of day and time spans, up to 1,000 picked values), **Add as step** first runs
-  it on the data at the selected step: where its rows differ from the card's, the card says "a
-  step would keep other rows than the filter: 1 of the 2 rows here", and where the step would stop
-  with an error on the data, it says that. It does so for any number of values where a stored
-  value isn't a value of the column's type (a project file can hold a number on a column of
-  categories, or a whole number beyond the column's type), and it refuses a text with the
-  character U+0000 or a broken character. Before, such steps were made: the quarter of
-  1969-12-31 23:59:59.999999999 was 1969 Q4 in the card and 1970 Q1 in the step, `^\w+$` didn't
-  match the letters of Unicode 15.1 and 16 (such as U+13460) in the step, and steps of such stored
-  values stopped at every run or kept other rows. On a million rows, **Add as step** with this
-  check takes about 0.1 to 0.25 seconds (600 separate months: 0.43 s; 20,000 stored values that
-  aren't of the column's type: 0.85 s). Filters that 0.6.3 saved keep their rows.
-- **Instant filters** on a date-time column with a time zone: a picked value keeps its moment in
-  every zone. Before, where the time-zone rules of Python and of Polars differ (for example
-  America/Vancouver, Edmonton and Winnipeg from 2026-11-01, Africa/Casablanca from 2026-09-20,
-  Europe/Chisinau since 2022), the value was stored with Python's offset for Polars' local time,
-  which is another moment: picking 30.11.2026 23:30 in Vancouver kept the row of 22:30 (or no row),
-  and **Add as step** made a step that kept no row. The same for **Show only rows where …** in the
-  grid. Filters saved before keep their rows.
-- **Filter rows** and **Fill empty values**: a typed date-time with more digits than its column
-  holds, such as `08:30:00.0005` in a column of milliseconds (Parquet files and Excel imports can
-  have them) or `08:30:00.000000001` in a column of microseconds, keeps them. **Filter rows**
-  compares it exactly: it equals no value of the column, and *is greater than* finds
-  08:30:00.001. **Fill empty values** makes the column's unit finer for it, so that it keeps its
-  digits and the other values stay as they are; when a value of the column doesn't fit the finer
-  unit (nanoseconds reach only from 1677 to 2262), the step stops with a message. The same for a
-  date-time parameter such as `{Now}` in a column of milliseconds with a time zone, and for a time
-  or a date-time with digits below a nanosecond (**Filter rows** compares exactly, **Fill empty
-  values** stops with a message). Before, the digits were cut without a message: *equals*
-  `08:30:00.0005` found 08:30:00, *is greater than* didn't find 08:30:00.001, and the fill wrote
-  08:30:00.
+- **Instant filters**, **Add as step** on a column with a time zone: a time period (year, quarter,
+  month, week, date) is taken in the local time of the column's zone, as the card groups it.
+  Before, the step used this PC's time zone. So 2025-01-31 23:30 UTC was February in Berlin, and
+  the January of a UTC column kept other rows.
+- **Instant filters**, **Add as step** of a value of a column with a time zone keeps its row.
+  Before, the step kept no row, because it read `TIMESTAMP '2025-01-31 23:30:00+00:00'` without
+  its offset. With the PC in the column's zone, it kept the other row of a time that a clock
+  change repeats.
+- **Instant filters** on a column with a time zone: a picked value keeps its moment in every zone,
+  also in **Show only rows where …** of the grid. Filters saved before keep their rows.
+- **Instant filters** in 0.6.3, where the time-zone rules of Python and of Polars differ (for
+  example America/Vancouver, Edmonton and Winnipeg from 2026-11-01, Africa/Casablanca from
+  2026-09-20, Europe/Chisinau since 2022): a picked value was stored as another moment. Picking
+  30.11.2026 23:30 in Vancouver kept the row of 22:30, or no row, and **Add as step** made a step
+  that kept no row.
+- **Instant filters**, **Add as step** of a value with nanoseconds, such as 08:30:00.000000001, of
+  a date-time or a time of day keeps its row, and so does **Show only rows where …** in the grid.
+  Before, 08:30:00 and 08:30:00.000000001 were two values in the card but stored as one. So the
+  card and the step kept the row of 08:30:00.
+- **Instant filters**, **Add as step** of a time span keeps its rows. Before, 1 µs made a step that
+  stopped with "extract specifier "e" not recognized". 1 ns and 2 ns were both stored as 0 s, so
+  the card kept no row and the step both. 300 years and 1 µs lost the µs, and the card kept no row.
+- **Instant filters**, **Add as step** of a pattern: `\w`, `\d` and `\s` are the letters, digits
+  and spaces of all languages, as in the card. Before, the step took those of ASCII only: `^\w+$`
+  kept Straße and ä in the card only, and `\d` the Arabic-Indic digits ١٢٣.
+- **Instant filters**, **Add as step** of a pattern: a repetition with spaces, such as `^a{1, 2}$`,
+  is one in the step too; before, the step read it as the text "a{1, 2}". A named group
+  `(?<name>…)` and a character written `\u{E4}` or `\u00E4` make steps too; before, these steps
+  stopped with "invalid perl operator" and "invalid escape sequence".
+- **Instant filters**: where a step can't keep the card's rows, the card says why ("Not added as a
+  step: …") and no step is made. This is so for a pattern with `\b` or `\B`, with a flag other
+  than i, m, s and U such as `(?x)`, or with a repetition of a repetition such as `a{2}{2}`.
+  Before, such steps stopped with "invalid perl operator" or "bad repetition operator".
+- **Instant filters**: time spans, or date-times with a time zone, that differ by less than a
+  microsecond make no step either, as a step compares these to the microsecond.
+- **Instant filters**: where a step could keep other rows than the card, **Add as step** first runs
+  it on the data at the selected step. This is so for patterns, time periods, date-times with a
+  time zone or with nanoseconds, times of day and time spans, up to 1,000 picked values. Where the
+  rows differ, the card says "a step would keep other rows than the filter: 1 of the 2 rows here";
+  where the step would stop on the data, it says that.
+- **Instant filters** in 0.6.3 made such steps: the quarter of 1969-12-31 23:59:59.999999999 was
+  1969 Q4 in the card and 1970 Q1 in the step. `^\w+$` in the step didn't match the letters of
+  Unicode 15.1 and 16, such as U+13460.
+- **Instant filters**: **Add as step** also runs the step first, for any number of values, where a
+  stored value isn't a value of the column's type. Only a project file can hold one, such as a
+  number on a column of categories or a whole number beyond the column's type. A text with the
+  character U+0000 or a broken character is refused. Before, such steps stopped at every run or
+  kept other rows. Filters that 0.6.3 saved keep their rows.
+- **Filter rows**: a typed date-time with more digits than its column holds keeps them and is
+  compared exactly. In a column of milliseconds (Parquet files and Excel imports can have them),
+  `2025-01-01 08:30:00.0005` equals no value and is between 08:30:00 and 08:30:00.001. Before, the
+  digits were cut without a message: *equals* found 08:30:00, and *is greater than or equal to*
+  kept it, while *does not equal* and *is less than* left it out.
+- **Filter rows**: the same exact comparison for `2025-01-01 08:30:00.000000001` in a column of
+  microseconds, for a date-time parameter such as `{Now}` in a column of milliseconds with a time
+  zone, and for digits below a nanosecond.
+- **Fill empty values**: a typed date-time with more digits than its column holds makes the
+  column's unit finer, so that it keeps its digits and the other values stay as they are. When a
+  value of the column doesn't fit the finer unit (nanoseconds reach only from 1677 to 2262), or the
+  value has digits below a nanosecond, the step stops with a message. The same for a date-time
+  parameter such as `{Now}`. Before, the fill cut the digits without a message:
+  `2025-01-01 08:30:00.0005` was written as 08:30:00.
 - **Filter rows** and **Fill empty values**: in a column with nanoseconds and a time zone, a typed
   date-time near 1677 or 2262 is the moment of its local time. East of UTC, the local time can be
   after 2262-04-11 23:47:16.854775807, the last moment of nanoseconds, while the moment is before
-  it; west of UTC, the same happens before 1677-09-21 00:12:43.145224192. Before (new in 0.6.3),
-  such a local time with digits below a microsecond became another moment without a message:
-  23 minutes 40 seconds off in Lord Howe, 3 minutes 58 seconds in New York; *equals* found no row,
-  *is less than* found the value itself, and the fill wrote the other moment.
+  it. West of UTC, the same happens before 1677-09-21 00:12:43.145224192.
+- **Filter rows** and **Fill empty values** in 0.6.3 (new in that version): such a local time with
+  digits below a microsecond became another moment without a message. It was 23 minutes 40 seconds
+  off in Lord Howe and 3 minutes 58 seconds in New York. *Equals* found no row, *is less than* found
+  the value itself, and the fill wrote the other moment.
 - **Filter rows** and **Fill empty values**: a typed date-time in the last microsecond at either
   end of nanoseconds, such as `1677-09-21 00:12:43.145225` or `2262-04-11 23:47:16.854775807`, is
-  inside them: the fill keeps a column of nanoseconds, and **Filter rows** compares to the
-  nanosecond. One just after the last nanosecond, such as `2262-04-11 23:47:16.854775808`, is
-  after every value of such a column, and the fill says that its digits below a microsecond need
-  nanoseconds. Before (new in 0.6.3), the fill made the column microseconds, cutting
-  `.854775807` to `.854775` without a message, or stopped ("doesn't fit column …: nanoseconds
-  reach only from 1677 to 2262") when a value of the column had digits below a microsecond, and
-  **Filter rows** compared in microseconds: `1677-09-21 00:12:43.145225` equaled
-  00:12:43.145225001 too, and `2262-04-11 23:47:16.854775808` equaled the values of its
-  microsecond.
-- **Filter rows**: *is greater than*, *is less than* (and *or equal to*) on a text column with a
-  value that reads as a number, a date or a time, such as `-16`, `31.03.2026` or `08:30`, compare
-  text, character by character, as before, and the step now warns that the column holds text.
-  For a number or a date it says that **Change type / format** before the step makes it compare
-  numbers or dates; for a time, which **Change type** doesn't make, it names a formula for
-  **Filter rows by formula**, such as `TRY_CAST([Start] AS TIME) < TIME '08:30'`. Before, there
-  was no warning: `-14,2` *is greater than* `-16` was false, and `8:15` *is less than* `08:30`
-  too, without a word. A number has a digit: words such as `nan` or `inf` give no warning. Of many
-  such conditions, the step warns for the first three, then in one line: "3,997 more conditions
-  compare texts character by character: 'c3', 'c4', 'c5', …". *Equals*, *is one of* and
-  *contains* stay without a warning.
-- **Merge**: lists and records (from Parquet files or plugins) match only keys of exactly their
-  own type, value by value, as before. Against keys of another type, the step stops with "'Tags'
-  holds list values, which can't be compared with 'CustNo': choose other key columns", and a
-  plugin's own values can't be keys at all. Before, a record was compared as a text without the
-  names of its fields, so `{a: 1}` matched `{b: 1}` (a *Full join* stopped with a technical
-  error); a list stopped with a message that named Polars' types and suggested a formula, and a
-  plugin's values with a technical error.
+  inside them. The fill keeps a column of nanoseconds, and **Filter rows** compares to the
+  nanosecond. One just after the last nanosecond, such as `2262-04-11 23:47:16.854775808`, is after
+  every value of such a column; the fill says that its digits below a microsecond need
+  nanoseconds.
+- **Filter rows** and **Fill empty values**, the ends of nanoseconds in 0.6.3 (new in that
+  version): the fill made the column microseconds and cut `.854775807` to `.854775` without a
+  message. When a value of the column had digits below a microsecond, it stopped ("doesn't fit
+  column …: nanoseconds reach only from 1677 to 2262"). **Filter rows** compared in microseconds:
+  `1677-09-21 00:12:43.145225` equaled 00:12:43.145225001 too, and
+  `2262-04-11 23:47:16.854775808` equaled the values of its microsecond.
+- **Filter rows**: on a text column, *is greater than* and *is less than* (and *or equal to*)
+  compare text, character by character, as before. With a value that reads as a number, a date or
+  a time, such as `-16`, `31.03.2026` or `08:30`, the step now warns that the column holds text.
+  Before, there was no warning: `-14,2` *is greater than* `-16` was false, and `8:15` *is less
+  than* `08:30` too.
+- **Filter rows**, this warning: for a number or a date it says that **Change type / format**
+  before the step makes it compare numbers or dates. For a time, which **Change type** doesn't
+  make, it names a formula for **Filter rows by formula**, such as
+  `TRY_CAST([Start] AS TIME) < TIME '08:30'`.
+- **Filter rows**, this warning: a number has a digit, so words such as `nan` or `inf` give no
+  warning. Of many such conditions, the step warns for the first three, then in one line: "3,997
+  more conditions compare texts character by character: 'c3', 'c4', 'c5', …". *Equals*, *is one
+  of* and *contains* stay without a warning.
+- **Merge**: lists and records (from Parquet files or plugins) match only keys of exactly their own
+  type, value by value, as before. Against other keys, the step stops: "'Tags' holds list values,
+  which can't be compared with 'CustNo': choose other key columns". A plugin's own values can't be
+  keys at all.
+- **Merge** in 0.6.3 compared a record as a text without its field names, so `{a: 1}` matched
+  `{b: 1}`, also in a *Full join*. A *Full join* of a record of two fields against a text key
+  stopped with a technical error. A list stopped with a message in Polars' words, and a plugin's
+  values with a technical error.
 - **Merge**, a *Full join* that matches one column of this table with two columns of the other
   table: when the first pair makes the column text, a row only in the other table gets the second
-  key as the text of that value in its own column's type, with every digit: `2.5`, `0.1`,
-  `17.00`, `2025-01-04`, `18446744073709551615`. Before, the step stopped with "the keys … don't
-  fit in one column" when the value didn't fit the column's first type (2.5 for whole numbers), and
-  wrote the others in that type (`17` for `17.00`, `1.00` for 1 against exact decimals).
+  key as text. That is the text of the value in its own column's type, with every digit: `2.5`,
+  `0.1`, `17.00`, `2025-01-04`, `18446744073709551615`.
+- **Merge**, such a *Full join* in 0.6.3: it stopped with "the keys … don't fit in one column" when
+  the value didn't fit the column's first type (2.5 for whole numbers). It wrote the others in that
+  type (`17` for `17.00`, `1.00` for 1 against exact decimals).
 - **Append**, **Unpivot** and the folder imports: a date after 2262 (such as `31.12.9999`) beside
   date-times in nanoseconds with a time zone (as other programs write them to Parquet files) gives
   date-times in microseconds, which hold both. Before, **Append** and the folder imports made that
   date empty without a message, and **Unpivot** stopped with a technical error.
-- **Fill empty values** with a fixed value leaves a column without empty cells as it is. Before,
-  it could change the column's type (whole numbers became decimal numbers with the value `1,5`) or
+- **Fill empty values** with a fixed value leaves a column without empty cells as it is. Before, it
+  could change the column's type (whole numbers became decimal numbers with the value `1,5`) or
   stop the step, although no cell got the value.
 - **Fill empty values** with a value that a column of fixed values (a plugin's list of allowed
-  values) doesn't hold stops with a message that names the column's values: "'XL' doesn't fit
+  values) doesn't hold stops the step. The message names the column's values: "'XL' doesn't fit
   column 'Size': it holds only these values: 'S', 'M', 'L'". Before, its empty cells stayed empty
   without a message.
 - **Export to Excel file**: whole numbers and exact decimals with more than 15 significant digits
-  stay numbers, and the step warns how many of them each column has, and how to keep all their
-  digits (change the column to text before the export). Excel keeps 15 significant digits: the
-  file holds 9007199254740992 for 9007199254740993, and 1.234567890123457E+19 for
-  12345678901234567890.1234. Also when only one sheet of a workbook is replaced. Decimal numbers
-  are not counted. Before, there was no warning.
+  stay numbers, and the step warns how many of them each column has. To keep all their digits,
+  change the column to text before the export. Excel keeps 15 significant digits: the file holds
+  9007199254740992 for 9007199254740993, and 1.234567890123457E+19 for 12345678901234567890.1234.
+  Also when only one sheet of a workbook is replaced. Decimal numbers are not counted. Before,
+  there was no warning.
 - **Export to database** (SQL Server): the ODBC driver passes fractions of a second to the
-  microsecond. When values have finer digits and their column could hold them (`datetime2`,
-  `time` or `datetimeoffset` with 7 digits, as in a new table), the step warns how many values were
-  cut, with an example. Two keys that differ only below a microsecond are one key now, as the
-  column holds them: **Update** stops with the message about repeated keys. Before, the digits were
-  lost without a word, and an update by such keys changed the rows of the other key too.
-- **Export to database** (SQL Server): categories (for example a Parquet file's dictionary column)
-  keep their characters in `char` and `varchar` columns in **Add the rows** and the replace modes,
-  as texts do. Before, they went in this PC's code page without a message: `Łódź` became `Lódz` in
-  a Polish column, `日本` became `??` in a UTF-8 one, and a category too long in bytes for a UTF-8
-  column was cut (`ääää` became `ää` in a `varchar(5)`). Such a category now stops the export with
-  SQL Server's message, which names the column. **Update** and **Upsert** wrote them right before.
+  microsecond. When values have finer digits and their column could hold them (`datetime2`, `time`
+  or `datetimeoffset` with 7 digits, as in a new table), the step warns how many values were cut,
+  with an example. Before, the digits were lost without a word.
+- **Export to database** (SQL Server): two keys that differ only below a microsecond are one key
+  now, as the column holds them, so **Update** stops with the message about repeated keys. Before,
+  an update by such keys changed the rows of the other key too.
+- **Export to database** (SQL Server): categories (from a plugin, also categories with a name of
+  their own) keep their characters in `char` and `varchar` columns in **Add the rows** and the
+  replace modes, as texts do. Before, they went in this PC's code page without a message: `Łódź`
+  became `Lódz` in a Polish column and `日本` became `??` in a UTF-8 one.
+- **Export to database** (SQL Server): a category too long in bytes for a UTF-8 column now stops
+  the export with SQL Server's message, which names the column. Before, it was cut (`ääää` became
+  `ää` in a `varchar(5)`). **Update** and **Upsert** wrote categories right before.
 - **Import CSV / text files** and **Import from database** (**Detect numbers and dates**): a
   date-time with nanoseconds keeps them (`2025-01-01 08:30:00.000000001`), as the SQLite export
   writes them. A column with a date-time beyond 1677 to 2262, the years of nanoseconds, keeps
@@ -370,72 +380,81 @@ with a message that says what to change.
 - **Redo** of deleting a table gives the tables that used it their error again ("Table … does not
   exist"), also when the Redo comes after the calculation of the **Undo**. Before, they kept their
   "ok" until you selected them.
-- On the map, **Del** on arrows into tables that are not selected (arrows selected with
-  Shift+drag or Ctrl+click), followed at once by Ctrl+1 (or **Tables**), no longer leaves those
-  tables and the tables that use them with their old status. Before, a table without steps could
-  still show "ok".
+- On the map, **Del** on arrows into tables that are not selected (arrows selected with Shift+drag
+  or Ctrl+click), followed at once by Ctrl+1 (or **Tables**), no longer leaves those tables and the
+  tables that use them with their old status. Before, a table without steps could still show
+  "ok".
 - **Rename** a table: the tables that use it show the new name in their messages ("uses “Sales”,
-  which is turned off"), and a step that names the table in a project file written by hand uses
-  no table now, as it says. Before, they kept the old name and their old status until you selected
+  which is turned off"). A step that names the table in a project file written by hand uses no
+  table now, as it says. Before, they kept the old name and their old status until you selected
   them.
 - **Undo** and **Redo** of moving tables on the map, of groups and of notes calculate no table
   again: nothing that a calculation reads changed. Before, the moved table and the tables that use
   it were calculated again.
+- **Tables that are off** in a circle (see **Results that change**): the message of a skipped table
+  names the way to the table that is off, for example "uses “C”, which is turned off". It follows
+  edits of the tables on that way. Without a circle, the messages are as before.
 - **Circular reference**: each table of a circle names the circle from itself, for example
-  "Circular reference: A → B → A" for *A* and "B → A → B" for *B*, whichever table you select
-  first, and in `tafl run` whichever tables you run. A table of the circle whose own earlier step
-  fails (a missing file) keeps that error; the other tables of the circle still name the circle.
-  Before, all tables of a circle named it from the table that was calculated first, and in the
-  second case *B* said "Table 'A' has an error: …" or "Circular reference: A → B → A", by the
-  order.
-- On the map, the box of a deleted table (shown a moment longer) has the status of its own result,
-  also when another table has the deleted table's id as its name (a table named `t5` in a project
-  file written by hand). Before, it could show the status of that other table, for example "off".
+  "Circular reference: A → B → A" for *A* and "B → A → B" for *B*. This holds whichever table you
+  select first, and whichever tables `tafl run` runs. Before, all tables of a circle named it from
+  the table calculated first.
+- **Circular reference**: when an earlier step of table *A* of a circle fails (a missing file), *A*
+  keeps that error, and *B* still names the circle. Before, *B* said "Table 'A' has an error: …" or
+  "Circular reference: A → B → A", by the order.
+- On the map, the box of a deleted table (shown a moment longer) has the status of its own result.
+  This holds also when another table has the deleted table's id as its name (a table named `t5` in
+  a project file written by hand). Before, it could show the status of that other table, for
+  example "off".
 
 ### Steps that work now
 
 - **Number rows**: with *Number the groups*, **New column** can be one of the group columns: the
   numbers replace that column in its place, as they do with *Number the rows*. Before, the step
-  stopped with `ColumnNotFoundError: "Region" not found`. A column of that name that is no group
-  column is replaced as in 0.6.3: the numbers come after the other columns, so stored projects
-  keep their column order.
+  stopped with `ColumnNotFoundError: "Region" not found`. Another column of that name is replaced
+  as in 0.6.3: the numbers come after the other columns, so stored projects keep their column
+  order.
 - **Formulas**: two exact decimals with different decimal places can be compared and added, for
   example `[Big] = [Rate]` with 12345678901234567890123 and 1.500000000000000000 (18 decimal
   places, as Parquet files of other programs often have them). Before, the formula stopped with
   "Casting value "12345678901234567890123" to type DECIMAL(38,18) failed: value is out of range!".
-  Exact decimals of other widths too: `[Amount] + [Rate]` of a DECIMAL(18,2) with
-  123456789012345.67 and a DECIMAL(18,4), and `[Id] + 1.5` of a DECIMAL(18,0) with 18 digits (the
-  results are decimal numbers, as for other exact decimals with decimal places). Before, these
+- **Formulas**: when such values need more than 38 digits together (23 digits and 18 decimal
+  places in use), the formula stops with the plain message "the result needs more than 38 digits,
+  decimal places included, …". So does `CAST([Big] AS DECIMAL(38, 18))`.
+- **Formulas**: exact decimals of other widths work too: `[Amount] + [Rate]` of a DECIMAL(18,2)
+  with 123456789012345.67 and a DECIMAL(18,4), and `[Id] + 1.5` of a DECIMAL(18,0) with 18 digits.
+  Their results are decimal numbers, as for other exact decimals with decimal places. Before, these
   stopped with "Casting value "123456789012345.67" to type DECIMAL(18,4) failed: value is out of
-  range! …". When the values need more than 38 digits together (23 digits and 18 decimal places
-  that are used), the formula stops with the plain message "the result needs more than 38 digits,
-  decimal places included, …", also for `CAST([Big] AS DECIMAL(38, 18))`.
+  range! …".
 - **Formulas**: a time of day can be compared with a time and gets an interval:
   `[Time] > TIME '12:00:00'`, `[Time] BETWEEN TIME '07:00' AND TIME '09:00'`,
   `[Time] + INTERVAL 1 HOUR` and `DATE '2025-01-01' + [Time]` work. Before, they stopped with
-  "Cannot compare values of type TIME_NS and type TIME - an explicit cast is required" ("Cannot mix
-  values of type TIME_NS and TIME in BETWEEN clause …", "No function matches the given name and
-  argument types '+(TIME_NS, INTERVAL)' …"). Where a time column that the formula uses has digits
-  below a microsecond, the times keep them, and the message says what to write: "[N] holds times
-  with nanoseconds, which a formula compares with a time only by = and IN: write CAST([N] AS TIME),
-  or a time as TIME_NS '12:00:00'". A formula with TIME_NS compares to the nanosecond, as before.
+  "Cannot compare values of type TIME_NS and type TIME - an explicit cast is required". BETWEEN
+  and `+` stopped with messages of the same kind ("Cannot mix values of type TIME_NS and TIME …",
+  "No function matches … '+(TIME_NS, INTERVAL)' …").
+- **Formulas** on a time column with digits below a microsecond: its times keep them. The message
+  says what to write: "[N] holds times with nanoseconds, which a formula compares with a time only
+  by = and IN: write CAST([N] AS TIME), or a time as TIME_NS '12:00:00'". A formula with TIME_NS
+  compares to the nanosecond, as before.
+- **Clean text** and **Replace** work on time spans, and on binary values that are no text. Before,
+  these stopped the step with a technical error (in **Replace**: "Invalid regular expression:
+  invalid utf8").
 - **Change type** to *Text*: a time span becomes `1d 2h 3m`, as **Pivot** writes it. Before, the
   step stopped with "casting from Duration('μs') to String not supported". Dates with a format that
   has a time, such as `dd.mm.yyyy hh:mm`, are written at midnight, `31.12.2025 00:00`, as Excel
   does. Before, the step stopped with a technical error that named an internal `col("value")`.
 - **Export to CSV** writes time spans as text that is the same on every PC (`1d 2h 3m`, as
-  **Pivot** and **Split column** write them). Before, a column of time spans stopped the export
-  with "datatype duration[μs] cannot be written to CSV".
-- **Export to database** (SQLite) finds the rows by up to 1,999 key columns. Before, it stopped with
-  "Expression tree is too large (maximum depth 1000)": with 500 key columns in **Replace the rows
-  with the same key values** and **Delete the rows with the same key values**, with 999 in every
-  mode by keys. **Export to database** (SQL Server) finds the rows by more than 32 key columns (16
-  before SQL Server 2016). Before, it stopped with "The index 'tafl_stage_…_keys' on table
-  '#tafl_stage_…' has 40 columns in the key list. The maximum limit for index key column list is
-  32.".
-- **Export to database**, **Delete the rows with the same key values**: decimals in a column that
-  isn't a key no longer stop the delete when the database column of that name holds whole numbers
-  (only the keys are written). Before: "The column Price of … holds whole numbers (int), but Price
+  **Pivot** writes them). Before, a column of time spans stopped the export with "datatype
+  duration[μs] cannot be written to CSV".
+- **Export to database** (SQLite) finds the rows by up to 1,999 key columns. Before, it stopped
+  with "Expression tree is too large (maximum depth 1000)". This came with 500 key columns in
+  **Replace the rows with the same key values** and **Delete the rows with the same key values**,
+  and with 999 in every mode by keys.
+- **Export to database** (SQL Server) finds the rows by more than 32 key columns (16 before SQL
+  Server 2016). Before, it stopped with "The index 'tafl_stage_…_keys' on table '#tafl_stage_…'
+  has 40 columns in the key list. The maximum limit for index key column list is 32.".
+- **Export to database** (SQL Server), **Delete the rows with the same key values**: decimals in a
+  column that isn't a key no longer stop the delete when the database column holds whole numbers.
+  Only the keys are written. Before: "The column Price of … holds whole numbers (int), but Price
   has decimals (e.g. 1.5): they would be cut off …".
 - **Export to database** (SQL Server): a new table holds whole numbers beyond
   9,223,372,036,854,775,807 (unsigned 64-bit numbers of a Parquet file): their column is
@@ -444,12 +463,14 @@ with a message that says what to change.
   digits the exact value. Before, the export stopped with "int too big to convert", or for a
   `decimal(19, 0)` column with a message about the TDS protocol.
 - **Export to database** (SQL Server): texts and other values go into columns of the old types
-  `text` and `ntext`, in every mode: numbers, dates and true/false as **Add the rows** writes them
-  (`1`, `1.5`, `2025-12-31`, `1` for true), also categories and columns whose first value is empty.
-  Before, every export of texts into such a column stopped with "There is not enough memory for
-  this. Close other programs, then calculate again.", and so did categories and columns whose first
-  value was empty in **Add the rows**; **Update** and **Upsert** of numbers and dates stopped with
-  "Operand type clash: int is incompatible with text".
+  `text` and `ntext`, in every mode. Numbers, dates and true/false are written as **Add the rows**
+  writes them (`1`, `1.5`, `2025-12-31`, `1` for true), also categories and columns whose first
+  value is empty.
+- **Export to database** (SQL Server), `text` and `ntext` columns in 0.6.3: every export of texts
+  into such a column stopped with "There is not enough memory for this. Close other programs, then
+  calculate again." So did categories and columns whose first value was empty in **Add the rows**.
+  **Update** and **Upsert** of numbers and dates stopped with "Operand type clash: int is
+  incompatible with text".
 - **Import CSV / text files**: a file whose lines end with a carriage return alone (as some old
   programs write them) is read. Before, it gave no rows and no message.
 
@@ -457,125 +478,150 @@ with a message that says what to change.
 
 - **Formulas**: a date function on a column of text, such as `QUARTER([Date])`,
   `STRFTIME([Date], '%Y')`, `DATE_DIFF('day', [Date], DATE '2026-12-31')` or
-  `EXTRACT(YEAR FROM [Date])`, says "QUARTER needs a date, but [Date] holds text: change its type
-  to a date before this step, or write CAST([Date] AS DATE)", and `[Date] > DATE '2025-01-01'`
-  says "[Date] holds text, not a date: …", and so do
-  `[Date] BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'` and
-  `COALESCE([Date], DATE '2025-01-01')`. In a formula with more columns of text, the hint names the
-  column that needs another type. A function or operator that needs numbers, such as
-  `ROUND([A], 2)` or `[A] * 2`, says so the same way. `[A] + [B]` on texts says "[A] and [B] hold text: to join text use || or CONCAT(); to add
-  numbers, change their type to numbers before this step, or write CAST([A] AS DOUBLE)". Before,
-  the messages were DuckDB's: "No function matches the given name and argument types
-  'quarter(VARCHAR)'. You might need to add explicit type casts." (for `+`, with "— to join text
-  use || or CONCAT()" at its end; for STRFTIME, "Could not choose a best candidate function …";
-  for the comparison, "Cannot compare values of type VARCHAR and type DATE - an explicit cast is
-  required"; for BETWEEN and COALESCE, "Cannot mix values of type VARCHAR and DATE …").
-- **Change type** to *Text* of dates or date-times with a number format, such as `0.00`, `0.000`,
-  `#,##0.000`, `00000` or `#,##0`, or with a format that writes no part of a date (`hh:mm` for
-  dates), stops with a plain message: "When: the format '0.000' writes no part of a date. Use
-  codes such as dd.mm.yyyy hh:mm:ss". Before, `0.00`, `#,##0.00`, `0%` and `hh:mm` for dates
-  stopped with a technical error that named an internal `col("value")`; `0.000`, `#,##0.000` and
-  `0.000000` wrote the fractions of a second (`0.500`, `#,##0.500`) without a message; `00000` or
-  `#,##0` gave that text for every date. A format with a fraction of a second that can't be
-  written, such as `hh:mm:ss.00`, stops with "When: date-times can't be written with the format
-  'hh:mm:ss.00'. Use codes such as dd.mm.yyyy hh:mm:ss, and .000, .000000 or .000000000 for
-  fractions of a second" (before: a technical error). Lists, records and a plugin's own values say
-  "Tags: the column holds list values, which can't become text"; before, a technical error, or
-  records as `{1,"a"}`.
-- **Change type**: the examples in its warnings are different values: "e.g. 'x', 'y', 'z'".
-  Before, a value could be named twice ("e.g. 'x', 'x', 'y'").
+  `EXTRACT(YEAR FROM [Date])`, says what to do. The message is "QUARTER needs a date, but [Date]
+  holds text: change its type to a date before this step, or write CAST([Date] AS DATE)".
+- **Formulas**, date functions on text in 0.6.3: the message was DuckDB's, "No function matches the
+  given name and argument types 'quarter(VARCHAR)'. You might need to add explicit type casts."
+  For STRFTIME it was "Could not choose a best candidate function …".
+- **Formulas**: `[Date] > DATE '2025-01-01'` on a column of text says "[Date] holds text, not a
+  date: …". So do `[Date] BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'` and
+  `COALESCE([Date], DATE '2025-01-01')`. Before, DuckDB said "Cannot compare values of type VARCHAR
+  and type DATE - an explicit cast is required" or "Cannot mix values of type VARCHAR and DATE …".
+- **Formulas**: in a formula with more columns of text, the hint names the column that needs
+  another type. A function or operator that needs numbers, such as `ROUND([A], 2)` or `[A] * 2`,
+  says so the same way.
+- **Formulas**: `[A] + [B]` on texts says "[A] and [B] hold text: to join text use || or CONCAT();
+  to add numbers, change their type to numbers before this step, or write CAST([A] AS DOUBLE)".
+  Before, it gave DuckDB's message "No function matches the given name and argument types
+  '+(VARCHAR, VARCHAR)' …", with "— to join text use || or CONCAT()" at its end.
+- Lists, records and a plugin's own values stop **Join texts**, **Clean text**, **Replace** and
+  **Change type** to *Text* with a plain message. Examples: "“Tags” holds list values, which Join
+  texts can't join", "Tags: the column holds list values, which can't become text". Before, lists
+  and a plugin's values stopped these steps with a technical error. Records became text such as
+  `{1,"a"}`, without their field names.
+- **Change type** of dates or date-times to *Text* with a number format, such as `0.00`, `0.000`,
+  `#,##0.000`, `00000` or `#,##0`, stops with a plain message. So does a format that writes no part
+  of a date (`hh:mm` for dates). The message is "When: the format '0.000' writes no part of a date.
+  Use codes such as dd.mm.yyyy hh:mm:ss".
+- **Change type** to *Text* with such formats in 0.6.3: `0.00`, `#,##0.00`, `0%` and `hh:mm` for
+  dates stopped with a technical error that named an internal `col("value")`. `0.000`,
+  `#,##0.000` and `0.000000` wrote the fractions of a second (`0.500`, `#,##0.500`) without a
+  message, and `00000` or `#,##0` gave that text for every date.
+- **Change type** of date-times to *Text* with a fraction of a second that can't be written, such
+  as `hh:mm:ss.00`, stops with "When: date-times can't be written with the format 'hh:mm:ss.00'.
+  Use codes such as dd.mm.yyyy hh:mm:ss, and .000, .000000 or .000000000 for fractions of a
+  second". Before, it stopped with a technical error.
+- **Change type**: the examples in its warnings are different values: "e.g. 'x', 'y', 'z'". Before,
+  a value could be named twice ("e.g. 'x', 'x', 'y'").
 - **Change type**: a column that can't become a number, a date or true/false is named in plain
   words: "W: a date-time column can't become a number". Before, the message named the technical
   type, such as "a Datetime(time_unit='us', time_zone=None) column".
-- **Filter rows**: a column of lists or records (a Parquet file can have them) says, for every
-  operator except *is empty* and *is not empty*, that **Filter rows** can't compare it with a
-  value, and names a formula for **Filter rows by formula** that can, with a value of the type of
-  the items or of the record's first field, such as `LIST_CONTAINS([Tags], 'a')`,
-  `LIST_CONTAINS([Ids], 1)` or `STRUCT_EXTRACT([Person], 'name') = 'a'` (`LEN([Tags]) > 0` where a
-  type has no such value). Before, most operators stopped with a technical error ("cannot cast
-  List type", "'is_in' cannot check for Struct…"), and some kept rows without a message: *is one
-  of* on lists none, *equals* and *is greater than* on records compared them as text. A column of
-  a plugin's own values says so too (before: "cannot cast 'Object' type").
+- **Filter rows** on a column of lists or records (a Parquet file can have them): for every
+  operator except *is empty* and *is not empty*, the step says that it can't compare the column
+  with a value. It names a formula for **Filter rows by formula** that can, such as
+  `LIST_CONTAINS([Tags], 'a')`, `LIST_CONTAINS([Ids], 1)` or
+  `STRUCT_EXTRACT([Person], 'name') = 'a'`.
+- **Filter rows**, this formula: its value is of the type of the items or of the record's first
+  field, and `LEN([Tags]) > 0` where a type has no such value. A column of a plugin's own values
+  gets a plain message too.
+- **Filter rows** on lists, records and a plugin's own values in 0.6.3: most operators stopped with
+  a technical error ("cannot cast List type", "'is_in' cannot check for Struct…", "cannot cast
+  'Object' type"). Some compared without a message: *is one of* took the typed values as one list
+  (`a;b` kept only the list [a, b]), and *equals* and *is greater than* compared records as text.
 - **Fill empty values** with a fixed value on a column of lists or records says that a typed value
   can't be used with it, as for time spans. Before, it stopped with a technical error ("cannot
-  cast List type", "conversion from `struct[2]` to `str` failed"), or made every record text,
-  such as `{1,"a"}`, without a message. *Fill down* and *fill up* work on such columns as before.
+  cast List type", "conversion from `struct[2]` to `str` failed"), or made every record text, such
+  as `{1,"a"}`, without a message. *Fill down* and *fill up* work on such columns as before.
 - **Export to CSV**: columns of lists or records stop the export with a plain message that names
   them ("A CSV file can't hold lists or records: Tags and Pair have them. Remove these columns
   before this step …"), and the file stays as it was. Before, the message was "CSV format does not
   support nested data", without the columns.
 - **Export to database**: values that SQLite or SQL Server can't store stop the export with a plain
-  message that names the column, before anything is written (a new table isn't made): time spans,
-  lists, records and values of a plugin's own type; in SQLite, whole numbers beyond
-  9,223,372,036,854,775,807 (unsigned 64-bit numbers of a Parquet file) and a table of more than
-  2,000 columns, the most a SQLite table holds. Before, the messages were the drivers' words:
-  "Error binding parameter 1: type 'datetime.timedelta' is not supported", "Python int too large
-  to convert to SQLite INTEGER", "too many columns on wide", and for a new SQL Server table even
-  "casting from Duration('μs') to String not supported" or "Unknown object type dict during
+  message that names the column, before anything is written (a new table isn't made). These are
+  time spans, lists, records and values of a plugin's own type, and in SQLite whole numbers beyond
+  9,223,372,036,854,775,807 and a table of more than 2,000 columns.
+- **Export to database**, such values in 0.6.3: the messages were the drivers' words, such as
+  "Error binding parameter 1: type 'datetime.timedelta' is not supported", "Python int too large to
+  convert to SQLite INTEGER" or "too many columns on wide". For a new SQL Server table they were
+  even "casting from Duration('μs') to String not supported" or "Unknown object type dict during
   describe".
-- **Export to database** (SQL Server): a whole number that its column can't hold stops the export
-  with a message that names the column, what it holds and what to do: a column of whole numbers
-  its range (`bit` 0 and 1, `tinyint` 0 to 255, and so on for `smallint`, `int` and `bigint`) and
-  a type that would hold the values; a `float`, `real`, `money` or narrower `decimal` column a
-  wider type; a `sql_variant` column to change the data's column to text; and columns of dates,
-  times, ids, xml or binary values that they can't take whole numbers. Whole numbers of more than
-  38 digits (from a plugin) stop the export before a table is made, with the advice to keep them
-  as text. Before: "A value doesn't fit its column in the database: a number is too large for its
+- **Export to database** (SQL Server): a whole number outside the range of its column of whole
+  numbers stops the export with a message. It names the column, its range (`bit` 0 and 1,
+  `tinyint` 0 to 255, and so on for `smallint`, `int` and `bigint`) and a type that holds the
+  values. Before: "A value doesn't fit its column in the database: a number is too large for its
   column, or has too many digits", without the column, or "int too big to convert".
+- **Export to database** (SQL Server): whole numbers beyond 9,223,372,036,854,775,807 (from a
+  Parquet file or a plugin) that a column can't hold stop the export with a message that names the
+  column. A `float`, `real`, `money` or narrower `decimal` column gets the advice of a wider type,
+  a `sql_variant` column the advice to make the data's column text. Before: "int too big to
+  convert".
+- **Export to database** (SQL Server): columns of dates, times, ids, xml or binary values say that
+  they can't take whole numbers beyond 9,223,372,036,854,775,807. Whole numbers of more than 38
+  digits stop the export, also before a new table is made, with the advice to keep them as text.
 - **Import CSV / text files**: a quote out of place stops the import with a message that names and
-  shows the line and says how such a value is written in a CSV file: a quote in a value that
-  doesn't start with one (`24";Monitor`), or text after the closing quote (`"24"x`). Before, the
-  message was "CSV malformed: expected 3 rows, actual 5 rows, in chunk starting at row_offset 3,
-  length 39", or "could not parse `"24"x` as dtype `str` at column 'column_0' (column number 1)".
-  A value with a pair of quotes (`24" and 27"`) is read as before. The same for a value that
-  starts with a quote that is never closed (`1;"Mouse;5`): before, the message was "could not
-  parse `"Mouse;5`", without the line.
+  shows the line, and says how such a value is written in a CSV file. That is a quote in a value
+  that doesn't start with one (`24";Monitor`), or text after the closing quote (`"24"x`). A value
+  with a pair of quotes (`24" and 27"`) is read as before.
+- **Import CSV / text files**, a quote out of place in 0.6.3: the message was "CSV malformed:
+  expected 3 rows, actual 5 rows, in chunk starting at row_offset 3, length 39". With text after
+  the closing quote, it was "could not parse `"24"x` as dtype `str` at column 'column_0' (column
+  number 1)".
+- **Import CSV / text files**: a value that starts with a quote that is never closed (`1;"Mouse;5`)
+  stops the import with a message that names and shows the line. Before, the message was "could
+  not parse `"Mouse;5`", without the line.
 - The grid shows *list*, *record* and *object* under the names of columns of lists, records and a
-  plugin's own values, and *text* for categories (from Parquet files or plugins), and messages use
-  these words ("“Tags” holds list values, which can't be split"). Before, they showed Polars'
-  names, such as `list(string)`, `struct({'a': int64})`, `categorical` and
-  `enum(categories=['a', 'b'])`.
+  plugin's own values, and *text* for categories (from plugins). Messages use these words ("“Tags”
+  holds list values, which can't be split"). Before, they showed Polars' names, such as
+  `list(string)`, `struct({'a': int64})`, `categorical` and `enum(categories=['a', 'b'])`.
 - **Merge**: the warning about keys compared as text, and the messages about keys that can't be
-  compared or don't fit in one column of a *Full join*, name the types with the words under the
-  column names of the grid: "'Customer' (integer) and 'CustNo' (text) are compared as text",
-  "'A' (duration) and 'K' (text) can't be compared: …". Before: `(Int64)`, `(String)`,
-  `(Duration(time_unit='us'))`. Categories against text keys give no warning (both types are
-  called text; before: "'A' (Categorical) and 'K' (String) are compared as text"). The message
-  about rows without a match names their keys as **Pivot** and **Split column** write them: `17`,
-  `10000000000000000`, `false`, `08:30:00.500`, `1d 2h`, a time zone's local time; binary values
-  as their text when all bytes of the key column are text (`abc`, as **Merge** compares them with
-  text keys), else as hex digits (`0x00FF`). Before: `17.0`, `1e+16`, `False`, `b'abc'`,
-  `b'\x00\xff'`, `08:30:00.500000`, `1 day, 2:00:00`, `2025-07-01 09:30:00+02:00`.
+  compared or don't fit in one column of a *Full join*, name the types with the words of the grid.
+  Examples: "'Customer' (integer) and 'CustNo' (text) are compared as text", "'A' (duration) and
+  'K' (text) can't be compared: …". Before: `(Int64)`, `(String)`, `(Duration(time_unit='us'))`.
+- **Merge**: categories against text keys give no warning, as both types are called text. Before:
+  "'A' (Categorical) and 'K' (String) are compared as text".
+- **Merge**: the message about rows without a match names their keys as **Pivot** writes them:
+  `17`, `10000000000000000`, `false`, `08:30:00.500`, `1d 2h`, a time zone's local time. Binary
+  values are shown as their text when all bytes of the key column are text (`abc`, as **Merge**
+  compares them with text keys), else as hex digits (`0x00FF`).
+- **Merge**, these keys in 0.6.3: `17.0`, `1e+16`, `False`, `b'abc'`, `b'\x00\xff'`,
+  `08:30:00.500000`, `1 day, 2:00:00`, `2025-07-01 09:30:00+02:00`.
 - **Replace**, *Whole cell value*: when a column becomes text, the warning names the value that
-  isn't one of its type, in plain words: "'n' was converted to text because 'zero' isn't an
-  integer", "… because '1,12345' has more digits than the column's exact decimals hold". A column
-  of times, time spans, binary values or no values: "'v' was converted to text: Replace keeps the
-  type only of numbers, dates, date-times and true/false values". Before: "… because a value
-  isn't a Decimal(precision=30, scale=4)", and "… isn't a Time" also when **Find** and **Replace
-  with** were times. Categories give no warning.
+  isn't one of its type, in plain words. Examples: "'n' was converted to text because 'zero' isn't
+  an integer", "… because '1,12345' has more digits than the column's exact decimals hold".
+- **Replace**, *Whole cell value*: a column of times, time spans, binary values or no values says
+  "'v' was converted to text: Replace keeps the type only of numbers, dates, date-times and
+  true/false values". Before: "… because a value isn't a Decimal(precision=30, scale=4)", and "…
+  isn't a Time" also when **Find** and **Replace with** were times. Categories give no warning.
 - **Aggregate** and **Pivot**: messages about the type of a column have the right article: "O is an
   object column". Before: "a object column".
 
 ### Speed
 
-- **Fill empty values** and **Filter rows** with thousands of columns take a fraction of a second
-  (tables of 10 rows): a fixed value for 2,000 text columns 0.10 s (0.6.3: 9.8 s, 0.6.2: 7.3 s),
-  for 4,000 0.19 s (0.6.3: 40 s, 0.6.2: 29 s), for 4,000 number columns 0.07 s (0.6.3: 48 s,
-  0.6.2: 36 s) and for 4,000 date-time columns 0.14 s (0.6.3: 72 s, 0.6.2: 55 s); *fill down* of
-  4,000 columns 0.15 s (0.6.3: 11 s); **Filter rows** with an *equals* condition for each of 4,000
-  columns 0.13 s (10 s in 0.6.2 and 0.6.3), 0.17 s with date-times (23 s), and *contains* on 4,000
-  decimal-number columns of 8 rows 0.17 s (0.6.3: 9.5 s). Before, every column made the table's
-  schema anew, and every condition read its typed value again, so the time grew with the square of
-  the number of columns. (On long tables with many decimal-number columns, *contains* is slower
-  than in 0.6.3: see **Filter rows** above.)
-- **Replace** on many columns is faster: 4,000 columns took about 11.5 s, now 1.3 s.
-- **Import Parquet files** reads files with thousands of text columns as fast as 0.6.2 did: 4,000
-  text columns in 0.05 s (0.6.3: 9 s), 20,000 in 0.24 s (0.6.3: about 5 minutes), a folder of three
-  files of 4,000 columns in 0.12 s (0.6.3: 3.3 s).
+- **Fill empty values** with a fixed value on 4,000 columns of 10 rows takes 0.07 to 0.19 s. 0.6.3
+  took about 35 s for text, 44 s for numbers and 66 s for date-times. On 2,000 text columns it
+  takes 0.10 s (0.6.3: about 9 s), and *fill down* of 4,000 columns 0.15 s (0.6.3: about 9 s).
+- **Filter rows** with a condition for each of 4,000 columns of 10 rows: *equals* takes 0.13 s
+  (0.6.3: about 9 s), and 0.17 s with date-times (0.6.3: about 22 s). *Contains* on 4,000
+  decimal-number columns of 8 rows takes 0.17 s (0.6.3: about 9.5 s).
+- **Fill empty values** and **Filter rows** in 0.6.3: every column and condition made the table's
+  schema anew, and every condition read its typed value again. So the time grew with the square of
+  the number of columns.
+- **Filter rows**: *contains*, *starts with* and *ends with* on long tables with many decimal-number
+  columns take longer than in 0.6.3, as each value gets its exact text (`17`, not `17.0`). They
+  take up to about five times as long: 100,000 rows and 200 such columns 0.9 s (0.6.3: 0.2 s),
+  300,000 rows and 300 columns 1.9 s (0.6.3: 0.7 s).
+- **Replace** on 4,000 decimal-number columns takes about 1 s (0.6.3: about 9 s). **Clean text** on
+  them takes longer than in 0.6.3, as each value gets its exact text: about 1.2 s (0.6.3: 0.25 s).
+- **Import Parquet files** reads files with thousands of text columns as fast as 0.6.2 did. 4,000
+  text columns take 0.05 s (0.6.3: 9 s), and 20,000 take 0.24 s (0.6.3: about 5 minutes). A
+  folder of three files of 4,000 columns takes 0.12 s (0.6.3: 3.3 s).
 - **Instant filters**: the step that **Add as step** makes of many time periods of a column with a
-  time zone is calculated faster: on a million rows, 122 years with 5 left out in 0.07 s (0.6.3:
-  0.28 s), 5,000 separate dates in 0.28 s (0.6.3: 0.74 s). Formulas with long lists of values, such
-  as the step of a filter of 20,000 texts, take 0.83 s instead of 1.64 s on a million rows.
+  time zone is calculated faster. On a million rows, 122 years with 5 left out take 0.07 s (0.6.3:
+  0.28 s), and 5,000 separate dates 0.28 s (0.6.3: 0.74 s).
+- **Instant filters**: on a million rows, **Add as step** with its check takes about 0.1 to 0.25
+  seconds (600 separate months: 0.43 s; 20,000 stored values that aren't of the column's type:
+  0.85 s). Formulas with long lists of values, such as the step of a filter of 20,000 texts, take
+  0.83 s instead of 1.64 s.
 
 ### Tools and plugins
 
@@ -583,25 +629,25 @@ with a message that says what to change.
   (`… make_big_project.py %TEMP%\big`). Before, without one it wrote `examples\big500.tafl` into
   the Tafl folder.
 - (Development) `tools\check_statuses.py` checks the statuses and messages of the tables with
-  random projects and random edits, also with **Skip the rest if a table is empty**, a parameter
-  in a file name and files that change (see Development in the README).
+  random projects and edits. It also uses **Skip the rest if a table is empty**, a parameter in a
+  file name and files that change (see Development in the README).
 - Plugin API, additions (it stays at version 1): `tafl.api.detection` finds numbers and dates in
-  text columns as the CSV import does (`guess_decimal`, `detect_types`). In `tafl.api.dtypes`,
-  `common_type(columns)` gives the type in which Unpivot and Append put the values of several
-  columns (a `CommonType` with `dtype`, `counted` and `lost`),
+  text columns as the CSV import does (`guess_decimal`, `detect_types`).
+- Plugin API, `tafl.api.dtypes`: `common_type(columns)` gives the type in which Unpivot and Append
+  put the values of several columns (a `CommonType` with `dtype`, `counted` and `lost`).
   `to_common_type(expr, dtype, target)` converts a column to it (with the keyword `text_bytes`,
-  binary values that are all text as that text), and
-  `stack(frames, warn=None, sources="tables")` puts frames below each other with that rule and its
-  warnings, as Append and the folder imports do;
-  `tafl.api.files.combine` has a new keyword, `warn`, for those warnings (without it: the same
-  types, no message). `numbers_to_datetimes(s, fmt)` and `is_digit_format(fmt)` read numbers as
-  dates as Change type does, `rounded_to_whole(s, decimal)` tells which values a whole number keeps
-  only rounded, `parse_whole_numbers(s, decimal)` gives the whole numbers of texts and the rounded
-  ones from one reading, and `type_word(dtype)` and `with_article(text)` give the words of
-  messages.
-  `type_label` calls lists *list*, records *record*, a plugin's own values *object* and categories
-  *text*. `excel_serial_to_datetime` gives empty values for day numbers outside the years 1 to
-  9999, NaN and infinity; before, it stopped with an error.
+  binary values that are all text as that text).
+- Plugin API: `dtypes.stack(frames, warn=None, sources="tables")` puts frames below each other with
+  that rule and its warnings, as Append and the folder imports do. `tafl.api.files.combine` has a
+  new keyword, `warn`, for those warnings (without it: the same types, no message).
+- Plugin API, more in `tafl.api.dtypes`: `numbers_to_datetimes(s, fmt)` and `is_digit_format(fmt)`
+  read numbers as dates as Change type does. `rounded_to_whole(s, decimal)` tells which values a
+  whole number keeps only rounded, and `parse_whole_numbers(s, decimal)` gives the whole numbers of
+  texts and the rounded ones from one reading.
+- Plugin API, `tafl.api.dtypes`: `type_word(dtype)` and `with_article(text)` give the words of
+  messages. `type_label` calls lists *list*, records *record*, a plugin's own values *object* and
+  categories *text*. `excel_serial_to_datetime` gives empty values for day numbers outside the
+  years 1 to 9999, NaN and infinity; before, it stopped with an error.
 
 ## 0.6.3 – 2026-11-04
 

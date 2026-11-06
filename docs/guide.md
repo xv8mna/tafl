@@ -959,10 +959,11 @@ with "'none' is not a number (column 'Net')". A value that would round long whol
 more than 15 digits) stops the step too, and the message names a number that would change. So
 does a value with decimal places in a whole-number column when a decimal number can't keep it:
 `1234567890123456.78` would become `1234567890123456.8`. A date-time with more digits than the
-column holds, such as `08:30:00.0005` in a column of milliseconds (Parquet files can have them),
-makes the column finer, so that every value keeps its digits; when a value of the column doesn't
-fit (nanoseconds reach only from 1677 to 2262), the step stops with a message. A column without
-empty cells stays as it is. A column of lists or records can only be filled down or up.
+column holds, such as `2025-01-01 08:30:00.0005` in a column of milliseconds (Parquet files can
+have them), makes the column finer, so that every value keeps its digits; when a value of the
+column doesn't fit (nanoseconds reach only from 1677 to 2262), the step stops with a message. A
+column without empty cells stays as it is. A column of lists or records can only be filled down or
+up.
 
 **Filter rows** keeps or removes the rows that match conditions.
 
@@ -981,8 +982,8 @@ Date *is greater than or equal to* `01.09.2026` keeps 20. In a date-time column 
 (a Parquet file can have one, for example UTC), a typed date-time, `today` and `now` are the local
 time of that zone, as the grid shows it. A date-time parameter alone, such as `{Now}` with
 `=NOW()`, is that moment of this PC's clock, as in formulas. A typed date-time or time keeps all
-its digits: in a column of milliseconds, `08:30:00.0005` equals no value and is between 08:30:00
-and 08:30:00.001.
+its digits: in a date-time column of milliseconds, `2025-01-01 08:30:00.0005` equals no value and
+is between 08:30:00 and 08:30:00.001.
 
 *Contains*, *starts with* and *ends with* look at a text of each value that is the same on every
 PC, as **Pivot** and **Split column** write it: `17`, not `17.0`; a date as `2025-12-31`, not as
@@ -1285,7 +1286,7 @@ the columns have different types (integer: Jan, Feb, Mar; date: Since)". So no v
 without a message: a date never becomes a number, and true never becomes 1. A column whose values
 are all empty doesn't count, whatever its type: an empty text column, as a CSV import gives it,
 beside whole numbers leaves them whole numbers. With **Leave out empty values**, text with nothing
-but spaces doesn't count either. Columns of categories (from Parquet files) count as text.
+but spaces doesn't count either. Columns of categories (from plugins) count as text.
 
 Tips:
 
@@ -1501,8 +1502,8 @@ are compared as text"): the decimal number 17.0 matches the text `17`, not `17.0
 programs write decimal numbers, first make the text column a decimal number with
 **Change type / format**: then the keys are compared as numbers. A date-time is compared as
 `2025-12-31 08:30:00`, with fractions of a second only when it has some, and with a time zone as
-its local time. Lists and records match only keys of exactly their own type (a record with the
-field a doesn't match one with the field b). *Keep rows without a match* finds missing master
+its local time. Lists and records match only keys of exactly their own type: against another key,
+also a record with other fields, the step stops. *Keep rows without a match* finds missing master
 data, for example orders of unknown customers.
 
 ### Export: files and databases
@@ -1715,7 +1716,9 @@ you mean [Net]?)".
   than an exact number holds. For a decimal number (about 15 digits) write CAST(... AS DOUBLE)".
   Such a sum keeps all its digits as an exact decimal. For a decimal number, write
   `CAST([Total] AS DOUBLE) * [Total]`. A window sum such as `SUM([Total]) OVER ()` stops with this
-  message too when the sum needs more than 38 digits. Two exact decimals with other decimal
+  message too when the sum needs more than 38 digits with the decimal places that its values use.
+  A sum that fits only with those places, not with the column's own, becomes a decimal number,
+  which keeps about 15 digits. Two exact decimals with other decimal
   places, such as a whole number of 23 digits and a rate with 18 decimal places, are compared and
   added with the decimal places their values use (then `CAST([Rate] AS VARCHAR)` shows only those
   decimal places too); only when these need more than 38 digits together does the formula stop
