@@ -1316,8 +1316,8 @@ in a row inside. With **Replace repeated spaces with one** (Customers, step 3), 
 `Müller GmbH` and `Bäckerei Weiß`. Note that *Title Case* makes `GmbH` into `Gmbh`.
 
 **Replace** replaces values **In columns** `*`. **Find**: *Whole cell value*, *Text inside the
-value* (every occurrence) or *Regular expression* (**Replace with** can use `$1` or `\1`, `$2` or
-`\2`, … for the groups, `${name}` for a named group, and `$$` for a `$` sign). The rows of
+value* (every occurrence) or *Regular expression* (**Replace with** can use `$1`, `$2`, … for the
+groups, `${name}` for a named group, and `$$` for a `$` sign). The rows of
 **Replace** are pairs of **Find** and **Replace with**. **Upper/lower case matters** is on here,
 unlike in **Filter rows**.
 
@@ -1329,8 +1329,9 @@ unlike in **Filter rows**.
   into `2026-02-27`.
 - `$1_$2` is group 1, an underscore and group 2. A group that the expression doesn't have, such
   as `$3` with `^(\d{2})\.(\d{2})$`, stops the step with a message that names the group.
-- For a backslash before a digit, write two: `D:\Archiv\\2026\$1` gives `D:\Archiv\2026\` and
-  group 1.
+- A backslash is a normal character: `D:\Archiv\2026\$1` gives `D:\Archiv\2026\` and group 1.
+  A backslash before the number of a group, such as `\1`, is the text `\1` too; the step warns
+  that group 1 is written `$1`.
 
 A column that is not text becomes text, as **Pivot** and **Split column** write values (`17`, not
 `17.0`), unless *Whole cell value* finds and writes values of its type.

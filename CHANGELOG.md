@@ -64,16 +64,13 @@ with a message that says what to change.
 - **Replace**, *Regular expression*: in **Replace with**, a group number ends where its digits
   end: `$1_$2` is group 1, an underscore and group 2. Before, `$1_` was read as a group named
   "1_", so `PA1004` with `^([A-Z]+)([0-9]+)$` became `1004`. `${1}`, `${name}` and `$$` (a `$`
-  sign) work as before.
+  sign) work as before, and so does a backslash, a normal character: a backslash before the number
+  of a group that the expression has, such as `\1`, now gives a warning: "\1 is the text \1; group
+  1 is written $1".
 - **Replace**, *Regular expression*: a group that the expression doesn't have, such as `$3` or
   `$name`, stops the step with a message that names it, also in steps made with 0.6.3. Before, it
   gave empty text, without a message. *Whole cell value* and *Text inside the value* read no
   groups.
-- **Replace**, *Regular expression*, a backslash before a digit in **Replace with**: `\1`, `\2`, …
-  are groups, as `$1`, `$2`, … are, and a backslash before a digit is written as two (`\\2026`
-  gives `\2026`). Before, a backslash before a digit stayed as it was. So `D:\Archiv\2026\$1` now
-  stops the step: the message says that there is no group 2026, and to write two backslashes.
-  Other backslashes (`C:\data\$1`) work as before.
 - **Append other tables**: a column with different types in the tables gets the type that
   **Unpivot** gives its value column, as long as every value stays as it is. Whole and decimal
   numbers become decimal numbers, whole numbers and exact decimals exact decimals (up to 38
