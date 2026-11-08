@@ -1,6 +1,6 @@
 # Changes
 
-## 0.6.4 – unreleased
+## 0.6.4 – 2026-11-08
 
 This version fixes wrong results without a message. Steps that treat numbers, dates and times as
 text now use the same text on every PC, as **Pivot** writes it. Columns of different types get a
