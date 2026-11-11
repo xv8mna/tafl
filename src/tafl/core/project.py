@@ -21,6 +21,8 @@ FORMAT_VERSION = 1
 EXTENSION = ".tafl"
 _MAX_NESTING = 100  # a project needs a few levels; a copy of it recurses, and stops at some hundred
 _TABLE_ID = re.compile(r"t[0-9]+")  # the ids the app gives tables: t1, t2, ...
+_LONGEST_NAME = 255  # characters in the name of a file in Windows (an emoji counts twice)
+_TEMPORARY = ".tmp"  # the end of the name of the file that a save writes first
 
 
 class ProjectError(Exception):
@@ -318,13 +320,15 @@ class Project:
         if target is None:
             raise ProjectError("No file name given")
         target = target.resolve()
+        if (length := _units(target.name)) > _LONGEST_NAME:
+            raise ProjectError(f"The file name is too long ({length:,} characters): a file name can have {_LONGEST_NAME} at most")
         try:
             data = (json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         except (TypeError, ValueError, ArithmeticError) as e:
             raise ProjectError(f"The project holds a value that can't be stored in its file: {e}") from e
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(prefix=target.name, suffix=".tmp", dir=target.parent)
+            fd, tmp = tempfile.mkstemp(prefix=_temporary_start(target.name), suffix=_TEMPORARY, dir=target.parent)
         except PermissionError:
             raise ProjectError(f"No permission to save in {target.parent}: save the project in another folder") from None
         try:
@@ -397,6 +401,21 @@ class Project:
             for step in table.steps:
                 if not step.id:
                     step.id = new_id("s")
+
+
+def _units(text: str) -> int:
+    """The length of ``text`` as Windows counts it in a file name (an emoji counts twice)."""
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _temporary_start(name: str) -> str:
+    """The start of the name of the file that a save writes first, next to the project file:
+    the file's name, shortened so that the whole name (with the 8 random characters of
+    ``tempfile`` and .tmp) stays within the 255 characters of a file name."""
+    room = _LONGEST_NAME - 8 - len(_TEMPORARY)
+    while _units(name) > room:
+        name = name[:-1]
+    return name
 
 
 def _texts(value: Any) -> Iterator[str]:

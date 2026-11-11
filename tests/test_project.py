@@ -52,6 +52,37 @@ def test_plain_messages_when_the_project_cant_be_saved(tmp_path, monkeypatch):
         project.save(tmp_path / "sub" / "sales.tafl")
 
 
+def long_paths(folder, name: str) -> None:
+    """Skips the test on a computer that can't have a file ``name`` in ``folder`` (a path of more
+    than 260 characters needs Windows' long paths)."""
+    try:
+        (folder / name).write_bytes(b"")
+    except OSError:
+        pytest.skip("this computer has no long paths")
+    (folder / name).unlink()
+
+
+@pytest.mark.parametrize("length", [243, 244, 250, 255])
+@pytest.mark.parametrize("letter", ["p", "😀"])  # an emoji counts twice in a file name
+def test_a_file_name_of_up_to_255_characters_can_be_saved(tmp_path, length, letter):
+    """The file that a save writes first has a name that fits too: up to 0.6.4 a name of 244 to
+    255 characters gave a system error about that file."""
+    name = letter * ((length - len(".tafl")) // (2 if letter == "😀" else 1)) + ".tafl"
+    long_paths(tmp_path, name)
+    project = sample_project()
+    path = project.save(tmp_path / name)
+    assert path.name == name and Project.load(path).to_dict() == project.to_dict()
+    assert [p.name for p in tmp_path.iterdir()] == [name]  # no temporary file left
+
+
+def test_a_file_name_longer_than_windows_allows_gets_a_plain_message(tmp_path):
+    with pytest.raises(ProjectError, match=r"^The file name is too long \(256 characters\): a file name can have 255 at most$"):
+        sample_project().save(tmp_path / ("p" * 251 + ".tafl"))
+    with pytest.raises(ProjectError, match=r"\(257 characters\)"):
+        sample_project().save(tmp_path / ("😀" * 126 + ".tafl"))
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_file_is_readable_json(tmp_path):
     path = sample_project().save(tmp_path / "sales.tafl")
     data = json.loads(path.read_text(encoding="utf-8"))

@@ -116,6 +116,21 @@ def test_a_project_that_can_t_be_saved_shows_a_message(window, session, monkeypa
     assert warnings == [f"Could not save {path}:\n\nno room on the disk"]
 
 
+def test_save_as_takes_a_file_name_of_255_characters(window, session, tmp_path):
+    """Up to 0.6.4 a name of 244 to 255 characters showed a system error about a temporary file
+    (a message box fails the test)."""
+    path = tmp_path / ("w" * 250 + ".tafl")
+    try:
+        path.write_bytes(b"")
+        path.unlink()
+    except OSError:
+        pytest.skip("this computer has no long paths")
+    session.add_table(session.registry.actions["csv.import"], "Orders")
+    assert window._save_to(path)
+    assert session.project.path == path.resolve() and not session.dirty
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]
+
+
 def test_a_project_nested_too_deeply_shows_a_message_and_the_window_stays_usable(window, monkeypatch, tmp_path, demo):
     """Before, a filter or a setting of some hundred levels stopped each calculation with a RecursionError."""
     warnings = []
