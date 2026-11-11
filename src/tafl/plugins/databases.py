@@ -248,10 +248,11 @@ class SqlServer(Connector):
         # 42S02: base table or view not found; (4413): a view whose own tables are missing
         return bool(error.args) and error.args[0] == "42S02" and "(4413)" not in str(error)
 
-    def _columns(self, conn, table) -> list[_Column]:
+    def _columns(self, conn, table, by_key: bool = False) -> list[_Column]:
         """The columns of a table or view, from the catalog of its database; for a synonym, those
         of the table or view it stands for (also in another database of the server). A synonym
-        for a table of another server is an ActionError: its columns can't be read there."""
+        for a table of another server has none here, as a table there (its columns can't be read
+        on this one), and is an ActionError ``by_key``: the keyed modes need their types."""
         parts = split_name(table)
         if len(parts) > 3:  # on a linked server
             return []
@@ -262,12 +263,14 @@ class SqlServer(Connector):
             cursor.execute(f"SELECT base_object_name FROM {catalog}.synonyms WHERE object_id = OBJECT_ID(?)", target)
             if (synonym := cursor.fetchone()) is not None:
                 base = split_name(synonym[0])
-                if len(base) > 3:
+                if len(base) > 3 and by_key:
                     raise ActionError(
-                        f"{table} is a synonym for {synonym[0]}, a table of another server: an export reads the types of "
-                        "the columns it writes into, and it can read them only on the connection's server. Use a "
-                        "connection to that server."
+                        f"{table} is a synonym for {synonym[0]}, a table of another server: to find rows by key, the "
+                        "export needs the types of its columns, and it can read them only on the connection's server. "
+                        "Use a connection to that server."
                     )
+                if len(base) > 3:  # written as in 0.6.4, without the types of its columns
+                    return []
                 if len(base) < 3 and len(parts) == 3:  # in the synonym's database
                     target = f"{self.quote(parts[0])}.{'.' if len(base) == 1 else ''}{synonym[0]}"
                 else:
@@ -309,7 +312,7 @@ class SqlServer(Connector):
         arrive there as the text the driver writes into the column itself (an int column of the
         stage could not be assigned to it: "Operand type clash: int is incompatible with text")."""
         types = {}
-        for c in self._columns(conn, table):
+        for c in self._columns(conn, table, by_key=True):
             if c.clr:
                 continue
             if c.kind in _LONG_TEXT_TYPES:

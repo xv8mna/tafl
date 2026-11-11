@@ -1842,7 +1842,8 @@ def test_sqlserver_a_synonym_is_written_as_its_table(registry):
     Update said "nothing changed" and Upsert added a duplicate, and a key of a case-sensitive
     collation stopped with "Cannot resolve the collation conflict". A synonym now has the columns
     of the table it stands for, also in another database; one for a table of another server stops
-    with a plain message."""
+    the keyed modes with a plain message (they need the types of its columns), and Add writes into
+    it as before."""
     ctx, name = _sqlserver()
     connector = registry.connectors["sqlserver"]
     base, short = f"{name}_base", f"{name}_short"
@@ -1887,12 +1888,13 @@ def test_sqlserver_a_synonym_is_written_as_its_table(registry):
             export(pl.DataFrame({"C": ["abc", "ABC"], "V": [7, 8]}), target, mode="update", key_columns=["C"])  # case-sensitive
             assert ctx.messages[-1] == ("info", f"{target}: updated 1 row") and stored() == [(*old[:3], 7)], target
         with ctx.database("server") as db:  # (no such server here: the export would stop when it looks for the table)
+            assert connector.column_types(db.raw, other_server) == {}  # Add writes into it as in 0.6.4, without the types
             with pytest.raises(ActionError) as error:
-                connector.column_types(db.raw, other_server)
+                connector.stage_types(db.raw, other_server)  # only the keyed modes need them
             assert str(error.value) == (
-                f"{other_server} is a synonym for [ElsewhereServer].[Sales].[dbo].[Orders], a table of another server: an "
-                "export reads the types of the columns it writes into, and it can read them only on the connection's "
-                "server. Use a connection to that server."
+                f"{other_server} is a synonym for [ElsewhereServer].[Sales].[dbo].[Orders], a table of another server: to find "
+                "rows by key, the export needs the types of its columns, and it can read them only on the connection's server. "
+                "Use a connection to that server."
             )
             assert connector.read_table_sql(db.raw, other_server) == f"SELECT * FROM {db.qualified(other_server)}"  # an import reads it as it is
     finally:
