@@ -622,6 +622,8 @@ class _Stoppable:
         self._connection.close()
 
     def __getattr__(self, name):
+        if name.startswith("_"):  # its own, not yet set (e.g. while it is made)
+            raise AttributeError(name)
         return getattr(self._connection, name)
 
     def call(self, cursor, method, *args):
@@ -702,7 +704,16 @@ class _StoppableCursor:
             raise StopIteration
         return row
 
+    def __enter__(self):
+        self._cursor.__enter__()
+        return self
+
+    def __exit__(self, *problem):
+        return self._cursor.__exit__(*problem)
+
     def __getattr__(self, name):
+        if name.startswith("_"):  # its own, not yet set (e.g. while it is made)
+            raise AttributeError(name)
         return getattr(self._cursor, name)
 
     def __setattr__(self, name, value):  # e.g. fast_executemany
@@ -840,7 +851,9 @@ def _cut_seconds(
     at in one pass."""
     texts = texts or {}
     held = {name: digits for name, dtype in df.schema.items() if (digits := _second_digits(types.get(name, ""), dtype == pl.String))}
-    by_value = [n for n, dtype in df.schema.items() if n in held and n not in texts and (isinstance(dtype, pl.Datetime) or dtype == pl.Time)]
+    by_value = [
+        n for n, dtype in df.schema.items() if n in held and n not in texts and (isinstance(dtype, pl.Datetime) or dtype == pl.Time)
+    ]
     counted = {name: (count, "", -1) for name, count in zip(by_value, df.select(
         (col(name).dt.nanosecond() % 10 ** (9 - held[name][0]) != 0).fill_null(False).sum() for name in by_value
     ).row(0) if by_value else ())}  # fmt: skip
@@ -865,9 +878,12 @@ def _cut_seconds(
         else:
             holds = "no parts of a second" if kept == 0 else f"{kept} digit{'s' if kept != 1 else ''} of a second"
             why = f"the column {(names or {}).get(name, name)} of {table} holds {holds} ({types[name]})"
-        unit = {0: "whole seconds", 1: "1 digit of a second", 3: "milliseconds", 6: "whole microseconds"}.get(kept, f"{kept} digits of a second")
+        unit = _CUT_TO.get(kept, f"{kept} digits of a second")
         warnings.append(f"{name}: {values_were} cut to {unit} (e.g. {shown} is {written[0]}): {why}")
     return warnings
+
+
+_CUT_TO = {0: "whole seconds", 1: "1 digit of a second", 3: "milliseconds", 6: "whole microseconds"}
 
 
 def _second_digits(sql_type: str, text: bool) -> tuple[int, int] | None:
@@ -1478,7 +1494,10 @@ def import_database(df, p, ctx):
     changes in SQL Server is rolled back (a query that commits by itself keeps its changes).
     Numbers keep all their digits: a column with numbers of more digits than a decimal number
     keeps (about 15), or with whole numbers too big for a whole-number column, stays a column of
-    exact decimals. "Detect numbers and dates in text columns" finds them in text, with the
+    exact decimals. A SQL Server datetimeoffset column becomes date-times in UTC, the moments it
+    holds; SQL Server's driver reads date-times to the microsecond, and for a column with 7
+    digits of a second the step says that a 7th digit is cut. "Detect numbers and dates in text
+    columns" finds them in text, with the
     decimal separator of each column as the CSV import does (also in amounts and percentages),
     or only numbers and dates with a chosen one; steps saved before it could be chosen use the
     point, as they did."""
@@ -1661,14 +1680,16 @@ def export_database(df, p, ctx):
     the dates in the data: reloading a day replaces that day). Update rows by key columns, or
     update them and add the new ones. Columns are matched by name; a missing table is created
     with types that fit the data. Values are stored as their columns hold them, the same way in
-    every mode (08:00:01.5 is 08:00:01 in a SQL Server datetime2(0) column; spaces at the end of
-    a text that don't fit are left out), and key values compare as their columns do (e.g. with
-    their collation). Date-times with a time zone are written in that zone's local time,
-    without the zone (08:30 in Berlin stays 08:30), as in the Excel export; into a SQL Server
-    datetimeoffset column with the zone's offset (08:30 +02:00), and there a date-time without
-    a zone gets the offset of this PC's time zone on its day. Binary values for a SQL Server
-    column of text are hex text (0x0102FF), as the CSV export writes them. Runs only when the
-    project is run.
+    every mode (08:00:01.5 is 08:00:01 in a SQL Server datetime2(0) column, and the step says how
+    many values were cut; spaces at the end of a text that don't fit are left out), and key values
+    compare as their columns do (e.g. with their collation). On SQL Server, a text for a date or
+    time column is read as Change type / format reads it without a format (31.12.2025 08:30,
+    2025-12-31): a text it can't read stops the export. Date-times with a time zone are written
+    in that zone's local time, without the zone (08:30 in Berlin stays 08:30), as in the Excel
+    export; into a SQL Server datetimeoffset column with the zone's offset (08:30 +02:00), and
+    there a date-time without a zone gets the offset of this PC's time zone on its day. Binary
+    values for a SQL Server column of text are hex text (0x0102FF), as the CSV export writes
+    them. Runs only when the project is run.
     """
     if p.skip_empty and df.height == 0:
         ctx.log("Not exported: the table is empty")
@@ -1938,7 +1959,9 @@ def _fit_decimals(df: pl.DataFrame, names: dict[str, str], types: dict[str, str]
             if max(_digits_before_point(low), _digits_before_point(high)) <= digits:
                 continue
             example = column[rounded.abs().arg_max()]
-            held = f"numbers of up to {digits} digit{'s' if digits != 1 else ''} before the decimal point" if digits else "numbers between -1 and 1"
+            held = "numbers between -1 and 1"
+            if digits:
+                held = f"numbers of up to {digits} digit{'s' if digits != 1 else ''} before the decimal point"
             raise ActionError(
                 f"The column {target} of {table} holds {held} ({kind}), but {source} has "
                 f"{'longer ones' if digits else 'others'} (e.g. {example}). Make the column wider in the database, e.g. "
@@ -1953,7 +1976,9 @@ _DATE_KINDS = ("date", "datetime", "datetime2", "smalldatetime", "time", "dateti
 _DATE_TEXTS = {
     "date": ("dates", "no date", "31.12.2025 or 2025-12-31, or change them to dates first (Change type / format, with their format)"),
     "time": ("times", "no time", "08:30, 08:30:15 or 08:30:15.250"),
-    "datetimeoffset": ("dates and times with their offset from UTC", "no date and time", "31.12.2025 08:30 +01:00 or 2025-12-31 08:30:00 +01:00"),
+    "datetimeoffset": (
+        "dates and times with their offset from UTC", "no date and time", "31.12.2025 08:30 +01:00 or 2025-12-31 08:30:00 +01:00"
+    ),
     "": ("dates and times", "no date and time", "31.12.2025 08:30 or 2025-12-31 08:30:00, or change them to date-times first "
          "(Change type / format, with their format)"),
 }  # fmt: skip
@@ -2024,7 +2049,8 @@ def _offset_texts(texts: pl.Series) -> pl.Series:
     frame = pl.DataFrame({"text": texts.str.strip_chars()})
     text, zone = pl.col("text"), pl.col("zone")
     found = text.str.extract(_TIME_BEFORE_ZONE + _ZONE, 1)
-    frame = frame.with_columns(found.alias("zone"), pl.when(found.is_not_null()).then(text.str.replace(r"\s*" + _ZONE, "")).otherwise(text).alias("moment"))
+    moment = pl.when(found.is_not_null()).then(text.str.replace(r"\s*" + _ZONE, "")).otherwise(text)
+    frame = frame.with_columns(found.alias("zone"), moment.alias("moment"))
     frame = frame.with_columns(dtypes.parse_datetimes(frame["moment"].alias("value")).alias("read"))
     hours = zone.str.slice(1, 2).cast(pl.Int32, strict=False)
     minutes = zone.str.replace(r"^[+-][0-9]{2}:?", "").cast(pl.Int32, strict=False).fill_null(0)
@@ -2357,7 +2383,8 @@ def run_sql(df, p, ctx):
     """Runs SQL in a database, e.g. a stored procedure after an export, or DELETE / UPDATE
     statements. SQL Server: separate batches with GO lines, as in SSMS (GO 3 runs a batch three
     times). Runs only when the project is run, in one transaction: if it fails, its changes are
-    rolled back (so leave out BEGIN and COMMIT). The table passes through unchanged."""
+    rolled back: leave out BEGIN, COMMIT and ROLLBACK (and SAVE TRAN on SQL Server), which the
+    step refuses. Stop ends a statement that runs. The table passes through unchanged."""
     with ctx.database(p.connection) as db:
         count = db.run_script(p.sql)
     ctx.log("Done" + (f": {count:,} row{'s' if count != 1 else ''} changed" if count >= 0 else ""))

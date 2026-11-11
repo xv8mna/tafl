@@ -2220,3 +2220,28 @@ def test_sqlserver_a_key_of_microseconds_that_meets_two_rows_stops_an_update(reg
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_ctrl_c_in_tafl_run_ends_a_running_statement(tmp_path, capsys):
+    """Ctrl+C on the command line sets the stop at once, also while the statement runs in the
+    driver: the run ends as stopped (exit code 130), not when the statement is done."""
+    import signal
+
+    from tafl import cli
+
+    project = Project(name="Stop")
+    project.add_connection("server", "sqlserver", server=os.environ["TAFL_TEST_SQLSERVER"], database="tempdb")
+    table = project.add_table("Waits")
+    project.add_step(table, "db.import", {"connection": "server", "mode": "query", "query": "WAITFOR DELAY '00:00:20'; SELECT 1 AS N"})
+    path = project.save(tmp_path / "stop.tafl")
+    before = signal.signal(signal.SIGINT, lambda *_: None)  # never a Ctrl+C for pytest itself
+    try:
+        threading.Timer(0.5, signal.raise_signal, (signal.SIGINT,)).start()
+        started = time.perf_counter()
+        assert cli.main(["run", str(path)]) == 130
+        assert time.perf_counter() - started < 5
+    finally:
+        signal.signal(signal.SIGINT, before)
+    output = capsys.readouterr()
+    assert "  · 1. Import SQL query from server   (stopped)" in output.out and output.err.endswith("Error: Stopped\n")
