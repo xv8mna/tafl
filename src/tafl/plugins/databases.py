@@ -2046,6 +2046,13 @@ def _or_else(first: pl.Series, other: pl.Series) -> pl.Series:
     return first.zip_with(first.is_not_null(), other)
 
 
+def _on_1900(times: pl.Series) -> pl.Series:
+    """Times as date-times on 1 January 1900 (to the microsecond), the date that SQL Server gives a
+    time alone in a datetime, smalldatetime or datetime2 column: CAST('08:30' AS datetime) is
+    1900-01-01 08:30. Tables made before SQL Server had a time type keep times so."""
+    return pl.select(pl.lit(dt.date(1900, 1, 1)).dt.combine(pl.lit(times), time_unit="us")).to_series().alias(times.name)
+
+
 def _read_date_texts(
     df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, connector_id: str
 ) -> tuple[pl.DataFrame, dict[str, tuple[int, str, int]]]:
@@ -2053,8 +2060,11 @@ def _read_date_texts(
     / format without a format (31.12.2025, 2025-12-31, with or without a time; 08:30:15.250 for a
     time; a datetimeoffset column also takes an offset after the time, +01:00 or Z), and as ISO
     8601 (``_iso_datetimes``: 2026-10-01T08:30, 20261001; an offset in it is left out for a column
-    without one; a time column takes the time of a date and time). Forms whose meaning depends on
-    the language or the date format (12/31/2025, 08:30 PM) are no dates here. Before, the
+    without one; a time column takes the time of a date and time). A time alone (08:30,
+    08:30:15.5) for a datetime, smalldatetime or datetime2 column is on 1 January 1900, as SQL
+    Server converts it (``_on_1900``: old tables keep times so, and Update and Upsert wrote them so
+    before). Forms whose meaning depends on the language or the date format (12/31/2025, 08:30 PM)
+    are no dates here. Before, the
     driver read them in Add (ISO only), while the keyed modes sent them as texts that the server
     read with its session's date format: 01.10.2026 was 10 January there. Dates, date-times and
     times are then written as such (for a datetimeoffset column: as a text the driver reads, with
@@ -2082,9 +2092,9 @@ def _read_date_texts(
             read = _or_else(dtypes.parse_times(text), _iso_datetimes(text).dt.time())
         elif base == "datetimeoffset":
             read = _offset_texts(text)
-        else:
-            read = _or_else(dtypes.parse_datetimes(text), _iso_datetimes(text))
-        failed = (text.is_not_null() & read.is_null() & (text.str.strip_chars() != "")).fill_null(False)
+        else:  # datetime, smalldatetime, datetime2: a time alone is on 1 January 1900, as SQL Server converts it
+            read = _or_else(_or_else(dtypes.parse_datetimes(text), _iso_datetimes(text)), _on_1900(dtypes.parse_times(text)))
+        failed =(text.is_not_null() & read.is_null() & (text.str.strip_chars() != "")).fill_null(False)
         if count := int(failed.sum()):
             held, no_such, forms = _DATE_TEXTS.get(base, _DATE_TEXTS[""])
             more = f"; {count:,} texts like it" if count > 1 else ""

@@ -2339,3 +2339,36 @@ def test_sqlserver_texts_keep_their_7_digits_of_a_second_in_every_mode(registry)
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_a_time_alone_is_on_1_january_1900_in_every_mode(registry):
+    """A text with only a time for a datetime, smalldatetime or datetime2 column is stored as SQL
+    Server's own conversion stores it, on 1 January 1900, in every mode: tables made before SQL
+    Server had a time type keep times so. In 0.6.4, Update and Upsert wrote such texts so (the
+    server read them), and Add refused them."""
+    ctx, name = _sqlserver()
+    texts = ["08:30", "08:30:15", "08:30:45", "23:59:59"]
+    cases = {"datetime": [*texts, "08:30:15.5"], "smalldatetime": texts, "datetime2(0)": texts,
+             "datetime2(7)": [*texts, "08:30:15.5", "08:30:15.1234567"]}  # fmt: skip
+    try:
+        for kind, values in cases.items():
+            with ctx.database("server") as db:  # SQL Server's own conversion of each text
+                cast = " UNION ALL ".join(f"SELECT {k} AS K, CONVERT(nvarchar(40), CAST(N'{v}' AS {kind}), 121) AS V" for k, v in enumerate(values))
+                expected = db.read(f"SELECT V FROM ({cast}) AS c ORDER BY K")["V"].to_list()
+            assert all(value.startswith(("1900-01-01 ", "1900-01-02 ")) for value in expected), (kind, expected)
+            for mode in ("insert", "upsert", "update"):
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                    db.execute(f"CREATE TABLE {name} (K int, V {kind})")
+                    if mode == "update":
+                        db.execute(f"INSERT INTO {name} (K) VALUES " + ", ".join(f"({k})" for k in range(len(values))))
+                before = len(ctx.warnings)
+                data = pl.DataFrame({"K": range(len(values)), "V": values})
+                registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": ["K"]}, ctx)
+                with ctx.database("server") as db:
+                    stored = db.read(f"SELECT CONVERT(nvarchar(40), V, 121) AS V FROM {name} ORDER BY K")["V"].to_list()
+                assert stored == expected and len(ctx.warnings) == before, (kind, mode, stored)
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

@@ -1827,6 +1827,21 @@ def test_sqlserver_reads_iso_8601_texts_for_date_columns(kind, texts, expected):
     assert read["V"].to_list() == expected
 
 
+@pytest.mark.parametrize("kind", ["datetime", "smalldatetime", "datetime2(0)", "datetime2(3)", "datetime2(7)"])
+def test_sqlserver_reads_a_time_alone_as_on_1_january_1900(kind):
+    """As SQL Server converts it (CAST('08:30' AS datetime) is 1900-01-01 08:30): tables made before
+    SQL Server had a time type keep times so. In 0.6.4, Update and Upsert wrote such texts so (the
+    server read them), and Add refused them. A date and time keeps its own date."""
+    texts = [" 08:30 ", "8:5", "08:30:15.5", "2026-10-01 08:30", None]
+    read = databases._read_date_texts(pl.DataFrame({"V": texts}), {"V": "V"}, {"V": kind}, "dbo.T", "sqlserver")[0]
+    if kind == "datetime2(7)":  # as a text, with all 7 digits of a second
+        expected = ["1900-01-01 08:30:00.0000000", "1900-01-01 08:05:00.0000000", "1900-01-01 08:30:15.5000000", "2026-10-01 08:30:00.0000000"]
+    else:
+        expected = [dt.datetime(1900, 1, 1, 8, 30), dt.datetime(1900, 1, 1, 8, 5), dt.datetime(1900, 1, 1, 8, 30, 15, 500000),
+                    dt.datetime(2026, 10, 1, 8, 30)]  # fmt: skip
+    assert read["V"].to_list() == [*expected, None]
+
+
 @pytest.mark.parametrize(
     ("kind", "texts", "message"),
     [
@@ -1838,18 +1853,22 @@ def test_sqlserver_reads_iso_8601_texts_for_date_columns(kind, texts, expected):
          "type / format, with their format)."),
         ("smalldatetime", ["2025-12-31 08:30 PM"], "holds dates and times (smalldatetime), but V has texts that are no date and time (e.g. "
          "“2025-12-31 08:30 PM”)"),
-        ("datetime2(0)", ["08:30"], "holds dates and times (datetime2(0)), but V has texts that are no date and time (e.g. “08:30”)"),
+        ("datetime2(0)", ["08:30 PM"], "holds dates and times (datetime2(0)), but V has texts that are no date and time (e.g. “08:30 PM”)"),
+        ("date", ["08:30"], "holds dates (date), but V has texts that are no date (e.g. “08:30”)"),
         ("time(0)", ["08:30 PM"], "holds times (time(0)), but V has texts that are no time (e.g. “08:30 PM”). Write them as 08:30, 08:30:15 "
          "or 08:30:15.250."),
         ("datetimeoffset(0)", ["2026-10-01 08:00 +15:00"], "holds dates and times with their offset from UTC (datetimeoffset(0)), but V has "
          "texts that are no date and time (e.g. “2026-10-01 08:00 +15:00”). Write them as 31.12.2025 08:30 +01:00 or "
          "2025-12-31T08:30:00+01:00."),
+        ("datetimeoffset(0)", ["08:30"], "holds dates and times with their offset from UTC (datetimeoffset(0)), but V has texts that are no "
+         "date and time (e.g. “08:30”)"),
     ],
 )
 def test_sqlserver_a_text_that_is_no_date_names_its_column(kind, texts, message):
     """Before, the driver refused it in Add without naming the column, and the server read it in
     the keyed modes, also as another date, or as 1900-01-01 for an empty text. Forms whose meaning
-    depends on the language or the date format, and a time without a date for a date and time."""
+    depends on the language or the date format, and a time without a date for a date or a
+    datetimeoffset column."""
     df = pl.DataFrame({"V": texts})
     with pytest.raises(ActionError) as error:
         databases._read_date_texts(df, {"V": "V"}, {"V": kind}, "dbo.T", "sqlserver")
