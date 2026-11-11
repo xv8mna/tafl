@@ -250,9 +250,11 @@ class SqlServer(Connector):
 
     def _columns(self, conn, table, by_key: bool = False) -> list[_Column]:
         """The columns of a table or view, from the catalog of its database; for a synonym, those
-        of the table or view it stands for (also in another database of the server). A synonym
-        for a table of another server has none here, as a table there (its columns can't be read
-        on this one), and is an ActionError ``by_key``: the keyed modes need their types."""
+        of the table or view it stands for (also in another database of the server, also written
+        db..table). A synonym for a table of another server has none here, as a table there (its
+        columns can't be read on this one), and is an ActionError ``by_key``: the keyed modes need
+        their types. So is a synonym whose columns this server can't tell (e.g. its database is
+        gone). SQL Server's PARSENAME gives the parts of the synonym's base, also empty ones."""
         parts = split_name(table)
         if len(parts) > 3:  # on a linked server
             return []
@@ -260,28 +262,44 @@ class SqlServer(Connector):
         cursor = conn.cursor()
         try:
             catalog = f"{self.quote(parts[0])}.sys" if len(parts) == 3 else "sys"
-            cursor.execute(f"SELECT base_object_name FROM {catalog}.synonyms WHERE object_id = OBJECT_ID(?)", target)
-            if (synonym := cursor.fetchone()) is not None:
-                base = split_name(synonym[0])
-                if len(base) > 3 and by_key:
+            cursor.execute(
+                f"SELECT base_object_name, PARSENAME(base_object_name, 4), PARSENAME(base_object_name, 3), "
+                f"PARSENAME(base_object_name, 2), PARSENAME(base_object_name, 1) FROM {catalog}.synonyms "
+                "WHERE object_id = OBJECT_ID(?)",
+                target,
+            )
+            synonym = cursor.fetchone()
+            if synonym is not None:
+                base, server, database, schema, name = synonym
+                if server is not None and by_key:
                     raise ActionError(
-                        f"{table} is a synonym for {synonym[0]}, a table of another server: to find rows by key, the "
+                        f"{table} is a synonym for {base}, a table of another server: to find rows by key, the "
                         "export needs the types of its columns, and it can read them only on the connection's server. "
                         "Use a connection to that server."
                     )
-                if len(base) > 3:  # written as in 0.6.4, without the types of its columns
+                if server is not None:  # written as in 0.6.4, without the types of its columns
                     return []
-                if len(base) < 3 and len(parts) == 3:  # in the synonym's database
-                    target = f"{self.quote(parts[0])}.{'.' if len(base) == 1 else ''}{synonym[0]}"
-                else:
-                    target = synonym[0]
-                catalog = f"{self.quote(base[0])}.sys" if len(base) == 3 else catalog
-            cursor.execute(
+                if database is None and len(parts) == 3:  # in the synonym's database
+                    database = parts[0]
+                schema = self.quote(schema) if schema else ""  # db..table: the user's default schema there
+                target = f"{self.quote(database)}.{schema}.{self.quote(name)}" if database else f"{schema}.{self.quote(name)}".lstrip(".")
+                catalog = f"{self.quote(database)}.sys" if database else catalog
+            query = (
                 f"SELECT c.name, COALESCE(TYPE_NAME(c.system_type_id), t.name), t.is_assembly_type, c.max_length, "
                 f"c.precision, c.scale, c.collation_name FROM {catalog}.columns AS c JOIN {catalog}.types AS t "
-                "ON t.user_type_id = c.user_type_id WHERE c.object_id = OBJECT_ID(?) ORDER BY c.column_id",
-                target,
+                "ON t.user_type_id = c.user_type_id WHERE c.object_id = OBJECT_ID(?) ORDER BY c.column_id"
             )
+            try:
+                cursor.execute(query, target)
+            except Exception as e:  # e.g. the synonym's database is gone or can't be read
+                if synonym is None:
+                    raise
+                if by_key:
+                    raise ActionError(
+                        f"{table} is a synonym for {synonym[0]}, whose columns can't be read ({self.error_message(e)}): to "
+                        "find rows by key, the export needs their types."
+                    ) from e
+                return []  # written as in 0.6.4: SQL Server says what is wrong
             return [_Column(name, kind.lower(), bool(clr), *rest) for name, kind, clr, *rest in cursor.fetchall()]
         finally:
             cursor.close()

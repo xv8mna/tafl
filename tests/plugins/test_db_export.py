@@ -1875,7 +1875,8 @@ def test_sqlserver_a_synonym_is_written_as_its_table(registry):
     connector = registry.connectors["sqlserver"]
     base, short = f"{name}_base", f"{name}_short"
     synonym, far, other_database, other_server = f"{name}_syn", f"{name}_far", f"{name}_master", f"{name}_server"
-    made = [synonym, far, other_database, other_server, short]
+    dots, master_dots, server_dots, gone = f"{name}_dots", f"{name}_mdots", f"{name}_sdots", f"{name}_gone"  # db..table
+    made = [synonym, far, other_database, other_server, short, dots, master_dots, server_dots, gone]
 
     def export(df, table, **params):
         registry.actions["db.export"](df, {"connection": "server", "table": table} | params, ctx)
@@ -1893,12 +1894,22 @@ def test_sqlserver_a_synonym_is_written_as_its_table(registry):
             db.execute(f"CREATE SYNONYM {far} FOR tempdb.{base}")
             db.execute(f"CREATE SYNONYM {other_database} FOR master.dbo.spt_values")
             db.execute(f"CREATE SYNONYM {other_server} FOR ElsewhereServer.Sales.dbo.Orders")
+            db.execute(f"CREATE SYNONYM {dots} FOR tempdb..[{base.split('.')[1]}]")
+            db.execute(f"CREATE SYNONYM {master_dots} FOR master..spt_values")
+            db.execute(f"CREATE SYNONYM {server_dots} FOR ElsewhereServer.Sales..Orders")
+            db.execute(f"CREATE SYNONYM {gone} FOR tafl_no_such_database.dbo.Orders")
             table_types = connector.column_types(db.raw, base)
             assert table_types == {"K": "int", "D": "datetime2(0)", "C": "varchar(10)", "V": "int"}
-            for target in (synonym, short, far, f"tempdb.{short}"):
+            for target in (synonym, short, far, f"tempdb.{short}", dots):
                 assert connector.column_types(db.raw, target) == table_types, target
                 assert connector.stage_types(db.raw, target) == connector.stage_types(db.raw, base), target
             assert {"name", "number", "type"} <= set(connector.column_types(db.raw, other_database))
+            assert connector.column_types(db.raw, master_dots) == connector.column_types(db.raw, other_database)  # it had none
+            assert connector.column_types(db.raw, server_dots) == connector.column_types(db.raw, gone) == {}  # Add: as in 0.6.4
+            with pytest.raises(ActionError, match=r"^.+_sdots is a synonym for \[ElsewhereServer\]\.\[Sales\]\.\.\[Orders\], a table of another"):
+                connector.stage_types(db.raw, server_dots)  # it was a driver's message: Invalid object name 'ElsewhereServer.sys.columns'
+            with pytest.raises(ActionError, match=r"^.+_gone is a synonym for \[tafl_no_such_database\]\.\[dbo\]\.\[Orders\], whose columns can't be read \("):
+                connector.stage_types(db.raw, gone)
         by_second = pl.DataFrame({"D": [dt.datetime(2026, 10, 1, 8, 0, 0, 400000)], "V": [5]})
         for target in (synonym, f"tempdb.{far}"):
             for mode, message, rows in (
