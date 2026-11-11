@@ -1926,3 +1926,70 @@ def test_sqlserver_stop_ends_a_running_statement(registry):
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+@pytest.mark.parametrize(
+    ("kind", "keys", "shown"),
+    [
+        ("nvarchar(10)", ["x", "ABC", "abc", "y", "Abc"], "ABC"),  # the database's collation: case-insensitive
+        ("nvarchar(10) COLLATE Latin1_General_CI_AI", ["e", "é"], "e"),
+        ("nvarchar(10)", ["a", "a "], "a"),  # spaces at the end don't count
+        ("datetime", [dt.datetime(2026, 10, 1, 8, 0, 0, 1000), dt.datetime(2026, 10, 1, 8)], "2026-10-01 08:00:00.001000"),
+        ("smalldatetime", [dt.datetime(2026, 10, 1, 8, 0, 10), dt.datetime(2026, 10, 1, 8, 0, 20)], "2026-10-01 08:00:10"),
+        ("decimal(10,2)", [1.001, 1.004], "1.001"),
+        ("uniqueidentifier", ["6f9619ff-8b86-d011-b42d-00c04fc964ff", "6F9619FF-8B86-D011-B42D-00C04FC964FF"],
+         "6f9619ff-8b86-d011-b42d-00c04fc964ff"),  # fmt: skip
+    ],
+    ids=["case", "accents", "spaces at the end", "datetime", "smalldatetime", "float into decimal", "GUID"],
+)
+def test_sqlserver_keys_must_be_unique_as_the_column_compares_them(registry, kind, keys, shown):
+    """Keys that differ in Tafl but are one key value for SQL Server were taken as different:
+    Upsert added both rows, and the next Update gave them both the values of one row."""
+    ctx, name = _sqlserver()
+    data = pl.DataFrame({"K": keys, "V": range(len(keys))})
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (K {kind}, V int)")
+        for mode in ("upsert", "update"):
+            with pytest.raises(ActionError) as error:
+                registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": ["K"]}, ctx)
+            assert str(error.value) == (
+                f"The key columns don't identify the rows: 1 key value occurs more than once (e.g. K = {shown}). Remove the "
+                "duplicates first, or choose more key columns."
+            ), mode
+        with ctx.database("server") as db:
+            assert db.read(f"SELECT COUNT(*) AS n FROM {name}")["n"].to_list() == [0]
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_the_example_of_keys_equal_as_compared_is_the_first_in_the_data(registry):
+    """As for keys equal in Tafl: the first key value in the order of the rows that occurs more
+    than once, the same in every run; several key columns together."""
+    ctx, name = _sqlserver()
+
+    def export(df):
+        with pytest.raises(ActionError) as error:
+            registry.actions["db.export"](df, {"connection": "server", "table": name, "mode": "update", "key_columns": list(df.columns[:-1])}, ctx)
+        return str(error.value)
+
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (K nvarchar(10), N int, V int)")
+        many = [f"k{i}" for i in range(3000)]  # more rows than one batch of the driver
+        keys = [*many, "b", "a", "B", "A"]
+        for _ in range(3):
+            assert export(pl.DataFrame({"K": keys, "V": range(len(keys))})) == (
+                "The key columns don't identify the rows: 2 key values occur more than once (e.g. K = b). Remove the "
+                "duplicates first, or choose more key columns."
+            )
+        two = pl.DataFrame({"K": ["abc", "abd", "ABC", "ABC"], "N": [1, 1, 2, 1], "V": [1, 2, 3, 4]})
+        assert "1 key value occurs more than once (e.g. K = abc, N = 1)" in export(two)
+        registry.actions["db.export"](two.head(3), {"connection": "server", "table": name, "mode": "upsert", "key_columns": ["K", "N"]}, ctx)
+        assert ctx.messages[-1] == ("info", f"{name}: added 3 rows")
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

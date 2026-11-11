@@ -1588,6 +1588,7 @@ def export_database(df, p, ctx):
         data = db.connector.fit_frame(data, fitted)
         if p.mode in ("update", "upsert"):
             _check_unique(data, p.key_columns)  # as stored: 08:00:01.2 and .7 are one second in datetime2(0)
+        fitted_data = data
         data = db.connector.prepare_frame(data)
 
         added = deleted = updated = 0
@@ -1602,7 +1603,10 @@ def export_database(df, p, ctx):
             stage = _stage(db, staged, names, keys, db.connector.stage_types(db.raw, p.table), ctx)
             deleted = db.execute(db.connector.delete_sql(table, stage, keys))
         elif p.mode in ("update", "upsert"):
-            stage = _stage(db, data, names, keys, db.connector.stage_types(db.raw, p.table), ctx)
+            row = _unused("tafl_row", names.values()) if db.connector.id == "sqlserver" else None
+            stage = _stage(db, data, names, keys, db.connector.stage_types(db.raw, p.table), ctx, row)
+            if row is not None:  # as SQL Server compares them: abc and ABC are one key in a CI column
+                _check_unique_as_compared(db, stage, row, fitted_data, [names[k] for k in p.key_columns], p.key_columns)
             others = [n for n in names.values() if n not in keys]
             if others:
                 updated = db.execute(db.connector.update_sql(table, stage, others, keys))
@@ -1939,27 +1943,68 @@ def _check_unique(df: pl.DataFrame, keys: list[str]) -> None:
         count = f"_{count}_"
     repeated = df.group_by(cols(keys), maintain_order=True).len(name=count).filter(col(count) > 1)
     if repeated.height:
-        example = ", ".join(f"{k} = {repeated[k][0]}" for k in keys)
-        values = "1 key value occurs" if repeated.height == 1 else f"{repeated.height:,} key values occur"
-        raise ActionError(
-            f"The key columns don't identify the rows: {values} more than once "
-            f"(e.g. {example}). Remove the duplicates first, or choose more key columns."
-        )
+        _not_unique(repeated.height, [(k, repeated[k][0]) for k in keys])
 
 
-def _stage(db, data: pl.DataFrame, names: dict[str, str], keys: list[str], own: dict[str, str], ctx) -> str:
+def _not_unique(count: int, example: list[tuple[str, object]]) -> None:
+    """The message of ``_check_unique``: ``count`` key values occur more than once, e.g. the
+    values of ``example`` (column, value)."""
+    shown = ", ".join(f"{name} = {value}" for name, value in example)
+    values = "1 key value occurs" if count == 1 else f"{count:,} key values occur"
+    raise ActionError(
+        f"The key columns don't identify the rows: {values} more than once "
+        f"(e.g. {shown}). Remove the duplicates first, or choose more key columns."
+    )
+
+
+def _check_unique_as_compared(db, stage: str, row: str, data: pl.DataFrame, columns: list[str], keys: list[str]) -> None:
+    """``_check_unique`` for SQL Server, as the table's columns compare the keys: the rows are in
+    ``stage`` (``_stage``), with their number in the column ``row``, and the keys in its
+    ``columns`` (of ``keys`` in ``data``). Keys that differ in the data can be one key value there:
+    abc and ABC in a column of a case-insensitive collation, e and é in an accent-insensitive one,
+    a and "a " (spaces at the end don't count), 08:00:00.001 and 08:00:00 in a datetime (steps of
+    1/300 s), 1.001 and 1.004 in a decimal(10,2), a GUID in upper and lower case. The example is
+    the data's first row of a key value that occurs more than once, as ``_check_unique`` gives it."""
+    grouped = ", ".join(db.quote(c) for c in columns)
+    found = db.read(
+        f"SELECT TOP 1 COUNT(*) OVER () AS repeated, MIN({db.quote(row)}) AS first_row FROM {stage} "
+        f"GROUP BY {grouped} HAVING COUNT(*) > 1 ORDER BY MIN({db.quote(row)})"
+    )
+    if found.height:
+        first = int(found["first_row"][0])
+        _not_unique(int(found["repeated"][0]), [(k, data[k][first]) for k in keys])
+
+
+def _unused(name: str, names) -> str:
+    """``name``, or with a number after it (name2, name3, …): no name of ``names``, also as SQL
+    Server may compare them (``_folded``)."""
+    taken = {_folded(n) for n in names}
+    number, candidate = 1, name
+    while _folded(candidate) in taken:
+        number += 1
+        candidate = f"{name}{number}"
+    return candidate
+
+
+def _stage(
+    db, data: pl.DataFrame, names: dict[str, str], keys: list[str], own: dict[str, str], ctx, row: str | None = None
+) -> str:
     """A temporary table with the data, named like the columns of the database table and
     indexed on the key columns (then matching rows takes a moment, not minutes). Its columns
     have the types of the table's own columns where the database tells them (``own``, from
     ``stage_types``): values arrive there as they would in the table (a datetime holds steps of
     1/300 s, a varchar only the characters of its code page), and keys compare as the table's
-    columns do. Otherwise they have types that fit the data."""
+    columns do. Otherwise they have types that fit the data. ``row`` (SQL Server): a column of
+    that name gets the number of each row (0, 1, …), in the order of the data."""
     own = {name.lower(): kind for name, kind in own.items()}
     create, stage = db.connector.temp_table(f"tafl_stage_{uuid.uuid4().hex[:8]}")
     kinds = {c: own.get(names[c].lower()) or db.connector.sql_type(data[c], temporary=True) for c in data.columns}
-    definitions = ", ".join(f"{db.quote(names[c])} {kind}" for c, kind in kinds.items())
+    columns = [names[c] for c in data.columns]
+    if row is not None:  # sent with the rows: an IDENTITY column made adding them half as slow again
+        data, kinds, columns = data.with_row_index(row), {row: "BIGINT", **kinds}, [row, *columns]
+    definitions = ", ".join(f"{db.quote(name)} {kind}" for name, kind in zip(columns, kinds.values()))
     db.execute(f"{create} {stage} ({definitions})")
-    _insert(db, stage, data, [names[c] for c in data.columns], ctx, kinds, temporary=True)
+    _insert(db, stage, data, columns, ctx, kinds, temporary=True)
     db.execute(db.connector.index_sql(stage, keys))
     return stage
 
