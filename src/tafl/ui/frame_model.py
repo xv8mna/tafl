@@ -63,9 +63,9 @@ class DisplayFormat:
 
     def number(self, value: float, single: bool = False) -> str:
         """With up to 10 decimal places. A number below 0.0001 that they would show as 0, or
-        without some of its digits, is shown in the shortest form that is exactly the number,
-        with an exponent, as Excel's General format does: 1E-12, 1.23456789012E-05. ``single``:
-        the value of a 32-bit number (Float32)."""
+        without some of its digits, is shown with an exponent and its digits, at most 15 of them,
+        as Excel's General format does: 1E-12, 1.23456789012E-05. ``single``: the value of a
+        32-bit number (Float32)."""
         if -_SMALL < value < _SMALL:  # (not NaN or ∞)
             text = _tiny(value, single) if value else "0"
         elif value != value:
@@ -190,19 +190,20 @@ class FrameModel(QAbstractTableModel):
 
 def _tiny(value: float, single: bool) -> str:
     """A number between -0.0001 and 0.0001, not 0: with 10 decimal places when they show all its
-    digits, else in the shortest form that is exactly the number. A digit that only comes from
-    computing in binary (0.00003 can be 2.9999999999999997e-05) is none: a 64-bit number counts
-    with 15 digits, as Excel does."""
-    exact = _shortest(value, single)  # with an exponent: 1.25e-05
-    mantissa, _, exponent = exact.partition("e")
+    digits, else with an exponent and its shortest digits. A digit that only comes from computing
+    in binary is none: a 64-bit number has at most 15 digits, as in Excel (0.00003 can be
+    2.9999999999999997e-05, 3e-13 can be 3.0000000000000004e-13)."""
+    digits = _shortest(value, single)  # with an exponent: 1.25e-05
+    mantissa, _, exponent = digits.partition("e")
     if not single and len(mantissa) - ("." in mantissa) - (mantissa[0] == "-") > 15:  # more than 15 digits
-        mantissa, _, exponent = f"{value:.15g}".partition("e")
+        digits = f"{value:.15g}"
+        mantissa, _, exponent = digits.partition("e")
     places = len(mantissa) - mantissa.index(".") - 1 if "." in mantissa else 0  # (1.25e-05: 7)
     if exponent:
         places -= int(exponent)
     if places <= 10:
         return f"{value:.10f}".rstrip("0").rstrip(".")
-    return exact.replace("e", "E")
+    return digits.replace("e", "E")
 
 
 def _shortest(value: float, single: bool) -> str:

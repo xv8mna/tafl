@@ -56,6 +56,9 @@ TINY = [  # a value, its text in the grid
     (1.23456789012e-5, "1.23456789012E-05"),
     (1.5e-10, "1.5E-10"),
     (5e-324, "5E-324"),
+    (3.0000000000000004e-13, "3E-13"),  # at most 15 digits, as Excel: the rest only comes from binary
+    (-3.0000000000000004e-13, "-3E-13"),
+    (1.2345678901234567e-12, "1.23456789012346E-12"),
 ]
 ORDINARY = [  # shown as before: all their digits fit, or they are not tiny
     (0.00005, "0.00005"),
