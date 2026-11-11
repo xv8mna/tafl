@@ -1618,25 +1618,30 @@ def _as_described(df: pl.DataFrame, description) -> tuple[pl.DataFrame, list[str
     (datetime2(7), time(7), datetimeoffset(7)) gets a warning when its values have parts of a
     second: the driver reads them only to the microsecond, so a 7th digit, if any, is cut."""
     names = unique_names([str(d[0]) if d[0] else f"Column {i}" for i, d in enumerate(description, 1)])
-    changes, cut = [], {}  # the columns of 7 digits with parts of a second: an example of each
+    changes, seven = [], []  # the columns of 7 digits of a second
     for name, described in zip(names, description):
         if name not in df.columns:
             continue
-        column, type_code, scale = df[name].alias("value"), described[1], described[5]  # a fixed name, as in _round_half_away
-        if column.dtype == pl.Null and type_code is str:
-            changes.append(column.cast(pl.String).alias(name))
-        elif scale == 7 and (isinstance(column.dtype, pl.Datetime) or column.dtype == pl.Time):
-            fraction = (column.dt.nanosecond() != 0).fill_null(False)
-            if fraction.any():
-                cut[name] = pl.select(dtypes.text_expr(pl.lit(column.filter(fraction).head(1)), column.dtype)).item()
-    if not cut:
+        dtype, type_code, scale = df.schema[name], described[1], described[5]
+        if dtype == pl.Null and type_code is str:
+            changes.append(col(name).cast(pl.String))
+        elif scale == 7 and (isinstance(dtype, pl.Datetime) or dtype == pl.Time):
+            seven.append(name)
+    listed = []
+    if seven:  # which of them have parts of a second, in one pass
+        found = df.select((col(name).dt.nanosecond() != 0).any() for name in seven).row(0)
+        listed = [name for name, cut in zip(seven, found) if cut]
+    if not listed:
         return (df.with_columns(changes) if changes else df), []
-    listed, first = list(cut), next(iter(cut))
+    first = listed[0]  # an example only for the first: the warning shows one
+    column = df[first].alias("value")  # a fixed name, as in _round_half_away
+    with_parts = column.filter((column.dt.nanosecond() != 0).fill_null(False)).head(1)
+    shown_value = pl.select(dtypes.text_expr(pl.lit(with_parts), column.dtype)).item()
     if len(listed) > 5:
         shown = ", ".join(listed[:5]) + f" and {len(listed) - 5:,} more"
     else:
         shown = " and ".join([", ".join(listed[:-1]), listed[-1]]) if len(listed) > 1 else first
-    example = cut[first] if len(listed) == 1 else f"{first}: {cut[first]}"
+    example = shown_value if len(listed) == 1 else f"{first}: {shown_value}"
     warning = (
         f"{shown}: the column{'s hold' if len(listed) > 1 else ' holds'} 7 digits of a second, but SQL Server's driver reads "
         f"only 6 (to the microsecond), so a 7th digit, if any, is cut (e.g. in {example}). Export to database finds such rows by "
@@ -2107,6 +2112,16 @@ def _or_else(first: pl.Series, other: pl.Series) -> pl.Series:
     return first.zip_with(first.is_not_null(), other)
 
 
+def _then(read: pl.Series, texts: pl.Series, reader) -> pl.Series:
+    """``read``, and where it is empty but its text isn't, what ``reader`` reads from that text:
+    the reader gets only those texts (the others are empty for it), and runs only when there are
+    any. The rule of Change type reads most texts, and another form costs as much again."""
+    rest = read.is_null() & texts.is_not_null()
+    if not rest.any():
+        return read
+    return _or_else(read, reader(texts.zip_with(rest, texts.clear(texts.len()))))
+
+
 def _on_1900(times: pl.Series) -> pl.Series:
     """Times as date-times on 1 January 1900 (to the microsecond), the date that SQL Server gives a
     time alone in a datetime, smalldatetime or datetime2 column: CAST('08:30' AS datetime) is
@@ -2147,15 +2162,17 @@ def _read_date_texts(
         if base not in _DATE_KINDS:
             continue
         text = df[source].cast(pl.String).alias("value")  # a fixed name, as in _round_half_away
+        # The other forms only for the texts that the rule of Change type didn't read (_then)
         if base == "date":
-            read = _or_else(dtypes.parse_dates(text), _iso_datetimes(text).dt.date())
+            read = _then(dtypes.parse_dates(text), text, lambda rest: _iso_datetimes(rest).dt.date())
         elif base == "time":  # the time of a date and time in ISO 8601 too (of a date: 00:00)
-            read = _or_else(dtypes.parse_times(text), _iso_datetimes(text).dt.time())
+            read = _then(dtypes.parse_times(text), text, lambda rest: _iso_datetimes(rest).dt.time())
         elif base == "datetimeoffset":
             read = _offset_texts(text)
         else:  # datetime, smalldatetime, datetime2: a time alone is on 1 January 1900, as SQL Server converts it
-            read = _or_else(_or_else(dtypes.parse_datetimes(text), _iso_datetimes(text)), _on_1900(dtypes.parse_times(text)))
-        failed =(text.is_not_null() & read.is_null() & (text.str.strip_chars() != "")).fill_null(False)
+            read = _then(dtypes.parse_datetimes(text), text, _iso_datetimes)
+            read = _then(read, text, lambda rest: _on_1900(dtypes.parse_times(rest)))
+        failed = (text.is_not_null() & read.is_null() & (text.str.strip_chars() != "")).fill_null(False)
         if count := int(failed.sum()):
             held, no_such, forms = _DATE_TEXTS.get(base, _DATE_TEXTS[""])
             more = f"; {count:,} texts like it" if count > 1 else ""
@@ -2191,7 +2208,7 @@ def _offset_texts(texts: pl.Series) -> pl.Series:
     moment = pl.when(found.is_not_null()).then(text.str.replace(r"\s*" + _ZONE, "")).otherwise(text)
     frame = frame.with_columns(found.alias("zone"), moment.alias("moment"))
     moments = frame["moment"].alias("value")
-    frame = frame.with_columns(_or_else(dtypes.parse_datetimes(moments), _iso_datetimes(moments)).alias("read"))
+    frame = frame.with_columns(_then(dtypes.parse_datetimes(moments), moments, _iso_datetimes).alias("read"))
     hours = zone.str.slice(1, 2).cast(pl.Int32, strict=False)
     minutes = zone.str.replace(r"^[+-][0-9]{2}:?", "").cast(pl.Int32, strict=False).fill_null(0)
     offset = (

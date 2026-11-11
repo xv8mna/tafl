@@ -2557,3 +2557,31 @@ def test_a_database_left_unfinished_gets_the_same_message_in_both_forms(code, re
     error = sqlite3.OperationalError("attempt to write a readonly database")
     error.sqlite_errorname = code
     assert registry.connectors["sqlite"].error_message(error).startswith("This SQLite database was left unfinished")
+
+
+def test_sqlserver_reads_other_forms_only_for_the_texts_that_need_them(monkeypatch):
+    """The reader of ISO 8601 and of a time alone ran on every text of a date column, also on those
+    that the rule of Change type had read: three times the work for most data (1M x 20 with date
+    texts in half of the columns: 4.6 s, 0.6.4 0.34 s). It gets only the texts still unread."""
+    seen = []
+    iso = databases._iso_datetimes
+    monkeypatch.setattr(databases, "_iso_datetimes", lambda texts: seen.append(texts.drop_nulls().to_list()) or iso(texts))
+    df = pl.DataFrame({"A": ["01.10.2026 08:00", "2026-10-01T08:30", None], "B": ["01.10.2026", "2026-10-02", None]})
+    read, _ = databases._read_date_texts(df, {"A": "A", "B": "B"}, {"A": "datetime2(0)", "B": "date"}, "dbo.T", "sqlserver")
+    assert read["A"].to_list() == [dt.datetime(2026, 10, 1, 8), dt.datetime(2026, 10, 1, 8, 30), None]
+    assert read["B"].to_list() == [dt.date(2026, 10, 1), dt.date(2026, 10, 2), None]
+    assert seen == [["2026-10-01T08:30"]]  # B: the rule of Change type read all
+
+
+def test_sqlserver_import_makes_one_example_of_a_cut_7th_digit(monkeypatch):
+    """The warning about columns of 7 digits of a second shows one example, but the import made one
+    for every such column (100 x 4,000 datetime2: 2.8 s, 0.6.4 0.76 s)."""
+    made = []
+    text_expr = databases.dtypes.text_expr
+    monkeypatch.setattr(databases.dtypes, "text_expr", lambda *args, **kwargs: made.append(1) or text_expr(*args, **kwargs))
+    moment = dt.datetime(2026, 10, 1, 8, 0, 0, 5)
+    df = pl.DataFrame({"A": [moment], "B": [dt.datetime(2026, 10, 1, 8)], "C": [moment], "D": [moment]})
+    described = [(name, dt.datetime, None, 27, 27, 7, True) for name in df.columns]
+    warnings = databases._as_described(df, described)[1]
+    assert len(warnings) == 1 and warnings[0].startswith("A, C and D: the columns hold 7 digits") and "(e.g. in A: 2026-10-01 08:00:00.000005)" in warnings[0]
+    assert len(made) == 1
