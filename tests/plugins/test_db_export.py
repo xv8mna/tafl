@@ -2227,8 +2227,9 @@ def test_sqlserver_keys_of_seven_digits_of_a_second_find_their_rows(registry, ki
 @_SQLSERVER
 def test_sqlserver_a_key_of_microseconds_that_meets_two_rows_stops_an_update(registry):
     """Compared to the microsecond, a key can meet two rows that differ only in the 7th digit:
-    Update and Upsert would give both the values of one row of the data, so they stop; Delete
-    deletes both, as the data asks. A text with a 7th digit finds only its own value."""
+    Update and Upsert would give both the values of one row of the data, so they stop; so do
+    Delete and Replace by keys, which deleted both (0.6.4, comparing exactly, only the one with a
+    7th digit 0). A text with a 7th digit finds only its own value."""
     ctx, name = _sqlserver()
 
     def export(df, **params):
@@ -2243,9 +2244,9 @@ def test_sqlserver_a_key_of_microseconds_that_meets_two_rows_stops_an_update(reg
                 "('2026-10-01 08:00:02.0000001', '2026-10-01 08:00:02 +00:00', 0)"
             )
         data = pl.DataFrame({"K": [dt.datetime(2026, 10, 1, 8, 0, 2), dt.datetime(2026, 10, 1, 8, 0, 1, 123456)], "V": [1, 2]})
-        for mode in ("update", "upsert"):
+        for mode in ("update", "upsert", "delete", "replace_keys"):
             with pytest.raises(ActionError) as error:
-                export(data, mode=mode, key_columns=["K"])
+                export(data.select("K") if mode == "delete" else data, mode=mode, key_columns=["K"])
             assert str(error.value) == (
                 f"The key columns don't identify the rows of {name}: 1 key value finds rows that differ only in the 7th digit of a "
                 "second of K (e.g. K = 2026-10-01 08:00:01.123456). SQL Server's driver passes date-times only to the microsecond, "
@@ -2255,8 +2256,10 @@ def test_sqlserver_a_key_of_microseconds_that_meets_two_rows_stops_an_update(reg
         assert ctx.messages[-1] == ("info", f"{name}: updated 1 row")
         export(pl.DataFrame({"T": ["2026-10-01 08:00:01.1234568 +00:00"], "V": [3]}), mode="update", key_columns=["T"])
         assert ctx.messages[-1] == ("info", f"{name}: updated 1 row")  # its own 7th digit
-        export(data.tail(1), mode="delete", key_columns=["K"])
-        assert ctx.messages[-1] == ("info", f"{name}: deleted 2 rows")
+        export(data.head(1).select("K"), mode="delete", key_columns=["K"])
+        assert ctx.messages[-1] == ("info", f"{name}: deleted 1 row")
+        with ctx.database("server") as db:
+            assert db.read(f"SELECT COUNT(*) AS n FROM {name}")["n"][0] == 2  # the two of 08:00:01 stay
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

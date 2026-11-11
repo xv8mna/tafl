@@ -1832,6 +1832,8 @@ def export_database(df, p, ctx):
         elif p.mode in ("replace_keys", "delete"):
             staged = data.select(cols(c for c, n in names.items() if n in keys)).unique()
             stage = _stage(db, staged, names, keys, db.connector.stage_types(db.raw, p.table), ctx)
+            if db.connector.id == "sqlserver":  # a key that meets rows that differ only in the 7th digit would delete them all
+                _check_seventh_digits(db, table, stage, None, staged, names, p.key_columns, types, p.table)
             deleted = db.execute(db.connector.delete_sql(table, stage, keys, **by_type))
         elif p.mode in ("update", "upsert"):
             sqlserver = db.connector.id == "sqlserver"
