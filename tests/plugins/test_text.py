@@ -316,6 +316,12 @@ assert out.row(0)[:2] == ("0,5", "1,5") and out.row(1)[:2] == ("2", "2") and out
 assert set(out.schema.values()) == {pl.String}
 cleaned = registry.actions["text.clean"](df, {"columns": df.columns, "pad_length": 4}, StubContext())
 assert cleaned.row(0)[:2] == ("00.5", "01.5") and cleaned.row(1)[:2] == ("0002", "0002"), cleaned
+whole = pl.DataFrame({f"W {i}": [1, 1000, None] for i in range(4001)})  # 1.000 is one thousand, as in Filter rows
+params = {"columns": whole.columns, "match": "whole", "replacements": [{"find": "1.000", "replace": "7"}]}
+begin = time.perf_counter()
+out = registry.actions["text.replace"](whole, params, StubContext())
+assert time.perf_counter() - begin < 5, time.perf_counter() - begin  # 22 s when each column read the values again
+assert out.row(0) == (1,) * 4001 and out.row(1) == (7,) * 4001 and set(out.schema.values()) == {pl.Int64}, out
 print(f"{time.perf_counter() - start:.2f} s")
 """
 

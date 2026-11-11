@@ -53,7 +53,10 @@ def replace(df, p, ctx):
     schema = df.schema  # made once: for a wide table that takes a while
     typed = {}  # Whole cell value: the values of the pairs in the type of a column, None when one doesn't fit
     if p.match == "whole":
-        typed = {name: _typed_pairs(pairs, schema[name]) for name in p.columns if schema[name] != pl.String}
+        kinds = {}  # read once for each type of column: 4,000 number columns took 22 s
+        for name in p.columns:
+            if (dtype := schema[name]) != pl.String:
+                typed[name] = kinds[dtype] if dtype in kinds else kinds.setdefault(dtype, _typed_pairs(pairs, dtype))
     df = _with_texts(df, [name for name in p.columns if typed.get(name) is None], schema, "Replace")
     updates = []
     for name in p.columns:
