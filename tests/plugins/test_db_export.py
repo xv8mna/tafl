@@ -1737,3 +1737,41 @@ def test_sqlserver_writes_every_digit_of_38_digit_decimals(registry):
         with ctx.database("server") as db:
             for table in (name, copy):
                 db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")
+
+
+@_SQLSERVER
+@pytest.mark.parametrize(
+    ("columns", "values"),
+    [
+        ({"s": "xml"}, ["<a/>"]),
+        ({"x": "xml"}, ["<a/>"]),
+        ({"s": "geography"}, ["POINT (8.5 47.4)"]),
+        ({"x": "hierarchyid"}, ["/1/2/"]),
+        ({"tafl_target": "xml", "TAFL_STAGE": "xml"}, ["<a/>"]),  # named like the names in the statements
+    ],
+    ids=["s xml", "x xml", "s geography", "x hierarchyid", "named like the names in the statements"],
+)
+def test_sqlserver_keyed_modes_take_xml_and_clr_columns_of_any_name(registry, columns, values):
+    """The statements of the keyed modes named the table x and the stage s: an xml, geography or
+    hierarchyid column named s or x made that name ambiguous ("Ambiguous column name 's'"), since
+    s.[K] could also be the member K of such a column."""
+    ctx, name = _sqlserver()
+    definitions = ", ".join(f"[{column}] {kind}" for column, kind in columns.items())
+    data = pl.DataFrame({"K": [1, 2], **{column: values * 2 for column in columns}})
+    shown = ", ".join(f"CAST([{column}] AS nvarchar(100)) AS [{column}]" for column in columns)
+    try:
+        for mode, message in (("update", "updated 1 row"), ("upsert", "updated 1 row, added 1 row")):
+            with ctx.database("server") as db:
+                db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                db.execute(f"CREATE TABLE {name} (K int, {definitions})")
+                db.execute(f"INSERT INTO {name} (K) VALUES (1)")
+            registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": ["K"]}, ctx)
+            assert ctx.messages[-1] == ("info", f"{name}: {message}"), mode
+            with ctx.database("server") as db:
+                stored = db.read(f"SELECT K, {shown} FROM {name} ORDER BY K").rows()
+            assert stored == [(k, *values * len(columns)) for k in ([1] if mode == "update" else [1, 2])], mode
+        registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": "delete", "key_columns": ["K"]}, ctx)
+        assert ctx.messages[-1] == ("info", f"{name}: deleted 2 rows")
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

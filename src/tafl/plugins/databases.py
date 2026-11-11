@@ -10,6 +10,7 @@ import functools
 import re
 import sqlite3
 import struct
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import NamedTuple
@@ -438,12 +439,30 @@ class SqlServer(Connector):
         zoned = [c for c, t in df.schema.items() if isinstance(t, pl.Datetime) and t.time_zone]
         return df.with_columns(col(c).dt.replace_time_zone(None) for c in zoned)
 
+    def matching(self, keys, left=None, right=None):
+        """The table's and the stage's names in the statement are ``_aliases`` of the key columns
+        when none are given."""
+        if left is None or right is None:
+            left, right = (self.quote(alias) for alias in _aliases(keys))
+        return super().matching(keys, left, right)
+
     def update_sql(self, table, stage, columns, keys):
-        sets = ", ".join(f"x.{self.quote(c)} = s.{self.quote(c)}" for c in columns)
-        return f"UPDATE x SET {sets} FROM {table} AS x INNER JOIN {stage} AS s ON {self.matching(keys)}"
+        x, s = (self.quote(alias) for alias in _aliases([*columns, *keys]))
+        sets = ", ".join(f"{x}.{self.quote(c)} = {s}.{self.quote(c)}" for c in columns)
+        return f"UPDATE {x} SET {sets} FROM {table} AS {x} INNER JOIN {stage} AS {s} ON {self.matching(keys, x, s)}"
 
     def delete_sql(self, table, stage, keys):
-        return f"DELETE x FROM {table} AS x WHERE EXISTS (SELECT 1 FROM {stage} AS s WHERE {self.matching(keys)})"
+        x, s = (self.quote(alias) for alias in _aliases(keys))
+        return f"DELETE {x} FROM {table} AS {x} WHERE EXISTS (SELECT 1 FROM {stage} AS {s} WHERE {self.matching(keys, x, s)})"
+
+    def insert_missing_sql(self, table, stage, columns, keys):
+        x, s = (self.quote(alias) for alias in _aliases([*columns, *keys]))
+        names = ", ".join(self.quote(c) for c in columns)
+        picked = ", ".join(f"{s}.{self.quote(c)}" for c in columns)
+        return (
+            f"INSERT INTO {table} ({names}) SELECT {picked} FROM {stage} AS {s} "
+            f"WHERE NOT EXISTS (SELECT 1 FROM {table} AS {x} WHERE {self.matching(keys, x, s)})"
+        )
 
     def index_sql(self, stage, keys):
         # Only when SQL Server can index the keys: none of them (n)varchar(max), varbinary(max),
@@ -477,6 +496,28 @@ class SqlServer(Connector):
         finally:
             cursor.close()
         return total if counted else -1
+
+
+def _aliases(names) -> tuple[str, str]:
+    """The names of the table and of the stage (its #temporary table) in the statements of the
+    keyed modes: none of the column names there. An xml or CLR column (geography, hierarchyid)
+    named like one of them would make that name ambiguous ("Ambiguous column name 's'"): s.[K]
+    could also be the member K of such a column s. Names are compared as SQL Server may compare
+    them, without regard to case, accents or width."""
+    taken = {_folded(name) for name in names}
+    number = 1
+    while True:
+        suffix = str(number) if number > 1 else ""
+        aliases = (f"tafl_target{suffix}", f"tafl_stage{suffix}")
+        if not taken.intersection(aliases):
+            return aliases
+        number += 1
+
+
+def _folded(name: str) -> str:
+    """A name as a case-, accent- and width-insensitive collation compares it."""
+    decomposed = unicodedata.normalize("NFKD", name)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
 
 
 class _Column(NamedTuple):
