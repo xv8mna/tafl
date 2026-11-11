@@ -910,6 +910,9 @@ def _cut_seconds(
 
 _CUT_TO = {0: "whole seconds", 1: "1 digit of a second", 3: "milliseconds", 6: "whole microseconds"}
 _CUT_SHOWN = 3  # columns that the warning about cut digits of a second shows, each with an example
+# The digits of a second in a text that the rule of Change type reads: after seconds of one or two
+# digits (08:30:15.25, 8:5:3.25)
+_FRACTION = r":[0-9]{1,2}\.([0-9]+)"
 
 
 def _second_digits(sql_type: str, text: bool) -> tuple[int, int] | None:
@@ -937,7 +940,7 @@ def _seven_digit_texts(read: pl.Series, texts: pl.Series, base: str) -> pl.Serie
     (2026-10-01 08:30:15.1234567, 08:30:15.1234567: SQL Server reads year-month-day for datetime2
     whatever its date format; the driver refuses a T there), with the digits of a second of the
     text, up to 7."""
-    digits = texts.str.strip_chars().str.extract(r":[0-9]{2}\.([0-9]+)", 1).fill_null("").str.slice(0, 7).str.pad_end(7, "0")
+    digits = texts.str.strip_chars().str.extract(_FRACTION, 1).fill_null("").str.slice(0, 7).str.pad_end(7, "0")
     whole = read.dt.strftime("%H:%M:%S" if base == "time" else "%Y-%m-%d %H:%M:%S")
     return pl.select(pl.lit(whole) + "." + pl.lit(digits)).to_series().alias(read.name)
 
@@ -2107,7 +2110,7 @@ def _read_date_texts(
             read = _seven_digit_texts(read, text, base)
         changes.append(read.alias(source))
         if digits := _second_digits(kind, _sent_as_text(base, size)):
-            cut = text.str.contains(rf":[0-9]{{2}}\.[0-9]{{{digits[0]}}}[0-9]*[1-9]").fill_null(False)
+            cut = text.str.contains(rf":[0-9]{{1,2}}\.[0-9]{{{digits[0]}}}[0-9]*[1-9]").fill_null(False)  # as _FRACTION
             first = int(cut.arg_true()[0]) if (count := int(cut.sum())) else -1
             texts[source] = (count, text[first].strip() if count else "", first)
     return df.with_columns(changes), texts

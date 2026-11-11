@@ -1912,6 +1912,20 @@ def test_sqlserver_warns_of_digits_of_a_second_that_are_cut(values, kind, warnin
     assert databases._cut_seconds(df, types, texts, names, "dbo.T") == ([warning] if warning else [])
 
 
+def test_sqlserver_one_digit_seconds_keep_their_parts_of_a_second():
+    """The rule of Change type reads 8:5:3.25 as 08:05:03.250, but the parts of a second of a text
+    were looked for only after two digits of seconds: for a time(7) column the text became
+    08:05:03 without a word, and a time(0) column cut .25 without the warning."""
+    df = pl.DataFrame({"T7": ["8:5:3.25", "08:30:5.1234567"], "T0": ["8:5:3.25", "08:30:05"], "D7": ["8:5:3.25", "08:30"]})
+    types, names = {"T7": "time(7)", "T0": "time(0)", "D7": "datetime2(7)"}, {"T7": "T7", "T0": "T0", "D7": "D7"}
+    read, texts = databases._read_date_texts(df, names, types, "dbo.T", "sqlserver")
+    assert read["T7"].to_list() == ["08:05:03.2500000", "08:30:05.1234567"]
+    assert read["D7"].to_list() == ["1900-01-01 08:05:03.2500000", "1900-01-01 08:30:00.0000000"]
+    assert databases._cut_seconds(read, types, texts, names, "dbo.T") == [
+        "T0: 1 value was cut to whole seconds (e.g. '8:5:3.25' is 08:05:03): the column T0 of dbo.T holds no parts of a second (time(0))"
+    ]
+
+
 def test_sqlserver_warns_once_of_digits_of_a_second_cut_in_several_columns():
     """One warning for all columns, with how many values and an example for each of the first 3,
     then how many more columns: a wide export gave a warning for each column."""
