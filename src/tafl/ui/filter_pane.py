@@ -299,6 +299,7 @@ class FilterCard(QFrame):
                 for k in ("all", "possible", "excluded", "none")
             )
         )
+        self.links.setWordWrap(True)  # a narrow pane: two lines
         self.links.setToolTip(
             "Select values (of the ones shown, if you searched):\nAll · Possible with the other filters · "
             "Excluded (grey; inverts a selection) · None"
@@ -627,7 +628,8 @@ class FilterPane(QWidget):
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # The pane can be narrower than a card (a narrow window): then the cards scroll sideways
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setWidget(container)
         self.scroll = scroll
         self.container = container
@@ -639,7 +641,6 @@ class FilterPane(QWidget):
         self.setStyleSheet(
             f"QFrame#FilterCard {{ border: 1px solid {theme.BORDER_LIGHT}; border-radius: 6px; background: {theme.BASE}; }}"
         )
-        self.setMinimumWidth(220)
 
     def filters(self) -> list[Filter]:
         return [Filter.from_dict(f) for f in self.session.filters(self.table_id)] if self.table_id else []
@@ -711,7 +712,7 @@ class FilterPane(QWidget):
 
     def _show_too_many(self) -> None:
         across = self.scroll.horizontalScrollBar()
-        kept = across.value()  # there is no bar to scroll back: the cards must not move to the side
+        kept = across.value()  # only down: the cards must not move to the side
         self.scroll.ensureWidgetVisible(self.too_many)
         across.setValue(kept)
 

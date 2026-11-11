@@ -340,7 +340,7 @@ class GroupBar(QWidget):
 
     def _update_arrows(self) -> None:
         bar = self.strip.horizontalScrollBar()
-        overflow = bar.maximum() > 0
+        overflow = bar.maximum() > 0  # (never without groups: the hint ends with "…" then)
         for arrow, possible in ((self.back, bar.value() > 0), (self.more, bar.value() < bar.maximum())):
             arrow.setVisible(overflow)
             arrow.setEnabled(possible)
@@ -376,12 +376,14 @@ class GroupBar(QWidget):
             )
             row.addWidget(chip)
             self.chips[group.id] = chip
-        if not project.groups:
-            hint = QLabel("Groups keep big projects tidy: select tables, then Ctrl+G", inner)
+        if not project.groups:  # ends with "…" in a narrow window
+            hint = ElidedLabel(inner)
+            hint.setText("Groups keep big projects tidy: select tables, then Ctrl+G")
             hint.setObjectName("Dim")
-            row.addWidget(hint)
+            row.addWidget(hint, 1)
         row.addStretch(1)
         self.strip.setWidget(inner)
+        self._update_arrows()
         self._expanded = any(not g.collapsed for g in project.groups)
         self.collapse_all.setVisible(bool(project.groups))
         self.collapse_all.setText("Collapse all" if self._expanded else "Expand all")

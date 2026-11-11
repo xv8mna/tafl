@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 import polars as pl
-from PySide6.QtCore import QItemSelectionModel, QPoint, Qt, Signal
+from PySide6.QtCore import QItemSelectionModel, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -69,7 +69,8 @@ class DataPanel(QWidget):
             "Filter pane: see only the rows with the values you pick.\n"
             "It changes only what you see, and stays while you click through the steps."
         )
-        self.filter_button.toggled.connect(self.filter_pane.setVisible)
+        self.filter_button.toggled.connect(self._show_filter_pane)
+        self._before: int | None = None  # the window's width before the filter pane opened
 
         self.model = FrameModel(self)
         self.view = QTableView(self)
@@ -284,6 +285,31 @@ class DataPanel(QWidget):
             self.view.setColumnWidth(column, min(width, 320))
 
     # --- filtering from the grid -------------------------------------------------------------------
+
+    def _show_filter_pane(self, shown: bool) -> None:
+        """Show or hide the filter pane. A narrow window gets wider for it; when the pane closes,
+        the window gets its width back, if it is still as wide as the pane made it."""
+        window = self.window()
+        if shown:
+            self._before = window.width()
+            self.filter_pane.show()
+            return
+        before, self._before = self._before, None
+        widened = before is not None and window.minimumWidth() == window.width() > before
+        self.filter_pane.hide()
+        if widened and not window.isMaximized():
+            self._narrow_again(before)
+
+    def _narrow_again(self, width: int, tries: int = 50) -> None:
+        """The window's width before the filter pane widened it, as soon as its minimum width
+        allows that: Qt lowers it a few passes of the event loop after the pane closed."""
+        window = self.window()
+        if self.filter_pane.isVisible() or window.width() <= width:
+            return
+        if window.minimumWidth() > width and tries:
+            QTimer.singleShot(0, self, lambda: self._narrow_again(width, tries - 1))
+            return
+        window.resize(max(width, window.minimumWidth()), window.height())
 
     def filter_by(self, column: str, values: list[Any] | None = None) -> None:
         """A filter for ``column`` in the filter pane (with ``values`` applied)."""

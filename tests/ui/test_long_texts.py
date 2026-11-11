@@ -1,6 +1,10 @@
 """Long texts (a summary, a hint, a skip reason with a path) never make the window wider than
 it is, the window can be narrow, and texts in status colors are easy to read."""
 
+import json
+import os
+import subprocess
+import sys
 import types
 
 import pytest
@@ -274,6 +278,105 @@ def test_the_window_can_be_narrow(window, session, settle, demo, qtbot):
     hint = next(label for label in window.map_view.findChildren(QLabel) if label.text().startswith("Drag a table"))
     assert hint.minimumSizeHint().width() == 0
     assert window.map_view.search.minimumWidth() <= 150
+
+
+NARROW = r"""
+import json
+import os
+import sys
+import tempfile
+
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import QApplication
+
+from tafl.core import Project, Registry
+from tafl.ui import theme, trust
+from tafl.ui.main_window import MainWindow
+from tafl.ui.session import Session
+
+folder = sys.argv[1]
+QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, os.path.join(folder, "settings"))
+app = QApplication([])
+theme.apply(app)  # as in the app: the style, the colors and the boxes' borders decide the widths
+trust.is_known = lambda digest, path: True
+with open(os.path.join(folder, "d.csv"), "w", encoding="utf-8") as file:
+    file.write("A;B\n1;2\n")
+inbox = os.path.join(folder, "inbox_for_the_daily_reports_of_the_northern_warehouse")
+os.mkdir(inbox)
+project = Project(name="Narrow")
+tables = [project.add_table(name) for name in ("Data", "Skip", "Error")]
+project.add_step(tables[0], "csv.import", {"file": "d.csv"})
+project.add_step(tables[1], "csv.import", {"source": "folder", "folder": inbox, "pattern": "*.csv", "no_files": "skip"})
+project.add_step(tables[1], "rows.sort", {"by": [{"column": "File", "order": "asc"}]})
+project.add_step(tables[2], "csv.import", {"file": "d.csv"})
+project.add_step(tables[2], "rows.sort", {"by": [{"column": "C:/Users/someone/" + "very_long_name_" * 8, "order": "asc"}]})
+session = Session(Registry.default())
+window = MainWindow(session)
+window.resize(1500, 900)
+window.show()
+window.open_path(project.save(os.path.join(folder, "narrow.tafl")))
+widths = {}
+
+
+def settle(passes=40):
+    session.wait()
+    for _ in range(passes):
+        app.processEvents()
+
+
+def smallest(table, step):
+    session.select_table(table.id)
+    session.select_step(table.steps[step].id)
+    settle()
+    window.resize(1, 1)
+    settle()
+    return window.width()
+
+
+widths["data"] = smallest(tables[0], 0)
+widths["info"] = smallest(tables[1], 0), window.settings_panel.info.isVisible()
+widths["error"] = smallest(tables[2], 1), window.settings_panel.error.isVisible()
+smallest(tables[0], 0)
+panel = window.data_panel
+panel.filter_button.setChecked(True)
+settle()
+widths["pane"] = window.width()
+panel.filter_button.setChecked(False)
+settle()
+widths["closed"] = window.width()
+window.resize(900, 600)
+settle()
+panel.filter_button.setChecked(True)
+settle()
+panel.filter_button.setChecked(False)
+settle()
+widths["wide"] = window.width()
+session._set_dirty(False)
+window.close()
+print(json.dumps(widths))
+"""
+
+
+def test_boxes_and_the_filter_pane_dont_keep_a_narrow_window_wide(tmp_path):
+    """At the window's smallest width, up to 0.6.4 an info box made it 13 pixels wider, an error
+    box 27, and the filter pane 220; the window stayed that wide after the pane closed. In a
+    program of its own: the widths depend on the app's style, which the tests don't have."""
+    (tmp_path / "narrow.py").write_text(NARROW, encoding="utf-8")
+    environment = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "APPDATA": str(tmp_path), "LOCALAPPDATA": str(tmp_path)}
+    if sys.platform == "win32":
+        environment["QT_QPA_FONTDIR"] = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Fonts")
+    environment.pop("TAFL_PLUGINS", None)
+    ended = subprocess.run(
+        [sys.executable, str(tmp_path / "narrow.py"), str(tmp_path)],
+        capture_output=True, encoding="utf-8", errors="replace", env=environment, timeout=120,
+    )
+    assert ended.returncode == 0, ended.stderr
+    widths = json.loads(ended.stdout.strip().splitlines()[-1])
+    narrowest = widths["data"]
+    assert widths["info"] == [narrowest, True] and widths["error"] == [narrowest, True]
+    assert narrowest < widths["pane"] < narrowest + 110  # it needs some room: about 70 pixels, 145 at 220 pixels
+    assert widths["closed"] == narrowest and widths["wide"] == 900
 
 
 def test_a_small_first_window_leaves_most_room_to_the_data(window, demo):

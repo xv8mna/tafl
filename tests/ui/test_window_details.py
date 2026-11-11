@@ -113,6 +113,26 @@ def test_the_group_bar_shows_that_there_are_more_groups(window, settle, session,
     assert 0 <= chip.mapTo(strip, chip.rect().topRight()).x() <= strip.width()
 
 
+def test_the_group_bar_shows_arrows_only_for_groups(window, settle, session, demo):
+    """Up to 0.6.4 a narrow map showed ◀ ▶ around a cut hint when the project had no groups."""
+    window.show()
+    window.open_path(demo)
+    window.show_map(True)
+    settle(session)
+    bar = window.map_view.group_bar
+    assert not session.project.groups
+    for width in (500, 600, 700, 800):
+        window.resize(width, 600)
+        QApplication.processEvents()
+        assert not bar.back.isVisible() and not bar.more.isVisible(), width
+        assert bar.strip.horizontalScrollBar().maximum() == 0, width  # the hint ends with "…" instead
+    for number in range(1, 12):
+        session.add_group(f"A group with a long name {number}")
+    window.map_view.rebuild()
+    QApplication.processEvents()
+    assert bar.more.isVisible() and bar.back.isVisible()  # now they are needed
+
+
 def test_a_long_connection_error_can_be_read_and_copied(session, qtbot):
     session.project.connections = [Connection("shop", "sqlite", {"file": "shop.db"})]
     dialog = ConnectionsDialog(session)
