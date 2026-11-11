@@ -179,7 +179,7 @@ def _made_text(name: str, dtype: pl.DataType, pairs) -> str | None:
         return f"'{name}' was converted to text: Replace keeps the type only of numbers, dates, date-times and true/false values"
     for text in (text for pair in pairs for text in pair if text.strip()):
         if _typed_pairs([(text, "")], dtype) is None:
-            if isinstance(dtype, pl.Decimal) and dtypes.parse_decimal(text.strip(), "," if "," in text else ".") is not None:
+            if isinstance(dtype, pl.Decimal) and dtypes.parse_decimal(text.strip(), dtypes.decimal_separator(text)) is not None:
                 return f"'{name}' was converted to text because '{text}' has more digits than the column's exact decimals hold"
             return f"'{name}' was converted to text because '{text}' isn't {_A_VALUE[label]}"
     return f"'{name}' was converted to text"
@@ -221,12 +221,12 @@ def _typed_pairs(pairs, dtype: pl.DataType):
                 converted.append(None)
                 continue
             series = pl.Series([text.strip()])
+            decimal = dtypes.decimal_separator(text)  # as in Filter rows and Fill: 1.000 is 1000, 1.5 one and a half
             if isinstance(dtype, pl.Decimal):  # exact decimals: all digits count
-                value = dtypes.parse_decimal(text.strip(), "," if "," in text else ".")
+                value = dtypes.parse_decimal(text.strip(), decimal)
                 if value is not None and not _fits(value, dtype):
                     value = None
             elif dtype.is_numeric():
-                decimal = "," if "," in text else "."
                 value = dtypes.parse_numbers(series, decimal)[0]
                 if value is not None and dtype.is_integer():  # all digits, also beyond 15
                     value = dtypes.parse_integers(series, decimal)[0] if value.is_integer() else None

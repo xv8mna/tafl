@@ -185,6 +185,29 @@ def test_replace_typed_values(act):
     assert out["n"].to_list() == [1, 1234567890123456768]
 
 
+def test_a_typed_number_is_read_as_in_filter_rows_and_fill(act):
+    """Replace read 1.000 as 1, with the point as the decimal separator, while Filter rows and Fill
+    read it as 1000; and 1,000.50 was no number, so the column became text. Now Replace reads typed
+    numbers as they do: with both separators the last one is the decimal one; a point alone splits
+    thousands when groups of three digits follow it (1.000), else it is the decimal point (1.5)."""
+    df = pl.DataFrame(
+        {
+            "N": [1, 1000, None],
+            "F": [1.0, 1000.5, 1.5],
+            "E": pl.Series([Decimal("1"), Decimal("1000"), None], dtype=pl.Decimal(10, 2)),
+        }
+    )
+    assert replace(act, df, ["N"], [("1.000", "7")])["N"].to_list() == [1, 7, None]
+    assert replace(act, df, ["E"], [("1.000", "7")])["E"].to_list() == [Decimal("1"), Decimal("7"), None]
+    ctx = StubContext()
+    assert replace(act, df, ["F"], [("1,000.50", "2"), ("1.5", "3")], ctx)["F"].to_list() == [1.0, 2.0, 3.0]
+    assert replace(act, df, ["F"], [("1.0000", "9")], ctx)["F"].to_list() == [9.0, 1000.5, 1.5]
+    assert ctx.warnings == []
+    kept = act("rows.filter", df, {"conditions": [{"column": "N", "operator": "=", "value": "1.000"}]})
+    filled = act("rows.fill", df, {"columns": ["N"], "method": "value", "value": "1.000"})
+    assert kept["N"].to_list() == [1000] and filled["N"].to_list() == [1, 1000, 1000]
+
+
 def test_replace_exact_decimals(act):
     ids = [Decimal("12345678901234567890.1234"), Decimal("12345678901234567890.1235"), Decimal("1.1000")]
     df = pl.DataFrame({"n": pl.Series(ids, dtype=pl.Decimal(30, 4))})

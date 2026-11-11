@@ -336,7 +336,7 @@ def _condition(
     else:
         value = _typed(c.value, dtype, c.column, typed)
         if dtype.is_integer() and not _holds(dtype, value):  # no whole number the column holds: with all its digits
-            exact = dtypes.parse_decimal(c.value.strip(), _decimal_of(c.value.strip()))
+            exact = dtypes.parse_decimal(c.value.strip(), dtypes.decimal_separator(c.value.strip()))
             if exact is not None:
                 compared = _whole_comparison(column, op, exact, dtype)
                 return compared.fill_null(True) if op == "!=" else compared
@@ -565,7 +565,7 @@ def _rounded_typed(text: str, value: Any, dtype: pl.DataType) -> int | str | Non
     typed = text.strip()
     if not dtype.is_integer() or not isinstance(value, float) or not abs(value) < float("inf"):
         return None
-    exact = dtypes.parse_decimal(typed, _decimal_of(typed))
+    exact = dtypes.parse_decimal(typed, dtypes.decimal_separator(typed))
     if exact is None or exact in (Decimal(value), Decimal(repr(value))):
         return None
     return int(value) if value.is_integer() else pl.select(dtypes.text_expr(pl.lit(value), pl.Float64)).item()
@@ -594,11 +594,11 @@ def _literal(text: str, dtype: pl.DataType, column: str) -> Any:
     if dtype == pl.String:
         return text
     if dtype.is_numeric():
-        number = dtypes.parse_numbers(pl.Series([value]), _decimal_of(value))[0]
+        number = dtypes.parse_numbers(pl.Series([value]), dtypes.decimal_separator(value))[0]
         if number is None:
             raise ActionError(f"'{text}' is not a number (column '{column}')")
         if isinstance(dtype, pl.Decimal):  # exact decimals: all digits
-            exact = dtypes.parse_decimal(value, _decimal_of(value))
+            exact = dtypes.parse_decimal(value, dtypes.decimal_separator(value))
             return number if exact is None else exact
         if dtype.is_integer() and number.is_integer():  # all digits, also beyond 15
             whole = _whole(value, dtype)
@@ -813,7 +813,7 @@ def _formula_text(text: str) -> str:
 def _whole(value: str, dtype: pl.DataType) -> int | None:
     """A typed whole number with all its digits. None when it has decimal places, or when neither
     an Int64 nor the column can hold it: it is then beyond all values of the column."""
-    number = dtypes.parse_decimal(value, _decimal_of(value))
+    number = dtypes.parse_decimal(value, dtypes.decimal_separator(value))
     if number is None or number != number.to_integral_value():
         return None
     if -(2**63) <= number < 2**63:
@@ -846,16 +846,4 @@ def _reads_as(text: str) -> str | None:
         return "time"
     if not re.search("[0-9]", value):
         return None
-    return "number" if dtypes.parse_numbers(pl.Series([value]), _decimal_of(value))[0] is not None else None
-
-
-def _decimal_of(value: str) -> str:
-    """Which separator is the decimal one in a number someone typed: the last of , and ."""
-    comma, point = value.rfind(","), value.rfind(".")
-    if comma >= 0 and point >= 0:
-        return "," if comma > point else "."
-    if comma >= 0:
-        return ","
-    if point >= 0 and re.fullmatch(r"[+-]?[0-9]{1,3}(\.[0-9]{3})+", value):
-        return ","  # 1.234 / 1.234.567 = thousands
-    return "."
+    return "number" if dtypes.parse_numbers(pl.Series([value]), dtypes.decimal_separator(value))[0] is not None else None

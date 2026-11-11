@@ -466,6 +466,24 @@ def _in_parts(s: pl.Series, check: Callable[[pl.Series], pl.Series]) -> pl.Serie
     return pl.concat([check(s.slice(start, _PART_VALUES)) for start in range(0, s.len(), _PART_VALUES)])
 
 
+def decimal_separator(text: str) -> str:
+    """Which separator is the decimal one in a number that someone typed into a setting, such as a
+    value of Filter rows, Fill empty values or Replace: with both, the last of , and . (1.234,5 and
+    1,234.5); a comma alone (1,5 and 1,000 are one and a half and one); a point alone unless it
+    splits the number into thousands, groups of three digits after one to three digits (1.5 and
+    1.0000 are decimals, 1.000 and 1.234.567 thousands). The result goes to ``parse_numbers``,
+    ``parse_decimal`` and ``parse_integers``."""
+    value = text.strip()
+    comma, point = value.rfind(","), value.rfind(".")
+    if comma >= 0 and point >= 0:
+        return "," if comma > point else "."
+    if comma >= 0:
+        return ","
+    if point >= 0 and re.fullmatch(r"[+-]?[0-9]{1,3}(\.[0-9]{3})+", value):
+        return ","
+    return "."
+
+
 # --- one type for the values of several columns ----------------------------------------------
 
 _UNITS = ("ns", "us", "ms")  # of date-times and durations, the finest first

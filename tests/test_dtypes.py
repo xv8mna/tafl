@@ -385,6 +385,20 @@ def test_float_loses_digits_as_python_says_for_random_numbers(scale):
     assert len(small) > 64 and not dtypes.float_loses_digits(pl.Series(small, dtype=pl.Decimal(38, scale))).any()
 
 
+@pytest.mark.parametrize(
+    ("text", "number"),
+    [
+        ("1.000", 1000), ("1.234.567", 1234567), ("-1.000", -1000), (" 1.000 ", 1000), ("1.5", 1.5), ("1.0000", 1.0),
+        ("12.34", 12.34), ("0.500", 0.5), ("1,5", 1.5), ("1,000", 1.0), ("1.234,5", 1234.5), ("1,234.5", 1234.5),
+        ("1,234,567.5", 1234567.5), ("7", 7),
+    ],
+)  # fmt: skip
+def test_the_decimal_separator_of_a_typed_number(text, number):
+    """One rule for numbers typed into a setting (Filter rows, Fill empty values, Replace)."""
+    assert dtypes.parse_numbers(pl.Series([text]), dtypes.decimal_separator(text))[0] == number
+    assert dtypes.parse_decimal(text, dtypes.decimal_separator(text)) == Decimal(str(number))
+
+
 def test_rounded_to_whole_of_exact_decimals_near_their_38_digits():
     """Polars rounds an exact decimal in its own type: -9999999999999999999999999999.9999999999 of
     a decimal(38, 10) would need 39 digits, and stopped with "overflow in decimal rounding"."""
