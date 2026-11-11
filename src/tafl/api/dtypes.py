@@ -739,6 +739,14 @@ def _with_nanoseconds(
     return parsed
 
 
+def plain_numbers(s: pl.Series, decimal: str = ",") -> pl.Series:
+    """Numbers typed as text (1.234,50 €, 123,45-) as ``parse_numbers`` reads them, still as text:
+    without spaces, currency signs at the ends and thousands separators, with a minus first and a
+    point as the decimal separator (-1234.50). The digits stay as they are: for an exact decimal
+    (Decimal), or to count them. A text that is no number comes out changed in the same way."""
+    return _apply(s, _number_text(_VALUE, decimal))
+
+
 def whole_numbers_to_int(df: pl.DataFrame) -> pl.DataFrame:
     """Float columns holding only whole numbers become Int64 (Excel stores all numbers as floats)."""
     updates = []

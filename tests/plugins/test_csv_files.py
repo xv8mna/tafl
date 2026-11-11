@@ -318,6 +318,8 @@ def test_a_file_with_one_column(act, tmp_path):
 
 
 def test_long_numbers_with_thousands_separators_keep_all_digits(act, tmp_path):
+    """Whole numbers up to 19 digits are integers, amounts of more than 15 digits exact decimals
+    (they stayed text, with a warning). Longer whole numbers stay text, with a warning."""
     (tmp_path / "l.csv").write_text(
         "Id;Code;Mehr;Betrag\n"
         "1.234.567.890.123.456.789;0815;98.765.432.109.876.543.210;12.345.678.901.234.567,89 €\n"
@@ -327,10 +329,49 @@ def test_long_numbers_with_thousands_separators_keep_all_digits(act, tmp_path):
     ctx = StubContext()
     df = act("csv.import", None, {"file": str(tmp_path / "l.csv")}, ctx)
     assert df["Id"].to_list() == [1234567890123456789, 9007199254740993] and df.schema["Id"] == pl.Int64
-    assert df.schema["Code"] == pl.String and df.schema["Mehr"] == pl.String and df.schema["Betrag"] == pl.String
+    assert df.schema["Code"] == pl.String and df.schema["Mehr"] == pl.String
+    assert df.schema["Betrag"] == pl.Decimal(38, 2)
+    assert df["Betrag"].to_list() == [Decimal("12345678901234567.89"), Decimal("5.00")]
+    assert ctx.warnings == ["Mehr stays text: its numbers are too long to be kept exactly, e.g. '98.765.432.109.876.543.210'"]
+
+
+def test_decimals_of_more_than_15_digits_keep_them(act, tmp_path):
+    """12345678901234,5678 and 12345678901234,5677 both became 12345678901234.568 without a message,
+    and an export wrote 12345678901234,6 twice. A column with a number of more than 15 significant
+    digits becomes exact decimals, with the decimal places that its values show; a column without
+    one stays decimal numbers."""
+    (tmp_path / "d.csv").write_text(
+        "Amt;Small;Mixed;Whole;Amount;Share;Ordinary;Zeros\n"
+        "12345678901234,5678;0,12345678901234567;12345678901234,5678;9007199254740993;12.345.678.901.234.567,89 €;"
+        "12,345678901234567%;1234,5678;1,50000000000000000000\n"
+        "12345678901234,5677;0,12345678901234568;1,5;1,5;5 €;5%;0,3;2,5\n",
+        encoding="utf-8",
+    )
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "d.csv")}, ctx)
+    assert df.schema == {
+        "Amt": pl.Decimal(38, 4), "Small": pl.Decimal(38, 17), "Mixed": pl.Decimal(38, 4), "Whole": pl.Decimal(38, 1),
+        "Amount": pl.Decimal(38, 2), "Share": pl.Decimal(38, 17), "Ordinary": pl.Float64, "Zeros": pl.Float64,
+    }  # fmt: skip
+    rows = [[str(value) for value in row] for row in df.drop("Ordinary", "Zeros").rows()]
+    assert rows == [
+        ["12345678901234.5678", "0.12345678901234567", "12345678901234.5678", "9007199254740993.0", "12345678901234567.89",
+         "0.12345678901234567"],
+        ["12345678901234.5677", "0.12345678901234568", "1.5000", "1.5", "5.00", "0.05000000000000000"],
+    ]  # fmt: skip
+    assert df["Ordinary"].to_list() == [1234.5678, 0.3] and df["Zeros"].to_list() == [1.5, 2.5]
+    assert not ctx.warnings
+    act("csv.export", df.select("Amt"), {"file": str(tmp_path / "out.csv")})
+    assert (tmp_path / "out.csv").read_text(encoding="utf-8-sig").splitlines() == ["Amt", "12345678901234,5678", "12345678901234,5677"]
+    # beyond the 38 digits of an exact decimal (also a tiny number, beyond decimal numbers): text, with a warning
+    tiny = "0," + "0" * 400 + "1"
+    (tmp_path / "t.csv").write_text(f"Long;Tiny\n12345678901234567890,1234567890123456789;{tiny}\n1,5;1,5\n", encoding="utf-8")
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "t.csv")}, ctx)
+    assert df.rows() == [("12345678901234567890,1234567890123456789", tiny), ("1,5", "1,5")]
     assert ctx.warnings == [
-        "Mehr stays text: its numbers are too long to be kept exactly, e.g. '98.765.432.109.876.543.210'",
-        "Betrag stays text: its numbers are too long to be kept exactly, e.g. '12.345.678.901.234.567,89 €'",
+        "Long stays text: its numbers are too long to be kept exactly, e.g. '12345678901234567890,1234567890123456789'",
+        f"Tiny stays text: its numbers are too long to be kept exactly, e.g. '{tiny}'",
     ]
 
 

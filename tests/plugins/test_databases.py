@@ -652,6 +652,9 @@ def test_point_and_comma_can_be_chosen(project, registry, tmp_path):
     }  # fmt: skip
 
 
+_D = decimal.Decimal
+
+
 def _text_table(path: Path, table: str, columns: dict[str, list[str]]) -> None:
     """A SQLite table of text columns, for Detect numbers and dates."""
     with closing(sqlite3.connect(path)) as con, con:
@@ -684,6 +687,28 @@ def test_detect_automatically_reads_more_numbers_as_the_csv_import(project, regi
     old = import_table(project, registry, table="t", detect_types=True).df
     assert old.to_dict(as_series=False) == {name: [0.5, 1.5] if name == "codes" else texts for name, (texts, _) in _GAPS.items()}
     assert import_table(project, registry, table="late", detect_types=True).df.schema["amount"] == pl.String
+
+
+_LONG_DECIMALS = {"comma": ["12345678901234,5678", "12345678901234,5677"], "point": ["12345678901234.5678", "1.5"]}
+
+
+def test_detect_automatically_keeps_the_digits_of_long_decimals(project, registry, tmp_path):
+    """As the CSV import: a column with a decimal of more than 15 significant digits becomes exact
+    decimals. 12345678901234,5678 and 12345678901234,5677 both became 12345678901234.568."""
+    _text_table(tmp_path / "data.db", "t", _LONG_DECIMALS)
+    df = import_new(project, registry, table="t", detect_types=True).df
+    assert df.schema == {"comma": pl.Decimal(38, 4), "point": pl.Decimal(38, 4)}
+    amounts = [_D("12345678901234.5678"), _D("12345678901234.5677")]
+    assert df.to_dict(as_series=False) == {"comma": amounts, "point": [amounts[0], _D("1.5")]}
+
+
+def test_a_step_saved_before_0_6_4_reads_long_numbers_as_before(project, registry, tmp_path):
+    """A step of version 1 (Point) reads long numbers as 0.6.4 did: ``dtypes.infer_types`` decides
+    there, not the rules of Detect automatically. A decimal of 18 digits becomes a decimal number;
+    with a decimal comma it stays text."""
+    _text_table(tmp_path / "data.db", "t", _LONG_DECIMALS)
+    df = import_table(project, registry, table="t", detect_types=True).df
+    assert df.to_dict(as_series=False) == {"comma": _LONG_DECIMALS["comma"], "point": [12345678901234.568, 1.5]}
 
 
 def test_tafl_run_of_an_old_project_is_unchanged(registry, tmp_path, capsys):
