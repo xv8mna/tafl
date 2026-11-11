@@ -1106,10 +1106,14 @@ def _tiny_float(value: float, single: bool) -> str | None:
     else None. As in the grid, a digit that only comes from computing in binary is none: a 64-bit
     number counts with 15 digits (0.00003 can be 2.9999999999999997e-05, and stays 0.00003)."""
     mantissa, _, exponent = _shortest_float(value, single).partition("e")  # with an exponent: 1.25e-05
+    if not exponent:  # 0.0001 itself (the 32-bit 0.0001 is 9.999999747378752e-05): 10 decimal places write it
+        return None
     digits, power = mantissa.lstrip("-").replace(".", ""), int(exponent)
     counted = len(digits), power
     if not single and len(digits) > 15:
         shown, _, shown_power = f"{abs(value):.15g}".partition("e")
+        if not shown_power:  # with 15 digits it is 0.0001 (0.0003 / 3 is 9.999999999999999e-05)
+            return None
         counted = len(shown.replace(".", "")), int(shown_power)
     if counted[0] - 1 - counted[1] <= 10:  # the decimal places that its digits need
         return None

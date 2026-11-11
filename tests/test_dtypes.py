@@ -252,6 +252,16 @@ def test_format_numbers_without_a_format_writes_tiny_numbers_with_all_their_digi
     assert dtypes.format_numbers(single, "", ",").to_list() == ["0,000000000001", "0,00000000004", "0,00003"]
 
 
+def test_format_numbers_without_a_format_of_numbers_just_below_0_0001():
+    """Their shortest form, or their 15 digits, is 0.0001, with no exponent: the step stopped with
+    "invalid literal for int()" (0.0003 / 3 is 9.999999999999999e-05; the 32-bit 0.0001 is
+    9.999999747378752e-05). They are written 0,0001, as in 0.6.4."""
+    doubles = pl.Series([0.0003 / 3, -(0.0003 / 3), 0.0001 - 1e-20, 0.0001])
+    assert dtypes.format_numbers(doubles, "", ",").to_list() == ["0,0001", "-0,0001", "0,0001", "0,0001"]
+    singles = pl.Series([0.0001, -0.0001], dtype=pl.Float32)
+    assert dtypes.format_numbers(singles, "", ",").to_list() == ["0,0001", "-0,0001"]
+
+
 def test_decimals_to_text_keep_their_digits():
     values = [Decimal("0.123456789012345678"), Decimal("-1.100000000000000000"), Decimal("0")]
     s = pl.Series(values, dtype=pl.Decimal(38, 18))
