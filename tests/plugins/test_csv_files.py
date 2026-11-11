@@ -404,7 +404,7 @@ def test_decimals_of_more_than_15_digits_keep_them(act, tmp_path):
     assert df.rows() == [("12345678901234567890,1234567890123456789", tiny), ("1,5", "1,5")]
     assert ctx.warnings == [
         "Long stays text: its numbers are too long to be kept exactly, e.g. '12345678901234567890,1234567890123456789'",
-        f"Tiny stays text: its numbers are too long to be kept exactly, e.g. '{tiny}'",
+        f"Tiny stays text: its numbers are too long to be kept exactly, e.g. '{tiny[:39]}…'",  # not all 403 characters
     ]
 
 

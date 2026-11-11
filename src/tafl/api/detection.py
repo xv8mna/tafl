@@ -421,7 +421,8 @@ def _hundredths(plain: pl.Expr) -> pl.Expr:
 
 
 def _too_long(name: str, example: str) -> str:
-    return f"{name} stays text: its numbers are too long to be kept exactly, e.g. '{example}'"
+    shown = example if len(example) <= 40 else example[:39] + "…"  # a number can have thousands of digits
+    return f"{name} stays text: its numbers are too long to be kept exactly, e.g. '{shown}'"
 
 
 def _plain(text: pl.Series, decimal: str) -> pl.Series:
