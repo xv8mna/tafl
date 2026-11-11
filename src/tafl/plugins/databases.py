@@ -2091,7 +2091,8 @@ _DATE_TEXTS = {
 }  # fmt: skip
 # ISO 8601 beside the rule of Change type: a date (2026-10-01, also 20261001 after a replace), with a
 # time after T or a space (08:30, 08:30:15, 08:30:15.1234567), and maybe an offset (Z, +02:00)
-_ISO = r"^([0-9]{4}-[0-9]{2}-[0-9]{2})(?:[T ]([0-9]{2}:[0-9]{2})(:[0-9]{2}(?:\.[0-9]{1,9})?)?)?\s*(?:Z|[+-][0-9]{2}(?::?[0-9]{2})?)?$"
+_ISO = r"^([0-9]{4}-[0-9]{2}-[0-9]{2})(?:[T ]([0-9]{2}:[0-9]{2})(:[0-9]{2}(?:\.[0-9]{1,9})?)?)?\s*(Z|[+-][0-9]{2}(?::?[0-9]{2})?)?$"
+_MOST_OFFSET = 14 * 60  # minutes: SQL Server holds offsets from -14:00 to +14:00
 
 
 def _iso_datetimes(texts: pl.Series) -> pl.Series:
@@ -2100,10 +2101,15 @@ def _iso_datetimes(texts: pl.Series) -> pl.Series:
     without seconds, up to 9 digits of a second); an offset after it (Z, +02:00) is left out, so
     the date-time is the local time that the text names. The export reads them beside the rule
     of Change type, which doesn't read all of them (2026-10-01T08:30, 20261001): CSV detection
-    must not take 20261001 for a date. Empty for other texts, also for a time without a date."""
+    must not take 20261001 for a date. Empty for other texts, also for a time without a date, and
+    for an offset that SQL Server doesn't hold (beyond ±14:00, or 60 minutes or more)."""
     text = texts.str.strip_chars().str.replace(r"^([0-9]{4})([0-9]{2})([0-9]{2})([T ].*)?$", "${1}-${2}-${3}${4}")
-    parts = text.str.extract_groups(_ISO).struct.unnest()  # the columns "1", "2" and "3"
-    joined = parts.select(pl.col("1") + " " + pl.col("2").fill_null("00:00") + pl.col("3").fill_null(":00")).to_series()
+    parts = text.str.extract_groups(_ISO).struct.unnest()  # the columns "1" to "4"
+    zone = pl.col("4")
+    hours = zone.str.slice(1, 2).cast(pl.Int32, strict=False)
+    minutes = zone.str.replace(r"^[+-][0-9]{2}:?", "").cast(pl.Int32, strict=False).fill_null(0)
+    held = zone.is_null() | (zone == "Z") | ((minutes < 60) & (hours * 60 + minutes <= _MOST_OFFSET))
+    joined = parts.select(pl.when(held).then(pl.col("1") + " " + pl.col("2").fill_null("00:00") + pl.col("3").fill_null(":00"))).to_series()
     return joined.str.to_datetime("%Y-%m-%d %H:%M:%S%.f", strict=False, time_unit="us").alias(texts.name)
 
 
@@ -2136,7 +2142,9 @@ def _read_date_texts(
     / format without a format (31.12.2025, 2025-12-31, with or without a time; 08:30:15.250 for a
     time; a datetimeoffset column also takes an offset after the time, +01:00 or Z), and as ISO
     8601 (``_iso_datetimes``: 2026-10-01T08:30, 20261001; an offset in it is left out for a column
-    without one; a time column takes the time of a date and time). A time alone (08:30,
+    without one, and one beyond ±14:00 is no offset). A time column takes the time of a date and
+    time in both forms (01.10.2026 08:30 and 2026-10-01T08:30), as 0.6.4's Update and Upsert did
+    (one rule for both: the date can't change the time). A time alone (08:30,
     08:30:15.5) for a datetime, smalldatetime or datetime2 column is on 1 January 1900, as SQL
     Server converts it (``_on_1900``: old tables keep times so, and Update and Upsert wrote them so
     before). Forms whose meaning depends on the language or the date format (12/31/2025, 08:30 PM)
@@ -2165,8 +2173,9 @@ def _read_date_texts(
         # The other forms only for the texts that the rule of Change type didn't read (_then)
         if base == "date":
             read = _then(dtypes.parse_dates(text), text, lambda rest: _iso_datetimes(rest).dt.date())
-        elif base == "time":  # the time of a date and time in ISO 8601 too (of a date: 00:00)
-            read = _then(dtypes.parse_times(text), text, lambda rest: _iso_datetimes(rest).dt.time())
+        elif base == "time":  # the time of a date and time too, as Change type or ISO 8601 writes it (of a date: 00:00)
+            read = _then(dtypes.parse_times(text), text, lambda rest: dtypes.parse_datetimes(rest).dt.time())
+            read = _then(read, text, lambda rest: _iso_datetimes(rest).dt.time())
         elif base == "datetimeoffset":
             read = _offset_texts(text)
         else:  # datetime, smalldatetime, datetime2: a time alone is on 1 January 1900, as SQL Server converts it

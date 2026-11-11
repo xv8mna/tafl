@@ -2585,3 +2585,26 @@ def test_sqlserver_import_makes_one_example_of_a_cut_7th_digit(monkeypatch):
     warnings = databases._as_described(df, described)[1]
     assert len(warnings) == 1 and warnings[0].startswith("A, C and D: the columns hold 7 digits") and "(e.g. in A: 2026-10-01 08:00:00.000005)" in warnings[0]
     assert len(made) == 1
+
+
+def test_sqlserver_date_texts_have_one_rule_for_offsets_and_for_time_columns():
+    """An offset beyond what SQL Server holds (2026-10-01 08:00:00 +14:30) gave the local time 08:00
+    in a column without an offset; SQL Server, 0.6.4 and a datetimeoffset column refuse it. A time
+    column took the time of 2026-10-01T08:30 but refused 01.10.2026 08:00, which 0.6.4's Update and
+    Upsert stored as 08:00: it takes the time of both (of a date alone: 00:00)."""
+
+    def read(kind, texts):
+        return databases._read_date_texts(pl.DataFrame({"V": texts}), {"V": "V"}, {"V": kind}, "dbo.T", "sqlserver")[0]["V"].to_list()
+
+    held = ["2026-10-01 08:00:00 +14:00", "2026-10-01T08:00-14:00", "2026-10-01T08:00+0530", "2026-10-01T08:00Z"]
+    assert read("datetime2(0)", held) == [dt.datetime(2026, 10, 1, 8)] * 4
+    for text in ("2026-10-01 08:00:00 +14:30", "2026-10-01T08:00+15:00", "2026-10-01T08:00+05:60"):
+        for kind in ("datetime2(0)", "date", "time(0)"):
+            with pytest.raises(ActionError) as error:
+                read(kind, [text])
+            assert f"has texts that are no {'time' if kind.startswith('time') else 'date'}" in str(error.value)
+            assert f"(e.g. “{text}”)" in str(error.value), kind
+    texts = ["01.10.2026 08:00", "31.12.2025 08:30:15", "2025-12-31 08:30:15.5", "01.10.2026", "2026-10-01T08:30", "08:45"]
+    expected = [dt.time(8), dt.time(8, 30, 15), dt.time(8, 30, 15, 500000), dt.time(0), dt.time(8, 30), dt.time(8, 45)]
+    assert read("time(3)", texts) == expected
+    assert read("time(7)", texts[:3]) == ["08:00:00.0000000", "08:30:15.0000000", "08:30:15.5000000"]
