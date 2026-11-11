@@ -1493,8 +1493,8 @@ def test_sqlserver_keys_must_be_unique_as_the_column_holds_them(registry):
 @_SQLSERVER
 def test_sqlserver_datetimeoffset_columns_get_the_zones_offset(registry):
     """A date-time with a time zone keeps its zone's offset, one without a zone gets the offset of
-    this PC's time zone on its day (from the driver), in every mode; imported values (texts such
-    as 2026-10-01T08:30:00+02:00) go back as they were."""
+    this PC's time zone on its day (from the driver), in every mode; imported values (the moments,
+    date-times in UTC) find their rows by key."""
     ctx, name = _sqlserver()
     copy = f"{name}_copy"
     utc = pl.Series([dt.datetime(2026, 7, 1, 6, 30, 0, 500000), dt.datetime(2026, 1, 1, 7, 30), dt.datetime(2026, 7, 1, 6, 30)])
@@ -1507,9 +1507,9 @@ def test_sqlserver_datetimeoffset_columns_get_the_zones_offset(registry):
     def export(df, table=name, **params):
         registry.actions["db.export"](df, {"connection": "server", "table": table} | params, ctx)
 
-    def stored(table=name):
+    def stored(table=name):  # as SQL Server writes them, with their offsets
         with ctx.database("server") as db:
-            return db.read(f"SELECT N, At FROM {table} ORDER BY N").rows()
+            return db.read(f"SELECT N, CONVERT(nvarchar(40), At) AS At FROM {table} ORDER BY N").rows()
 
     try:
         with ctx.database("server") as db:
@@ -1520,25 +1520,29 @@ def test_sqlserver_datetimeoffset_columns_get_the_zones_offset(registry):
                 db.execute(f"DELETE FROM {name}")
             export(data, mode=mode, key_columns=["N"])
             assert stored() == [
-                (1, "2026-07-01T06:30:00.500000+00:00"), (2, "2026-01-01T07:30:00+00:00"), (3, "2026-07-01T06:30:00+00:00"),
+                (1, "2026-07-01 06:30:00.500 +00:00"), (2, "2026-01-01 07:30:00.000 +00:00"), (3, "2026-07-01 06:30:00.000 +00:00"),
             ], mode  # fmt: skip
         export(berlin, mode="update", key_columns=["N"])
         assert stored() == [
-            (1, "2026-07-01T08:30:00.500000+02:00"), (2, "2026-01-01T08:30:00+01:00"), (3, "2026-07-01T08:30:00+02:00"),
+            (1, "2026-07-01 08:30:00.500 +02:00"), (2, "2026-01-01 08:30:00.000 +01:00"), (3, "2026-07-01 08:30:00.000 +02:00"),
         ]  # fmt: skip
         export(data.drop("N"), mode="delete", key_columns=["At"])  # the same moments in another zone
         assert ctx.messages[-1] == ("info", f"{name}: deleted 3 rows")
         export(pl.DataFrame({"N": [4], "At": [naive]}), mode="upsert", key_columns=["N"])
         export(pl.DataFrame({"N": [5], "At": [naive]}))
-        assert stored() == [(4, f"2026-07-01T08:30:00{local}"), (5, f"2026-07-01T08:30:00{local}")]
-        # An import gives texts with the offset: they go back unchanged, by Add and by key
+        assert stored() == [(4, f"2026-07-01 08:30:00.000 {local}"), (5, f"2026-07-01 08:30:00.000 {local}")]
+        # An import gives the moments, date-times in UTC: by key they find their rows
         imported = registry.actions["db.import"](None, {"connection": "server", "table": name}, ctx)
-        assert imported["At"].to_list() == [f"2026-07-01T08:30:00{local}"] * 2
+        moment = naive.astimezone().astimezone(dt.UTC)
+        assert imported.schema["At"] == pl.Datetime("us", "UTC") and imported["At"].to_list() == [moment] * 2
         export(imported, table=copy)
         export(imported, table=copy, mode="upsert", key_columns=["At", "N"])
         assert ctx.messages[-1] == ("info", f"{copy}: nothing changed")  # the keys found their rows
         export(imported.with_columns(N=pl.col("N") + 10), table=copy, mode="upsert", key_columns=["At", "N"])
-        assert stored(copy) == [*stored(), *[(n + 10, at) for n, at in stored()]]
+        utc = moment.strftime("%Y-%m-%d %H:%M:%S.000 +00:00")
+        assert stored(copy) == [(4, utc), (5, utc), (14, utc), (15, utc)]  # the same moments, written in UTC
+        export(imported.head(1).with_columns(N=pl.lit(24)), mode="update", key_columns=["At"])  # both rows have this moment
+        assert ctx.messages[-1] == ("info", f"{name}: updated 2 rows")
     finally:
         with ctx.database("server") as db:
             for table in (name, copy):
@@ -2131,6 +2135,88 @@ def test_sqlserver_digits_of_a_second_beyond_the_column_are_cut_in_every_mode_wi
                     f"V: 1 value was cut to {'whole seconds' if kind != 'datetimeoffset(1)' else '1 digit of a second'} (e.g. {example}): "
                     f"the column V of {name} holds {'no parts of a second' if kind != 'datetimeoffset(1)' else '1 digit of a second'} ({kind})"
                 ], (kind, mode)
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+@pytest.mark.parametrize("kind", ["datetime2(7)", "time(7)", "datetimeoffset(7)"])
+def test_sqlserver_keys_of_seven_digits_of_a_second_find_their_rows(registry, kind):
+    """The driver reads such values to the microsecond: imported and written back by key, 20 of
+    200 rows were found (those whose 7th digit was 0), and Upsert added the other 180 again. The
+    import now says that a 7th digit was cut, and the keyed modes compare these keys to the
+    microsecond. A datetimeoffset column is imported as date-times in UTC (it was text)."""
+    ctx, name = _sqlserver()
+    start = {"datetime2(7)": "CAST('2026-10-01 08:00:00' AS datetime2(7))", "time(7)": "CAST('08:00:00' AS time(7))",
+             "datetimeoffset(7)": "CAST('2026-10-01 08:00:00 +02:00' AS datetimeoffset(7))"}[kind]  # fmt: skip
+
+    def export(df, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
+
+    def count():
+        with ctx.database("server") as db:
+            return db.read(f"SELECT COUNT(*) AS n, SUM(V) AS v FROM {name}").row(0)
+
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (K {kind}, V int)")
+            db.execute(  # 200 rows, seconds apart; the 100-ns digit is 0 in every 10th row
+                f"WITH n AS (SELECT TOP 200 ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS i FROM sys.all_objects) "
+                f"INSERT INTO {name} SELECT DATEADD(NANOSECOND, (i * 1234567 % 10000000) * 100, DATEADD(SECOND, i, {start})), 0 FROM n"
+            )
+        imported = registry.actions["db.import"](None, {"connection": "server", "table": name}, ctx)
+        assert imported.schema["K"] == (pl.Time if kind == "time(7)" else pl.Datetime("us", "UTC" if "offset" in kind else None))
+        assert ctx.warnings[-1].startswith(
+            "K: the column holds 7 digits of a second, but SQL Server's driver reads only 6 (to the microsecond), so a 7th digit is "
+            "cut (e.g. in "
+        )
+        export(imported.with_columns(V=pl.lit(1)), mode="upsert", key_columns=["K"])
+        assert _logged(ctx) == ("info", f"{name}: updated 200 rows") and count() == (200, 200)
+        export(imported.with_columns(V=pl.lit(2)), mode="update", key_columns=["K"])
+        assert _logged(ctx) == ("info", f"{name}: updated 200 rows") and count() == (200, 400)
+        export(imported.head(50), mode="replace_keys", key_columns=["K"])
+        assert _logged(ctx) == ("info", f"{name}: deleted 50 rows, added 50 rows") and count() == (200, 300)
+        export(imported, mode="delete", key_columns=["K"])
+        assert _logged(ctx) == ("info", f"{name}: deleted 200 rows") and count() == (0, None)
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_a_key_of_microseconds_that_meets_two_rows_stops_an_update(registry):
+    """Compared to the microsecond, a key can meet two rows that differ only in the 7th digit:
+    Update and Upsert would give both the values of one row of the data, so they stop; Delete
+    deletes both, as the data asks. A text with a 7th digit finds only its own value."""
+    ctx, name = _sqlserver()
+
+    def export(df, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": name} | params, ctx)
+
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (K datetime2(7), T datetimeoffset(7), V int)")
+            db.execute(
+                f"INSERT INTO {name} VALUES ('2026-10-01 08:00:01.1234567', '2026-10-01 08:00:01.1234567 +00:00', 0), "
+                "('2026-10-01 08:00:01.1234568', '2026-10-01 08:00:01.1234568 +00:00', 0), "
+                "('2026-10-01 08:00:02.0000001', '2026-10-01 08:00:02 +00:00', 0)"
+            )
+        data = pl.DataFrame({"K": [dt.datetime(2026, 10, 1, 8, 0, 2), dt.datetime(2026, 10, 1, 8, 0, 1, 123456)], "V": [1, 2]})
+        for mode in ("update", "upsert"):
+            with pytest.raises(ActionError) as error:
+                export(data, mode=mode, key_columns=["K"])
+            assert str(error.value) == (
+                f"The key columns don't identify the rows of {name}: 1 key value finds rows that differ only in the 7th digit of a "
+                "second of K (e.g. K = 2026-10-01 08:00:01.123456). SQL Server's driver passes date-times only to the microsecond, "
+                "so Tafl compares these keys to the microsecond. Choose more key columns."
+            ), mode
+        export(data.head(1), mode="update", key_columns=["K"])  # 08:00:02.0000001: one row
+        assert ctx.messages[-1] == ("info", f"{name}: updated 1 row")
+        export(pl.DataFrame({"T": ["2026-10-01 08:00:01.1234568 +00:00"], "V": [3]}), mode="update", key_columns=["T"])
+        assert ctx.messages[-1] == ("info", f"{name}: updated 1 row")  # its own 7th digit
+        export(data.tail(1), mode="delete", key_columns=["K"])
+        assert ctx.messages[-1] == ("info", f"{name}: deleted 2 rows")
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

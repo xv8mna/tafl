@@ -39,6 +39,7 @@ from tafl.api import (
     parameters,
     split_name,
     text_length,
+    unique_names,
 )
 
 # Chosen when the connection names no driver. Not "SQL Server", which comes with Windows: it is
@@ -170,6 +171,13 @@ class SqlServer(Connector):
             if scale == 0 and (precision or 0) <= 18:
                 return pl.Int64
             return pl.Decimal(min(precision or 38, 38), scale or 0)
+        # datetimeoffset, which pyodbc takes for text: date-times in UTC (_datetimeoffset). With
+        # digits of a second only it has a scale; without, it is described as a text of 26
+        # characters: the values tell (import_database makes an empty such column text again).
+        if type_code is str and scale:
+            return pl.Datetime("us", "UTC")
+        if type_code is str and precision == _DATETIMEOFFSET_SIZE:
+            return None
         return _PYTHON_TYPES.get(type_code)
 
     def error_message(self, error):
@@ -460,29 +468,42 @@ class SqlServer(Connector):
         zoned = [c for c, t in df.schema.items() if isinstance(t, pl.Datetime) and t.time_zone]
         return df.with_columns(col(c).dt.replace_time_zone(None) for c in zoned)
 
-    def matching(self, keys, left=None, right=None):
+    def matching(self, keys, left=None, right=None, kinds=None):
         """The table's and the stage's names in the statement are ``_aliases`` of the key columns
-        when none are given."""
+        when none are given. ``kinds``: the types of the table's columns (``column_types``). A key
+        of a column with 7 digits of a second (datetime2(7), time(7), datetimeoffset(7)) is
+        compared to the microsecond: the driver gives and takes date-times only to the
+        microsecond, so a key that an import read from such a column finds its row (a key with a
+        7th digit, from a text for a datetimeoffset column, finds only its own value)."""
         if left is None or right is None:
             left, right = (self.quote(alias) for alias in _aliases(keys))
-        return super().matching(keys, left, right)
+        kinds = {name.lower(): kind for name, kind in (kinds or {}).items()}
+        matched = []
+        for key in keys:
+            x, s = f"{left}.{self.quote(key)}", f"{right}.{self.quote(key)}"
+            if _seven_digits(kinds.get(key.lower(), "")):
+                same_microsecond = f"{_microsecond(x)} = {_microsecond(s)} AND (DATEPART(NANOSECOND, {s}) % 1000 = 0 OR {x} = {s})"
+                matched.append(f"(({same_microsecond}) OR ({x} IS NULL AND {s} IS NULL))")
+            else:
+                matched.append(self.same(x, s))
+        return " AND ".join(matched)
 
-    def update_sql(self, table, stage, columns, keys):
+    def update_sql(self, table, stage, columns, keys, kinds=None):
         x, s = (self.quote(alias) for alias in _aliases([*columns, *keys]))
         sets = ", ".join(f"{x}.{self.quote(c)} = {s}.{self.quote(c)}" for c in columns)
-        return f"UPDATE {x} SET {sets} FROM {table} AS {x} INNER JOIN {stage} AS {s} ON {self.matching(keys, x, s)}"
+        return f"UPDATE {x} SET {sets} FROM {table} AS {x} INNER JOIN {stage} AS {s} ON {self.matching(keys, x, s, kinds)}"
 
-    def delete_sql(self, table, stage, keys):
+    def delete_sql(self, table, stage, keys, kinds=None):
         x, s = (self.quote(alias) for alias in _aliases(keys))
-        return f"DELETE {x} FROM {table} AS {x} WHERE EXISTS (SELECT 1 FROM {stage} AS {s} WHERE {self.matching(keys, x, s)})"
+        return f"DELETE {x} FROM {table} AS {x} WHERE EXISTS (SELECT 1 FROM {stage} AS {s} WHERE {self.matching(keys, x, s, kinds)})"
 
-    def insert_missing_sql(self, table, stage, columns, keys):
+    def insert_missing_sql(self, table, stage, columns, keys, kinds=None):
         x, s = (self.quote(alias) for alias in _aliases([*columns, *keys]))
         names = ", ".join(self.quote(c) for c in columns)
         picked = ", ".join(f"{s}.{self.quote(c)}" for c in columns)
         return (
             f"INSERT INTO {table} ({names}) SELECT {picked} FROM {stage} AS {s} "
-            f"WHERE NOT EXISTS (SELECT 1 FROM {table} AS {x} WHERE {self.matching(keys, x, s)})"
+            f"WHERE NOT EXISTS (SELECT 1 FROM {table} AS {x} WHERE {self.matching(keys, x, s, kinds)})"
         )
 
     def index_sql(self, stage, keys):
@@ -538,6 +559,17 @@ class SqlServer(Connector):
         return total if counted else -1
 
 
+def _seven_digits(sql_type: str) -> bool:
+    """Whether a SQL Server column of this type holds 7 digits of a second (100 nanoseconds)."""
+    kind, size, _scale = _kind(sql_type)
+    return kind in _FRACTION_TYPES and size == 7
+
+
+def _microsecond(value: str) -> str:
+    """T-SQL for a datetime2, time or datetimeoffset value cut to the microsecond."""
+    return f"DATEADD(NANOSECOND, -(DATEPART(NANOSECOND, {value}) % 1000), {value})"
+
+
 def _aliases(names) -> tuple[str, str]:
     """The names of the table and of the stage (its #temporary table) in the statements of the
     keyed modes: none of the column names there. An xml or CLR column (geography, hierarchyid)
@@ -580,6 +612,7 @@ class _Stoppable:
         self._running: list = []  # the cursors (of the driver) in a call of the driver
         self._closed = threading.Event()
         self._watching = False
+        self.described = None  # cursor.description after the last execute or nextset (import_database reads it)
 
     def cursor(self):
         return _StoppableCursor(self._connection.cursor(), self)
@@ -640,6 +673,7 @@ class _StoppableCursor:
 
     def execute(self, *args):
         self._owner.call(self._cursor, self._cursor.execute, *args)
+        self._owner.described = self._cursor.description
         return self
 
     def executemany(self, *args):
@@ -656,7 +690,9 @@ class _StoppableCursor:
         return self._owner.call(self._cursor, self._cursor.fetchall)
 
     def nextset(self):
-        return self._owner.call(self._cursor, self._cursor.nextset)
+        found = self._owner.call(self._cursor, self._cursor.nextset)
+        self._owner.described = self._cursor.description if found else self._owner.described
+        return found
 
     def __iter__(self):
         return self
@@ -701,6 +737,7 @@ _FIXED_SIZES = {
 }  # fmt: skip
 _FRACTION_SIZES = {"datetime2": 19, "time": 8, "datetimeoffset": 26}
 _SQL_SS_TIMESTAMPOFFSET = -155  # the driver's own type for datetimeoffset (pyodbc has no name for it)
+_DATETIMEOFFSET_SIZE = 26  # the size of a datetimeoffset(0) in cursor.description (1 + n more with n digits)
 _KIND = re.compile(r"\s*([a-z0-9]+)\s*(?:\(\s*(\d+|max)\s*(?:,\s*(\d+)\s*)?\))?", re.IGNORECASE)
 
 
@@ -1442,11 +1479,42 @@ def import_database(df, p, ctx):
         finally:
             with contextlib.suppress(Exception):  # e.g. a driver in autocommit mode: nothing to roll back
                 db.rollback()
+        described = getattr(db.raw, "described", None)  # SQL Server (_Stoppable): the columns of what was read
+    if described:
+        out, warnings = _as_described(out, described)
+        for warning in warnings:
+            ctx.warn(warning)
     if not p.detect_types:
         return out
     if p.decimal == "auto":
         return _detect_types(out, ctx)
     return dtypes.infer_types(out, decimal=p.decimal, warn=ctx.warn)  # only numbers and dates, as version 1 with a point
+
+
+def _as_described(df: pl.DataFrame, description) -> tuple[pl.DataFrame, list[str]]:
+    """A SQL Server import with what ``cursor.description`` tells about its columns: a column of
+    texts that has no value is text, as before (a datetimeoffset(0) column is described as a text
+    of 26 characters, so ``dtype_for`` lets the values decide); a column of 7 digits of a second
+    (datetime2(7), time(7), datetimeoffset(7)) gets a warning when its values have parts of a
+    second: the driver reads them only to the microsecond, so a 7th digit is cut."""
+    names = unique_names([str(d[0]) if d[0] else f"Column {i}" for i, d in enumerate(description, 1)])
+    changes, warnings = [], []
+    for name, described in zip(names, description):
+        if name not in df.columns:
+            continue
+        column, type_code, scale = df[name].alias("value"), described[1], described[5]  # a fixed name, as in _round_half_away
+        if column.dtype == pl.Null and type_code is str:
+            changes.append(column.cast(pl.String).alias(name))
+        elif scale == 7 and (isinstance(column.dtype, pl.Datetime) or column.dtype == pl.Time):
+            fraction = (column.dt.nanosecond() != 0).fill_null(False)
+            if fraction.any():
+                example = pl.select(dtypes.text_expr(pl.lit(column.filter(fraction).head(1)), column.dtype)).item()
+                warnings.append(
+                    f"{name}: the column holds 7 digits of a second, but SQL Server's driver reads only 6 (to the microsecond), "
+                    f"so a 7th digit is cut (e.g. in {example}). Export to database finds such rows by these keys: it compares "
+                    "them to the microsecond."
+                )
+    return (df.with_columns(changes) if changes else df), warnings
 
 
 def _detect_types(df: pl.DataFrame, ctx) -> pl.DataFrame:
@@ -1622,6 +1690,7 @@ def export_database(df, p, ctx):
         data = db.connector.prepare_frame(data)
 
         added = deleted = updated = 0
+        by_type = {"kinds": types} if db.connector.id == "sqlserver" else {}  # how SQL Server compares the keys
         if p.mode == "replace":
             # Not TRUNCATE: it would reset IDENTITY numbering, needs more rights and fails with
             # foreign keys. Deleting 1M rows takes about 1 s; adding them again about 9 s.
@@ -1631,17 +1700,18 @@ def export_database(df, p, ctx):
         elif p.mode in ("replace_keys", "delete"):
             staged = data.select(cols(c for c, n in names.items() if n in keys)).unique()
             stage = _stage(db, staged, names, keys, db.connector.stage_types(db.raw, p.table), ctx)
-            deleted = db.execute(db.connector.delete_sql(table, stage, keys))
+            deleted = db.execute(db.connector.delete_sql(table, stage, keys, **by_type))
         elif p.mode in ("update", "upsert"):
             row = _unused("tafl_row", names.values()) if db.connector.id == "sqlserver" else None
             stage = _stage(db, data, names, keys, db.connector.stage_types(db.raw, p.table), ctx, row)
             if row is not None:  # as SQL Server compares them: abc and ABC are one key in a CI column
                 _check_unique_as_compared(db, stage, row, fitted_data, [names[k] for k in p.key_columns], p.key_columns)
+                _check_seventh_digits(db, table, stage, row, fitted_data, names, p.key_columns, types, p.table)
             others = [n for n in names.values() if n not in keys]
             if others:
-                updated = db.execute(db.connector.update_sql(table, stage, others, keys))
+                updated = db.execute(db.connector.update_sql(table, stage, others, keys, **by_type))
             if p.mode == "upsert":
-                added = db.execute(db.connector.insert_missing_sql(table, stage, list(names.values()), keys))
+                added = db.execute(db.connector.insert_missing_sql(table, stage, list(names.values()), keys, **by_type))
         if p.mode in ("insert", "replace", "replace_keys", "replace_where"):
             added = _insert(db, table, data, list(names.values()), ctx, fitted)
     if created:  # only now: a failed export creates no table
@@ -2159,6 +2229,37 @@ def _check_unique_as_compared(db, stage: str, row: str, data: pl.DataFrame, colu
         _not_unique(int(found["repeated"][0]), [(k, data[k][first]) for k in keys])
 
 
+def _check_seventh_digits(
+    db, table: str, stage: str, row: str, data: pl.DataFrame, names: dict[str, str], keys: list[str], types: dict[str, str], name: str
+) -> None:
+    """Keys of a column with 7 digits of a second are compared to the microsecond (``matching``):
+    updating needs one row of the table per key there too. Two rows that differ only in the 7th
+    digit (08:00:01.1234567 and 08:00:01.1234568) would both get the values of one row of the data:
+    refuse, with the data's first such key as the example. ``table``: quoted; ``name``: as given."""
+    kinds = {column.lower(): kind for column, kind in types.items()}
+    seven = [names[k] for k in keys if _seven_digits(kinds.get(names[k].lower(), ""))]
+    if not seven:
+        return
+    x, s = (db.quote(alias) for alias in _aliases([*names.values(), row]))
+    differ = " OR ".join(f"MIN({x}.{db.quote(c)}) <> MAX({x}.{db.quote(c)})" for c in seven)
+    found = db.read(
+        f"SELECT TOP 1 COUNT(*) OVER () AS keys, {s}.{db.quote(row)} AS first_row FROM {stage} AS {s} INNER JOIN {table} AS {x} "
+        f"ON {db.connector.matching([names[k] for k in keys], x, s, types)} GROUP BY {s}.{db.quote(row)} HAVING {differ} "
+        f"ORDER BY {s}.{db.quote(row)}"
+    )
+    if not found.height:
+        return
+    first, count = int(found["first_row"][0]), int(found["keys"][0])
+    shown = ", ".join(f"{k} = {data[k][first]}" for k in keys)
+    values = "1 key value finds" if count == 1 else f"{count:,} key values find"
+    columns = ", ".join(k for k in keys if names[k] in seven)
+    raise ActionError(
+        f"The key columns don't identify the rows of {name}: {values} rows that differ only in the 7th digit of a second "
+        f"of {columns} (e.g. {shown}). SQL Server's driver passes date-times only to the microsecond, so {APP_NAME} "
+        "compares these keys to the microsecond. Choose more key columns."
+    )
+
+
 def _unused(name: str, names) -> str:
     """``name``, or with a number after it (name2, name3, …): no name of ``names``, also as SQL
     Server may compare them (``_folded``)."""
@@ -2236,8 +2337,20 @@ def run_sql(df, p, ctx):
     return df
 
 
-def _datetimeoffset(value: bytes) -> str:
+def _datetimeoffset(value: bytes) -> dt.datetime | ActionError:
+    """A datetimeoffset value (the driver's struct) as the moment it stands for, a date-time in
+    UTC, to the microsecond as other date-times (2026-10-01 08:30 +02:00 is 06:30 in UTC); an
+    ActionError (it stops the import) for a moment that a date-time can't hold, before the year 1
+    or after 9999 in UTC (0001-01-01 08:00 +14:00)."""
     year, month, day, hour, minute, second, nanos, tz_hour, tz_minute = struct.unpack("<6hI2h", value)
     stamp = dt.datetime(year, month, day, hour, minute, second, nanos // 1000)
-    tz = dt.timezone(dt.timedelta(hours=tz_hour, minutes=tz_minute))
-    return stamp.replace(tzinfo=tz).isoformat()
+    try:
+        return (stamp - dt.timedelta(hours=tz_hour, minutes=tz_minute)).replace(tzinfo=dt.UTC)
+    except OverflowError:
+        sign = "-" if tz_hour < 0 or tz_minute < 0 else "+"
+        written = f"{stamp:%Y-%m-%d %H:%M:%S} {sign}{abs(tz_hour):02}:{abs(tz_minute):02}"
+        return ActionError(
+            f"The column {{column}} has a date and time ({written}) whose moment in UTC is before the year 1 or after "
+            f"9999, which {APP_NAME} can't hold as a date-time. Read the column as text in a query, e.g. "
+            "CONVERT(nvarchar(34), [{column}]) AS [{column}]."
+        )

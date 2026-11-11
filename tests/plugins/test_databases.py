@@ -1777,6 +1777,47 @@ def test_sqlserver_warns_of_digits_of_a_second_that_are_cut(values, kind, warnin
     assert databases._cut_seconds(df, types, texts, names, "dbo.T") == ([warning] if warning else [])
 
 
+def test_sqlserver_datetimeoffset_is_read_as_a_moment_in_utc(registry):
+    """It was text with 6 digits of a second (2026-10-01T08:00:01.123456+02:00); now a date-time
+    in UTC. pyodbc describes it as text: with digits of a second it has a scale, without them it
+    looks like a text of 26 characters, and its values decide."""
+    import struct
+
+    dtype_for = registry.connectors["sqlserver"].dtype_for
+    assert dtype_for(("a", str, None, 34, 34, 7, True)) == pl.Datetime("us", "UTC")  # datetimeoffset(7)
+    assert dtype_for(("a", str, None, 26, 26, 0, True)) is None  # datetimeoffset(0), or nvarchar(26)
+    assert dtype_for(("a", str, None, 30, 30, 0, True)) == pl.String
+    value = struct.pack("<6hI2h", 2026, 10, 1, 8, 0, 1, 123456789, 2, 0)  # 2026-10-01 08:00:01.1234567 +02:00
+    assert databases._datetimeoffset(value) == dt.datetime(2026, 10, 1, 6, 0, 1, 123456, tzinfo=dt.UTC)
+    negative = struct.pack("<6hI2h", 2026, 1, 1, 0, 30, 0, 0, -5, -30)
+    assert databases._datetimeoffset(negative) == dt.datetime(2026, 1, 1, 6, 0, tzinfo=dt.UTC)
+    beyond = databases._datetimeoffset(struct.pack("<6hI2h", 1, 1, 1, 8, 0, 0, 0, 14, 0))  # SQL Server itself holds none
+    assert isinstance(beyond, ActionError) and str(beyond).startswith(
+        "The column {column} has a date and time (0001-01-01 08:00:00 +14:00) whose moment in UTC is before the year 1"
+    )
+    empty = pl.DataFrame({"Text": pl.Series([None, None], dtype=pl.Null), "At": [dt.datetime(2026, 10, 1, 8, 0, 1, 5)] * 2})
+    described = [("Text", str, None, 26, 26, 0, True), ("At", dt.datetime, None, 27, 27, 7, True)]
+    fitted, warnings = databases._as_described(empty, described)
+    assert fitted.schema == {"Text": pl.String, "At": pl.Datetime("us")}  # an empty column of texts stays text
+    assert warnings == [
+        "At: the column holds 7 digits of a second, but SQL Server's driver reads only 6 (to the microsecond), so a 7th digit is "
+        "cut (e.g. in 2026-10-01 08:00:01.000005). Export to database finds such rows by these keys: it compares them to the "
+        "microsecond."
+    ]
+    whole = empty.with_columns(At=pl.lit(dt.datetime(2026, 10, 1, 8)))
+    assert databases._as_described(whole, described)[1] == []  # no part of a second: nothing to cut
+
+
+def test_sqlserver_keys_of_seven_digits_are_compared_to_the_microsecond(registry):
+    connector = registry.connectors["sqlserver"]
+    kinds = {"K": "datetime2(7)", "T": "time(3)", "N": "int"}
+    matched = connector.matching(["K", "T", "N"], "[x]", "[s]", kinds)
+    assert matched.count("DATEPART(NANOSECOND") == 3 and "([x].[T] = [s].[T] OR" in matched and "([x].[N] = [s].[N] OR" in matched
+    assert "DATEPART" not in connector.matching(["K"], "[x]", "[s]")  # without the types: as before
+    assert "DATEPART" in connector.update_sql("[t]", "#s", ["V"], ["K"], kinds) + connector.delete_sql("[t]", "#s", ["K"], kinds)
+    assert "DATEPART" in connector.insert_missing_sql("[t]", "#s", ["K", "V"], ["K"], kinds)
+
+
 def test_sqlserver_sends_texts_for_varchar_columns_as_unicode(registry):
     """The server converts them to the code page of the column's collation (as N'…'), in every
     mode; bound as varchar, the driver would convert them to this PC's code page first."""
