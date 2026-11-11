@@ -262,6 +262,20 @@ def test_format_numbers_without_a_format_of_numbers_just_below_0_0001():
     assert dtypes.format_numbers(singles, "", ",").to_list() == ["0,0001", "-0,0001"]
 
 
+@pytest.mark.parametrize("name", ["v", "^a.*$"])
+def test_format_numbers_without_a_format_writes_32_bit_numbers_with_their_own_digits(name):
+    """A 32-bit number (from a Parquet file) went to Python with the digits of its 64-bit number:
+    0.1 was written 0,1000000015, 3.14159 3,1415901184 and 123456.7 123456,703125. Now each has its
+    own shortest digits, as text_expr (Pivot, Split column) writes them. A format still rounds."""
+    values = [0.1, 3.14159, 123456.7, 1e-12, 0.0001, 1e20, -0.0, float("nan"), float("inf"), None]
+    single = pl.Series(name, values, dtype=pl.Float32)
+    assert dtypes.format_numbers(single, "", ",").to_list() == [
+        "0,1", "3,14159", "123456,7", "0,000000000001", "0,0001", "100000000000000000000", "0", "nan", "inf", None
+    ]  # fmt: skip
+    assert dtypes.format_numbers(single, "", ".").to_list()[:3] == ["0.1", "3.14159", "123456.7"]
+    assert dtypes.format_numbers(single, "0.00", ",").to_list()[:3] == ["0,10", "3,14", "123456,70"]
+
+
 def test_decimals_to_text_keep_their_digits():
     values = [Decimal("0.123456789012345678"), Decimal("-1.100000000000000000"), Decimal("0")]
     s = pl.Series(values, dtype=pl.Decimal(38, 18))
