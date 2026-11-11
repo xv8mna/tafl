@@ -875,6 +875,8 @@ class MainWindow(QMainWindow):
             self.settings.setValue(key, splitter.saveState())
         self.session.cancel_run()
         self.session.cancel_calculation()  # else closing waits for it, and it goes on after that
+        for panel in (self.data_panel, self.map_view.data):
+            panel.filter_pane.stop()
         checks().stop_all()  # the checks of formula fields: nothing waits for them
         self.session.wait(5000)
         event.accept()

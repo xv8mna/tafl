@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import math
+import threading
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 import polars as pl
@@ -47,7 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tafl.api import col, dtypes
+from tafl.api import Cancelled, col, dtypes
 
 from . import theme
 from .filters import (
@@ -74,49 +75,142 @@ from .filters import (
 from .frame_model import DisplayFormat
 from .labels import LONG_TIP_LINES, tooltip_text
 from .session import Session
+from .worker import Worker
 
 Index = QModelIndex | QPersistentModelIndex
 _ROOT = QModelIndex()
 _BAR = Qt.ItemDataRole.UserRole + 1  # share of the rows (0..1), for the bar behind the count
 _LIST_ROWS = 8  # rows a card shows before it scrolls
 MAX_CARDS = 100  # the filters after these only apply, without a card: a card takes about 1 MB of widgets
+_SLICE = 32_768  # values turned into Python's values at a time
+_AT_ONCE = 20_000  # rows (of all the lists to make) that are listed at once; more in the background
 _ADD_TIP = "Add a filter for a column (or right-click a column or a cell in the grid)"
 
 
+Arrangement = tuple[str, int, bool]  # how a list is arranged: the search, the column it is sorted by, descending
+
+
+@dataclass
+class _Listing:
+    """The values of a card, as plain Python lists: they can be made in the background (see
+    ``_listing``), and the card only takes them. Items: [value, count, stored value, text,
+    lower-case text, applied, rank (the place in the order of the values)]."""
+
+    all: list[list[Any]]
+    rows: list[list[Any]]  # the ones shown, in order: the applied ones first (see _arranged)
+    filtering: bool  # the filter leaves values out (else every value counts as applied)
+    total: int  # rows that pass the other filters
+    label: Callable[[Any], str]
+    arrangement: Arrangement
+    applied: int  # of all
+    shown: int  # applied ones among the rows: rows 0 .. shown - 1
+
+
+def _listing(table: pl.DataFrame, total: int, f: Filter, label: Callable[[Any], str], how: Arrangement) -> _Listing:
+    """The list of the values ``table`` of ``facet``, in the order of their values: empty first,
+    NaN last, texts in the order of Sort (like Excel). No Qt: it can run in another thread, and
+    there Polars sorts, without Python's lock; each value keeps its place as a number (its rank),
+    so that later sorts compare numbers."""
+    dtype = table.schema[VALUE]
+    value = col(VALUE).cast(pl.String) if isinstance(dtype, pl.Categorical | pl.Enum) else col(VALUE)
+    table = table.sort([dtypes.text_sort_key(value), value] if dtype == pl.String else value, maintain_order=True)
+    column = table.get_column(VALUE)
+    stored_forms: list[Any] = []
+    for start in range(0, column.len(), _SLICE):  # (making Python's values holds Python's lock)
+        stored_forms += stored_values(column.slice(start, _SLICE))  # with nanoseconds, which Python's values don't have
+    applies = f.picker()
+    rows = table.select(VALUE, COUNT).iter_rows()
+    items = [
+        [value, count, stored, None, None, applies(stored), rank]
+        for rank, ((value, count), stored) in enumerate(zip(rows, stored_forms, strict=True))
+    ]
+    return _arranged(items, bool(f.values), total, label, how)
+
+
+def _marked(listing: _Listing, f: Filter, how: Arrangement) -> _Listing:
+    """``listing`` with the values that ``f`` applies now: the counts stay. New items: the card
+    shows the old ones meanwhile."""
+    applies = f.picker()
+    items = [[*item[:5], applies(item[2]), item[6]] for item in listing.all]
+    return _arranged(items, bool(f.values), listing.total, listing.label, how)
+
+
+def _arranged(
+    items: list[list[Any]], filtering: bool, total: int, label: Callable[[Any], str], how: Arrangement
+) -> _Listing:
+    """``items`` as a list that is searched and sorted: applied ones first, then by value (empty
+    first) or count. On Python lists: a sorting proxy would call back into Python for every
+    comparison, far too slow for columns with many different values."""
+    search, column, descending = how
+    shown = [item for item in items if search in _lower(item, label)] if search else items
+    size = len(items) + 1  # by count, then by value: one number
+    key = (lambda item: item[1] * size + item[6]) if column == 1 else _rank
+    applied = [item for item in shown if item[5]] if filtering else []
+    others = [item for item in shown if not item[5]] if filtering else list(shown)
+    applied.sort(key=key, reverse=descending)  # (by value: the items are in that order already)
+    others.sort(key=key, reverse=descending)
+    # Without filtering, either no value is applied or all are (all but none)
+    count = sum(1 for item in items if item[5]) if filtering else (len(items) if items and items[0][5] else 0)
+    first = len(applied) if filtering else (len(others) if count else 0)
+    return _Listing(items, applied + others, filtering, total, label, how, count, first)
+
+
+def _text(item: list[Any], label: Callable[[Any], str]) -> str:
+    if item[3] is None:
+        value = item[0]
+        item[3] = "(empty)" if value is None else "(empty text)" if value == "" else label(value)
+    return item[3]
+
+
+def _lower(item: list[Any], label: Callable[[Any], str]) -> str:
+    if item[4] is None:
+        item[4] = _text(item, label).lower()
+    return item[4]
+
+
 class _Values(QAbstractTableModel):
-    """The values of one card: applied ones first, then sorted by value (empty first) or count,
-    narrowed down by the search. Sorting and searching are done on Python lists here: a sorting
-    proxy would call back into Python for every comparison, far too slow for columns with many
-    different values."""
+    """The values of one card (see ``_Listing``)."""
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
-        # [value, count, stored value, text, lower-case text, applied, sort key of a text]
-        self.all: list[list[Any]] = []
-        self.rows: list[list[Any]] = []  # the ones shown, in order
-        self.filtering = False  # the filter leaves values out (else every value counts as applied)
-        self.total = 0  # rows that pass the other filters
+        self.listing = _arranged([], False, 0, str, ("", 0, False))
         self.search = ""
         self.sort_column, self.descending = 0, False
-        self._format: Callable[[Any], str] = str
+
+    @property
+    def all(self) -> list[list[Any]]:
+        return self.listing.all
+
+    @property
+    def rows(self) -> list[list[Any]]:
+        return self.listing.rows
+
+    @property
+    def filtering(self) -> bool:
+        return self.listing.filtering
+
+    @property
+    def total(self) -> int:
+        return self.listing.total
+
+    @property
+    def arrangement(self) -> Arrangement:
+        return self.search, self.sort_column, self.descending
+
+    def set_listing(self, listing: _Listing) -> None:
+        """Show a list (made for the arrangement of that time: the search or the sort may have
+        changed since)."""
+        if listing.arrangement != self.arrangement:
+            listing = _arranged(listing.all, listing.filtering, listing.total, listing.label, self.arrangement)
+        self.beginResetModel()
+        self.listing = listing
+        self.endResetModel()
 
     def set_values(self, table: pl.DataFrame, total: int, f: Filter, label: Callable[[Any], str]) -> None:
-        self._format = label
-        applies = f.picker()
-        self.all = []
-        texts = table.schema[VALUE] == pl.String
-        keys = table.select(dtypes.text_sort_key(col(VALUE))).to_series().to_list() if texts else [None] * table.height
-        stored_forms = stored_values(table.get_column(VALUE))  # with nanoseconds, which Python's values don't have
-        rows = table.select(VALUE, COUNT).iter_rows()
-        for (value, count), key, stored in zip(rows, keys, stored_forms, strict=True):
-            self.all.append([value, count, stored, None, None, applies(stored), key])
-        self.filtering = bool(f.values)
-        self.total = total
-        self._arrange()
+        self.set_listing(_listing(table, total, f, label, self.arrangement))
 
     def clear(self) -> None:
-        self.all, self.filtering, self.total = [], False, 0
-        self._arrange()
+        self.set_listing(_arranged([], False, 0, str, self.arrangement))
 
     def applied(self) -> list[Any]:
         """The applied values (as stored)."""
@@ -131,32 +225,10 @@ class _Values(QAbstractTableModel):
         self._arrange()
 
     def _arrange(self) -> None:
-        self.beginResetModel()
-        items = self.all
-        if self.search:
-            items = [item for item in items if self.search in self._lower(item)]
-        key = _by_count if self.sort_column == 1 else _by_value
-        applied = [item for item in items if item[5]] if self.filtering else []
-        others = [item for item in items if not item[5]] if self.filtering else list(items)
-        try:
-            applied.sort(key=key, reverse=self.descending)
-            others.sort(key=key, reverse=self.descending)
-        except TypeError:  # values that can't be compared: by their text
-            applied.sort(key=self.text, reverse=self.descending)
-            others.sort(key=self.text, reverse=self.descending)
-        self.rows = applied + others  # applied values first, whichever way it is sorted
-        self.endResetModel()
+        self.set_listing(self.listing)
 
     def text(self, item: list[Any]) -> str:
-        if item[3] is None:
-            value = item[0]
-            item[3] = "(empty)" if value is None else "(empty text)" if value == "" else self._format(value)
-        return item[3]
-
-    def _lower(self, item: list[Any]) -> str:
-        if item[4] is None:
-            item[4] = self.text(item).lower()
-        return item[4]
+        return _text(item, self.listing.label)
 
     def is_applied(self, row: int) -> bool:
         return self.rows[row][5]
@@ -198,22 +270,54 @@ class _Values(QAbstractTableModel):
         return None
 
 
-def _value_key(item: list[Any]) -> tuple:
-    """Sort key of a value: empty first, NaN last; texts in the order of Sort (like Excel)."""
-    value = item[0]
-    if value is None:
-        return (0, 0)
-    if isinstance(value, float) and math.isnan(value):
-        return (2, 0)
-    return (1, value) if item[6] is None else (1, item[6], value)
+@dataclass
+class _Plan:
+    """What the list of a card needs (see FilterCard.prepare)."""
+
+    card: FilterCard
+    filter: Filter
+    filters: list[Filter]
+    index: int
+    why: str | None  # why nothing can be listed
+    label: Callable[[Any], str]
+    arrangement: Arrangement
+    made: tuple[Any, str]  # what the list is made from, and what it is marked for
+    data: pl.DataFrame | None = None  # the data of a list that is made anew (None: it is marked anew)
+    old: _Listing | None = field(default=None, repr=False)  # the list that is marked anew
+
+    def __post_init__(self) -> None:
+        if self.data is None and self.why is None:
+            self.old = self.card.model.listing
 
 
-def _by_value(item: list[Any]) -> tuple:
-    return _value_key(item)
+def _make(plans: list[_Plan], more: list[Filter], cancel: threading.Event | None = None) -> list[tuple[_Plan, Any]]:
+    """The lists of ``plans``: a _Listing each, or why there is none. No Qt: for big data this runs
+    in the background. ``more``: the filters without a card, which narrow the rows once (for each
+    card they would take minutes)."""
+    made: list[tuple[_Plan, Any]] = []
+    rows: dict[int, pl.DataFrame | None] = {}
+    for plan in plans:
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+        if plan.why is not None:
+            made.append((plan, plan.why))
+        elif plan.data is None:  # only the applied values changed: the counts stay
+            assert plan.old is not None
+            made.append((plan, _marked(plan.old, plan.filter, plan.arrangement)))
+        else:
+            if id(plan.data) not in rows:
+                rows[id(plan.data)] = apply(plan.data, more) if more else None
+            result = facet(plan.data, plan.filters, plan.index, rows[id(plan.data)])
+            if result is None:
+                made.append((plan, "These values can't be listed."))
+            else:
+                made.append((plan, _listing(result[0], result[1], plan.filter, plan.label, plan.arrangement)))
+    return made
 
 
-def _by_count(item: list[Any]) -> tuple:
-    return item[1], _value_key(item)
+def _rank(item: list[Any]) -> int:
+    """The place of a value in the order of the values (see ``_listing``)."""
+    return item[6]
 
 
 class _CountBar(QStyledItemDelegate):
@@ -251,6 +355,11 @@ class FilterCard(QFrame):
         self.index = 0
         self._dtype: pl.DataType | None = None
         self._filter = f
+        self._made: tuple[Any, ...] | None = None  # what the list shown is made from (see prepare)
+        self._marked = ""  # the values it marks as applied
+        self._status = ""  # the status line of the list shown
+        self._why: str | None = None  # why it lists nothing
+        self.updating = False  # a list is being made in the background
         self.setObjectName("FilterCard")
         self.title = QLabel(f.column, self)
         self.title.setTextFormat(Qt.TextFormat.PlainText)
@@ -448,46 +557,74 @@ class FilterCard(QFrame):
 
     # --- showing -------------------------------------------------------------------------------
 
-    def update_values(
-        self,
-        df: pl.DataFrame | None,
-        filters: list[Filter],
-        index: int,
-        display: DisplayFormat,
-        rows: pl.DataFrame | None = None,
-    ) -> None:
+    def prepare(
+        self, df: pl.DataFrame | None, filters: list[Filter], index: int, display: DisplayFormat, more: str
+    ) -> _Plan | None:
+        """Take the card's filter (``filters[index]``) and data, and say what its list needs: None
+        when the list it shows is the list for them. A list is made anew when its data changed:
+        the data, the filter's column, mode and settings, or another filter (the counts are among
+        the rows of the others, ``more`` are the filters without a card); when only the filter's
+        values changed, it is marked anew."""
         f = filters[index]
         self.index = index
         self._filter = f
         self._dtype = df.schema[f.column] if df is not None and f.column in df.columns else None
         self._sync_options(f)
+        others = json.dumps([g.to_dict() for i, g in enumerate(filters) if i != index], default=str)
+        made = (df, display, (f.column, f.facet, json.dumps(f.options, default=str), others, more))
+        marked = json.dumps([f.values, f.excluded], default=str)
+        before = self._made
+        if before is not None and before[0] is df and before[1] is display and before[2] == made[2]:
+            if marked == self._marked:
+                return None
+            if self._why is None:  # a list, not why there is none
+                return _Plan(self, f, filters, index, None, self._labeler(f, display), self.model.arrangement, (made, marked))
         if df is None:
             why: str | None = "No data at this step."
         elif reason := unusable(f, df.schema):
             why = f"Not used at this step: {reason}."
         else:
             why = None
-        result = facet(df, filters, index, rows) if why is None else None
-        if result is None and why is None:
-            why = "These values can't be listed."
-        listed = result is not None
+        return _Plan(self, f, filters, index, why, self._labeler(f, display), self.model.arrangement, (made, marked), df)
+
+    def show_updating(self) -> None:
+        """The list is being made: "…", and nothing can be picked meanwhile."""
+        self.updating = True
+        self.status.setText("…")
+        self.view.setEnabled(False)
+        self._selection_changed()
+
+    def show_current(self) -> None:
+        """The list shown is the right one after all (its update was not needed any more)."""
+        if self.updating:
+            self.updating = False
+            self.status.setText(self._status)
+            self.view.setEnabled(self.view.isVisibleTo(self))
+            self._selection_changed()
+
+    def show_list(self, plan: _Plan, listing: _Listing | str) -> None:
+        """Show the list made for ``plan``, or why there is none."""
+        f = plan.filter
+        listed = isinstance(listing, _Listing)
+        self.updating = False
         self.search.setVisible(listed and f.facet in ("values", "period"))
         self.links.setVisible(listed)
         self.view.setVisible(listed)
         self.view.setEnabled(listed)
-        if result is None:
-            self.model.clear()
-            self.status.setText(why or "")
-        else:
-            table, total = result
-            self.model.set_values(table, total, f, self._labeler(f, display))
+        if isinstance(listing, _Listing):
+            self.model.set_listing(listing)
             self._select_applied()
             count = len(self.model.all)
             noun = {"period": "period", "ranges": "range", "length": "length", "regex": "group"}.get(f.facet, "value")
             text = f"{count:,} {noun}{'s' if count != 1 else ''}"
             if f.values or f.excluded:
-                text += f" · {len(self.model.applied()):,} selected"
-            self.status.setText(text)
+                text += f" · {self.model.listing.applied:,} selected"
+        else:
+            self.model.clear()
+            text = listing
+        self._status, self._why = text, None if listed else text
+        self.status.setText(text)
+        self._made, self._marked = plan.made
         self._selection_changed()
 
     def _labeler(self, f: Filter, display: DisplayFormat) -> Callable[[Any], str]:
@@ -507,23 +644,27 @@ class FilterCard(QFrame):
         return display.formatter(self._dtype) if self._dtype is not None else str
 
     def _select_applied(self) -> None:
-        self._select_rows([row for row, item in enumerate(self.model.rows) if item[5]])
+        self._select_rows(range(self.model.listing.shown))  # the applied values are the first rows
 
     def _select(self, values: list[Any]) -> None:
         keys = {value_key(v) for v in values}
         self._select_rows([row for row, item in enumerate(self.model.rows) if value_key(item[2]) in keys])
 
-    def _select_rows(self, rows: list[int]) -> None:
+    def _select_rows(self, rows: list[int] | range) -> None:
         """Select these rows (ascending), in as few ranges as possible."""
         selection = QItemSelection()
-        start = end = -2
-        for row in [*rows, -2]:
-            if row == end + 1:
-                end = row
-                continue
-            if start >= 0:
-                selection.select(self.model.index(start, 0), self.model.index(end, 1))
-            start = end = row
+        if isinstance(rows, range):  # one run (of all values, maybe): not row by row
+            if len(rows):
+                selection.select(self.model.index(rows[0], 0), self.model.index(rows[-1], 1))
+        else:
+            start = end = -2
+            for row in [*rows, -2]:
+                if row == end + 1:
+                    end = row
+                    continue
+                if start >= 0:
+                    selection.select(self.model.index(start, 0), self.model.index(end, 1))
+                start = end = row
         flags = QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows
         self.view.selectionModel().select(selection, flags)
 
@@ -547,10 +688,22 @@ class FilterCard(QFrame):
         """How the filter stores these chosen values: ``filters.selection``."""
         return selection(chosen, [item[2] for item in self.model.all])
 
+    def _merged_selection(self) -> list[tuple[int, int]]:
+        """The selected rows, as (first, last) of each run of rows."""
+        merged: list[tuple[int, int]] = []
+        for top, bottom in sorted((part.top(), part.bottom()) for part in self.view.selectionModel().selection()):
+            if merged and top <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], bottom))
+            else:
+                merged.append((top, bottom))
+        return merged
+
     def _selection_changed(self, *_: Any) -> None:
-        # Applied, the selected values would be the ones applied: is that what is applied now?
-        selected = {id(self.model.rows[row]) for row in self._selected_rows()}
-        changed = selected != {id(item) for item in self.model.all if item[5]}
+        # Applied, the selected values would be the ones applied: is that what is applied now? The
+        # applied values are the first rows, all of them unless the search hides some
+        listing = self.model.listing
+        applied = [(0, listing.shown - 1)] if listing.shown else []
+        changed = self._merged_selection() != applied or listing.applied != listing.shown
         filtering = bool(self._filter.values)
         self.apply_button.setEnabled(changed and self.view.isEnabled())
         self.revert_button.setEnabled(changed and self.view.isEnabled())
@@ -560,7 +713,12 @@ class FilterCard(QFrame):
     # --- choosing values -----------------------------------------------------------------------
 
     def apply(self) -> None:
-        if self.view.isEnabled():
+        if not self.view.isEnabled():
+            return
+        rows = self.model.rows
+        if len(rows) == len(self.model.all) and self._merged_selection() == [(0, len(rows) - 1)]:
+            self.pane.set_values(self.index, [], True)  # all values (as _stored says, without going through them)
+        else:
             self.pane.set_values(self.index, *self._stored(self.pending()))
 
     def apply_only(self, index: QModelIndex) -> None:
@@ -569,8 +727,9 @@ class FilterCard(QFrame):
     def quick_select(self, kind: str) -> None:
         """All, Possible, Excluded or None of the values shown (they still need Apply)."""
         rows = self.model.rows
+        chosen: list[int] | range
         if kind == "all":
-            chosen = list(range(len(rows)))
+            chosen = range(len(rows))
         elif kind == "possible":
             chosen = [row for row in range(len(rows)) if rows[row][1] > 0]
         elif kind == "excluded":
@@ -641,17 +800,56 @@ class FilterPane(QWidget):
         self.setStyleSheet(
             f"QFrame#FilterCard {{ border: 1px solid {theme.BORDER_LIGHT}; border-radius: 6px; background: {theme.BASE}; }}"
         )
+        # The lists of big data are made in the background, one job that matters at a time
+        self._lister = Worker(self)
+        self._lister.finished.connect(self._listed)
+        self._lister.failed.connect(self._not_listed)
+        self._making: list[_Plan] = []  # the plans of the lists being made
+        self._lists = True  # the cards have their lists (else: once the pane comes into sight)
+
+    @property
+    def updating(self) -> bool:
+        """Lists are being made in the background (their cards show "…")."""
+        return self._lister.busy
 
     def filters(self) -> list[Filter]:
         return [Filter.from_dict(f) for f in self.session.filters(self.table_id)] if self.table_id else []
 
+    def offer(self, table_id: str | None, df: pl.DataFrame | None) -> None:
+        """The data panel's data. A closed pane, or the pane of the view that isn't shown, makes
+        no lists (only its cards): it makes them when it comes into sight."""
+        self._show(table_id, df, self.isVisibleTo(self.window()))
+
+    def setVisible(self, visible: bool) -> None:
+        super().setVisible(visible)
+        if visible:
+            self._catch_up()
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        self._catch_up()
+
+    def _catch_up(self) -> None:
+        if not self._lists and self.isVisibleTo(self.window()):
+            self._show(self.table_id, self.df, True)
+
+    def stop(self) -> None:
+        """Stop making lists (the window closes)."""
+        self._lister.forget()
+
     def show_data(self, table_id: str | None, df: pl.DataFrame | None) -> None:
-        """Show the filters of a table for its data after the selected step."""
+        """Show the filters of a table for its data after the selected step. A card's list is made
+        only when what it lists changed (see FilterCard.prepare); for big data in the background,
+        while the card shows "…"."""
+        self._show(table_id, df, True)
+
+    def _show(self, table_id: str | None, df: pl.DataFrame | None, lists: bool) -> None:
         filters = [Filter.from_dict(f) for f in self.session.filters(table_id)] if table_id else []
         shown = (table_id, id(df), json.dumps([f.to_dict() for f in filters], default=str))
-        if shown == self._shown and df is self.df:
+        if shown == self._shown and df is self.df and (self._lists or not lists):
             return
-        self._shown, self.table_id, self.df = shown, table_id, df
+        self._lister.forget()  # a list for the data or filters before: not wanted any more
+        self._shown, self.table_id, self.df, self._lists = shown, table_id, df, lists
         first = filters[:MAX_CARDS]  # the number of a card is the index of its filter
         if [(c.column, c.facet) for c in self.cards] != [(f.column, f.facet) for f in first]:
             for card in self.cards:
@@ -661,10 +859,28 @@ class FilterPane(QWidget):
             self.cards = [FilterCard(self, f) for f in first]
             for number, card in enumerate(self.cards):
                 self.cards_layout.insertWidget(number + 1, card)
-        # The filters without a card narrow the rows once: for each card, they would take minutes
-        rows = None if df is None else apply(df, filters[MAX_CARDS:])
+        others = filters[MAX_CARDS:]
+        others_key = json.dumps([f.to_dict() for f in others], default=str)
+        plans = []
         for number, card in enumerate(self.cards):
-            card.update_values(df, first, number, self.display, rows)
+            plan = card.prepare(df, first, number, self.display, others_key)
+            if plan is None:
+                card.show_current()
+            else:
+                plans.append(plan)
+        self._making = []
+        if lists:
+            slow = [plan for plan in plans if plan.why is None]  # (why there is no list: at once)
+            size = sum(len(plan.data) if plan.data is not None else len(plan.old.all if plan.old else []) for plan in slow)
+            at_once = [plan for plan in plans if plan.why is not None] + (slow if size <= _AT_ONCE else [])
+            for plan, listing in _make(at_once, others):
+                plan.card.show_list(plan, listing)
+            self._making = [plan for plan in slow if plan not in at_once]
+        if self._making:
+            for plan in self._making:
+                plan.card.show_updating()
+            making = list(self._making)
+            self._lister.start(lambda cancel: _make(making, others, cancel))
         more = len(filters) - len(first)
         full = len(filters) >= MAX_CARDS
         most = f"A table shows {MAX_CARDS} filters at most: remove {f'{more + 1:,}' if more else 'one'} to add another."
@@ -675,6 +891,20 @@ class FilterPane(QWidget):
         self.hint.setVisible(not filters)
         self.add_button.setEnabled(table_id is not None and not full)
         self.add_button.setToolTip(tooltip_text(most if full else _ADD_TIP))
+
+    def _listed(self, made: list[tuple[_Plan, Any]]) -> None:
+        self._making = []
+        for plan, listing in made:
+            if plan.card in self.cards:
+                plan.card.show_list(plan, listing)
+
+    def _not_listed(self, text: str) -> None:
+        """Making the lists failed (a fault): the cards say so, and the window shows the error."""
+        making, self._making = self._making, []
+        for plan in making:
+            if plan.card in self.cards:
+                plan.card.show_list(plan, "These values can't be listed.")
+        self.session.error.emit(text)
 
     def _fill_add_menu(self) -> None:
         self.add_menu.clear()

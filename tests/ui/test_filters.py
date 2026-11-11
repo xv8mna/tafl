@@ -11,6 +11,7 @@ import pytest
 from PySide6.QtCore import QLocale, QPoint, Qt
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QWidget
 
+from tafl.api.dtypes import text_key
 from tafl.api.testing import StubContext
 from tafl.core import Project
 from tafl.ui import app, data_panel, filter_pane
@@ -281,8 +282,9 @@ def test_tiny_numbers_are_listed_with_all_their_digits(session):
     assert Filter.from_dict(session.filters(table.id)[0]).options["thresholds"] == limits
 
 
-def test_many_different_values_stay_fast(session):
-    """A column with 60,000 different values (once took half a minute)."""
+def test_many_different_values_stay_fast(session, qtbot):
+    """A column with 60,000 different values (once took half a minute). They are listed in the
+    background, while the cards show "…"."""
     df = pl.DataFrame({"i": pl.int_range(0, 300_000, eager=True)}).select(
         Customer=pl.format("C{}", pl.col("i") % 60_000), Net=(pl.col("i") % 997) / 10
     )
@@ -291,8 +293,11 @@ def test_many_different_values_stay_fast(session):
     pane = FilterPane(session)
     started = time.perf_counter()
     pane.show_data(table.id, df)
+    assert pane.updating and [card.status.text() for card in pane.cards] == ["…", "…"]
+    qtbot.waitUntil(lambda: not pane.updating, timeout=10_000)
     assert time.perf_counter() - started < 5
     assert pane.cards[0].model.rows[0][2] == "C17" and len(pane.cards[0].model.all) == 60_000
+    assert pane.cards[0].status.text() == "60,000 values · 1 selected"
 
 
 def test_an_error_dialog_comes_once_per_place(window, monkeypatch):
@@ -499,6 +504,130 @@ def test_a_long_selection_is_stored_as_the_values_left_out():
     assert selection([], offered) == ([], False)
 
 
+@pytest.fixture
+def made(monkeypatch):
+    """How many lists the filter pane made anew (with a count of every value) and marked anew."""
+    counts = {"lists": 0, "marked": 0}
+    facet, marked = filter_pane.facet, filter_pane._marked
+
+    def counted_facet(*args, **kwargs):
+        counts["lists"] += 1
+        return facet(*args, **kwargs)
+
+    def counted_marked(*args, **kwargs):
+        counts["marked"] += 1
+        return marked(*args, **kwargs)
+
+    monkeypatch.setattr(filter_pane, "facet", counted_facet)
+    monkeypatch.setattr(filter_pane, "_marked", counted_marked)
+    return counts
+
+
+def test_a_change_lists_again_only_the_cards_it_changes(session, made):
+    """Up to 0.6.4 every change made the list of every card anew. A card counts its values among
+    the rows of the other filters: its own values only change which of them are applied."""
+    df = pl.DataFrame({"A": [i % 7 for i in range(100)], "B": [i % 5 for i in range(100)], "C": [i % 3 for i in range(100)]})
+    table = session.project.add_table("T")
+    session.set_filters(table.id, [{"column": name, "values": []} for name in "ABC"])
+    pane = FilterPane(session)
+    pane.show_data(table.id, df)
+    assert made == {"lists": 3, "marked": 0}
+    card = pane.cards[0]
+    card.apply_only(card.model.index(0, 0))  # card A: the values of B and C are counted anew
+    pane.show_data(table.id, df)
+    assert made == {"lists": 5, "marked": 1} and card.status.text() == "7 values · 1 selected"
+    assert sum(item[1] for item in pane.cards[1].model.all) == 100 // 7 + 1  # the rows of A = 0
+    pane.show_data(table.id, df)  # nothing changed
+    assert made == {"lists": 5, "marked": 1}
+    pane.show_data(table.id, df.head(50))  # other data: every list
+    assert made == {"lists": 8, "marked": 1}
+
+
+def test_a_closed_pane_and_the_view_not_shown_make_no_lists(window, settle, session, demo, made):
+    """Up to 0.6.4 the filter pane of the map and that of the tables made the lists of every card
+    at every change, also when closed."""
+    panel, orders = open_orders(window, settle, session, demo, 8)
+    session.set_filters(orders.id, [{"column": "City", "values": []}, {"column": "Net", "values": []}])
+    settle(session)
+    assert made["lists"] == 0 and [card.column for card in panel.filter_pane.cards] == ["City", "Net"]
+    panel.filter_button.setChecked(True)
+    assert made["lists"] == 2 and listed(panel.filter_pane.cards[0])
+    card = panel.filter_pane.cards[0]
+    card.apply_only(card.model.index(0, 0))
+    settle(session)
+    assert made == {"lists": 3, "marked": 1}  # the pane under the map (not shown) made none
+    window.show_map(True)
+    settle(session)
+    map_panel = window.map_view.data
+    map_panel.filter_button.setChecked(True)  # it catches up when it comes into sight
+    assert made["lists"] == 5 and map_panel.filter_pane.cards[0].status.text().endswith("· 1 selected")
+
+
+def test_big_lists_are_made_in_the_background(session, qtbot):
+    """While the cards show "…": nothing can be picked from a list that is out of date. A list
+    made for data or filters that changed meanwhile is not shown."""
+    df = pl.DataFrame({"A": range(30_000), "B": [i % 10 for i in range(30_000)]})
+    table = session.project.add_table("T")
+    session.set_filters(table.id, [{"column": "A", "values": [5]}, {"column": "B", "values": []}])
+    pane = FilterPane(session)
+    qtbot.addWidget(pane)
+    pane.show_data(table.id, df)
+    assert pane.updating and all(card.status.text() == "…" and not card.view.isEnabled() for card in pane.cards)
+    assert not any(card.apply_button.isEnabled() for card in pane.cards)
+    qtbot.waitUntil(lambda: not pane.updating, timeout=10_000)
+    assert [card.status.text() for card in pane.cards] == ["30,000 values · 1 selected", "10 values"]
+    assert pane.cards[1].model.rows[0][1] == 0 and pane.cards[1].view.isEnabled()  # (B = 0 has no row with A = 5)
+    session.set_filters(table.id, [{"column": "A", "values": [7]}, {"column": "B", "values": []}])
+    pane.show_data(table.id, df)
+    session.set_filters(table.id, [{"column": "A", "values": [5]}, {"column": "B", "values": []}])
+    pane.show_data(table.id, df)  # back as it was before: the lists shown are right
+    assert not pane.updating and [card.status.text() for card in pane.cards] == ["30,000 values · 1 selected", "10 values"]
+    qtbot.wait(1000)  # the lists made for A = 7 never come
+    assert pane.cards[0].model.applied() == [5] and [row[1] for row in pane.cards[1].model.rows][5:8] == [1, 0, 0]
+    session.set_filters(table.id, [{"column": "A", "values": [25]}, {"column": "B", "values": []}])
+    pane.show_data(table.id, df)
+    pane.show_data(table.id, df.head(25_000))  # A = 25 among other data
+    qtbot.waitUntil(lambda: not pane.updating, timeout=10_000)
+    assert pane.cards[0].status.text() == "25,000 values · 1 selected"
+    assert pane.cards[1].model.rows[5][1] == 1  # B = 5 in the row with A = 25 of the new data
+
+
+def test_the_order_of_the_values_is_that_of_sort(session):
+    """The lists are sorted by Polars (by value) and then by number; the order is the one the
+    lists had in 0.6.4, sorted by Python: empty first, NaN last, texts like Excel."""
+
+    def old_key(item, texts):
+        value = item[0]
+        if value is None:
+            return (0, 0)
+        if isinstance(value, float) and math.isnan(value):
+            return (2, 0)
+        return (1, text_key(value), value) if texts else (1, value)  # categories: by their text alone
+
+    texts = ["Zebra", "apfel", "Äpfel", "Apfel", "Özdemir", None, "zebra", "Peter", "Straße", "Strasse", "", "ß", "ss"]
+    frames = [
+        pl.DataFrame({"V": [3.5, None, float("nan"), -1.0, 0.0, 2.25, -7.5, 3.5, None, 1e-12] * 3}),
+        pl.DataFrame({"V": texts * 2}),
+        pl.DataFrame({"V": pl.Series(texts * 2, dtype=pl.Categorical)}),
+        pl.DataFrame({"V": [dt.date(2025, 1, 2), None, dt.date(2024, 12, 31), dt.date(2025, 1, 1)] * 2}),
+        pl.DataFrame({"V": pl.Series([D("1.50"), None, D("-2.25"), D("10.00")] * 2, dtype=pl.Decimal(10, 2))}),
+    ]
+    table = session.project.add_table("T")
+    session.set_filters(table.id, [{"column": "V", "values": []}])
+    for df in frames:
+        pane = FilterPane(session)
+        pane.show_data(table.id, df)
+        model, texts = pane.cards[0].model, df.schema["V"] == pl.String
+        for column, order in ((0, Qt.SortOrder.AscendingOrder), (0, Qt.SortOrder.DescendingOrder), (1, Qt.SortOrder.DescendingOrder)):
+            model.sort(column, order)
+            descending = order == Qt.SortOrder.DescendingOrder
+            keys = {id(item): old_key(item, texts) for item in model.all}
+            key = (lambda item, keys=keys: (item[1], keys[id(item)])) if column == 1 else (lambda item, keys=keys: keys[id(item)])
+            expected = sorted(model.all, key=key, reverse=descending)
+            got = [item[0] for item in model.rows]
+            assert [repr(v) for v in got] == [repr(item[0]) for item in expected], (df.schema, column, order)
+
+
 def test_all_values_then_apply_is_fast_and_short(session, qtbot):
     """100,000 different values: All, then Apply (once took 8 s and stored every value)."""
     df = pl.DataFrame({"Customer": [f"C{i}" for i in range(100_000)], "Net": range(100_000)})
@@ -509,6 +638,7 @@ def test_all_values_then_apply_is_fast_and_short(session, qtbot):
     pane.resize(300, 700)
     pane.show()
     pane.show_data(table.id, df)
+    qtbot.waitUntil(lambda: not pane.updating, timeout=10_000)
     (card,) = pane.cards
     QApplication.processEvents()
     started = time.perf_counter()
@@ -516,6 +646,7 @@ def test_all_values_then_apply_is_fast_and_short(session, qtbot):
     QApplication.processEvents()  # drawing the selection
     card.apply()
     pane.show_data(table.id, df)
+    qtbot.waitUntil(lambda: not pane.updating, timeout=10_000)
     (card,) = pane.cards
     QApplication.processEvents()
     assert time.perf_counter() - started < 2
@@ -1010,6 +1141,7 @@ def test_a_filter_without_a_card_leaves_the_values_of_a_card_in_its_list(window,
     first, other = sorted(set(panel.model.frame["CustomerNo"].to_list()))[:2]
     empty = [{"column": "Status", "values": []}] * (MAX_CARDS - 1)
     session.set_filters(orders.id, [{"column": "CustomerNo", "values": [first]}, *empty, {"column": "CustomerNo", "values": [other]}])
+    panel.filter_button.setChecked(True)  # a closed pane makes no lists
     card = pane.cards[0]
     assert card.status.text().endswith("· 1 selected")
     assert [value for value in card.model.applied()] == [first]

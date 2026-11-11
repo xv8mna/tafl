@@ -153,7 +153,7 @@ class DataPanel(QWidget):
         if table is None:
             self._show_message("Open a project (Ctrl+O), or create a table with “+ New table”.")
             self.subtitle.setText("")
-            self.filter_pane.show_data(None, None)
+            self.filter_pane.offer(None, None)
             return
         if step is None:
             self._no_data(table.id, "This table has no steps yet. Add an import with “+ Add step”.")
@@ -206,7 +206,7 @@ class DataPanel(QWidget):
         if df is None:
             self._no_data(table.id, "No data.")
             return
-        self.filter_pane.show_data(table.id, df)
+        self.filter_pane.offer(table.id, df)
         shown = self._filtered(table.id, df)
         if shown is not self.model.frame:
             self._show_frame(df, shown)
@@ -260,7 +260,7 @@ class DataPanel(QWidget):
 
     def _no_data(self, table_id: str, text: str, error: bool = False) -> None:
         self._show_message(text, error)
-        self.filter_pane.show_data(table_id, None)
+        self.filter_pane.offer(table_id, None)
 
     def _show_message(self, text: str, error: bool = False) -> None:
         self.message.setText(text)
