@@ -57,7 +57,7 @@ from . import params as P
 from .context import Context
 from .endpoints import FOLDER, IN, Endpoint, file_endpoint
 from .errors import ActionError, SkipRest
-from .names import col
+from .names import col, cols
 
 _IN_FOLDER = {"source": "folder"}
 ONE_COLUMN = "\x1f"  # the delimiter for files that have none: text doesn't contain it
@@ -287,7 +287,7 @@ def _stack_each(
         if all(dtypes.type_label(dtype) != "text" for dtype in counted):
             mixed.append(name)
     if mixed and warn is not None:  # Append's warning about them, in its words
-        dtypes.stack([frame.select([name for name in mixed if name in frame.columns]) for frame in frames], warn, sources)
+        dtypes.stack([frame.select(cols([name for name in mixed if name in frame.columns])) for frame in frames], warn, sources)
     if kept:
         frames = [frame.with_columns(_texts(text, [name for name in kept if name in text.columns])) for frame, text in zip(frames, texts, strict=True)]
     return dtypes.stack(frames, warn, sources)

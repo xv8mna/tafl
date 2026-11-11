@@ -431,6 +431,15 @@ for _tables in (["o"], ["o", "p"]):
         )
 
 
+@case("csv.import of a folder, K and D dates in one file and whole numbers in the other", "K", "D")
+def _(r):
+    """Each column of a date and a whole number gets Append's warning, abc (text in a.csv) none. With
+    K named * the step stopped ("duplicate output name"), with ^a.*$ abc got K's warning."""
+    (r.folder / "a.csv").write_text(f"{r['K']};{r['D']};abc;x\n31.01.2026;31.01.2026;n/a;1,5\n", encoding="utf-8")
+    (r.folder / "b.csv").write_text(f"{r['K']};{r['D']};abc;x\n17;17;1,5;2,5\n", encoding="utf-8")
+    return r.step("csv.import", None, {"source": "folder", "folder": str(r.folder), "file_column": True})
+
+
 @case("parquet.import of a folder, K of other types in the files", "K")
 def _(r):
     named(pl.DataFrame({"K": [1, 2], "abc": [1.5, 2.5]}), r).write_parquet(r.folder / "a.parquet")

@@ -98,6 +98,19 @@ def test_a_column_of_other_types_in_the_files_of_a_folder(act, tmp_path):
     assert ctx.warnings == ["“When” is text: it has different types in the files (date, integer)"]
 
 
+@pytest.mark.parametrize("name", ["*", "^a.*$", "c12*"])
+def test_names_like_patterns_in_the_files_of_a_folder(act, tmp_path, name):
+    """A column named *, ^a.*$ or c12* with a date in one file and a whole number in the other gets
+    Append's warning as any other column does, and so does D beside it; abc (text in a.csv) gets
+    none. The names were read as patterns: * stopped the step, ^a.*$ gave abc the warning."""
+    (tmp_path / "a.csv").write_text(f"{name};D;abc\n31.01.2026;31.01.2026;n/a\n", encoding="utf-8")
+    (tmp_path / "b.csv").write_text(f"{name};D;abc\n17;17;1,5\n", encoding="utf-8")
+    ctx = StubContext()
+    out = act("csv.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out.to_dict(as_series=False) == {name: ["31.01.2026", "17"], "D": ["31.01.2026", "17"], "abc": ["n/a", "1,5"]}
+    assert ctx.warnings == [f"“{column}” is text: it has different types in the files (date, integer)" for column in (name, "D")]
+
+
 def test_long_numbers_in_one_file_of_a_folder_keep_their_digits(act, tmp_path):
     """Files with the same decimal separator are looked at together, as one file: a decimal of more
     than 15 digits in one of them makes the column exact decimals (in 0.6.4 12345678901234.568)."""
