@@ -349,8 +349,8 @@ def test_float_loses_digits_counts_all_significant_digits():
     amounts = ["12345678901234.5678", "1152921504606846976.0000", "9007199254740993.0000", "-123456789012.3450", "-9999999999999.9999"]
     exact = pl.Series([Decimal(v) for v in amounts], dtype=pl.Decimal(38, 4))
     assert dtypes.float_loses_digits(exact).to_list() == [True, False, True, False, True]
-    sixteen = pl.Series([Decimal("9999999999999.999"), Decimal("1.5")] * 50, dtype=pl.Decimal(38, 3))  # 9999999999999.998
-    assert dtypes.float_loses_digits(sixteen).to_list() == [True, False] * 50
+    sixteen = pl.Series([Decimal("9999999999999.999"), Decimal("1.5")] * 300, dtype=pl.Decimal(38, 3))  # 9999999999999.998
+    assert sixteen.len() > dtypes._FEW_DECIMALS and dtypes.float_loses_digits(sixteen).to_list() == [True, False] * 300
 
 
 def _changes_as_float(number: Decimal) -> bool:
@@ -381,8 +381,8 @@ def test_float_loses_digits_as_python_says_for_random_numbers(scale):
     assert few == expected  # a column of a few values: Python looks at them
     texts = pl.Series([format(number, "f").replace(".", ",") for number in numbers])
     assert dtypes.float_loses_digits(texts, ",").to_list() == expected
-    small = [number for number in numbers if abs(number) < Decimal(10) ** (15 - scale)] * 5  # all below 10^15 units
-    assert len(small) > 64 and not dtypes.float_loses_digits(pl.Series(small, dtype=pl.Decimal(38, scale))).any()
+    small = [number for number in numbers if abs(number) < Decimal(10) ** (15 - scale)] * 50  # all below 10^15 units
+    assert len(small) > dtypes._FEW_DECIMALS and not dtypes.float_loses_digits(pl.Series(small, dtype=pl.Decimal(38, scale))).any()
 
 
 @pytest.mark.parametrize(

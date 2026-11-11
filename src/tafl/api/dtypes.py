@@ -387,15 +387,16 @@ def _all_digits(parsed: pl.Expr, text: pl.Expr, fmt: str) -> pl.Expr:
 def _text_digits_lost(texts: pl.Series, decimal: str) -> pl.Series:
     """``float_loses_digits`` for numbers typed as text: a whole part that a decimal number doesn't
     keep exactly, or decimal places other than zeros whose decimal number has other digits."""
-    plain = _apply(texts, _number_text(_VALUE, decimal))  # once: the slow part
-    mantissa = _VALUE.str.replace(r"[eE].*$", "")  # 1.5e3: the digits 15
-    before = mantissa.str.split_exact(".", 1).struct.field("field_0").str.strip_chars_start("+-").str.strip_chars_start("0")
-    exact = before.cast(pl.Int128, strict=False)  # the whole part
-    parts = pl.DataFrame([plain.alias("value")]).select(
-        number=_VALUE.cast(pl.Float64, strict=False),
-        whole=((before.str.len_chars() > 38) | (exact.cast(pl.Float64).cast(pl.Int128, strict=False) != exact)).fill_null(False),
-        places=mantissa.str.contains(r"\.[0-9]*[1-9]").fill_null(False),
-        digits=_significant_digits(mantissa),
+    plain = _apply(texts, _number_text(_VALUE, decimal))  # each text once: a select works out what it uses for each use
+    # 1.5e3: the digits 15, of which 1 is the whole part
+    split = plain.to_frame("value").select(mantissa=_VALUE.str.replace(r"[eE].*$", ""), number=_VALUE.cast(pl.Float64, strict=False))
+    split = split.with_columns(whole=pl.col("mantissa").str.split_exact(".", 1).struct.field("field_0").str.strip_chars_start("+-0"))
+    exact = pl.col("whole").cast(pl.Int128, strict=False)
+    parts = split.select(
+        pl.col("number"),
+        whole=((pl.col("whole").str.len_chars() > 38) | (exact.cast(pl.Float64).cast(pl.Int128, strict=False) != exact)).fill_null(False),
+        places=pl.col("mantissa").str.contains(r"\.[0-9]*[1-9]").fill_null(False),
+        digits=_significant_digits(pl.col("mantissa")),
     )
     places = parts["places"] & _digits_lost(parts["digits"], parts["number"])
     return (parts["whole"] | places) & parts["number"].is_not_null()
@@ -434,7 +435,7 @@ def _digits_lost(digits: pl.Series, numbers: pl.Series) -> pl.Series:
     return lost
 
 
-_FEW_DECIMALS = 64  # up to so many exact decimals, Python looks at them in less time than a call of Polars takes
+_FEW_DECIMALS = 500  # up to so many exact decimals, Python looks at them in less time than the calls of Polars take
 
 
 def _decimal_lost(value: Decimal | None) -> bool:
