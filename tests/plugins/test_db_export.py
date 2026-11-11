@@ -2092,8 +2092,8 @@ def test_sqlserver_texts_for_date_columns_are_read_one_way_in_every_mode(registr
             # a key of texts finds the rows that SQL Server stored from the same dates
             registry.actions["db.export"](data.select("V").head(2), {"connection": "server", "table": name, "mode": "delete", "key_columns": ["V"]}, ctx)
             assert ctx.messages[-1] == ("info", f"{name}: deleted 2 rows"), kind
-        with pytest.raises(ActionError, match=rf"^The column V of {re.escape(name)} holds dates and time.*e\.g\. “2026-10-01T08:00”"):
-            registry.actions["db.export"](pl.DataFrame({"K": [1], "V": ["2026-10-01T08:00"]}), {"connection": "server", "table": name}, ctx)
+        with pytest.raises(ActionError, match=rf"^The column V of {re.escape(name)} holds dates and time.*e\.g\. “12/31/2025”"):
+            registry.actions["db.export"](pl.DataFrame({"K": [1], "V": ["12/31/2025"]}), {"connection": "server", "table": name}, ctx)
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
@@ -2245,3 +2245,35 @@ def test_sqlserver_ctrl_c_in_tafl_run_ends_a_running_statement(tmp_path, capsys)
         signal.signal(signal.SIGINT, before)
     output = capsys.readouterr()
     assert "  · 1. Import SQL query from server   (stopped)" in output.out and output.err.endswith("Error: Stopped\n")
+
+
+@_SQLSERVER
+def test_sqlserver_iso_8601_texts_for_date_columns_are_read_one_way_in_every_mode(registry):
+    """ISO 8601 means the same in every language: such texts worked in 0.6.4 when SQL Server read
+    them (Update and Upsert), mostly not in Add, whose driver reads only 2026-10-01 08:30:00. Now
+    every mode reads them; an offset is left out for a column without one (its local time)."""
+    ctx, name = _sqlserver()
+    texts = ["2026-10-01T08:30", "20261001", "20261001 08:30:15", "2026-10-01T08:30:15Z", "2026-10-01T08:30:15+02:00"]
+    expected = {
+        "date": ["2026-10-01"] * 5,
+        "datetime": ["2026-10-01 08:30:00.000", "2026-10-01 00:00:00.000", *["2026-10-01 08:30:15.000"] * 3],
+        "datetime2(0)": ["2026-10-01 08:30:00", "2026-10-01 00:00:00", *["2026-10-01 08:30:15"] * 3],
+        "time(0)": ["08:30:00", "00:00:00", *["08:30:15"] * 3],
+        "datetimeoffset(0)": [None, None, None, "2026-10-01 08:30:15 +00:00", "2026-10-01 08:30:15 +02:00"],  # None: this PC's offset
+    }
+    data = pl.DataFrame({"K": range(1, 6), "V": texts})
+    try:
+        for kind, values in expected.items():
+            stored_by = {}
+            for mode in ("insert", "upsert"):
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                    db.execute(f"CREATE TABLE {name} (K int, V {kind})")
+                registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": ["K"]}, ctx)
+                with ctx.database("server") as db:
+                    stored_by[mode] = db.read(f"SELECT CONVERT(nvarchar(40), V, 121) AS V FROM {name} ORDER BY K")["V"].to_list()
+            assert stored_by["insert"] == stored_by["upsert"], kind
+            assert [v for v, e in zip(stored_by["insert"], values) if e is not None] == [e for e in values if e is not None], kind
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

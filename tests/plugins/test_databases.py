@@ -1793,24 +1793,48 @@ def test_sqlserver_reads_texts_for_date_columns_with_the_rule_of_change_type():
 
 
 @pytest.mark.parametrize(
+    ("kind", "texts", "expected"),
+    [
+        ("date", ["20261001", "2026-10-01T08:30", "2026-10-01T23:30:00-05:00", "20261001 08:30:15.5"], [dt.date(2026, 10, 1)] * 4),
+        ("datetime2(3)", ["2026-10-01T08:30", "20261001", "20261001 08:30:15", "2026-10-01T08:30:15.123Z", "2026-10-01 08:30:15 +02:00"],
+         [dt.datetime(2026, 10, 1, 8, 30), dt.datetime(2026, 10, 1), dt.datetime(2026, 10, 1, 8, 30, 15),
+          dt.datetime(2026, 10, 1, 8, 30, 15, 123000), dt.datetime(2026, 10, 1, 8, 30, 15)]),  # an offset: the local time it names
+        ("time(3)", ["2026-10-01T08:30:15.25", "20261001", "08:30"], [dt.time(8, 30, 15, 250000), dt.time(0), dt.time(8, 30)]),
+        ("datetimeoffset(3)", ["2026-10-01T08:30", "20261001 08:30+02:00", "2026-10-01T08:30:15.5Z"],
+         ["2026-10-01 08:30:00", "2026-10-01 08:30:00 +02:00", "2026-10-01 08:30:15.5 +00:00"]),
+    ],
+)
+def test_sqlserver_reads_iso_8601_texts_for_date_columns(kind, texts, expected):
+    """Every form of ISO 8601, which means the same in every language: with T or a space, with or
+    without seconds, 20261001 for a date; texts of these forms that SQL Server read worked in 0.6.4
+    in some modes, and must not stop an export now. The rule of Change type reads only some of them."""
+    read = databases._read_date_texts(pl.DataFrame({"V": texts}), {"V": "V"}, {"V": kind}, "dbo.T", "sqlserver")[0]
+    assert read["V"].to_list() == expected
+
+
+@pytest.mark.parametrize(
     ("kind", "texts", "message"),
     [
         ("date", ["2026-10-01", "2026-13-01", "32.01.2026"], "holds dates (date), but V has texts that are no date (e.g. “2026-13-01”; 2 "
-         "texts like it). Write them as 31.12.2025 or 2025-12-31, or change them to dates first (Change type / format, with their format)."),
-        ("datetime", ["2026-10-01T08:00"], "holds dates and times (datetime), but V has texts that are no date and time (e.g. "
-         "“2026-10-01T08:00”). Write them as 31.12.2025 08:30 or 2025-12-31 08:30:00, or change them to date-times first (Change "
+         "texts like it). Write them as 31.12.2025, 2025-12-31 or 20251231, or change them to dates first (Change type / format, with "
+         "their format)."),
+        ("datetime", ["12/31/2025 08:30"], "holds dates and times (datetime), but V has texts that are no date and time (e.g. "
+         "“12/31/2025 08:30”). Write them as 31.12.2025 08:30 or 2025-12-31T08:30:00, or change them to date-times first (Change "
          "type / format, with their format)."),
-        ("smalldatetime", ["20261001"], "holds dates and times (smalldatetime), but V has texts that are no date and time (e.g. “20261001”)"),
-        ("time(0)", ["2026-10-01 08:00"], "holds times (time(0)), but V has texts that are no time (e.g. “2026-10-01 08:00”). Write them "
-         "as 08:30, 08:30:15 or 08:30:15.250."),
+        ("smalldatetime", ["2025-12-31 08:30 PM"], "holds dates and times (smalldatetime), but V has texts that are no date and time (e.g. "
+         "“2025-12-31 08:30 PM”)"),
+        ("datetime2(0)", ["08:30"], "holds dates and times (datetime2(0)), but V has texts that are no date and time (e.g. “08:30”)"),
+        ("time(0)", ["08:30 PM"], "holds times (time(0)), but V has texts that are no time (e.g. “08:30 PM”). Write them as 08:30, 08:30:15 "
+         "or 08:30:15.250."),
         ("datetimeoffset(0)", ["2026-10-01 08:00 +15:00"], "holds dates and times with their offset from UTC (datetimeoffset(0)), but V has "
-         "texts that are no date and time (e.g. “2026-10-01 08:00 +15:00”). Write them as 31.12.2025 08:30 +01:00 or 2025-12-31 "
-         "08:30:00 +01:00."),
+         "texts that are no date and time (e.g. “2026-10-01 08:00 +15:00”). Write them as 31.12.2025 08:30 +01:00 or "
+         "2025-12-31T08:30:00+01:00."),
     ],
 )
 def test_sqlserver_a_text_that_is_no_date_names_its_column(kind, texts, message):
     """Before, the driver refused it in Add without naming the column, and the server read it in
-    the keyed modes, also as another date, or as 1900-01-01 for an empty text."""
+    the keyed modes, also as another date, or as 1900-01-01 for an empty text. Forms whose meaning
+    depends on the language or the date format, and a time without a date for a date and time."""
     df = pl.DataFrame({"V": texts})
     with pytest.raises(ActionError) as error:
         databases._read_date_texts(df, {"V": "V"}, {"V": kind}, "dbo.T", "sqlserver")

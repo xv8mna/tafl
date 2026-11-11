@@ -1974,14 +1974,36 @@ _DATE_KINDS = ("date", "datetime", "datetime2", "smalldatetime", "time", "dateti
 # For the message about texts that are no date or time: what the column holds, what the texts are
 # not, how to write them
 _DATE_TEXTS = {
-    "date": ("dates", "no date", "31.12.2025 or 2025-12-31, or change them to dates first (Change type / format, with their format)"),
+    "date": ("dates", "no date", "31.12.2025, 2025-12-31 or 20251231, or change them to dates first (Change type / format, with "
+             "their format)"),
     "time": ("times", "no time", "08:30, 08:30:15 or 08:30:15.250"),
     "datetimeoffset": (
-        "dates and times with their offset from UTC", "no date and time", "31.12.2025 08:30 +01:00 or 2025-12-31 08:30:00 +01:00"
+        "dates and times with their offset from UTC", "no date and time", "31.12.2025 08:30 +01:00 or 2025-12-31T08:30:00+01:00"
     ),
-    "": ("dates and times", "no date and time", "31.12.2025 08:30 or 2025-12-31 08:30:00, or change them to date-times first "
+    "": ("dates and times", "no date and time", "31.12.2025 08:30 or 2025-12-31T08:30:00, or change them to date-times first "
          "(Change type / format, with their format)"),
 }  # fmt: skip
+# ISO 8601 beside the rule of Change type: a date (2026-10-01, also 20261001 after a replace), with a
+# time after T or a space (08:30, 08:30:15, 08:30:15.1234567), and maybe an offset (Z, +02:00)
+_ISO = r"^([0-9]{4}-[0-9]{2}-[0-9]{2})(?:[T ]([0-9]{2}:[0-9]{2})(:[0-9]{2}(?:\.[0-9]{1,9})?)?)?\s*(?:Z|[+-][0-9]{2}(?::?[0-9]{2})?)?$"
+
+
+def _iso_datetimes(texts: pl.Series) -> pl.Series:
+    """Texts in a form of ISO 8601, which means the same in every language, as date-times to the
+    microsecond: a date (2026-10-01 or 20261001), maybe with a time after T or a space (with or
+    without seconds, up to 9 digits of a second); an offset after it (Z, +02:00) is left out, so
+    the date-time is the local time that the text names. The export reads them beside the rule
+    of Change type, which doesn't read all of them (2026-10-01T08:30, 20261001): CSV detection
+    must not take 20261001 for a date. Empty for other texts, also for a time without a date."""
+    text = texts.str.strip_chars().str.replace(r"^([0-9]{4})([0-9]{2})([0-9]{2})([T ].*)?$", "${1}-${2}-${3}${4}")
+    parts = text.str.extract_groups(_ISO).struct.unnest()  # the columns "1", "2" and "3"
+    joined = parts.select(pl.col("1") + " " + pl.col("2").fill_null("00:00") + pl.col("3").fill_null(":00")).to_series()
+    return joined.str.to_datetime("%Y-%m-%d %H:%M:%S%.f", strict=False, time_unit="us").alias(texts.name)
+
+
+def _or_else(first: pl.Series, other: pl.Series) -> pl.Series:
+    """``first``, and ``other`` where it is empty."""
+    return first.zip_with(first.is_not_null(), other)
 
 
 def _read_date_texts(
@@ -1989,7 +2011,10 @@ def _read_date_texts(
 ) -> tuple[pl.DataFrame, dict[str, tuple[int, str, int]]]:
     """Texts for SQL Server date and time columns, read in every mode with the rule of Change type
     / format without a format (31.12.2025, 2025-12-31, with or without a time; 08:30:15.250 for a
-    time; a datetimeoffset column also takes an offset after the time, +01:00 or Z). Before, the
+    time; a datetimeoffset column also takes an offset after the time, +01:00 or Z), and as ISO
+    8601 (``_iso_datetimes``: 2026-10-01T08:30, 20261001; an offset in it is left out for a column
+    without one; a time column takes the time of a date and time). Forms whose meaning depends on
+    the language or the date format (12/31/2025, 08:30 PM) are no dates here. Before, the
     driver read them in Add (ISO only), while the keyed modes sent them as texts that the server
     read with its session's date format: 01.10.2026 was 10 January there. Dates, date-times and
     times are then written as such (for a datetimeoffset column: as a text the driver reads, with
@@ -2012,13 +2037,13 @@ def _read_date_texts(
             continue
         text = df[source].cast(pl.String).alias("value")  # a fixed name, as in _round_half_away
         if base == "date":
-            read = dtypes.parse_dates(text)
-        elif base == "time":
-            read = dtypes.parse_times(text)
+            read = _or_else(dtypes.parse_dates(text), _iso_datetimes(text).dt.date())
+        elif base == "time":  # the time of a date and time in ISO 8601 too (of a date: 00:00)
+            read = _or_else(dtypes.parse_times(text), _iso_datetimes(text).dt.time())
         elif base == "datetimeoffset":
             read = _offset_texts(text)
         else:
-            read = dtypes.parse_datetimes(text)
+            read = _or_else(dtypes.parse_datetimes(text), _iso_datetimes(text))
         failed = (text.is_not_null() & read.is_null() & (text.str.strip_chars() != "")).fill_null(False)
         if count := int(failed.sum()):
             held, no_such, forms = _DATE_TEXTS.get(base, _DATE_TEXTS[""])
@@ -2051,7 +2076,8 @@ def _offset_texts(texts: pl.Series) -> pl.Series:
     found = text.str.extract(_TIME_BEFORE_ZONE + _ZONE, 1)
     moment = pl.when(found.is_not_null()).then(text.str.replace(r"\s*" + _ZONE, "")).otherwise(text)
     frame = frame.with_columns(found.alias("zone"), moment.alias("moment"))
-    frame = frame.with_columns(dtypes.parse_datetimes(frame["moment"].alias("value")).alias("read"))
+    moments = frame["moment"].alias("value")
+    frame = frame.with_columns(_or_else(dtypes.parse_datetimes(moments), _iso_datetimes(moments)).alias("read"))
     hours = zone.str.slice(1, 2).cast(pl.Int32, strict=False)
     minutes = zone.str.replace(r"^[+-][0-9]{2}:?", "").cast(pl.Int32, strict=False).fill_null(0)
     offset = (
