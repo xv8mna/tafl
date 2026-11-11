@@ -408,6 +408,22 @@ def test_decimals_of_more_than_15_digits_keep_them(act, tmp_path):
     ]
 
 
+def test_decimals_that_a_decimal_number_keeps_stay_decimal_numbers(act, tmp_path):
+    """A program writes its decimal numbers with as many digits as tell them apart, up to 17:
+    0.3333333333333333 and 0.30000000000000004 come back from a decimal number with the same digits,
+    so their columns stay decimal numbers, also as amounts (they became exact decimals for having
+    more than 15 digits). 12345678901234.5678 comes back as 12345678901234.568: exact decimals."""
+    (tmp_path / "m.csv").write_text(
+        "Ratio,Sum,Price,Amt\n0.3333333333333333,0.30000000000000004,$0.30000000000000004,12345678901234.5678\n0.5,1.1,$1.5,1.5\n",
+        encoding="utf-8",
+    )
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "m.csv")}, ctx)
+    assert df.schema == {"Ratio": pl.Float64, "Sum": pl.Float64, "Price": pl.Float64, "Amt": pl.Decimal(38, 4)} and not ctx.warnings
+    assert df.drop("Amt").rows() == [(0.3333333333333333, 0.30000000000000004, 0.30000000000000004), (0.5, 1.1, 1.5)]
+    assert df["Amt"].to_list() == [Decimal("12345678901234.5678"), Decimal("1.5")]
+
+
 def test_a_sign_before_the_currency_sign_and_no_digit_before_the_separator(act, tmp_path):
     """-$3.00 and -€3,00 stayed text (the sign could only come after the currency sign), and so did
     ,5 and .5."""

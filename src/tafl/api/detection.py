@@ -40,7 +40,7 @@ _SPACED = {
 # The sign of an amount comes after its currency sign or before it: $-3.00, -$3.00, -3,00 €
 _SIGNED = rf"([{_CURRENCY}]?{_SPACES}*[+-]?|[+-]{_SPACES}*[{_CURRENCY}])"
 _CODE = r"^[+-]?0[0-9]"  # a leading zero before another digit: a code (0815, 00,5), not a number
-_FLOAT_DIGITS = 15  # the significant digits that a decimal number (Float64) keeps, as Excel and the CSV export
+_FLOAT_DIGITS = 15  # a decimal number (Float64) keeps every number of up to 15 significant digits
 _MOST_DIGITS = 38  # of an exact decimal (Decimal)
 _SAMPLE = 1_000  # values that most columns are told apart by
 _SHOWN = 2_000  # rows whose values show the decimal separator of a file
@@ -231,10 +231,11 @@ def detect_types(data: pl.DataFrame, decimals: Mapping[str, str], warn: Callable
     the column is one. Digits with spaces between them are numbers only in amounts and percentages,
     as thousands (see ``_SPACED``): 1 234 and +49 30 1234567 stay text, and so do numbers with a
     leading zero (0815, 00,5: codes). Numbers that a decimal number (Float64) would change keep all
-    their digits: a column with a number of more than 15 significant digits, or with a whole
-    number beyond Int64, becomes exact decimals (Decimal) with the decimal places its values show;
-    beyond the 38 digits of an exact decimal it stays text, and ``warn`` is told. All values of a
-    column decide, not only the first ones."""
+    their digits: a column with a number that its decimal number gives back with other digits
+    (12345678901234,5678; ``dtypes.float_loses_digits``), or with a whole number beyond Int64,
+    becomes exact decimals (Decimal) with the decimal places its values show; beyond the 38 digits
+    of an exact decimal it stays text, and ``warn`` is told. A decimal number as a program writes it
+    (0.30000000000000004) stays one. All values of a column decide, not only the first ones."""
     notes: dict[str, list[str]] = {}  # the warnings of infer_types, by column
     typed = data.with_columns(
         [dtypes.infer_series(data[name], decimals[name], notes.setdefault(name, []).append) for name in data.columns]
@@ -288,7 +289,7 @@ def _numbers(original: pl.Series, decimal: str, floats: bool) -> tuple[pl.Series
             return _whole_numbers(original, text, decimal)
         if pattern == amount and not _amounts(values):
             return None
-        if _beyond_floats(values, decimal):
+        if _beyond_floats(values, decimal, percent=pattern == percent):
             return _exact(original, text, decimal, percent=pattern == percent)
         if pattern == percent:
             return _percentages(text, decimal), None
@@ -319,38 +320,49 @@ def _whole_numbers(original: pl.Series, text: pl.Series, decimal: str) -> tuple[
 def _decimal_numbers(original: pl.Series, column: pl.Series, decimal: str) -> tuple[pl.Series, str | None] | None:
     """A column that ``infer_series`` made decimal numbers (``column``: its texts): codes with a
     leading zero (00,5) stay text, and numbers that a decimal number would change make exact
-    decimals. Both are looked for in the texts as they are, without cleaning all of them first:
-    most columns have neither."""
+    decimals. ``infer_series`` made decimal numbers only of numbers whose digits they keep
+    (``dtypes.float_loses_digits``): only one too close to 0 is left (see ``_tiny``). Both are
+    looked for in the texts as they are, without cleaning all of them first: most columns have
+    neither."""
     if column.str.contains(r"^\s*[+-]?0[0-9]").any():
         return original, None
-    if not _beyond_floats(column, decimal):  # the texts as they are: spaces around them don't change the numbers
+    if not _tiny(column, decimal):  # the texts as they are: spaces around them don't change the numbers
         return None
     return _exact(original, _clean(column), decimal)
 
 
-def _beyond_floats(values: pl.Series, decimal: str) -> bool:
+def _beyond_floats(values: pl.Series, decimal: str, percent: bool = False) -> bool:
     """Whether a decimal number (Float64) would change one of these numbers (texts that fit a
-    pattern of numbers, also with spaces around them): one of more than 15 significant digits, or
-    beyond the range of decimal numbers. The first long ones are looked at first: in a column of
-    such numbers, one of them tells."""
+    pattern of numbers, also with spaces around them; with ``percent``, divided by 100): one that
+    its decimal number gives back with other digits (``dtypes.float_loses_digits``:
+    12345678901234.5678, not 0.30000000000000004 or 0.3333333333333333, which a program writes for
+    its decimal numbers), or one too close to 0 (``_tiny``). Only numbers of more than 15 digits can
+    be such a number; the first of them are looked at first: in a column of them, one tells."""
     rows = (values.str.len_bytes() > _FLOAT_DIGITS).fill_null(False).arg_true()  # shorter ones have at most 15 digits
     for part in (rows.head(_SAMPLE), rows.slice(_SAMPLE)):
         long = values.gather(part)
         long = long.filter(long.str.count_matches("[0-9]") > _FLOAT_DIGITS)  # and so have those with fewer digits
-        if long.len() and _plain(long, decimal).to_frame().select(_changed_by_floats(pl.col("value")).any()).item():
+        if not long.len():
+            continue
+        plain = _plain(long, decimal).to_frame()
+        plain = plain.select(_hundredths(pl.col("value"))) if percent else plain
+        if dtypes.float_loses_digits(plain["value"], ".").any():
             return True
-    return False
+    return _tiny(values, decimal)
 
 
-def _changed_by_floats(plain: pl.Expr) -> pl.Expr:
-    """For numbers as plain text (-1234.50): whether a decimal number changes them. It keeps 15
-    significant digits (zeros before the first digit and after the last one don't count), from
-    about 1e-307 to 1e308."""
-    counts = _counts(plain)
-    number = plain.str.strip_chars_start("+-").str.strip_chars_start("0")  # .000123 for 0.000123
+def _tiny(values: pl.Series, decimal: str) -> bool:
+    """Whether one of these numbers is so close to 0 that its decimal number is 0 (below about
+    1e-307): ``dtypes.float_loses_digits`` looks at the digits, and such a number has few. It is
+    written with more than 300 characters."""
+    rows = (values.str.len_bytes() > 300).fill_null(False).arg_true()
+    if not rows.len():
+        return False
+    plain = _plain(values.gather(rows), decimal).to_frame()
+    counts = _counts(pl.col("value"))
+    number = pl.col("value").str.strip_chars_start("+-").str.strip_chars_start("0")  # .000123 for 0.000123
     zeros = number.str.len_bytes().cast(pl.Int64) - number.str.strip_chars_start(".0").str.len_bytes().cast(pl.Int64) - 1
-    tiny = (counts["whole"] == 0) & (counts["significant"] > 0) & (zeros > 306)
-    return (counts["significant"] > _FLOAT_DIGITS) | (counts["whole"] > 308) | tiny
+    return bool(plain.select(((counts["whole"] == 0) & (counts["significant"] > 0) & (zeros > 306)).any()).item())
 
 
 def _counts(plain: pl.Expr) -> dict[str, pl.Expr]:
