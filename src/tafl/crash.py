@@ -258,7 +258,35 @@ def last_words(name: str | None = None) -> list[Stopped]:
 def main(argv: list[str] | None = None, *, ctrl_c: threading.Event | None = None) -> int:
     """The program ``tafl``: ``cli.main``, and on Windows ``tafl run`` in a child process, which
     starts this program again. Elsewhere a run is one process: a signal for the parent would not
-    reach a child, and no job ends the child with its parent."""
+    reach a child, and no job ends the child with its parent. ``ctrl_c`` is set by a Ctrl+C that
+    came while the program started (see __main__.py and packaging/tafl_cli.py). Without it, the
+    program (no ``argv``) keeps a Ctrl+C from here on, before it loads the modules of the
+    command line, as ``_keep_ctrl_c`` does."""
+    if argv is not None or ctrl_c is not None or threading.current_thread() is not threading.main_thread():
+        return _main(argv, ctrl_c)
+    before = signal.getsignal(signal.SIGINT)
+    ctrl_c, kept = _keep_ctrl_c()
+    try:
+        return _main(argv, ctrl_c)
+    finally:
+        if signal.getsignal(signal.SIGINT) is kept:  # nothing took Ctrl+C over (a test): as before
+            signal.signal(signal.SIGINT, before)
+
+
+def _keep_ctrl_c() -> tuple[threading.Event, Any]:
+    """From now on, a Ctrl+C sets the event that is returned (with the handler), and interrupts
+    nothing: a KeyboardInterrupt while Python loads a library prints a long traceback, and can
+    crash the program. ``cli.main`` stops at once when the event is set. Main thread only."""
+    kept = threading.Event()
+
+    def keep(signum: int, frame: object) -> None:
+        kept.set()
+
+    signal.signal(signal.SIGINT, keep)
+    return kept, keep
+
+
+def _main(argv: list[str] | None, ctrl_c: threading.Event | None) -> int:
     name = os.environ.pop(_CHILD, None)
     if argv is None and name is None and sys.platform == "win32" and _is_run(sys.argv[1:]):
         return _run_in_child(ctrl_c)

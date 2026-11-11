@@ -363,6 +363,61 @@ def test_the_other_ends_of_a_run_stay_as_they_were(folder, plugins, tmp_path):
     assert not folder.exists() or list(folder.iterdir()) == []
 
 
+LOADING = '''
+import builtins
+import runpy
+import signal
+import sys
+
+how, module, *args = sys.argv[1:]
+load = builtins.__import__
+
+
+def loading(name, *more, **options):
+    if name == module:  # a Ctrl+C while the program loads this module
+        builtins.__import__ = load
+        signal.raise_signal(signal.SIGINT)
+    return load(name, *more, **options)
+
+
+builtins.__import__ = loading
+sys.argv = ["tafl", *args]
+if how == "module":  # python -m tafl
+    runpy.run_module("tafl", run_name="__main__", alter_sys=True)
+else:  # the program that pip installs: tafl.crash:main
+    from tafl.crash import main
+
+    raise SystemExit(main())
+'''
+
+
+@pytest.mark.parametrize(
+    ("how", "module", "command"),
+    [
+        ("module", "tafl.crash", "plugins"),  # python -m tafl, before the module of crash.main is loaded
+        ("module", "tafl.cli", "run"),  # in the run's child, which is this program again
+        ("program", "tafl.cli", "run"),
+        ("program", "tafl.cli", "plugins"),
+    ],
+)
+def test_a_ctrl_c_while_the_program_loads_stops_it_without_a_traceback(how, module, command, folder, tmp_path):
+    """Up to 0.6.4 a Ctrl+C in the first moments printed a long traceback of Python's import: a
+    run's child loads Polars then, and the run ended as if it had stopped without a message."""
+    (tmp_path / "loading.py").write_text(LOADING, encoding="utf-8")
+    arguments = ["run", str(_project(tmp_path))] if command == "run" else ["plugins"]
+    environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "APPDATA": str(tmp_path / "appdata")}
+    environment.pop("TAFL_PLUGINS", None)
+    stopped = subprocess.run(
+        [sys.executable, str(tmp_path / "loading.py"), how, module, *arguments],
+        capture_output=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=120,
+    )
+    assert (stopped.returncode, stopped.stderr) == (130, "Error: Stopped\n")
+    assert "Import orders.csv" not in stopped.stdout
+
+
 @pytest.mark.parametrize(
     ("args", "is_run"),
     [

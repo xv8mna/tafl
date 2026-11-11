@@ -434,6 +434,37 @@ def test_tafl_exe_keeps_a_ctrl_c_that_comes_while_it_starts(tmp_path):
     assert (worker.returncode, worker.stdout) == (0, "worker True\n")
 
 
+HOOKED = '''
+import runpy
+import signal
+import sys
+
+hook, script, *args = sys.argv[1:]
+# PyInstaller runs its run-time hooks and then the script, all in the module __main__
+names = runpy.run_path(hook, run_name="__main__")
+signal.raise_signal(signal.SIGINT)  # a Ctrl+C while PyInstaller's other hooks load modules
+sys.argv = ["tafl", *args]
+runpy.run_path(script, init_globals=names, run_name="__main__")
+'''
+
+
+@pytest.mark.parametrize("command", ["run", "show"])
+def test_tafl_exe_keeps_a_ctrl_c_from_its_run_time_hook_on(command, tmp_path):
+    """The hook (packaging/pyi_rth_tafl_cli.py) runs before PyInstaller's other hooks: up to 0.6.4 a
+    Ctrl+C while they loaded modules gave a traceback, and the exit code 1."""
+    path = _one_table(tmp_path)
+    (tmp_path / "hooked.py").write_text(HOOKED, encoding="utf-8")
+    environment = {**os.environ, "APPDATA": str(tmp_path / "appdata"), "LOCALAPPDATA": str(tmp_path / "local")}
+    environment.pop("TAFL_PLUGINS", None)
+    arguments = ["run", str(path)] if command == "run" else ["show", str(path), "--table", "Orders"]
+    command_line = [sys.executable, str(tmp_path / "hooked.py"), str(TAFL_EXE.parent / "pyi_rth_tafl_cli.py"), str(TAFL_EXE)]
+    stopped = subprocess.run(
+        [*command_line, *arguments], capture_output=True, text=True, errors="replace", env=environment, timeout=120
+    )
+    assert (stopped.returncode, stopped.stderr) == (130, "Error: Stopped\n")
+    assert not (tmp_path / "out.csv").exists()
+
+
 SLOW = "=(SELECT COUNT(*) FROM range(30000000000) t(i) WHERE i % 7 = 8)"  # takes minutes
 
 

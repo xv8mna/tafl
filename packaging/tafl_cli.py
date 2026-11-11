@@ -4,9 +4,13 @@ import signal
 import threading
 
 # Ctrl+C while the program loads its modules is kept for main(), which then stops at once: a
-# KeyboardInterrupt in the middle of loading a library can crash the program.
-ctrl_c = threading.Event()
-signal.signal(signal.SIGINT, lambda signum, frame: ctrl_c.set())
+# KeyboardInterrupt in the middle of loading a library can crash the program. The run-time hook
+# pyi_rth_tafl_cli.py keeps it from the start, before PyInstaller's other hooks load modules; it
+# runs in this module (__main__) as this script does.
+ctrl_c = globals().get("tafl_ctrl_c")
+if not isinstance(ctrl_c, threading.Event):  # the script without the hook
+    ctrl_c = threading.Event()
+    signal.signal(signal.SIGINT, lambda signum, frame: ctrl_c.set())
 
 import multiprocessing  # noqa: E402
 import multiprocessing.spawn  # noqa: E402

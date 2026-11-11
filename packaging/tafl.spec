@@ -62,7 +62,14 @@ excludes = [
     "pytest", "IPython", "matplotlib", "pandas", "openpyxl", "uv",
 ]  # fmt: skip
 
-programs = Analysis(["tafl_app.py", "tafl_cli.py"], pathex=["../src"], hiddenimports=hidden, excludes=excludes)
+# The run-time hook of the command line keeps a Ctrl+C from the start (see pyi_rth_tafl_cli.py)
+programs = Analysis(
+    ["tafl_app.py", "tafl_cli.py"],
+    pathex=["../src"],
+    hiddenimports=hidden,
+    excludes=excludes,
+    runtime_hooks=["pyi_rth_tafl_cli.py"],
+)
 programs.binaries = [entry for entry in programs.binaries if needed(entry)]
 programs.datas = [entry for entry in programs.datas if needed(entry)]
 modules = PYZ(programs.pure)
@@ -72,10 +79,13 @@ icon = "../src/tafl/ui/app.ico"
 def program(script, **options):
     """An EXE that runs one of the two scripts, with the shared modules. programs.scripts also
     holds PyInstaller's start-up code and runtime hooks, which both need, except Qt's: the
-    command line doesn't use Qt, and loading it at the start makes a Ctrl+C then crash."""
+    command line doesn't use Qt, and loading it at the start makes a Ctrl+C then crash. The
+    window has no console, so no Ctrl+C either: the hook of the command line stays out of it."""
     left_out = {"tafl_app", "tafl_cli"} - {script}
     if script == "tafl_cli":
         left_out.add("pyi_rth_pyside6")
+    else:
+        left_out.add("pyi_rth_tafl_cli")
     scripts = [entry for entry in programs.scripts if entry[0] not in left_out]
     return EXE(modules, scripts, [], exclude_binaries=True, icon=icon, upx=False, **options)
 
