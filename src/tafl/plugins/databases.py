@@ -237,18 +237,35 @@ class SqlServer(Connector):
         return bool(error.args) and error.args[0] == "42S02" and "(4413)" not in str(error)
 
     def _columns(self, conn, table) -> list[_Column]:
-        """The columns of a table or view, from the catalog of its database."""
+        """The columns of a table or view, from the catalog of its database; for a synonym, those
+        of the table or view it stands for (also in another database of the server). A synonym
+        for a table of another server is an ActionError: its columns can't be read there."""
         parts = split_name(table)
         if len(parts) > 3:  # on a linked server
             return []
-        catalog = f"{self.quote(parts[0])}.sys" if len(parts) == 3 else "sys"
+        target = self.qualified(table)
         cursor = conn.cursor()
         try:
+            catalog = f"{self.quote(parts[0])}.sys" if len(parts) == 3 else "sys"
+            cursor.execute(f"SELECT base_object_name FROM {catalog}.synonyms WHERE object_id = OBJECT_ID(?)", target)
+            if (synonym := cursor.fetchone()) is not None:
+                base = split_name(synonym[0])
+                if len(base) > 3:
+                    raise ActionError(
+                        f"{table} is a synonym for {synonym[0]}, a table of another server: an export reads the types of "
+                        "the columns it writes into, and it can read them only on the connection's server. Use a "
+                        "connection to that server."
+                    )
+                if len(base) < 3 and len(parts) == 3:  # in the synonym's database
+                    target = f"{self.quote(parts[0])}.{'.' if len(base) == 1 else ''}{synonym[0]}"
+                else:
+                    target = synonym[0]
+                catalog = f"{self.quote(base[0])}.sys" if len(base) == 3 else catalog
             cursor.execute(
                 f"SELECT c.name, COALESCE(TYPE_NAME(c.system_type_id), t.name), t.is_assembly_type, c.max_length, "
                 f"c.precision, c.scale, c.collation_name FROM {catalog}.columns AS c JOIN {catalog}.types AS t "
                 "ON t.user_type_id = c.user_type_id WHERE c.object_id = OBJECT_ID(?) ORDER BY c.column_id",
-                self.qualified(table),
+                target,
             )
             return [_Column(name, kind.lower(), bool(clr), *rest) for name, kind, clr, *rest in cursor.fetchall()]
         finally:

@@ -1819,3 +1819,69 @@ def test_sqlserver_commands_run_in_one_transaction(registry):
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{proc}') IS NOT NULL DROP PROCEDURE {proc}")
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_a_synonym_is_written_as_its_table(registry):
+    """The columns of a synonym were read by its own name, which has none: by a datetime2(0) key,
+    Update said "nothing changed" and Upsert added a duplicate, and a key of a case-sensitive
+    collation stopped with "Cannot resolve the collation conflict". A synonym now has the columns
+    of the table it stands for, also in another database; one for a table of another server stops
+    with a plain message."""
+    ctx, name = _sqlserver()
+    connector = registry.connectors["sqlserver"]
+    base, short = f"{name}_base", f"{name}_short"
+    synonym, far, other_database, other_server = f"{name}_syn", f"{name}_far", f"{name}_master", f"{name}_server"
+    made = [synonym, far, other_database, other_server, short]
+
+    def export(df, table, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": table} | params, ctx)
+
+    def stored():
+        with ctx.database("server") as db:
+            return db.read(f"SELECT K, D, C, V FROM {base} ORDER BY K, V").rows()
+
+    old = (1, dt.datetime(2026, 10, 1, 8), "abc", 0)
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {base} (K int, D datetime2(0), C varchar(10) COLLATE Latin1_General_CS_AS, V int)")
+            db.execute(f"CREATE SYNONYM {synonym} FOR {base}")
+            db.execute(f"CREATE SYNONYM {short} FOR [{base.split('.')[1]}]")  # a base without its schema
+            db.execute(f"CREATE SYNONYM {far} FOR tempdb.{base}")
+            db.execute(f"CREATE SYNONYM {other_database} FOR master.dbo.spt_values")
+            db.execute(f"CREATE SYNONYM {other_server} FOR ElsewhereServer.Sales.dbo.Orders")
+            table_types = connector.column_types(db.raw, base)
+            assert table_types == {"K": "int", "D": "datetime2(0)", "C": "varchar(10)", "V": "int"}
+            for target in (synonym, short, far, f"tempdb.{short}"):
+                assert connector.column_types(db.raw, target) == table_types, target
+                assert connector.stage_types(db.raw, target) == connector.stage_types(db.raw, base), target
+            assert {"name", "number", "type"} <= set(connector.column_types(db.raw, other_database))
+        by_second = pl.DataFrame({"D": [dt.datetime(2026, 10, 1, 8, 0, 0, 400000)], "V": [5]})
+        for target in (synonym, f"tempdb.{far}"):
+            for mode, message, rows in (
+                ("update", "updated 1 row", [(1, dt.datetime(2026, 10, 1, 8), "abc", 5)]),
+                ("upsert", "updated 1 row", [(1, dt.datetime(2026, 10, 1, 8), "abc", 5)]),
+                ("delete", "deleted 1 row", []),
+            ):
+                with ctx.database("server") as db:
+                    db.execute(f"DELETE FROM {base}; INSERT INTO {base} VALUES (1, '2026-10-01 08:00:00', 'abc', 0)")
+                export(by_second, target, mode=mode, key_columns=["D"])
+                assert ctx.messages[-1] == ("info", f"{target}: {message}") and stored() == rows, (target, mode)
+            with ctx.database("server") as db:
+                db.execute(f"DELETE FROM {base}; INSERT INTO {base} VALUES (1, '2026-10-01 08:00:00', 'abc', 0)")
+            export(pl.DataFrame({"C": ["abc", "ABC"], "V": [7, 8]}), target, mode="update", key_columns=["C"])  # case-sensitive
+            assert ctx.messages[-1] == ("info", f"{target}: updated 1 row") and stored() == [(*old[:3], 7)], target
+        with ctx.database("server") as db:  # (no such server here: the export would stop when it looks for the table)
+            with pytest.raises(ActionError) as error:
+                connector.column_types(db.raw, other_server)
+            assert str(error.value) == (
+                f"{other_server} is a synonym for [ElsewhereServer].[Sales].[dbo].[Orders], a table of another server: an "
+                "export reads the types of the columns it writes into, and it can read them only on the connection's "
+                "server. Use a connection to that server."
+            )
+            assert connector.read_table_sql(db.raw, other_server) == f"SELECT * FROM {db.qualified(other_server)}"  # an import reads it as it is
+    finally:
+        with ctx.database("server") as db:
+            for made_name in made:
+                db.execute(f"IF OBJECT_ID('{made_name}', 'SN') IS NOT NULL DROP SYNONYM {made_name}")
+            db.execute(f"IF OBJECT_ID('{base}') IS NOT NULL DROP TABLE {base}")
