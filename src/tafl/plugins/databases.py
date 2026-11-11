@@ -1834,9 +1834,12 @@ def export_database(df, p, ctx):
             stage = _stage(db, staged, names, keys, db.connector.stage_types(db.raw, p.table), ctx)
             deleted = db.execute(db.connector.delete_sql(table, stage, keys, **by_type))
         elif p.mode in ("update", "upsert"):
-            row = _unused("tafl_row", names.values()) if db.connector.id == "sqlserver" else None
+            sqlserver = db.connector.id == "sqlserver"
+            # The number of each row, for the examples of the checks: not in a stage that would get more
+            # columns than a table can have (the checks then show a key as the stage holds it)
+            row = _unused("tafl_row", names.values()) if sqlserver and data.width < _MOST_COLUMNS else None
             stage = _stage(db, data, names, keys, db.connector.stage_types(db.raw, p.table), ctx, row)
-            if row is not None:  # as SQL Server compares them: abc and ABC are one key in a CI column
+            if sqlserver:  # as SQL Server compares them: abc and ABC are one key in a CI column
                 _check_unique_as_compared(db, stage, row, fitted_data, [names[k] for k in p.key_columns], p.key_columns)
                 _check_seventh_digits(db, table, stage, row, fitted_data, names, p.key_columns, types, p.table)
             others = [n for n in names.values() if n not in keys]
@@ -2392,15 +2395,23 @@ def _not_unique(count: int, example: list[tuple[str, object]]) -> None:
     )
 
 
-def _check_unique_as_compared(db, stage: str, row: str, data: pl.DataFrame, columns: list[str], keys: list[str]) -> None:
+def _check_unique_as_compared(db, stage: str, row: str | None, data: pl.DataFrame, columns: list[str], keys: list[str]) -> None:
     """``_check_unique`` for SQL Server, as the table's columns compare the keys: the rows are in
     ``stage`` (``_stage``), with their number in the column ``row``, and the keys in its
     ``columns`` (of ``keys`` in ``data``). Keys that differ in the data can be one key value there:
     abc and ABC in a column of a case-insensitive collation, e and é in an accent-insensitive one,
     a and "a " (spaces at the end don't count), 08:00:00.001 and 08:00:00 in a datetime (steps of
     1/300 s), 1.001 and 1.004 in a decimal(10,2), a GUID in upper and lower case. The example is
-    the data's first row of a key value that occurs more than once, as ``_check_unique`` gives it."""
+    the data's first row of a key value that occurs more than once, as ``_check_unique`` gives it;
+    without ``row`` (a stage of the most columns a table can have), such a key value as the stage
+    holds it."""
     grouped = ", ".join(db.quote(c) for c in columns)
+    if row is None:
+        found = db.read(f"SELECT TOP 1 COUNT(*) OVER (), {grouped} FROM {stage} GROUP BY {grouped} HAVING COUNT(*) > 1")
+        if found.height:
+            values = found.row(0)
+            _not_unique(int(values[0]), list(zip(keys, values[1:])))
+        return
     found = db.read(
         f"SELECT TOP 1 COUNT(*) OVER () AS repeated, MIN({db.quote(row)}) AS first_row FROM {stage} "
         f"GROUP BY {grouped} HAVING COUNT(*) > 1 ORDER BY MIN({db.quote(row)})"
@@ -2416,22 +2427,32 @@ def _check_seventh_digits(
     """Keys of a column with 7 digits of a second are compared to the microsecond (``matching``):
     updating needs one row of the table per key there too. Two rows that differ only in the 7th
     digit (08:00:01.1234567 and 08:00:01.1234568) would both get the values of one row of the data:
-    refuse, with the data's first such key as the example. ``table``: quoted; ``name``: as given."""
+    refuse, with the data's first such key as the example; without ``row`` (a stage of the most
+    columns a table can have, or of the distinct keys of Delete and Replace by keys), such a key as
+    the stage holds it. ``table``: quoted; ``name``: as given."""
     kinds = {column.lower(): kind for column, kind in types.items()}
     seven = [names[k] for k in keys if _seven_digits(kinds.get(names[k].lower(), ""))]
     if not seven:
         return
-    x, s = (db.quote(alias) for alias in _aliases([*names.values(), row]))
+    x, s = (db.quote(alias) for alias in _aliases([*names.values(), *([row] if row else [])]))
     differ = " OR ".join(f"MIN({x}.{db.quote(c)}) <> MAX({x}.{db.quote(c)})" for c in seven)
-    found = db.read(
-        f"SELECT TOP 1 COUNT(*) OVER () AS keys, {s}.{db.quote(row)} AS first_row FROM {stage} AS {s} INNER JOIN {table} AS {x} "
-        f"ON {db.connector.matching([names[k] for k in keys], x, s, types)} GROUP BY {s}.{db.quote(row)} HAVING {differ} "
-        f"ORDER BY {s}.{db.quote(row)}"
-    )
-    if not found.height:
-        return
-    first, count = int(found["first_row"][0]), int(found["keys"][0])
-    shown = ", ".join(f"{k} = {data[k][first]}" for k in keys)
+    joined = f"FROM {stage} AS {s} INNER JOIN {table} AS {x} ON {db.connector.matching([names[k] for k in keys], x, s, types)}"
+    if row is None:
+        grouped = ", ".join(f"{s}.{db.quote(names[k])}" for k in keys)
+        found = db.read(f"SELECT TOP 1 COUNT(*) OVER (), {grouped} {joined} GROUP BY {grouped} HAVING {differ}")
+        if not found.height:
+            return
+        count, *example = found.row(0)
+        shown = ", ".join(f"{k} = {value}" for k, value in zip(keys, example))
+    else:
+        found = db.read(
+            f"SELECT TOP 1 COUNT(*) OVER () AS keys, {s}.{db.quote(row)} AS first_row {joined} GROUP BY {s}.{db.quote(row)} "
+            f"HAVING {differ} ORDER BY {s}.{db.quote(row)}"
+        )
+        if not found.height:
+            return
+        first, count = int(found["first_row"][0]), int(found["keys"][0])
+        shown = ", ".join(f"{k} = {data[k][first]}" for k in keys)
     values = "1 key value finds" if count == 1 else f"{count:,} key values find"
     columns = ", ".join(k for k in keys if names[k] in seven)
     raise ActionError(
@@ -2439,6 +2460,9 @@ def _check_seventh_digits(
         f"of {columns} (e.g. {shown}). SQL Server's driver passes date-times only to the microsecond, so {APP_NAME} "
         "compares these keys to the microsecond. Choose more key columns."
     )
+
+
+_MOST_COLUMNS = 1024  # the most columns a SQL Server table can have, a #temporary one too
 
 
 def _unused(name: str, names) -> str:

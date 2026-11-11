@@ -2427,3 +2427,27 @@ def test_sqlserver_a_row_left_out_by_its_key_has_no_cut_digits(registry):
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_update_and_upsert_a_table_of_1024_columns(registry):
+    """The stage of Update and Upsert has a column more for the number of each row, which a table
+    of 1,024 columns (the most SQL Server allows) can't have: they stopped with "CREATE TABLE
+    failed because column 'c1023' … exceeds the maximum of 1024 columns". Such a stage now has no
+    row numbers, and the checks of the keys show a key as the stage holds it."""
+    ctx, name = _sqlserver()
+    width = 1024
+    data = pl.DataFrame({"K": ["a", "b"], **{f"c{i}": [i, i] for i in range(1, width)}})
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (K nvarchar(10) COLLATE Latin1_General_CI_AS, " + ", ".join(f"c{i} int" for i in range(1, width)) + ")")
+            db.execute(f"INSERT INTO {name} (K, c1) VALUES (N'a', 0)")
+        for mode, message in (("update", "updated 1 row"), ("upsert", "updated 1 row, added 1 row")):
+            registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": ["K"]}, ctx)
+            assert _logged(ctx) == ("info", f"{name}: {message}"), mode
+        with pytest.raises(ActionError, match=r"^The key columns don't identify the rows: 1 key value occurs more than once \(e\.g\. K = (abc|ABC)\)"):
+            registry.actions["db.export"](data.with_columns(K=pl.Series(["abc", "ABC"])), {"connection": "server", "table": name,
+                                                                                            "mode": "update", "key_columns": ["K"]}, ctx)  # fmt: skip
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
