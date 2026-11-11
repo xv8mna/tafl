@@ -10,8 +10,10 @@ import functools
 import re
 import sqlite3
 import struct
+import threading
 import unicodedata
 import uuid
+import weakref
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import quote
@@ -152,7 +154,7 @@ class SqlServer(Connector):
         # read CLR types: a query stops with a hint, read_table_sql converts them to text
         connection.add_output_converter(-150, lambda value: _SQL_VARIANT)
         connection.add_output_converter(-151, lambda value: _CLR_TYPE)  # geography, geometry, hierarchyid
-        return connection
+        return _Stoppable(connection, ctx)
 
     def quote(self, identifier):
         return "[" + identifier.replace("]", "]]") + "]"
@@ -177,6 +179,8 @@ class SqlServer(Connector):
         parts = [str(arg) for arg in error.args]
         state = next((part for part in parts if re.fullmatch(r"[0-9A-Z]{5}", part)), "")
         text = next((part for part in parts if not re.fullmatch(r"[0-9A-Z]{5}", part)), str(error))
+        if state == _CANCELLED:  # only Stop cancels a statement (_Stoppable); the driver's text is in the language of Windows
+            return "Stopped: SQL Server's statement was ended before it was done"
         by_driver = "[SQL Server]" not in text  # the driver found it before the server
         if by_driver and (state in _VALUE_ERRORS or "right truncation" in text):
             # Its (localized) text names no column or value
@@ -554,6 +558,119 @@ def _folded(name: str) -> str:
     """A name as a case-, accent- and width-insensitive collation compares it."""
     decomposed = unicodedata.normalize("NFKD", name)
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
+
+
+_CANCELLED = "HY008"  # the driver's state for a statement that cursor.cancel() ended
+_STOP_CHECK_SECONDS = 0.05  # how often Stop is looked at while a statement runs
+
+
+class _Stoppable:
+    """A connection to SQL Server whose running statements Stop (and Ctrl+C in ``tafl run``)
+    ends: a query that gives no row yet, a statement that waits for a lock, a long command. While
+    one of its cursors is in a call of the driver (``execute``, ``executemany``, a fetch or
+    ``nextset``: ``_StoppableCursor``), a thread looks at Stop and cancels the statement there
+    (``cursor.cancel()``, the call that ODBC allows from another thread). The call then fails
+    (``_CANCELLED``), the step ends as stopped, and an export's or a command's transaction is
+    rolled back. Everything else is the connection's own."""
+
+    def __init__(self, connection, ctx) -> None:
+        self._connection = connection
+        self._ctx = ctx
+        self._lock = threading.Lock()  # a cancel is never at the same time as the end of the call
+        self._running: list = []  # the cursors (of the driver) in a call of the driver
+        self._closed = threading.Event()
+        self._watching = False
+
+    def cursor(self):
+        return _StoppableCursor(self._connection.cursor(), self)
+
+    def close(self) -> None:
+        self._closed.set()
+        self._connection.close()
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+    def call(self, cursor, method, *args):
+        """``method(*args)``, a call of the driver for ``cursor``, which Stop can end."""
+        with self._lock:
+            self._running.append(cursor)
+            if not self._watching:
+                self._watching = True
+                threading.Thread(target=_watch, args=(weakref.ref(self),), name="SQL Server stop", daemon=True).start()
+        try:
+            return method(*args)
+        finally:
+            with self._lock:
+                self._running.remove(cursor)
+
+    def cancel_running(self) -> bool:
+        """Cancel the statements in a call of the driver when the step is stopped; False when the
+        connection is closed."""
+        if self._closed.is_set():
+            return False
+        try:
+            self._ctx.check_cancelled()
+        except Cancelled:
+            with self._lock:
+                for cursor in self._running:
+                    with contextlib.suppress(Exception):  # e.g. one that just ended
+                        cursor.cancel()
+        return True
+
+
+def _watch(connection: weakref.ref) -> None:
+    """Look at Stop while the connection is open (and not forgotten)."""
+    while (owner := connection()) is not None and owner.cancel_running():
+        closed = owner._closed
+        del owner  # the connection is not kept for the thread
+        if closed.wait(_STOP_CHECK_SECONDS):
+            return
+
+
+class _StoppableCursor:
+    """A cursor of ``_Stoppable``: the calls that wait for SQL Server go through ``call``,
+    everything else is the cursor's own."""
+
+    __slots__ = ("_cursor", "_owner")
+
+    def __init__(self, cursor, owner: _Stoppable) -> None:
+        object.__setattr__(self, "_cursor", cursor)
+        object.__setattr__(self, "_owner", owner)
+
+    def execute(self, *args):
+        self._owner.call(self._cursor, self._cursor.execute, *args)
+        return self
+
+    def executemany(self, *args):
+        self._owner.call(self._cursor, self._cursor.executemany, *args)
+        return self
+
+    def fetchone(self):
+        return self._owner.call(self._cursor, self._cursor.fetchone)
+
+    def fetchmany(self, *args):
+        return self._owner.call(self._cursor, self._cursor.fetchmany, *args)
+
+    def fetchall(self):
+        return self._owner.call(self._cursor, self._cursor.fetchall)
+
+    def nextset(self):
+        return self._owner.call(self._cursor, self._cursor.nextset)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if (row := self.fetchone()) is None:
+            raise StopIteration
+        return row
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+    def __setattr__(self, name, value):  # e.g. fast_executemany
+        setattr(self._cursor, name, value)
 
 
 class _Column(NamedTuple):

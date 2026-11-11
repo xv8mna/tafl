@@ -1717,6 +1717,68 @@ def test_sqlserver_messages_name_a_temporary_table_as_it_was_created(registry):
     assert error_message(Exception("42000", kept)) == "Invalid column name 'a_________b'."
 
 
+class _Waiting:
+    """A cursor of a driver whose statement runs until it is cancelled (from another thread)."""
+
+    def __init__(self, calls: list):
+        self.calls = calls
+        self.cancelled = threading.Event()
+
+    def execute(self, sql):
+        self.calls.append("execute")
+        if not self.cancelled.wait(10):
+            raise AssertionError("the statement wasn't cancelled")
+        raise RuntimeError("HY008", "[HY008] [Microsoft][ODBC Driver 17 for SQL Server]Der Vorgang wurde abgebrochen (0)")
+
+    def fetchone(self):
+        self.calls.append("fetchone")
+        return (1,)
+
+    def cancel(self):
+        self.calls.append("cancel")
+        self.cancelled.set()
+
+    def close(self):
+        self.calls.append("close")
+
+
+def test_stop_cancels_a_sqlserver_statement_while_it_runs(registry):
+    """Stop ended a SQL Server statement only when rows came: a query that gave no row for a long
+    time, a command or an export that waited for a lock ran on. A thread looks at Stop while a
+    statement is in the driver and cancels it there; a statement that is over is left alone."""
+    cancel = threading.Event()
+    calls, cursors = [], []
+
+    class Connection:
+        def cursor(self):
+            cursors.append(_Waiting(calls))
+            return cursors[-1]
+
+        def close(self):
+            calls.append("closed")
+
+    connection = databases._Stoppable(Connection(), Context(cancel=cancel))
+    done, waiting = connection.cursor(), connection.cursor()
+    assert done.fetchone() == (1,)  # a call that ends by itself gives what the driver gives
+    time.sleep(3 * databases._STOP_CHECK_SECONDS)
+    assert calls == ["fetchone"]  # nothing is cancelled while nobody stops
+    threading.Timer(0.2, cancel.set).start()
+    start = time.perf_counter()
+    with pytest.raises(RuntimeError, match="HY008"):
+        waiting.execute("WAITFOR DELAY '00:01:00'")
+    assert time.perf_counter() - start < 2 and calls[:3] == ["fetchone", "execute", "cancel"]
+    seen = len(calls)
+    time.sleep(3 * databases._STOP_CHECK_SECONDS)  # Stop is still set, but no statement runs
+    assert len(calls) == seen and not cursors[0].cancelled.is_set()
+    waiting.fast_executemany = True  # the driver's own settings go to its cursor
+    assert cursors[1].fast_executemany is True
+    connection.close()
+    assert calls[-1] == "closed"
+    driver = "[HY008] [Microsoft][ODBC Driver 17 for SQL Server]Der Vorgang wurde abgebrochen (0) (SQLExecDirectW)"
+    message = registry.connectors["sqlserver"].error_message(RuntimeError("HY008", driver))
+    assert message == "Stopped: SQL Server's statement was ended before it was done"  # not in the language of Windows
+
+
 def test_sqlserver_messages_keep_their_values_and_say_things_once(registry):
     """The driver's records: without the prefixes and error numbers, the duplicate key value kept,
     each message once (the driver repeats some), and the same error for more rows counted."""

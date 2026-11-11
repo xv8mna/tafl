@@ -7,13 +7,14 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
 import polars as pl
 import pytest
 
-from tafl.api import ActionError
+from tafl.api import ActionError, Cancelled
 from tafl.api.testing import StubContext
 from tafl.core import Engine, Project
 
@@ -1885,3 +1886,43 @@ def test_sqlserver_a_synonym_is_written_as_its_table(registry):
             for made_name in made:
                 db.execute(f"IF OBJECT_ID('{made_name}', 'SN') IS NOT NULL DROP SYNONYM {made_name}")
             db.execute(f"IF OBJECT_ID('{base}') IS NOT NULL DROP TABLE {base}")
+
+
+@_SQLSERVER
+def test_sqlserver_stop_ends_a_running_statement(registry):
+    """Stop (and Ctrl+C in tafl run) waited for a SQL Server statement to end: a query that gave no
+    row yet, a command, an export that waited for a lock, which then even kept its rows. Now the
+    statement is cancelled, the step ends as stopped, and its transaction rolls back."""
+    ctx, name = _sqlserver()
+    waiting = "WAITFOR DELAY '00:00:20'"
+    cases = {
+        "import": [("db.import", {"mode": "query", "query": f"{waiting}; SELECT 1 AS N"})],
+        "command": [("db.import", {"mode": "query", "query": "SELECT 1 AS N"}), ("db.command", {"sql": f"INSERT INTO {name} VALUES (1); {waiting}"})],
+        "export that waits for a lock": [("db.import", {"mode": "query", "query": "SELECT 7 AS N"}), ("db.export", {"table": name})],
+    }
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (N int)")
+        for case, steps in cases.items():
+            project = Project(name="Stop")
+            project.add_connection("server", "sqlserver", server=os.environ["TAFL_TEST_SQLSERVER"], database="tempdb")
+            table = project.add_table("Stopped")
+            for action, params in steps:
+                project.add_step(table, action, {"connection": "server", **params})
+            holder = ctx.database("server")  # another program that holds the table
+            holder.execute(f"INSERT INTO {name} WITH (TABLOCKX) VALUES (99)" if "lock" in case else "SELECT 1")
+            try:
+                cancel = threading.Event()
+                threading.Timer(0.5, cancel.set).start()
+                start = time.perf_counter()
+                with pytest.raises(Cancelled):
+                    Engine(project, registry).run([table.id], cancel=cancel)
+                assert time.perf_counter() - start < 5, case
+            finally:
+                holder.rollback()
+                holder.close()
+            with ctx.database("server") as db:
+                assert db.read(f"SELECT COUNT(*) AS n FROM {name}")["n"].to_list() == [0], case  # rolled back
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
