@@ -2043,3 +2043,43 @@ def test_sqlserver_exact_decimals_get_the_checks_of_whole_numbers_in_every_mode(
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_texts_for_date_columns_are_read_one_way_in_every_mode(registry):
+    """Add refused 01.10.2026 08:00 for a datetime column (the driver reads ISO only), while Update
+    and Upsert stored 10 January (the server read the text with its session's date format), and an
+    empty text was 1900-01-01 there. Now every mode reads texts as Change type / format does."""
+    ctx, name = _sqlserver()
+    texts = {
+        "date": (["01.10.2026", "2026-10-02", ""], ["2026-10-01", "2026-10-02", None]),
+        "datetime": (["01.10.2026 08:00", "2026-10-02 08:30:15.5", "  "], ["2026-10-01 08:00:00.000", "2026-10-02 08:30:15.500", None]),
+        "datetime2(3)": (["01.10.2026 08:00:15", "31.12.25 23:59", None], ["2026-10-01 08:00:15.000", "2025-12-31 23:59:00.000", None]),
+        "smalldatetime": (["01.10.2026 08:00", "2026-10-02 08:30", ""], ["2026-10-01 08:00:00.000", "2026-10-02 08:30:00.000", None]),
+        "time(3)": (["08:00", "8:30:15.25", ""], ["08:00:00.000", "08:30:15.250", None]),
+        "datetimeoffset(3)": (["01.10.2026 08:00 +02:00", "2026-10-02T08:30:00Z", ""], ["2026-10-01 08:00:00.000 +02:00", "2026-10-02 08:30:00.000 +00:00", None]),
+    }
+
+    def stored():
+        with ctx.database("server") as db:
+            return db.read(f"SELECT K, CONVERT(nvarchar(40), V, 121) AS V FROM {name} ORDER BY K").rows()
+
+    try:
+        for kind, (values, expected) in texts.items():
+            data = pl.DataFrame({"K": [1, 2, 3], "V": values})
+            for mode in ("insert", "upsert", "update", "replace_keys"):
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                    db.execute(f"CREATE TABLE {name} (K int, V {kind})")
+                    if mode in ("update", "replace_keys"):
+                        db.execute(f"INSERT INTO {name} (K) VALUES (1), (2), (3)")
+                registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": ["K"]}, ctx)
+                assert stored() == list(zip([1, 2, 3], expected)), (kind, mode)
+            # a key of texts finds the rows that SQL Server stored from the same dates
+            registry.actions["db.export"](data.select("V").head(2), {"connection": "server", "table": name, "mode": "delete", "key_columns": ["V"]}, ctx)
+            assert ctx.messages[-1] == ("info", f"{name}: deleted 2 rows"), kind
+        with pytest.raises(ActionError, match=rf"^The column V of {re.escape(name)} holds dates and time.*e\.g\. “2026-10-01T08:00”"):
+            registry.actions["db.export"](pl.DataFrame({"K": [1], "V": ["2026-10-01T08:00"]}), {"connection": "server", "table": name}, ctx)
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

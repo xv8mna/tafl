@@ -785,21 +785,34 @@ def _round_half_away(series: pl.Series, scale: int) -> pl.Series:
             return series
 
 
-def _below_microseconds(df: pl.DataFrame, types: dict[str, str]) -> list[str]:
+def _below_microseconds(df: pl.DataFrame, types: dict[str, str], texts: dict[str, pl.Series] | None = None) -> list[str]:
     """Warnings for the columns of ``df`` whose SQL Server column holds 100 nanoseconds
     (datetime2, time or datetimeoffset with 7 digits), and that have values with digits below a
     microsecond: the driver passes none (``fit_frame`` cuts them as it does). Columns of fewer
-    digits cut more anyway, as they hold the values."""
+    digits cut more anyway, as they hold the values. ``texts``: the texts that date-times of
+    ``df`` were read from (``_read_date_texts``), which had such digits."""
     warnings = []
     for name, dtype in df.schema.items():
         kind, size, _scale = _kind(types.get(name, ""))
-        if kind not in _FRACTION_TYPES or size != 7 or not (dtype == pl.Time or getattr(dtype, "time_unit", "") == "ns"):
+        text = (texts or {}).get(name)
+        if kind not in _FRACTION_TYPES or size != 7:
             continue
-        values = df[name].alias("value")  # a fixed name, as in _round_half_away
-        cut = (values.dt.nanosecond() % 1000 != 0).fill_null(False)
-        if count := int(cut.sum()):
-            example = values.filter(cut).head(1)
-            shown, kept = (pl.select(dtypes.text_expr(pl.lit(v), v.dtype)).item() for v in (example, _microseconds(example)))
+        if text is not None and isinstance(dtype, pl.Datetime):  # read to the microsecond
+            cut = text.str.contains(r":[0-9]{2}\.[0-9]{6}[0-9]*[1-9]").fill_null(False)
+            count, shown, kept = int(cut.sum()), "", ""
+            if count:
+                shown = f"'{text.filter(cut).str.strip_chars()[0]}'"
+                kept = pl.select(dtypes.text_expr(pl.lit(df[name].alias("value").filter(cut).head(1)), dtype)).item()
+        elif dtype == pl.Time or getattr(dtype, "time_unit", "") == "ns":
+            values = df[name].alias("value")  # a fixed name, as in _round_half_away
+            cut = (values.dt.nanosecond() % 1000 != 0).fill_null(False)
+            count, shown, kept = int(cut.sum()), "", ""
+            if count:
+                example = values.filter(cut).head(1)
+                shown, kept = (pl.select(dtypes.text_expr(pl.lit(v), v.dtype)).item() for v in (example, _microseconds(example)))
+        else:
+            continue
+        if count:
             values_were = "1 value was" if count == 1 else f"{count:,} values were"
             warnings.append(
                 f"{name}: {values_were} cut to whole microseconds (e.g. {shown} is {kept}): SQL Server's driver passes "
@@ -1578,6 +1591,7 @@ def export_database(df, p, ctx):
             data = data.select(cols(c for c, n in names.items() if n in keys))
         _check_whole_numbers(data, names, types, p.table)
         _check_storable(data, db)
+        data, read = _read_date_texts(data, names, types, p.table, db.connector.id)
         data = _fit_decimals(data, names, types, p.table, db.connector.id)
         data = _fit_whole_numbers(data, names, types, p.table, db.connector.id)
         data, hexed = _binary_texts(data, names, types, db.connector.id)
@@ -1585,7 +1599,7 @@ def export_database(df, p, ctx):
         data = _fit_lengths(data, names, types, p.table, finding, hexed)
         kinds = {name.lower(): kind for name, kind in types.items()}
         fitted = {c: kinds[names[c].lower()] for c in data.columns if names[c].lower() in kinds}
-        cut = _below_microseconds(data, fitted) if db.connector.id == "sqlserver" else []
+        cut = _below_microseconds(data, fitted, read) if db.connector.id == "sqlserver" else []
         data = db.connector.fit_frame(data, fitted)
         if p.mode in ("update", "upsert"):
             _check_unique(data, p.key_columns)  # as stored: 08:00:01.2 and .7 are one second in datetime2(0)
@@ -1824,6 +1838,93 @@ def _fit_decimals(df: pl.DataFrame, names: dict[str, str], types: dict[str, str]
                 f"decimal(38, {scale})."
             )
     return df.with_columns(changes) if changes else df
+
+
+_DATE_KINDS = ("date", "datetime", "datetime2", "smalldatetime", "time", "datetimeoffset")
+# For the message about texts that are no date or time: what the column holds, what the texts are
+# not, how to write them
+_DATE_TEXTS = {
+    "date": ("dates", "no date", "31.12.2025 or 2025-12-31, or change them to dates first (Change type / format, with their format)"),
+    "time": ("times", "no time", "08:30, 08:30:15 or 08:30:15.250"),
+    "datetimeoffset": ("dates and times with their offset from UTC", "no date and time", "31.12.2025 08:30 +01:00 or 2025-12-31 08:30:00 +01:00"),
+    "": ("dates and times", "no date and time", "31.12.2025 08:30 or 2025-12-31 08:30:00, or change them to date-times first "
+         "(Change type / format, with their format)"),
+}  # fmt: skip
+
+
+def _read_date_texts(
+    df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, connector_id: str
+) -> tuple[pl.DataFrame, dict[str, pl.Series]]:
+    """Texts for SQL Server date and time columns, read in every mode with the rule of Change type
+    / format without a format (31.12.2025, 2025-12-31, with or without a time; 08:30:15.250 for a
+    time; a datetimeoffset column also takes an offset after the time, +01:00 or Z). Before, the
+    driver read them in Add (ISO only), while the keyed modes sent them as texts that the server
+    read with its session's date format: 01.10.2026 was 10 January there. Dates, date-times and
+    times are then written as such (for a datetimeoffset column: as a text the driver reads, with
+    the offset as it was); empty texts are empty values, as with Change type; a text that the rule
+    can't read stops the export with a message that names the column and the text. Returns the
+    data and the texts of the columns read so (the warnings about cut digits show them)."""
+    if connector_id != "sqlserver":
+        return df, {}
+    kinds = {name.lower(): kind for name, kind in types.items()}
+    changes, texts = [], {}
+    for source, dtype in df.schema.items():
+        if not (dtype == pl.String or isinstance(dtype, (pl.Categorical, pl.Enum))):
+            continue
+        target = names[source]
+        kind = kinds.get(target.lower(), "")
+        base = _kind(kind)[0]
+        if base not in _DATE_KINDS:
+            continue
+        text = df[source].cast(pl.String).alias("value")  # a fixed name, as in _round_half_away
+        if base == "date":
+            read = dtypes.parse_dates(text)
+        elif base == "time":
+            read = dtypes.parse_times(text)
+        elif base == "datetimeoffset":
+            read = _offset_texts(text)
+        else:
+            read = dtypes.parse_datetimes(text)
+        failed = (text.is_not_null() & read.is_null() & (text.str.strip_chars() != "")).fill_null(False)
+        if count := int(failed.sum()):
+            held, no_such, forms = _DATE_TEXTS.get(base, _DATE_TEXTS[""])
+            more = f"; {count:,} texts like it" if count > 1 else ""
+            raise ActionError(
+                f"The column {target} of {table} holds {held} ({kind}), but {source} has texts that are {no_such} "
+                f"(e.g. “{text.filter(failed)[0]}”{more}). Write them as {forms}."
+            )
+        changes.append(read.alias(source))
+        texts[source] = text
+    return df.with_columns(changes), texts
+
+
+# An offset from UTC after a time: Z, +01:00, +0100 or +01
+_ZONE = r"(Z|[+-][0-9]{2}(?::?[0-9]{2})?)$"
+_TIME_BEFORE_ZONE = r"[0-9]{1,2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]+)?)?\s*"
+
+
+def _offset_texts(texts: pl.Series) -> pl.Series:
+    """Texts for a datetimeoffset column as the driver reads them in every mode: the date and
+    time read as Change type reads them, with the digits of a second as they were, and the offset
+    after them as it was (2026-10-01 08:30:00.1234567 +02:00); one without an offset gets none
+    (the driver gives it the offset of this PC's time zone on its day). Empty where the rule
+    can't read a text or its offset is beyond what SQL Server holds (±14:00)."""
+    frame = pl.DataFrame({"text": texts.str.strip_chars()})
+    text, zone = pl.col("text"), pl.col("zone")
+    found = text.str.extract(_TIME_BEFORE_ZONE + _ZONE, 1)
+    frame = frame.with_columns(found.alias("zone"), pl.when(found.is_not_null()).then(text.str.replace(r"\s*" + _ZONE, "")).otherwise(text).alias("moment"))
+    frame = frame.with_columns(dtypes.parse_datetimes(frame["moment"].alias("value")).alias("read"))
+    hours = zone.str.slice(1, 2).cast(pl.Int32, strict=False)
+    minutes = zone.str.replace(r"^[+-][0-9]{2}:?", "").cast(pl.Int32, strict=False).fill_null(0)
+    offset = (
+        pl.when(zone == "Z")
+        .then(pl.lit(" +00:00"))
+        .when((minutes < 60) & (hours * 60 + minutes <= 14 * 60))
+        .then(pl.lit(" ") + zone.str.slice(0, 3) + pl.lit(":") + minutes.cast(pl.String).str.zfill(2))
+    )
+    fraction = pl.col("moment").str.extract(r":[0-9]{2}(\.[0-9]+)$", 1).fill_null("")
+    written = pl.col("read").dt.strftime("%Y-%m-%d %H:%M:%S") + fraction
+    return frame.select(pl.when(zone.is_null()).then(written).otherwise(written + offset).alias(texts.name)).to_series()
 
 
 # What SQL Server's money and smallmoney columns hold

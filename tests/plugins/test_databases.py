@@ -1690,6 +1690,57 @@ def test_sqlserver_exact_decimals_that_dont_fit_name_their_column(values, dtype,
     assert str(error.value) == message
 
 
+def test_sqlserver_reads_texts_for_date_columns_with_the_rule_of_change_type():
+    """The driver read texts for date and time columns in Add (ISO only), and the keyed modes sent
+    them to the server, which read them with its session's date format (01.10.2026 was 10 January).
+    Now Tafl reads them in every mode, as Change type / format does without a format, and writes
+    the dates, date-times and times; a datetimeoffset column keeps the offset of a text."""
+    D, T = dt.datetime, dt.time
+    df = pl.DataFrame({
+        "Day": ["01.10.2026", " 2026-10-02 ", "  ", None, "1.10.26 08:30"],
+        "At": ["01.10.2026 08:00", "2026-10-01T08:30:15", "", None, "2026-10-01 08:00:00.5"],
+        "Clock": ["08:00", "8:5", "08:00:00.1234567", "", None],
+        "Moment": ["01.10.2026 08:00 +02:00", "2026-10-01T08:00:00.1234567Z", "2026-10-01 08:00:00.5", "2026-10-01 08:00-0530", None],
+        "Note": ["01.10.2026", "x", "", None, "y"],
+    })  # fmt: skip
+    types = {"Day": "date", "At": "datetime2(3)", "Clock": "time(7)", "Moment": "datetimeoffset(7)", "Note": "nvarchar(20)"}
+    read, texts = databases._read_date_texts(df, {c: c for c in df.columns}, types, "dbo.T", "sqlserver")
+    assert read["Day"].to_list() == [dt.date(2026, 10, 1), dt.date(2026, 10, 2), None, None, dt.date(2026, 10, 1)]
+    assert read["At"].to_list() == [D(2026, 10, 1, 8), D(2026, 10, 1, 8, 30, 15), None, None, D(2026, 10, 1, 8, 0, 0, 500000)]
+    assert read["Clock"].cast(pl.Int64).to_list() == [28_800 * 10**9, 29_100 * 10**9, 28_800_123_456_700, None, None]
+    assert read["Moment"].to_list() == [
+        "2026-10-01 08:00:00 +02:00", "2026-10-01 08:00:00.1234567 +00:00", "2026-10-01 08:00:00.5", "2026-10-01 08:00:00 -05:30", None,
+    ]  # fmt: skip
+    assert read["Note"].equals(df["Note"]) and set(texts) == {"Day", "At", "Clock", "Moment"}
+    assert read["Clock"].dtype == pl.Time and T(8, 0) == read["Clock"][0]
+    assert databases._read_date_texts(df, {c: c for c in df.columns}, types, "T", "sqlite")[0].equals(df)  # SQL Server only
+
+
+@pytest.mark.parametrize(
+    ("kind", "texts", "message"),
+    [
+        ("date", ["2026-10-01", "2026-13-01", "32.01.2026"], "holds dates (date), but V has texts that are no date (e.g. “2026-13-01”; 2 "
+         "texts like it). Write them as 31.12.2025 or 2025-12-31, or change them to dates first (Change type / format, with their format)."),
+        ("datetime", ["2026-10-01T08:00"], "holds dates and times (datetime), but V has texts that are no date and time (e.g. "
+         "“2026-10-01T08:00”). Write them as 31.12.2025 08:30 or 2025-12-31 08:30:00, or change them to date-times first (Change "
+         "type / format, with their format)."),
+        ("smalldatetime", ["20261001"], "holds dates and times (smalldatetime), but V has texts that are no date and time (e.g. “20261001”)"),
+        ("time(0)", ["2026-10-01 08:00"], "holds times (time(0)), but V has texts that are no time (e.g. “2026-10-01 08:00”). Write them "
+         "as 08:30, 08:30:15 or 08:30:15.250."),
+        ("datetimeoffset(0)", ["2026-10-01 08:00 +15:00"], "holds dates and times with their offset from UTC (datetimeoffset(0)), but V has "
+         "texts that are no date and time (e.g. “2026-10-01 08:00 +15:00”). Write them as 31.12.2025 08:30 +01:00 or 2025-12-31 "
+         "08:30:00 +01:00."),
+    ],
+)
+def test_sqlserver_a_text_that_is_no_date_names_its_column(kind, texts, message):
+    """Before, the driver refused it in Add without naming the column, and the server read it in
+    the keyed modes, also as another date, or as 1900-01-01 for an empty text."""
+    df = pl.DataFrame({"V": texts})
+    with pytest.raises(ActionError) as error:
+        databases._read_date_texts(df, {"V": "V"}, {"V": kind}, "dbo.T", "sqlserver")
+    assert str(error.value).startswith(f"The column V of dbo.T {message}")
+
+
 def test_sqlserver_sends_texts_for_varchar_columns_as_unicode(registry):
     """The server converts them to the code page of the column's collation (as N'…'), in every
     mode; bound as varchar, the driver would convert them to this PC's code page first."""
