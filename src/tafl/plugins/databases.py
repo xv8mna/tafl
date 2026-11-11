@@ -1638,10 +1638,10 @@ def _empty_offsets(db, df: pl.DataFrame, description, p) -> frozenset[int]:
     Only then: the values of a column with values tell already."""
     if db.connector.id != "sqlserver":
         return frozenset()
-    names = _described_names(description)
+    names, schema = _described_names(description), df.schema  # once: each call builds the types of all columns again
     unknown = [
         i for i, (name, d) in enumerate(zip(names, description))
-        if d[1] is str and d[4] == _DATETIMEOFFSET_SIZE and not d[5] and name in df.columns and df.schema[name] == pl.Null
+        if d[1] is str and d[4] == _DATETIMEOFFSET_SIZE and not d[5] and schema.get(name) == pl.Null
     ]  # fmt: skip
     if not unknown:
         return frozenset()
@@ -1660,12 +1660,12 @@ def _as_described(df: pl.DataFrame, description, offsets: frozenset[int] = froze
     is; a column of 7 digits of a second (datetime2(7), time(7), datetimeoffset(7)) gets a
     warning when its values have parts of a second: the driver reads them only to the
     microsecond, so a 7th digit, if any, is cut."""
-    names = _described_names(description)
+    names, schema = _described_names(description), df.schema  # once: each call builds the types of all columns again
     changes, seven = [], []  # the columns of 7 digits of a second
     for index, (name, described) in enumerate(zip(names, description)):
-        if name not in df.columns:
+        if name not in schema:
             continue
-        dtype, type_code, scale = df.schema[name], described[1], described[5]
+        dtype, type_code, scale = schema[name], described[1], described[5]
         if dtype == pl.Null and type_code is str:
             changes.append(col(name).cast(pl.Datetime("us", "UTC") if index in offsets else pl.String))
         elif scale == 7 and (isinstance(dtype, pl.Datetime) or dtype == pl.Time):
