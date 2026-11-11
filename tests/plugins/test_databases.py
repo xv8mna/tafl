@@ -1628,6 +1628,68 @@ def test_sqlserver_rounds_decimals_half_away_from_zero(registry):
     assert unchanged["Price"].equals(df["Price"]) and unchanged["Fee"].equals(df["Fee"])
 
 
+def _fit_decimals(values: list, dtype: pl.Decimal, kind: str) -> pl.Series:
+    """Exact decimals for a SQL Server column of this type, as an export checks and fits them."""
+    df, names, types = pl.DataFrame({"V": pl.Series(values, dtype=dtype)}), {"V": "V"}, {"V": kind}
+    databases._check_whole_numbers(df, names, types, "dbo.T")
+    df = databases._fit_decimals(df, names, types, "dbo.T", "sqlserver")
+    df = databases._fit_whole_numbers(df, names, types, "dbo.T", "sqlserver")
+    return databases._fit_lengths(df, names, types, "dbo.T", [])["V"]
+
+
+@pytest.mark.parametrize(
+    ("values", "dtype", "kind", "expected"),
+    [
+        (["2.00", "-3.00", None], pl.Decimal(10, 2), "int", [2, -3, None]),
+        (["1.00", "0.00"], pl.Decimal(10, 2), "bit", [1, 0]),
+        (["99999999999999999999"], pl.Decimal(20, 0), "decimal(20,0)", ["99999999999999999999"]),
+        (["1.50", None], pl.Decimal(10, 2), "nvarchar(10)", ["1.50", None]),  # the same text on every PC
+        (["-0.05"], pl.Decimal(10, 2), "varchar(max)", ["-0.05"]),
+        (["999.994"], pl.Decimal(10, 3), "decimal(5,2)", ["999.994"]),  # rounded later: 999.99 fits
+        (["0.5"], pl.Decimal(10, 1), "decimal(2,2)", ["0.5"]),
+        (["922337203685477.5807"], pl.Decimal(38, 4), "money", ["922337203685477.5807"]),
+        (["1.5"], pl.Decimal(10, 1), "float", ["1.5"]),  # fit_frame makes it a float
+    ],
+)
+def test_sqlserver_exact_decimals_fit_their_columns(values, dtype, kind, expected):
+    D = decimal.Decimal
+    fitted = _fit_decimals([None if v is None else D(v) for v in values], dtype, kind)
+    assert [None if v is None else str(v) for v in fitted.to_list()] == [None if v is None else str(v) for v in expected]
+
+
+@pytest.mark.parametrize(
+    ("values", "dtype", "kind", "message"),
+    [
+        (["2.00", "1.50"], pl.Decimal(10, 2), "int", "The column V of dbo.T holds whole numbers (int), but V has decimals (e.g. 1.50): "
+         "they would be cut off. Round them first, e.g. ROUND([V]), or change the column's type in the database."),
+        (["12345678901"], pl.Decimal(20, 0), "int", "The column V of dbo.T holds whole numbers from -2,147,483,648 to "
+         "2,147,483,647 (int), but V has others (e.g. 12345678901). Change the column's type in the database, e.g. to bigint."),
+        (["2.00"], pl.Decimal(10, 2), "bit", "The column V of dbo.T holds 0 and 1 (bit), but V has others (e.g. 2). Change the "
+         "column's type in the database, e.g. to int."),
+        (["1234.50"], pl.Decimal(10, 2), "nvarchar(3)", "The column V of dbo.T holds texts of up to 3 characters (nvarchar(3)), "
+         "but V has longer ones (e.g. “1234.50”, 7 characters). Shorten them first, e.g. LEFT([V], 3), or make the column "
+         "longer in the database."),
+        (["1.00", "-12345.67"], pl.Decimal(10, 2), "decimal(5,2)", "The column V of dbo.T holds numbers of up to 3 digits before "
+         "the decimal point (decimal(5,2)), but V has longer ones (e.g. -12345.67). Make the column wider in the database, "
+         "e.g. decimal(38, 2)."),
+        (["999.995"], pl.Decimal(10, 3), "decimal(5,2)", "The column V of dbo.T holds numbers of up to 3 digits before the "
+         "decimal point (decimal(5,2)), but V has longer ones (e.g. 999.995). Make the column wider in the database, e.g. "
+         "decimal(38, 2)."),  # 1000.00 when it is rounded as SQL Server rounds it
+        (["1.5"], pl.Decimal(10, 1), "numeric(2,2)", "The column V of dbo.T holds numbers between -1 and 1 (numeric(2,2)), but V "
+         "has others (e.g. 1.5). Make the column wider in the database, e.g. decimal(38, 2)."),
+        (["214748.3648"], pl.Decimal(10, 4), "smallmoney", "The column V of dbo.T holds numbers from -214,748.3648 to "
+         "214,748.3647 (smallmoney), but V has others (e.g. 214748.3648). Change the column's type in the database, e.g. "
+         "to decimal(38, 4)."),
+    ],
+)
+def test_sqlserver_exact_decimals_that_dont_fit_name_their_column(values, dtype, kind, message):
+    """The driver's words named no column: "Converting decimal loses precision" (also for a text
+    column, which takes them now), a long text about the TDS protocol, "A value doesn't fit…"."""
+    with pytest.raises(ActionError) as error:
+        _fit_decimals([decimal.Decimal(v) for v in values], dtype, kind)
+    assert str(error.value) == message
+
+
 def test_sqlserver_sends_texts_for_varchar_columns_as_unicode(registry):
     """The server converts them to the code page of the column's collation (as N'…'), in every
     mode; bound as varchar, the driver would convert them to this PC's code page first."""

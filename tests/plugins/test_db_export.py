@@ -1993,3 +1993,53 @@ def test_sqlserver_the_example_of_keys_equal_as_compared_is_the_first_in_the_dat
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_exact_decimals_get_the_checks_of_whole_numbers_in_every_mode(registry):
+    """Exact decimals (Decimal) stopped with the driver's words, which named no column: "Converting
+    decimal loses precision" for 1.50 into an int, bigint, nvarchar or varchar column, a long text
+    about the TDS protocol for 12345.67 into a decimal(5,2), "A value doesn't fit its column…" for
+    12345678901 into an int. Now they have the checks of whole numbers, the same in every mode, and
+    a text column gets the same text on every PC."""
+    ctx, name = _sqlserver()
+    D = decimal.Decimal
+    stored_as = {
+        "int": (["2.00", "-3.00"], pl.Decimal(10, 2), ["2", "-3"]),
+        "nvarchar(10)": (["1.50", "-0.05"], pl.Decimal(10, 2), ["1.50", "-0.05"]),
+        "varchar(10)": (["1.50", "100"], pl.Decimal(10, 2), ["1.50", "100.00"]),
+        "decimal(5,2)": (["1.505", "-999.994"], pl.Decimal(10, 3), ["1.51", "-999.99"]),
+    }
+    refused = {
+        "int": (["1.50"], pl.Decimal(10, 2), r"holds whole numbers \(int\), but V has decimals \(e\.g\. 1\.50\): they would be cut off"),
+        "bigint": (["12345678901234567890"], pl.Decimal(20, 0), r"holds whole numbers from .* \(bigint\), but V has others \(e\.g\. 12345678901234567890\)"),
+        "nvarchar(3)": (["1234.50"], pl.Decimal(10, 2), r"holds texts of up to 3 characters \(nvarchar\(3\)\), but V has longer ones \(e\.g\. “1234\.50”"),
+        "decimal(5,2)": (["12345.67"], pl.Decimal(10, 2), r"holds numbers of up to 3 digits before the decimal point \(decimal\(5,2\)\), but V"),
+    }
+
+    def export(values, dtype, mode):
+        data = pl.DataFrame({"K": range(1, len(values) + 1), "V": pl.Series([D(v) for v in values], dtype=dtype)})
+        registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": ["K"]}, ctx)
+
+    def reset(kind):
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+            db.execute(f"CREATE TABLE {name} (K int, V {kind})")
+            db.execute(f"INSERT INTO {name} (K) VALUES (1), (2)")
+
+    try:
+        for kind, (values, dtype, expected) in stored_as.items():
+            for mode in ("insert", "upsert", "update"):
+                reset(kind)
+                export(values, dtype, mode)
+                with ctx.database("server") as db:
+                    stored = db.read(f"SELECT CAST(V AS nvarchar(40)) AS V FROM {name} WHERE V IS NOT NULL ORDER BY K")["V"].to_list()
+                assert stored == expected, (kind, mode)
+        for kind, (values, dtype, message) in refused.items():
+            for mode in ("insert", "upsert", "update"):
+                reset(kind)
+                with pytest.raises(ActionError, match=rf"^The column V of {re.escape(name)} {message}"):
+                    export(values, dtype, mode)
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

@@ -1578,6 +1578,7 @@ def export_database(df, p, ctx):
             data = data.select(cols(c for c, n in names.items() if n in keys))
         _check_whole_numbers(data, names, types, p.table)
         _check_storable(data, db)
+        data = _fit_decimals(data, names, types, p.table, db.connector.id)
         data = _fit_whole_numbers(data, names, types, p.table, db.connector.id)
         data, hexed = _binary_texts(data, names, types, db.connector.id)
         finding = keys if p.mode in ("update", "delete") else []  # key values that only find rows
@@ -1636,12 +1637,14 @@ _WHOLE_NUMBER_TYPES = {"tinyint", "smallint", "int", "integer", "bigint", "bit"}
 
 def _check_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str) -> None:
     """The database would cut off decimals that go into a whole-number column (1.5 -> 1) without
-    a word: refuse instead. Only the columns of ``df``, those the export writes."""
+    a word: refuse instead, also for exact decimals (1.50). Only the columns of ``df``, those the
+    export writes."""
     kinds = {name.lower(): kind for name, kind in types.items()}
     for source in df.columns:
         target, column = names[source], df[source].alias("value")  # a fixed name, as in _round_half_away
-        if column.dtype.is_float() and kinds.get(target.lower()) in _WHOLE_NUMBER_TYPES:
-            values = column.drop_nulls().drop_nans()
+        exact = isinstance(column.dtype, pl.Decimal)
+        if (column.dtype.is_float() or exact) and kinds.get(target.lower()) in _WHOLE_NUMBER_TYPES:
+            values = column.drop_nulls() if exact else column.drop_nulls().drop_nans()
             if values.len() and (values != values.round(0)).any():
                 example = values.filter(values != values.round(0))[0]
                 raise ActionError(
@@ -1769,6 +1772,71 @@ def _fit_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str,
             f"and {source} has some (e.g. {example}). Change the column's type in the database, e.g. to decimal(38, 0)."
         )
     return df.with_columns(changes) if changes else df
+
+
+def _fit_decimals(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, connector_id: str) -> pl.DataFrame:
+    """Exact decimals (Decimal) for the SQL Server columns they go into, with the checks whole
+    numbers have (the driver's messages named no column: "Converting decimal loses precision",
+    or a long text about the TDS protocol): for a column of whole numbers they become whole
+    numbers (``_check_whole_numbers`` refused those with decimal places before), so that
+    ``_fit_whole_numbers`` checks their range; a decimal or numeric column takes those with at most
+    as many digits before the point as it holds, after they are rounded to its decimal places
+    (999.995 is 1000.00 in a decimal(5,2)), money and smallmoney those of their range; a column of
+    text gets the same text on every PC (1.50), whose length ``_fit_lengths`` checks. Other
+    columns are left as they were."""
+    if connector_id != "sqlserver":
+        return df
+    kinds = {name.lower(): kind for name, kind in types.items()}
+    changes = []
+    for source, dtype in df.schema.items():
+        if not isinstance(dtype, pl.Decimal):
+            continue
+        target, column = names[source], df[source].alias("value")  # a fixed name, as in _round_half_away
+        kind = kinds.get(target.lower(), "")
+        base, size, scale = _kind(kind)
+        if base in _WHOLE_RANGES:  # whole numbers here (others were refused): within 128 bits for 38 digits
+            whole = pl.Int64 if (dtype.precision or 38) - dtype.scale <= 18 else pl.Int128
+            changes.append(column.cast(whole).alias(source))
+        elif base in _TEXT_KINDS:
+            changes.append(pl.select(dtypes.text_expr(pl.lit(column), dtype)).to_series().alias(source))
+        elif base in ("decimal", "numeric", "money", "smallmoney"):
+            rounded = _round_half_away(column, scale) if dtype.scale > scale else column
+            low, high = rounded.min(), rounded.max()
+            if high is None:
+                continue
+            if base in ("money", "smallmoney"):
+                least, most = _MONEY_RANGES[base]
+                if least <= low and high <= most:
+                    continue
+                example = column[rounded.arg_max() if high > most else rounded.arg_min()]
+                raise ActionError(
+                    f"The column {target} of {table} holds numbers from {least:,} to {most:,} ({kind}), but {source} has "
+                    f"others (e.g. {example}). Change the column's type in the database, e.g. to decimal(38, 4)."
+                )
+            digits = size - scale  # before the point
+            if max(_digits_before_point(low), _digits_before_point(high)) <= digits:
+                continue
+            example = column[rounded.abs().arg_max()]
+            held = f"numbers of up to {digits} digit{'s' if digits != 1 else ''} before the decimal point" if digits else "numbers between -1 and 1"
+            raise ActionError(
+                f"The column {target} of {table} holds {held} ({kind}), but {source} has "
+                f"{'longer ones' if digits else 'others'} (e.g. {example}). Make the column wider in the database, e.g. "
+                f"decimal(38, {scale})."
+            )
+    return df.with_columns(changes) if changes else df
+
+
+# What SQL Server's money and smallmoney columns hold
+_MONEY_RANGES = {
+    "money": (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("922337203685477.5807")),
+    "smallmoney": (decimal.Decimal("-214748.3648"), decimal.Decimal("214748.3647")),
+}
+
+
+def _digits_before_point(value: decimal.Decimal) -> int:
+    """The digits of a decimal before its point: 0 for 0.5, 3 for -123.45."""
+    whole = abs(int(value))
+    return len(str(whole)) if whole else 0
 
 
 _TEXT_KINDS = ("char", "varchar", "nchar", "nvarchar", "text", "ntext")
