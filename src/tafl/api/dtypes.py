@@ -216,13 +216,13 @@ def float_loses_digits(s: pl.Series, decimal: str = ",") -> pl.Series:
     if isinstance(s.dtype, pl.Decimal):  # below 10^15 units (its digits without the point) a value has at most 15 digits
         rows = (s.to_physical().abs() >= 10**15).fill_null(False).arg_true()
         if rows.len():
-            lost = lost.scatter(rows, _apply(s.gather(rows), _decimal_digits_lost(_VALUE, s.dtype.scale)))
+            lost = lost.scatter(rows, _in_parts(s.gather(rows), _decimal_digits_lost))
         return lost
     if s.dtype != pl.String:
         return lost
     rows = (s.str.len_bytes() > 15).fill_null(False).arg_true()  # shorter texts have at most 15 digits
     if rows.len():
-        lost = lost.scatter(rows, _apply(s.gather(rows), _text_digits_lost(_VALUE, decimal)))
+        lost = lost.scatter(rows, _in_parts(s.gather(rows), lambda part: _text_digits_lost(part, decimal)))
     return lost
 
 
@@ -380,41 +380,72 @@ def _all_digits(parsed: pl.Expr, text: pl.Expr, fmt: str) -> pl.Expr:
     return parsed if width is None else pl.when(text.str.contains(f"^[0-9]{{{width}}}$")).then(parsed)
 
 
-def _text_digits_lost(text: pl.Expr, decimal: str) -> pl.Expr:
+def _text_digits_lost(texts: pl.Series, decimal: str) -> pl.Series:
     """``float_loses_digits`` for numbers typed as text: a whole part that a decimal number doesn't
     keep exactly, or decimal places other than zeros whose decimal number has other digits."""
-    plain = _number_text(text, decimal)
-    digits = plain.str.extract(r"^[+-]?0*([0-9]+)", 1)
-    whole = digits.cast(pl.Int128, strict=False)
-    whole_lost = (digits.str.len_chars() > 38) | (whole.cast(pl.Float64).cast(pl.Int128, strict=False) != whole)
-    mantissa = plain.str.replace(r"[eE].*$", "")  # 1.5e3: the digits 15
-    number = plain.cast(pl.Float64, strict=False)
-    places_lost = mantissa.str.contains(r"\.[0-9]*[1-9]") & _other_digits(mantissa, number)
-    return (whole_lost.fill_null(False) | places_lost.fill_null(False)) & number.is_not_null()
+    plain = _apply(texts, _number_text(_VALUE, decimal))  # once: the slow part
+    mantissa = _VALUE.str.replace(r"[eE].*$", "")  # 1.5e3: the digits 15
+    before = mantissa.str.split_exact(".", 1).struct.field("field_0").str.strip_chars_start("+-").str.strip_chars_start("0")
+    exact = before.cast(pl.Int128, strict=False)  # the whole part
+    parts = pl.DataFrame([plain.alias("value")]).select(
+        number=_VALUE.cast(pl.Float64, strict=False),
+        whole=((before.str.len_chars() > 38) | (exact.cast(pl.Float64).cast(pl.Int128, strict=False) != exact)).fill_null(False),
+        places=mantissa.str.contains(r"\.[0-9]*[1-9]").fill_null(False),
+        digits=_significant_digits(mantissa),
+    )
+    places = parts["places"] & _digits_lost(parts["digits"], parts["number"])
+    return (parts["whole"] | places) & parts["number"].is_not_null()
 
 
-def _decimal_digits_lost(value: pl.Expr, scale: int) -> pl.Expr:
-    """``float_loses_digits`` for exact decimals with ``scale`` decimal places: a whole value whose
-    decimal number is another whole number, or one with decimal places other than zeros whose
-    decimal number has other digits. A comparison with the decimal number made exact again would
-    see digits that it never showed (1.1 is 1.100000000000000128 with 18 decimal places)."""
-    units = value.to_physical()
-    one = pl.lit(10**scale, dtype=pl.Int128)
-    number = value.cast(pl.Float64)
-    whole_changed = (number.cast(pl.Int128, strict=False) != units // one).fill_null(True)
-    return pl.when(units % one == 0).then(whole_changed).otherwise(_other_digits(value.cast(pl.String), number))
+def _decimal_digits_lost(values: pl.Series) -> pl.Series:
+    """``float_loses_digits`` for exact decimals with decimal places: a whole value whose decimal
+    number is another whole number, or one with decimal places other than zeros whose decimal
+    number has other digits. A comparison with the decimal number made exact again would see
+    digits that it never showed (1.1 is 1.100000000000000128 with 18 decimal places)."""
+    units, one = _VALUE.to_physical(), pl.lit(10**values.dtype.scale, dtype=pl.Int128)
+    number = _VALUE.cast(pl.Float64)
+    parts = pl.DataFrame([values.alias("value")]).select(
+        number=number,
+        whole=units % one == 0,
+        changed=(number.cast(pl.Int128, strict=False) != units // one).fill_null(True),
+        digits=_significant_digits(_VALUE.cast(pl.String)),
+    )
+    return pl.select(pl.when(parts["whole"]).then(parts["changed"]).otherwise(_digits_lost(parts["digits"], parts["number"]))).to_series()
 
 
-def _other_digits(written: pl.Expr, number: pl.Expr) -> pl.Expr:
-    """Whether the decimal number ``number`` reads back with other significant digits than the
-    number ``written`` with a point (and perhaps a sign): its shortest text has other digits. Being
-    that close, the two can't have the same digits at another place."""
-    return _significant_digits(written) != _significant_digits(text_expr(number, pl.Float64))
+def _digits_lost(digits: pl.Series, numbers: pl.Series) -> pl.Series:
+    """Whether the decimal numbers ``numbers`` read back with other significant digits than
+    ``digits``, those of the numbers they were made from. Up to 15 digits they don't: Polars makes
+    the nearest decimal number of a text or an exact decimal, which keeps them. From 18 on they do:
+    the shortest text that reads back as a decimal number has at most 17. Only 16 and 17 digits
+    need that text, which Polars writes (with an exponent for some, 1.2345678901234568e+17, which
+    doesn't change its digits). Being that close, the two can't have the same digits at another
+    place."""
+    count = digits.str.len_bytes()
+    lost = (count > 17).fill_null(False)
+    close = count.is_between(16, 17).fill_null(False).arg_true()
+    if close.len():
+        shown = numbers.gather(close).cast(pl.String).str.split_exact("e", 1).struct.field("field_0")
+        lost = lost.scatter(close, _apply(shown, _significant_digits(_VALUE)) != digits.gather(close))
+    return lost
 
 
 def _significant_digits(text: pl.Expr) -> pl.Expr:
-    """The digits of a number written with a point, without zeros at the start and the end."""
-    return text.str.replace_all("[^0-9]", "").str.strip_chars("0")
+    """The digits of a number written with a point (and perhaps a sign), without zeros at the start
+    and the end. Text operations, not a pattern: three times as quick."""
+    return text.str.strip_chars_start("+-").str.replace(".", "", literal=True).str.strip_chars("0")
+
+
+_PART_VALUES = 1 << 17  # the values whose digits are compared together (see _in_parts)
+
+
+def _in_parts(s: pl.Series, check: Callable[[pl.Series], pl.Series]) -> pl.Series:
+    """``check`` of the values of ``s``, in parts of at most ``_PART_VALUES``: the texts that the
+    comparison of digits makes for each value took twice the memory of the check of 0.6.4 at
+    once (600 MB for a million values)."""
+    if s.len() <= _PART_VALUES:
+        return check(s)
+    return pl.concat([check(s.slice(start, _PART_VALUES)) for start in range(0, s.len(), _PART_VALUES)])
 
 
 # --- one type for the values of several columns ----------------------------------------------

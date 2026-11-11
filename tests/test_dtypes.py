@@ -351,6 +351,33 @@ def test_float_loses_digits_counts_all_significant_digits():
     assert dtypes.float_loses_digits(exact).to_list() == [True, False, True, False, True]
 
 
+def _changes_as_float(number: Decimal) -> bool:
+    """What ``float_loses_digits`` says, worked out with Python for one number: a whole number
+    changes when its nearest decimal number is another number, one with decimal places when that
+    reads back as another number."""
+    nearest = float(number)
+    if number == number.to_integral_value():
+        return Decimal(nearest) != number
+    return Decimal(repr(nearest)) != number
+
+
+@pytest.mark.parametrize("scale", [0, 2, 4, 10, 18, 25])
+def test_float_loses_digits_as_python_says_for_random_numbers(scale):
+    """1 to 20 significant digits, at every place the scale allows: the quick ways of the check (up
+    to 15 digits kept, from 18 on lost, only 16 and 17 looked at closely) give Python's answer."""
+    rng = random.Random(scale)
+    numbers = []
+    while len(numbers) < 1500:
+        digits = rng.randint(1, 20)
+        number = Decimal(rng.randint(10 ** (digits - 1), 10**digits - 1)).scaleb(-rng.randint(0, scale))
+        if number.adjusted() < 38 - scale:
+            numbers.append(-number if rng.random() < 0.3 else number)
+    expected = [_changes_as_float(number) for number in numbers]
+    assert dtypes.float_loses_digits(pl.Series(numbers, dtype=pl.Decimal(38, scale))).to_list() == expected
+    texts = pl.Series([format(number, "f").replace(".", ",") for number in numbers])
+    assert dtypes.float_loses_digits(texts, ",").to_list() == expected
+
+
 def test_rounded_to_whole_of_exact_decimals_near_their_38_digits():
     """Polars rounds an exact decimal in its own type: -9999999999999999999999999999.9999999999 of
     a decimal(38, 10) would need 39 digits, and stopped with "overflow in decimal rounding"."""

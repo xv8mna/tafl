@@ -146,8 +146,10 @@ def _warn_rounded(name: str, source: pl.Series, converted: pl.Series, decimal: s
     them: a whole number only those without decimal places."""
     rounded = dtypes.float_loses_digits(source, decimal) & converted.is_not_null()
     if rounded.any():
-        values = source.filter(rounded)
-        if not dtypes.rounded_to_whole(values, decimal).any():
+        values, numbers = source.filter(rounded), converted.filter(rounded)
+        # decimal places: in a decimal number that isn't whole, else read from the values (a long
+        # whole number such as 1234567890123456789,5 is a whole decimal number)
+        if not (numbers != numbers.floor()).any() and not dtypes.rounded_to_whole(values, decimal).any():
             keep = "Whole number and Text keep them all"
         elif isinstance(source.dtype, pl.Decimal):
             keep = "exact decimals and Text keep them all"
