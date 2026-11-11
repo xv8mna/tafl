@@ -1760,12 +1760,14 @@ def export_database(df, p, ctx):
             data = data.select(cols(c for c, n in names.items() if n in keys))
         _check_whole_numbers(data, names, types, p.table)
         _check_storable(data, db)
-        data, read = _read_date_texts(data, names, types, p.table, db.connector.id)
         data = _fit_decimals(data, names, types, p.table, db.connector.id)
         data = _fit_whole_numbers(data, names, types, p.table, db.connector.id)
         data, hexed = _binary_texts(data, names, types, db.connector.id)
         finding = keys if p.mode in ("update", "delete") else []  # key values that only find rows
         data = _fit_lengths(data, names, types, p.table, finding, hexed)
+        # After the rows that _fit_lengths leaves out: the cut digits of a second are counted, with
+        # their rows, in the rows that are written
+        data, read = _read_date_texts(data, names, types, p.table, db.connector.id)
         kinds = {name.lower(): kind for name, kind in types.items()}
         fitted = {c: kinds[names[c].lower()] for c in data.columns if names[c].lower() in kinds}
         cut = _cut_seconds(data, fitted, read, names, p.table) if db.connector.id == "sqlserver" else []

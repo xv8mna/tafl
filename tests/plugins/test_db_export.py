@@ -2372,3 +2372,34 @@ def test_sqlserver_a_time_alone_is_on_1_january_1900_in_every_mode(registry):
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_a_row_left_out_by_its_key_has_no_cut_digits(registry):
+    """Update and Delete leave out a row whose key text is longer than its column (no row of the
+    table can have it). The texts with digits of a second that a column doesn't hold were counted,
+    with their rows, before that: a cut text after such a row stopped the step ("index 0 is out of
+    bounds"), and one in the left-out row was the example of a warning about a value that wasn't
+    written."""
+    ctx, name = _sqlserver()
+    cases = ((["2026-10-01 08:00:00", "2026-10-01 08:00:00.5"], True), (["2026-10-01 08:00:00.5", "2026-10-01 08:00:00"], False))
+    try:
+        for mode in ("update", "delete"):
+            for texts, warned in cases:
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                    db.execute(f"CREATE TABLE {name} (K nvarchar(3), D datetime2(0), V int)")
+                    db.execute(f"INSERT INTO {name} VALUES (N'a', '2026-10-01 08:00:00', 0)")
+                data, keys = pl.DataFrame({"K": ["toolong", "a"], "D": texts, "V": [1, 2]}), ["K"]
+                if mode == "delete":
+                    data, keys = data.select("K", "D"), ["K", "D"]
+                before = len(ctx.warnings)
+                registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": keys}, ctx)
+                assert _logged(ctx) == ("info", f"{name}: {'updated' if mode == 'update' else 'deleted'} 1 row"), (mode, texts)
+                assert ctx.warnings[before:] == ([
+                    f"D: 1 value was cut to whole seconds (e.g. '2026-10-01 08:00:00.5' is 2026-10-01 08:00:00): the column D of "
+                    f"{name} holds no parts of a second (datetime2(0))"
+                ] if warned else []), (mode, texts)  # fmt: skip
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
