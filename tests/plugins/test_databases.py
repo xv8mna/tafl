@@ -1780,6 +1780,29 @@ def test_sqlserver_exact_decimals_that_dont_fit_name_their_column(values, dtype,
     assert str(error.value) == message
 
 
+@pytest.mark.parametrize(
+    ("value", "dtype", "shown"),
+    [
+        ("9" * 36 + ".50", pl.Decimal(38, 2), "9" * 36 + ".50"),  # rounded, it needs 37 digits before the point
+        ("0.0000000001", pl.Decimal(38, 10), "0.0000000001"),  # Python writes 1E-10
+        ("-2.5", pl.Decimal(10, 1), "-2.5"),
+    ],
+)
+def test_sqlserver_decimals_for_a_whole_number_column_are_shown_as_tafl_writes_them(value, dtype, shown):
+    """The check of decimal places stopped with Polars' "overflow in decimal rounding: result
+    doesn't fit Decimal(38, 2)" for a value of 36 digits before the point, and showed small ones as
+    Python writes them (1E-10). Whole values pass: their range is checked later."""
+    df = pl.DataFrame({"V": pl.Series([decimal.Decimal(value), None], dtype=dtype)})
+    with pytest.raises(ActionError) as error:
+        databases._check_whole_numbers(df, {"V": "V"}, {"V": "int"}, "dbo.T")
+    assert str(error.value) == (
+        f"The column V of dbo.T holds whole numbers (int), but V has decimals (e.g. {shown}): they would be cut off. Round them "
+        "first, e.g. ROUND([V]), or change the column's type in the database."
+    )
+    whole = pl.DataFrame({"V": pl.Series([decimal.Decimal("9" * 36 + ".00")], dtype=pl.Decimal(38, 2))})
+    databases._check_whole_numbers(whole, {"V": "V"}, {"V": "int"}, "dbo.T")
+
+
 def test_sqlserver_reads_texts_for_date_columns_with_the_rule_of_change_type():
     """The driver read texts for date and time columns in Add (ISO only), and the keyed modes sent
     them to the server, which read them with its session's date format (01.10.2026 was 10 January).

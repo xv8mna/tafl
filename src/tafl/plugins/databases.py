@@ -1871,6 +1871,12 @@ def _temporary(connector_id: str, parts: list[str]) -> bool:
 _WHOLE_NUMBER_TYPES = {"tinyint", "smallint", "int", "integer", "bigint", "bit"}
 
 
+def _value_text(values: pl.Series) -> str:
+    """The first of ``values`` as an example in a message, as Tafl writes it (0.0000000001, not
+    Python's 1E-10)."""
+    return pl.select(dtypes.text_expr(pl.lit(values.head(1)), values.dtype)).item()
+
+
 def _check_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str) -> None:
     """The database would cut off decimals that go into a whole-number column (1.5 -> 1) without
     a word: refuse instead, also for exact decimals (1.50). Only the columns of ``df``, those the
@@ -1881,8 +1887,9 @@ def _check_whole_numbers(df: pl.DataFrame, names: dict[str, str], types: dict[st
         exact = isinstance(column.dtype, pl.Decimal)
         if (column.dtype.is_float() or exact) and kinds.get(target.lower()) in _WHOLE_NUMBER_TYPES:
             values = column.drop_nulls() if exact else column.drop_nulls().drop_nans()
-            if values.len() and (values != values.round(0)).any():
-                example = values.filter(values != values.round(0))[0]
+            fraction = dtypes.rounded_to_whole(values)  # by the digits: a rounding of 38 digits could overflow
+            if fraction.any():
+                example = _value_text(values.filter(fraction))
                 raise ActionError(
                     f"The column {target} of {table} holds whole numbers ({kinds[target.lower()]}), but {source} has "
                     f"decimals (e.g. {example}): they would be cut off. Round them first, e.g. ROUND([{source}]), "
@@ -2044,7 +2051,7 @@ def _fit_decimals(df: pl.DataFrame, names: dict[str, str], types: dict[str, str]
                 least, most = _MONEY_RANGES[base]
                 if least <= low and high <= most:
                     continue
-                example = column[rounded.arg_max() if high > most else rounded.arg_min()]
+                example = _value_text(column.slice(rounded.arg_max() if high > most else rounded.arg_min(), 1))
                 raise ActionError(
                     f"The column {target} of {table} holds numbers from {least:,} to {most:,} ({kind}), but {source} has "
                     f"others (e.g. {example}). Change the column's type in the database, e.g. to decimal(38, 4)."
@@ -2052,7 +2059,7 @@ def _fit_decimals(df: pl.DataFrame, names: dict[str, str], types: dict[str, str]
             digits = size - scale  # before the point
             if max(_digits_before_point(low), _digits_before_point(high)) <= digits:
                 continue
-            example = column[rounded.abs().arg_max()]
+            example = _value_text(column.slice(rounded.abs().arg_max(), 1))
             held = "numbers between -1 and 1"
             if digits:
                 held = f"numbers of up to {digits} digit{'s' if digits != 1 else ''} before the decimal point"
