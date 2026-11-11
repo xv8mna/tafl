@@ -218,7 +218,12 @@ def float_loses_digits(s: pl.Series, decimal: str = ",") -> pl.Series:
     if isinstance(s.dtype, pl.Decimal):  # below 10^15 units (its digits without the point) a value has at most 15 digits
         if max((abs(value) for value in (s.min(), s.max()) if value is not None), default=0) < Decimal(10) ** (15 - s.dtype.scale):
             return lost
-        rows = (s.to_physical().abs() >= 10**15).fill_null(False).arg_true()
+        units, (ten, at_16, at_18) = _VALUE.to_physical(), (pl.lit(10**k, dtype=pl.Int128) for k in (1, 15, 17))
+        found = s.to_frame().select(  # 18 digits or more without a zero at the end: a decimal number can't keep them (_digits_lost)
+            many=((units.abs() >= at_18) & (units % ten != 0)).fill_null(False),
+            check=(units.abs() >= at_16).fill_null(False),
+        )
+        lost, rows = found["many"].alias(name), (found["check"] & ~found["many"]).arg_true()
         if rows.len():
             lost = lost.scatter(rows, _in_parts(s.gather(rows), _decimal_digits_lost))
         return lost
