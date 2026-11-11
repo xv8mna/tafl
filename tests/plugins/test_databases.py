@@ -1927,7 +1927,7 @@ def test_sqlserver_datetimeoffset_is_read_as_a_moment_in_utc(registry):
     fitted, warnings = databases._as_described(empty, described)
     assert fitted.schema == {"Text": pl.String, "At": pl.Datetime("us")}  # an empty column of texts stays text
     assert warnings == [
-        "At: the column holds 7 digits of a second, but SQL Server's driver reads only 6 (to the microsecond), so a 7th digit is "
+        "At: the column holds 7 digits of a second, but SQL Server's driver reads only 6 (to the microsecond), so a 7th digit, if any, is "
         "cut (e.g. in 2026-10-01 08:00:01.000005). Export to database finds such rows by these keys: it compares them to the "
         "microsecond."
     ]

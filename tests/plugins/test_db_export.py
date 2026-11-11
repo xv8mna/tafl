@@ -2184,7 +2184,7 @@ def test_sqlserver_keys_of_seven_digits_of_a_second_find_their_rows(registry, ki
         imported = registry.actions["db.import"](None, {"connection": "server", "table": name}, ctx)
         assert imported.schema["K"] == (pl.Time if kind == "time(7)" else pl.Datetime("us", "UTC" if "offset" in kind else None))
         assert ctx.warnings[-1].startswith(
-            "K: the column holds 7 digits of a second, but SQL Server's driver reads only 6 (to the microsecond), so a 7th digit is "
+            "K: the column holds 7 digits of a second, but SQL Server's driver reads only 6 (to the microsecond), so a 7th digit, if any, is "
             "cut (e.g. in "
         )
         export(imported.with_columns(V=pl.lit(1)), mode="upsert", key_columns=["K"])

@@ -1569,7 +1569,7 @@ def _as_described(df: pl.DataFrame, description) -> tuple[pl.DataFrame, list[str
     texts that has no value is text, as before (a datetimeoffset(0) column is described as a text
     of 26 characters, so ``dtype_for`` lets the values decide); a column of 7 digits of a second
     (datetime2(7), time(7), datetimeoffset(7)) gets a warning when its values have parts of a
-    second: the driver reads them only to the microsecond, so a 7th digit is cut."""
+    second: the driver reads them only to the microsecond, so a 7th digit, if any, is cut."""
     names = unique_names([str(d[0]) if d[0] else f"Column {i}" for i, d in enumerate(description, 1)])
     changes, cut = [], {}  # the columns of 7 digits with parts of a second: an example of each
     for name, described in zip(names, description):
@@ -1592,7 +1592,7 @@ def _as_described(df: pl.DataFrame, description) -> tuple[pl.DataFrame, list[str
     example = cut[first] if len(listed) == 1 else f"{first}: {cut[first]}"
     warning = (
         f"{shown}: the column{'s hold' if len(listed) > 1 else ' holds'} 7 digits of a second, but SQL Server's driver reads "
-        f"only 6 (to the microsecond), so a 7th digit is cut (e.g. in {example}). Export to database finds such rows by "
+        f"only 6 (to the microsecond), so a 7th digit, if any, is cut (e.g. in {example}). Export to database finds such rows by "
         "these keys: it compares them to the microsecond."
     )
     return (df.with_columns(changes) if changes else df), [warning]
