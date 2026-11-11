@@ -1808,13 +1808,20 @@ def test_sqlserver_datetimeoffset_is_read_as_a_moment_in_utc(registry):
     ]
     whole = empty.with_columns(At=pl.lit(dt.datetime(2026, 10, 1, 8)))
     assert databases._as_described(whole, described)[1] == []  # no part of a second: nothing to cut
+    for count, listed in ((3, "C0, C1 and C2: the columns hold"), (8, "C0, C1, C2, C3, C4 and 3 more: the columns hold")):
+        many = pl.DataFrame({f"C{i}": [dt.time(8, 0, 0, 5)] for i in range(count)})
+        warnings = databases._as_described(many, [(f"C{i}", dt.time, None, 16, 16, 7, True) for i in range(count)])[1]
+        assert len(warnings) == 1 and warnings[0].startswith(f"{listed} 7 digits of a second, ") and "(e.g. in C0: 08:00:00.000005)" in warnings[0]
 
 
 def test_sqlserver_keys_of_seven_digits_are_compared_to_the_microsecond(registry):
     connector = registry.connectors["sqlserver"]
     kinds = {"K": "datetime2(7)", "T": "time(3)", "N": "int"}
     matched = connector.matching(["K", "T", "N"], "[x]", "[s]", kinds)
-    assert matched.count("DATEPART(NANOSECOND") == 3 and "([x].[T] = [s].[T] OR" in matched and "([x].[N] = [s].[N] OR" in matched
+    cut = "DATEADD(NANOSECOND, -(DATEPART(NANOSECOND, [x].[K]) % 1000), [x].[K])"
+    assert matched.startswith(f"({cut} = ") and f"OR ({cut} IS NULL AND " in matched  # as same(): SQL Server joins it by hashing
+    assert "(DATEPART(NANOSECOND, [s].[K]) % 1000 = 0 OR [x].[K] = [s].[K] OR [s].[K] IS NULL)" in matched
+    assert "([x].[T] = [s].[T] OR" in matched and "([x].[N] = [s].[N] OR" in matched
     assert "DATEPART" not in connector.matching(["K"], "[x]", "[s]")  # without the types: as before
     assert "DATEPART" in connector.update_sql("[t]", "#s", ["V"], ["K"], kinds) + connector.delete_sql("[t]", "#s", ["K"], kinds)
     assert "DATEPART" in connector.insert_missing_sql("[t]", "#s", ["K", "V"], ["K"], kinds)
@@ -1854,7 +1861,8 @@ assert df["*"][0] == dt.date(2026, 10, 1) and df["^a.*$"][0] == dt.datetime(2026
 described = [(name, str if i % 2 else dt.datetime, None, 26, 26, 7 * (i % 2 == 0), True) for i, name in enumerate(names)]
 read = pl.DataFrame({name: pl.Series([None], dtype=pl.Null) if i % 2 else [dt.datetime(2026, 10, 1, 8, 0, 1, 5)] for i, name in enumerate(names)})
 fitted, warnings = databases._as_described(read, described)
-assert fitted.width == width and len(warnings) == width // 2 and fitted.schema["^a.*$"] == pl.String
+assert fitted.width == width and fitted.schema["^a.*$"] == pl.String
+assert len(warnings) == 1 and warnings[0].startswith("*, c0, c2, c4, c6 and 2,095 more: the columns hold 7 digits"), warnings
 print("ok")
 """
 

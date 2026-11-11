@@ -481,9 +481,9 @@ class SqlServer(Connector):
         matched = []
         for key in keys:
             x, s = f"{left}.{self.quote(key)}", f"{right}.{self.quote(key)}"
-            if _seven_digits(kinds.get(key.lower(), "")):
-                same_microsecond = f"{_microsecond(x)} = {_microsecond(s)} AND (DATEPART(NANOSECOND, {s}) % 1000 = 0 OR {x} = {s})"
-                matched.append(f"(({same_microsecond}) OR ({x} IS NULL AND {s} IS NULL))")
+            if _seven_digits(kinds.get(key.lower(), "")):  # in the form of same(): SQL Server joins such rows by hashing
+                matched.append(self.same(_microsecond(x), _microsecond(s)))
+                matched.append(f"(DATEPART(NANOSECOND, {s}) % 1000 = 0 OR {x} = {s} OR {s} IS NULL)")
             else:
                 matched.append(self.same(x, s))
         return " AND ".join(matched)
@@ -1512,7 +1512,7 @@ def _as_described(df: pl.DataFrame, description) -> tuple[pl.DataFrame, list[str
     (datetime2(7), time(7), datetimeoffset(7)) gets a warning when its values have parts of a
     second: the driver reads them only to the microsecond, so a 7th digit is cut."""
     names = unique_names([str(d[0]) if d[0] else f"Column {i}" for i, d in enumerate(description, 1)])
-    changes, warnings = [], []
+    changes, cut = [], {}  # the columns of 7 digits with parts of a second: an example of each
     for name, described in zip(names, description):
         if name not in df.columns:
             continue
@@ -1522,13 +1522,21 @@ def _as_described(df: pl.DataFrame, description) -> tuple[pl.DataFrame, list[str
         elif scale == 7 and (isinstance(column.dtype, pl.Datetime) or column.dtype == pl.Time):
             fraction = (column.dt.nanosecond() != 0).fill_null(False)
             if fraction.any():
-                example = pl.select(dtypes.text_expr(pl.lit(column.filter(fraction).head(1)), column.dtype)).item()
-                warnings.append(
-                    f"{name}: the column holds 7 digits of a second, but SQL Server's driver reads only 6 (to the microsecond), "
-                    f"so a 7th digit is cut (e.g. in {example}). Export to database finds such rows by these keys: it compares "
-                    "them to the microsecond."
-                )
-    return (df.with_columns(changes) if changes else df), warnings
+                cut[name] = pl.select(dtypes.text_expr(pl.lit(column.filter(fraction).head(1)), column.dtype)).item()
+    if not cut:
+        return (df.with_columns(changes) if changes else df), []
+    listed, first = list(cut), next(iter(cut))
+    if len(listed) > 5:
+        shown = ", ".join(listed[:5]) + f" and {len(listed) - 5:,} more"
+    else:
+        shown = " and ".join([", ".join(listed[:-1]), listed[-1]]) if len(listed) > 1 else first
+    example = cut[first] if len(listed) == 1 else f"{first}: {cut[first]}"
+    warning = (
+        f"{shown}: the column{'s hold' if len(listed) > 1 else ' holds'} 7 digits of a second, but SQL Server's driver reads "
+        f"only 6 (to the microsecond), so a 7th digit is cut (e.g. in {example}). Export to database finds such rows by "
+        "these keys: it compares them to the microsecond."
+    )
+    return (df.with_columns(changes) if changes else df), [warning]
 
 
 def _detect_types(df: pl.DataFrame, ctx) -> pl.DataFrame:
