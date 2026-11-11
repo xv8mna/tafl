@@ -173,7 +173,7 @@ class SqlServer(Connector):
             return pl.Decimal(min(precision or 38, 38), scale or 0)
         # datetimeoffset, which pyodbc takes for text: date-times in UTC (_datetimeoffset). With
         # digits of a second only it has a scale; without, it is described as a text of 26
-        # characters: the values tell (import_database makes an empty such column text again).
+        # characters: the values tell (for an empty column, import_database asks the server).
         if type_code is str and scale:
             return pl.Datetime("us", "UTC")
         if type_code is str and precision == _DATETIMEOFFSET_SIZE:
@@ -347,6 +347,20 @@ class SqlServer(Connector):
                 collation = f" COLLATE {c.collation}" if c.collation else ""
                 types[c.name] = f"{c.kind.upper()}({length}){collation}"
         return types
+
+    def result_types(self, conn, sql) -> list[str] | None:
+        """The SQL Server types of the columns that ``sql`` gives (datetimeoffset(0), nvarchar(26)),
+        as the server describes its first result without running it; None when it can't (e.g. a
+        query that fills a #temporary table first)."""
+        cursor = conn.cursor()
+        try:
+            cursor.execute("EXEC sp_describe_first_result_set @tsql = ?", sql)
+            described = [(row[1], row[5]) for row in cursor.fetchall() if not row[0]]  # visible columns: ordinal, type
+        except Exception:  # e.g. "The metadata could not be determined": the values decide, as before
+            return None
+        finally:
+            cursor.close()
+        return [kind.lower() if kind else "" for _ordinal, kind in sorted(described)]
 
     def read_table_sql(self, conn, table):
         try:
@@ -1600,8 +1614,9 @@ def import_database(df, p, ctx):
             with contextlib.suppress(Exception):  # e.g. a driver in autocommit mode: nothing to roll back
                 db.rollback()
         described = getattr(db.raw, "described", None)  # SQL Server (_Stoppable): the columns of what was read
+        offsets = _empty_offsets(db, out, described, p) if described else frozenset()
     if described:
-        out, warnings = _as_described(out, described)
+        out, warnings = _as_described(out, described, offsets)
         for warning in warnings:
             ctx.warn(warning)
     if not p.detect_types:
@@ -1611,20 +1626,48 @@ def import_database(df, p, ctx):
     return dtypes.infer_types(out, decimal=p.decimal, warn=ctx.warn)  # only numbers and dates, as version 1 with a point
 
 
-def _as_described(df: pl.DataFrame, description) -> tuple[pl.DataFrame, list[str]]:
+def _described_names(description) -> list[str]:
+    """The names of the columns of a result, as ``frame_from_cursor`` gives them."""
+    return unique_names([str(d[0]) if d[0] else f"Column {i}" for i, d in enumerate(description, 1)])
+
+
+def _empty_offsets(db, df: pl.DataFrame, description, p) -> frozenset[int]:
+    """The columns of a SQL Server import (by position) that have no value and are datetimeoffset:
+    a datetimeoffset(0) column is described as a text of 26 characters, as an nvarchar(26) one,
+    so ``dtype_for`` lets its values decide, and without values the server tells (``result_types``).
+    Only then: the values of a column with values tell already."""
+    if db.connector.id != "sqlserver":
+        return frozenset()
+    names = _described_names(description)
+    unknown = [
+        i for i, (name, d) in enumerate(zip(names, description))
+        if d[1] is str and d[4] == _DATETIMEOFFSET_SIZE and not d[5] and name in df.columns and df.schema[name] == pl.Null
+    ]  # fmt: skip
+    if not unknown:
+        return frozenset()
+    sql = db.connector.read_table_sql(db.raw, p.table) if p.mode == "table" else p.query
+    types = db.connector.result_types(db.raw, sql)
+    if types is None or len(types) != len(description):
+        return frozenset()
+    return frozenset(i for i in unknown if types[i].startswith("datetimeoffset"))
+
+
+def _as_described(df: pl.DataFrame, description, offsets: frozenset[int] = frozenset()) -> tuple[pl.DataFrame, list[str]]:
     """A SQL Server import with what ``cursor.description`` tells about its columns: a column of
-    texts that has no value is text, as before (a datetimeoffset(0) column is described as a text
-    of 26 characters, so ``dtype_for`` lets the values decide); a column of 7 digits of a second
-    (datetime2(7), time(7), datetimeoffset(7)) gets a warning when its values have parts of a
-    second: the driver reads them only to the microsecond, so a 7th digit, if any, is cut."""
-    names = unique_names([str(d[0]) if d[0] else f"Column {i}" for i, d in enumerate(description, 1)])
+    texts that has no value is text, as before, and a datetimeoffset column without values
+    (``offsets``, by position: one of 0 digits of a second is described as a text of 26
+    characters, so ``dtype_for`` lets the values decide) is date-times in UTC, as one with values
+    is; a column of 7 digits of a second (datetime2(7), time(7), datetimeoffset(7)) gets a
+    warning when its values have parts of a second: the driver reads them only to the
+    microsecond, so a 7th digit, if any, is cut."""
+    names = _described_names(description)
     changes, seven = [], []  # the columns of 7 digits of a second
-    for name, described in zip(names, description):
+    for index, (name, described) in enumerate(zip(names, description)):
         if name not in df.columns:
             continue
         dtype, type_code, scale = df.schema[name], described[1], described[5]
         if dtype == pl.Null and type_code is str:
-            changes.append(col(name).cast(pl.String))
+            changes.append(col(name).cast(pl.Datetime("us", "UTC") if index in offsets else pl.String))
         elif scale == 7 and (isinstance(dtype, pl.Datetime) or dtype == pl.Time):
             seven.append(name)
     listed = []

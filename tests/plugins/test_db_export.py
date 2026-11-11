@@ -2454,3 +2454,30 @@ def test_sqlserver_update_and_upsert_a_table_of_1024_columns(registry):
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_datetimeoffset_0_imports_as_date_times_also_without_values(registry):
+    """A datetimeoffset(0) column is described as a text of 26 characters, as an nvarchar(26) one:
+    with values it became date-times in UTC, as datetimeoffset(1) to (7) do, but without values (no
+    rows, or only empty ones) it was text, so the type of the column depended on its data. The
+    server now tells the type of such a column."""
+    ctx, name = _sqlserver()
+    expected = {"B": pl.Datetime("us", "UTC"), "N": pl.String, "A": pl.Datetime("us", "UTC")}
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (B datetimeoffset(0), N nvarchar(26), A datetimeoffset(7))")
+            db.execute(f"INSERT INTO {name} VALUES (NULL, NULL, NULL)")
+        for params in ({"table": name}, {"mode": "query", "query": f"SELECT B, N, A FROM {name}"},
+                       {"mode": "query", "query": f"SELECT B, N, A FROM {name} WHERE 1 = 0"}):  # fmt: skip
+            assert registry.actions["db.import"](None, {"connection": "server"} | params, ctx).schema == expected, params
+        with ctx.database("server") as db:
+            db.execute(f"INSERT INTO {name} VALUES ('2026-10-01 08:30:00 +02:00', N'x', NULL)")
+        out = registry.actions["db.import"](None, {"connection": "server", "table": name}, ctx)
+        assert out.schema == expected and out["B"].to_list() == [None, dt.datetime(2026, 10, 1, 6, 30, tzinfo=dt.UTC)]
+        # a query that SQL Server can't describe without running it: the values decide, as before
+        query = f"SELECT B INTO #tafl_t FROM {name} WHERE B IS NULL; SELECT B FROM #tafl_t"
+        assert registry.actions["db.import"](None, {"connection": "server", "mode": "query", "query": query}, ctx).schema == {"B": pl.String}
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
