@@ -8,7 +8,7 @@ from decimal import Decimal as D
 
 import polars as pl
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QLocale, QPoint, Qt
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QWidget
 
 from tafl.api.testing import StubContext
@@ -33,6 +33,7 @@ from tafl.ui.filters import (
     to_json,
     unusable,
 )
+from tafl.ui.frame_model import DisplayFormat
 from tafl.ui.labels import tooltip_text
 
 DATA = pl.DataFrame(
@@ -258,6 +259,26 @@ def test_texts_are_listed_in_the_order_of_sort(session):
     assert [row[0] for row in model.rows] == [
         None, "Apfel", "apfel", "Äpfel", "Özdemir", "Peter", "Strasse", "Straße", "Zebra", "zebra",
     ]
+
+
+def test_tiny_numbers_are_listed_with_all_their_digits(session):
+    """Up to 0.6.4 a card listed 1e-12, -1e-12 and 4e-11 each as "0", as zero itself, and a
+    threshold of 1e-12 was shown as 0: Enter in the field then made it 0."""
+    df = pl.DataFrame({"n": [1e-12, -1e-12, 4e-11, 0.0, 1.23456789012e-5, 2.5]})
+    table = session.project.add_table("Tiny")
+    session.set_filters(table.id, [{"column": "n", "values": []}])
+    pane = FilterPane(session)
+    pane.display = DisplayFormat(QLocale(QLocale.Language.English, QLocale.Country.UnitedKingdom))
+    pane.show_data(table.id, df)
+    assert list(listed(pane.cards[0])) == ["-1E-12", "0", "1E-12", "4E-11", "1.23456789012E-05", "2.5"]
+    limits = [1e-12, 1.23456789012e-5]
+    session.set_filters(table.id, [Filter("n", [], "ranges", {"thresholds": limits, "lower_inclusive": True}).to_dict()])
+    pane.show_data(table.id, df)
+    (card,) = pane.cards
+    assert card.limits.text() == "1E-12; 1.23456789012E-05"
+    assert list(listed(card)) == ["< 1E-12", "1E-12 to < 1.23456789012E-05", "≥ 1.23456789012E-05"]
+    card.limits.editingFinished.emit()  # Enter in the field: the thresholds stay
+    assert Filter.from_dict(session.filters(table.id)[0]).options["thresholds"] == limits
 
 
 def test_many_different_values_stay_fast(session):

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import re
+import struct
 from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
@@ -23,6 +24,7 @@ BLOCK = 256
 _MAX_BLOCKS = 64
 _MAX_TEXT = 500
 _TIP_TEXT = 100 * LONG_TIP_LINES  # tooltip_text shows no more
+_SMALL = 1e-4  # 10 decimal places show at least 7 digits of a bigger number
 
 Index = QModelIndex | QPersistentModelIndex
 _ROOT = QModelIndex()
@@ -43,6 +45,8 @@ class DisplayFormat:
             return lambda v: str(v) if len(v) <= _MAX_TEXT else str(v[:_MAX_TEXT]) + "…"
         if dtype.is_nested():  # a list or a record can hold cells of any size
             return _start_of_text
+        if dtype == pl.Float32:  # Python gets the value with the digits of a 64-bit number
+            return lambda v: self.number(v, single=True)
         if dtype.is_float():
             return self.number
         if dtype == pl.Date:
@@ -57,14 +61,19 @@ class DisplayFormat:
             return _text_of
         return str
 
-    def number(self, value: float) -> str:
-        if math.isnan(value):
+    def number(self, value: float, single: bool = False) -> str:
+        """With up to 10 decimal places. A number below 0.0001 that they would show as 0, or
+        without some of its digits, is shown in the shortest form that is exactly the number,
+        with an exponent, as Excel's General format does: 1E-12, 1.23456789012E-05. ``single``:
+        the value of a 32-bit number (Float32)."""
+        if -_SMALL < value < _SMALL:  # (not NaN or ∞)
+            text = _tiny(value, single) if value else "0"
+        elif value != value:
             return "NaN"
-        if math.isinf(value):
+        elif value == math.inf or value == -math.inf:
             return "∞" if value > 0 else "-∞"
-        text = f"{value:.10f}".rstrip("0").rstrip(".")
-        if text in ("", "-0"):
-            text = "0"
+        else:
+            text = f"{value:.10f}".rstrip("0").rstrip(".")
         return text.replace(".", self.decimal) if self.decimal != "." else text
 
     def datetime(self, value: Any) -> str:
@@ -177,6 +186,39 @@ class FrameModel(QAbstractTableModel):
             return ["" if value is None else show(value) for value in column.to_list()]
 
         return texts
+
+
+def _tiny(value: float, single: bool) -> str:
+    """A number between -0.0001 and 0.0001, not 0: with 10 decimal places when they show all its
+    digits, else in the shortest form that is exactly the number. A digit that only comes from
+    computing in binary (0.00003 can be 2.9999999999999997e-05) is none: a 64-bit number counts
+    with 15 digits, as Excel does."""
+    exact = _shortest(value, single)  # with an exponent: 1.25e-05
+    mantissa, _, exponent = exact.partition("e")
+    if not single and len(mantissa) - ("." in mantissa) - (mantissa[0] == "-") > 15:  # more than 15 digits
+        mantissa, _, exponent = f"{value:.15g}".partition("e")
+    places = len(mantissa) - mantissa.index(".") - 1 if "." in mantissa else 0  # (1.25e-05: 7)
+    if exponent:
+        places -= int(exponent)
+    if places <= 10:
+        return f"{value:.10f}".rstrip("0").rstrip(".")
+    return exact.replace("e", "E")
+
+
+def _shortest(value: float, single: bool) -> str:
+    """The shortest text that is exactly ``value`` (Python's repr), or the 32-bit number
+    ``value`` (a Float32 value has fewer digits: 1e-12, not 9.999999960041972e-13)."""
+    if single:
+        for digits in range(1, 10):
+            text = f"{value:.{digits}g}"
+            if _single(float(text)) == value:
+                return text
+    return repr(value)
+
+
+def _single(number: float) -> float:
+    """``number`` as a 32-bit number."""
+    return struct.unpack("<f", struct.pack("<f", number))[0]
 
 
 def _text_of(value: Any) -> str:

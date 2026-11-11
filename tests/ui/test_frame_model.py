@@ -49,6 +49,52 @@ def test_exact_decimals_show_every_digit_with_the_regional_separator(qapp):
         assert model.data(model.index(0, 0), Qt.ItemDataRole.TextAlignmentRole) & Qt.AlignmentFlag.AlignRight
 
 
+TINY = [  # a value, its text in the grid
+    (1e-12, "1E-12"),
+    (-1e-12, "-1E-12"),
+    (4e-11, "4E-11"),
+    (1.23456789012e-5, "1.23456789012E-05"),
+    (1.5e-10, "1.5E-10"),
+    (5e-324, "5E-324"),
+]
+ORDINARY = [  # shown as before: all their digits fit, or they are not tiny
+    (0.00005, "0.00005"),
+    (-0.0000015, "-0.0000015"),
+    (1e-10, "0.0000000001"),
+    (2.9999999999999997e-05, "0.00003"),  # 0.00003 computed in binary: no digit is lost
+    (0.1 + 0.2, "0.3"),
+    (1 / 3, "0.3333333333"),
+    (0.000123456789012, "0.0001234568"),
+    (1234.5, "1234.5"),
+    (-0.0, "0"),
+    (0.0, "0"),
+    (1e16, "10000000000000000"),
+]
+
+
+def test_a_tiny_number_shows_and_copies_all_its_digits(qapp):
+    """Up to 0.6.4 the grid, Ctrl+C and the list of a filter card showed 1e-12 as 0, and
+    1.23456789012e-5 as 0.0000123457. Now as Excel's General format: with an exponent."""
+    values = pl.Series("n", [value for value, _ in TINY + ORDINARY], pl.Float64)
+    for language, country, separator in (("German", "Germany", ","), ("English", "UnitedKingdom", ".")):
+        model = FrameModel()
+        model.display = DisplayFormat(QLocale(getattr(QLocale.Language, language), getattr(QLocale.Country, country)))
+        model.set_frame(values.to_frame())
+        expected = [text.replace(".", separator) for _, text in TINY + ORDINARY]
+        assert [model.data(model.index(row, 0)) for row in range(values.len())] == expected
+        assert model.copier()(values) == expected
+
+
+def test_a_tiny_32_bit_number_shows_its_own_digits(qapp):
+    """A Float32 value comes as a 64-bit number with more digits (1e-12 is 9.999999960041972e-13)."""
+    values = pl.Series("n", [1e-12, -1.2345678e-5, -1.2345e-5, 5e-05, 0.1, 2.5], pl.Float32)
+    model = FrameModel()
+    model.display = DisplayFormat(QLocale(QLocale.Language.English, QLocale.Country.UnitedKingdom))
+    model.set_frame(values.to_frame())
+    shown = [model.data(model.index(row, 0)) for row in range(values.len())]
+    assert shown == ["1E-12", "-1.2345678E-05", "-0.000012345", "0.00005", "0.1000000015", "2.5"]  # 0.1 as before
+
+
 def test_empty_cells_headers_and_alignment(qapp):
     model = model_for(QLocale(QLocale.Language.English, QLocale.Country.UnitedKingdom))
     assert model.rowCount() == 2 and model.columnCount() == 6
