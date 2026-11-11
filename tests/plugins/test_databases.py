@@ -1711,7 +1711,9 @@ def test_sqlserver_reads_texts_for_date_columns_with_the_rule_of_change_type():
     assert read["Moment"].to_list() == [
         "2026-10-01 08:00:00 +02:00", "2026-10-01 08:00:00.1234567 +00:00", "2026-10-01 08:00:00.5", "2026-10-01 08:00:00 -05:30", None,
     ]  # fmt: skip
-    assert read["Note"].equals(df["Note"]) and set(texts) == {"Day", "At", "Clock", "Moment"}
+    assert read["Note"].equals(df["Note"])
+    # for the warnings of digits of a second that are cut: how many texts had them, the first one, its row
+    assert texts == {"At": (0, "", -1), "Clock": (1, "08:00:00.1234567", 2), "Moment": (0, "", -1)}
     assert read["Clock"].dtype == pl.Time and T(8, 0) == read["Clock"][0]
     assert databases._read_date_texts(df, {c: c for c in df.columns}, types, "T", "sqlite")[0].equals(df)  # SQL Server only
 

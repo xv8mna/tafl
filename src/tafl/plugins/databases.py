@@ -823,50 +823,64 @@ def _round_half_away(series: pl.Series, scale: int) -> pl.Series:
 
 
 def _cut_seconds(
-    df: pl.DataFrame, types: dict[str, str], texts: dict[str, pl.Series] | None = None, names: dict[str, str] | None = None, table: str = ""
+    df: pl.DataFrame,
+    types: dict[str, str],
+    texts: dict[str, tuple[int, str, int]] | None = None,
+    names: dict[str, str] | None = None,
+    table: str = "",
 ) -> list[str]:
     """Warnings for the columns of ``df`` whose values lose digits of a second in their SQL Server
     column, with how many and an example, the same in every mode (``fit_frame`` cuts them as the
     driver does): a datetime2, time or datetimeoffset column holds as many digits as its type says
     (datetime2(0) whole seconds, 08:00:00.5 is 08:00:00 there), a datetime column 3 (in steps of
     1/300 s, to which SQL Server rounds them), and the driver passes no digits below a microsecond
-    (a column of 7 digits holds them). ``texts``: the texts that values of ``df`` were read from
-    (``_read_date_texts``), which show their digits as they were. ``names``: the columns of the
-    ``table``, by column of ``df``."""
+    (a column of 7 digits holds them). ``texts``: for the columns read from texts
+    (``_read_date_texts``), how many of them had such digits, the first one and its row. ``names``:
+    the columns of the ``table``, by column of ``df``. The values of all other columns are looked
+    at in one pass."""
+    texts = texts or {}
+    held = {name: digits for name, dtype in df.schema.items() if (digits := _second_digits(types.get(name, ""), dtype == pl.String))}
+    by_value = [n for n, dtype in df.schema.items() if n in held and n not in texts and (isinstance(dtype, pl.Datetime) or dtype == pl.Time)]
+    counted = {name: (count, "", -1) for name, count in zip(by_value, df.select(
+        (col(name).dt.nanosecond() % 10 ** (9 - held[name][0]) != 0).fill_null(False).sum() for name in by_value
+    ).row(0) if by_value else ())}  # fmt: skip
+    found = counted | {name: texts[name] for name in held if name in texts}
     warnings = []
-    for name, dtype in df.schema.items():
-        kind = types.get(name, "")
-        base, size, _scale = _kind(kind)
-        if base == "datetime":
-            size = 3
-        elif base not in _FRACTION_TYPES:
+    for name in (name for name in df.columns if name in found):  # in the order of the columns
+        count, shown, row = found[name]
+        if not count:
             continue
-        text = (texts or {}).get(name)
-        kept = size if base == "datetimeoffset" and dtype == pl.String else min(size, 6)  # the driver reads a text's 7 digits
-        if text is not None:
-            cut = text.str.contains(rf":[0-9]{{2}}\.[0-9]{{{kept}}}[0-9]*[1-9]").fill_null(False)
-        elif isinstance(dtype, pl.Datetime) or dtype == pl.Time:
-            cut = (df[name].alias("value").dt.nanosecond() % 10 ** (9 - kept) != 0).fill_null(False)  # a fixed name, as in _round_half_away
+        kept, size = held[name]
+        values = df[name].alias("value")  # a fixed name, as in _round_half_away
+        if row < 0:  # the first value with such digits
+            row = int((values.dt.nanosecond() % 10 ** (9 - kept) != 0).fill_null(False).arg_true()[0])
+            shown = pl.select(dtypes.text_expr(pl.lit(values.slice(row, 1)), values.dtype)).item()
         else:
-            continue
-        if not (count := int(cut.sum())):
-            continue
-        example = df[name].alias("value").filter(cut).head(1)
-        if text is not None:
-            shown = f"'{text.filter(cut).str.strip_chars()[0]}'"
-        else:
-            shown = pl.select(dtypes.text_expr(pl.lit(example), dtype)).item()
-        written = _digits_of_a_second(example, kept)
+            shown = f"'{shown}'"
+        written = _digits_of_a_second(values.slice(row, 1), kept)
         written = written if written.dtype == pl.String else pl.select(dtypes.text_expr(pl.lit(written), written.dtype)).to_series()
         values_were = "1 value was" if count == 1 else f"{count:,} values were"
         if kept == 6 and size == 7:
             why = "SQL Server's driver passes no smaller parts of a second"
         else:
             holds = "no parts of a second" if kept == 0 else f"{kept} digit{'s' if kept != 1 else ''} of a second"
-            why = f"the column {(names or {}).get(name, name)} of {table} holds {holds} ({kind})"
+            why = f"the column {(names or {}).get(name, name)} of {table} holds {holds} ({types[name]})"
         unit = {0: "whole seconds", 1: "1 digit of a second", 3: "milliseconds", 6: "whole microseconds"}.get(kept, f"{kept} digits of a second")
         warnings.append(f"{name}: {values_were} cut to {unit} (e.g. {shown} is {written[0]}): {why}")
     return warnings
+
+
+def _second_digits(sql_type: str, text: bool) -> tuple[int, int] | None:
+    """The digits of a second that a value keeps in a SQL Server column of this type, and those the
+    column holds, or None for a column without parts of a second (and for a date). The driver
+    passes date-times and times to the microsecond; it reads all 7 digits of a ``text`` for a
+    datetimeoffset column. A datetime holds 3, in steps of 1/300 s."""
+    base, size, _scale = _kind(sql_type)
+    if base == "datetime":
+        return 3, 3
+    if base not in _FRACTION_TYPES:
+        return None
+    return (size if base == "datetimeoffset" and text else min(size, 6)), size
 
 
 def _digits_of_a_second(values: pl.Series, digits: int) -> pl.Series:
@@ -1939,7 +1953,7 @@ _DATE_TEXTS = {
 
 def _read_date_texts(
     df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, connector_id: str
-) -> tuple[pl.DataFrame, dict[str, pl.Series]]:
+) -> tuple[pl.DataFrame, dict[str, tuple[int, str, int]]]:
     """Texts for SQL Server date and time columns, read in every mode with the rule of Change type
     / format without a format (31.12.2025, 2025-12-31, with or without a time; 08:30:15.250 for a
     time; a datetimeoffset column also takes an offset after the time, +01:00 or Z). Before, the
@@ -1948,7 +1962,9 @@ def _read_date_texts(
     times are then written as such (for a datetimeoffset column: as a text the driver reads, with
     the offset as it was); empty texts are empty values, as with Change type; a text that the rule
     can't read stops the export with a message that names the column and the text. Returns the
-    data and the texts of the columns read so (the warnings about cut digits show them)."""
+    data and, for the columns read so whose column holds parts of a second, how many texts have
+    more digits of a second than it keeps, the first of them and its row (``_cut_seconds`` warns of
+    them: the texts themselves are not kept)."""
     if connector_id != "sqlserver":
         return df, {}
     kinds = {name.lower(): kind for name, kind in types.items()}
@@ -1979,7 +1995,10 @@ def _read_date_texts(
                 f"(e.g. “{text.filter(failed)[0]}”{more}). Write them as {forms}."
             )
         changes.append(read.alias(source))
-        texts[source] = text
+        if digits := _second_digits(kind, base == "datetimeoffset"):  # a datetimeoffset gets a text
+            cut = text.str.contains(rf":[0-9]{{2}}\.[0-9]{{{digits[0]}}}[0-9]*[1-9]").fill_null(False)
+            first = int(cut.arg_true()[0]) if (count := int(cut.sum())) else -1
+            texts[source] = (count, text[first].strip() if count else "", first)
     return df.with_columns(changes), texts
 
 
