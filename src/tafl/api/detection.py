@@ -292,7 +292,7 @@ def _numbers(original: pl.Series, decimal: str, floats: bool) -> tuple[pl.Series
             return _exact(original, text, decimal, percent=pattern == percent)
         if pattern == percent:
             return _percentages(text, decimal), None
-        parsed = dtypes.parse_numbers(text.str.replace_all(f"[{_CURRENCY}]", ""), decimal)  # also -$3.00
+        parsed = dtypes.parse_numbers(text, decimal)  # as Change type reads them, also -$3.00
         return (parsed, None) if parsed.null_count() == text.null_count() else None
     return None
 
@@ -406,9 +406,9 @@ def _too_long(name: str, example: str) -> str:
 
 def _plain(text: pl.Series, decimal: str) -> pl.Series:
     """Numbers, amounts and percentages (cleaned texts) as plain numbers with all their digits
-    (-1234.50, see ``dtypes.plain_numbers``), named "value". Currency signs go first, also after a
-    sign (-$3.00), and so does %."""
-    return dtypes.plain_numbers(text.str.replace_all(f"[{_CURRENCY}%]", ""), decimal).alias("value")
+    (-1234.50, see ``dtypes.plain_numbers``, which reads -$3.00 as Change type does), named
+    "value". The % goes first."""
+    return dtypes.plain_numbers(text.str.replace_all("%", "", literal=True), decimal).alias("value")
 
 
 def _fit(values: pl.Series, pattern: str) -> bool:

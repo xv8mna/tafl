@@ -121,6 +121,29 @@ def test_parse_numbers_handles_currency_spaces_and_trailing_minus():
     assert dtypes.parse_numbers(s, ",").to_list() == [1234.56, -12.5, 7.0, None, None]
 
 
+def test_a_sign_before_the_currency_sign_and_no_digit_before_the_separator(act):
+    """-$3.00 and -€3,00 were no numbers for Change type and for typed values (Filter rows, Fill,
+    Replace), while the CSV import read them: the sign could only come after the currency sign. One
+    rule now, also for ,5 (0.5), which they read already. What they read gives the same."""
+    texts = ["-$3.00", "+$3.00", "-€3,00", "- € 3,00", ",5", "-,5", ".5", "$-3.00", "-3,00 €", "1.234,50 €", "123,45-", "1.000", "--$3", "-$"]
+    numbers = [-3.0, 3.0, -3.0, -3.0, 0.5, -0.5, 0.5, -3.0, -3.0, 1234.5, -123.45, 1000.0, None, None]
+    for text, number in zip(texts, numbers, strict=True):
+        decimal = dtypes.decimal_separator(text)
+        assert dtypes.parse_numbers(pl.Series([text]), decimal)[0] == number, text
+        assert dtypes.parse_decimal(text, decimal) == (None if number is None else Decimal(str(number))), text
+    assert dtypes.parse_integers(pl.Series(["-$3.00", "-€3,00", ",5", "$-3.00"]), ",").to_list() == [-3, -3, 1, -3]
+    df = pl.DataFrame({"t": ["-$3.00", "-€3,00", ",5", "2,5"]})
+    change = {"columns": [{"column": "t", "type": "number", "format": ""}], "decimal": ","}
+    assert act("columns.change_type", df.slice(1), change)["t"].to_list() == [-3.0, 0.5, 2.5]
+    assert act("columns.change_type", df.head(1), change | {"decimal": "."})["t"].to_list() == [-3.0]
+    values = pl.DataFrame({"x": [-3.0, 0.5, None]})
+    for typed in ("-$3.00", "-€3,00"):
+        assert act("rows.filter", values, {"conditions": [{"column": "x", "operator": "=", "value": typed}]})["x"].to_list() == [-3.0]
+        assert act("rows.fill", values, {"columns": ["x"], "method": "value", "value": typed})["x"].to_list() == [-3.0, 0.5, -3.0]
+        replaced = act("text.replace", values, {"columns": ["x"], "match": "whole", "replacements": [{"find": typed, "replace": "7"}]})
+        assert replaced["x"].to_list() == [7.0, 0.5, None]
+
+
 @pytest.mark.parametrize(
     ("fmt", "decimal", "expected"),
     [

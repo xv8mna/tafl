@@ -149,7 +149,7 @@ def number_expr(expr: pl.Expr, decimal: str = ",") -> pl.Expr:
 
 def parse_numbers(s: pl.Series, decimal: str = ",") -> pl.Series:
     """Text -> Float64 (see ``number_expr``)."""
-    return _apply(s, number_expr(_VALUE, decimal))
+    return _apply_once(s, number_expr(_VALUE, decimal))
 
 
 def parse_decimal(text: str, decimal: str = ",") -> Decimal | None:
@@ -168,13 +168,13 @@ def parse_integers(s: pl.Series, decimal: str = ",") -> pl.Series:
     """Text -> Int64, like ``parse_numbers`` but exact for all 19 digits (a Float64 keeps 15).
     Decimals are rounded half away from zero, like in Excel; numbers outside the range of Int64
     become empty."""
-    return _apply(_apply(s, _number_text(_VALUE, decimal)), _integer(_VALUE))
+    return _apply(_apply_once(s, _number_text(_VALUE, decimal)), _integer(_VALUE))
 
 
 def parse_whole_numbers(s: pl.Series, decimal: str = ",") -> tuple[pl.Series, pl.Series]:
     """Text -> Int64 as ``parse_integers``, and which values were rounded (as ``rounded_to_whole``
     says), from one reading of the texts: that reading is the slow part."""
-    text = _apply(s, _number_text(_VALUE, decimal)).alias("value")
+    text = _apply_once(s, _number_text(_VALUE, decimal)).alias("value")
     out = text.to_frame().select(_integer(_VALUE).alias("whole"), _has_fraction(_VALUE).alias("rounded"))
     rounded = out["rounded"] & out["whole"].is_not_null()  # fixed names: see _clean_text
     return out["whole"].alias(s.name), rounded.alias(s.name)
@@ -245,7 +245,7 @@ def rounded_to_whole(s: pl.Series, decimal: str = ",") -> pl.Series:
         rounded = pl.repeat(False, s.len(), eager=True).alias(name)
         rows = s.str.contains_any([".", ",", "e", "E"]).fill_null(False).arg_true()  # the others have no decimal places
         if rows.len():
-            text = _apply(s.gather(rows), _number_text(_VALUE, decimal))  # once: the slow part
+            text = _apply_once(s.gather(rows), _number_text(_VALUE, decimal))  # once: the slow part
             rounded = rounded.scatter(rows, _apply(text, _has_fraction(_VALUE)))
         return rounded
     if s.dtype.is_float():
@@ -393,7 +393,7 @@ def _all_digits(parsed: pl.Expr, text: pl.Expr, fmt: str) -> pl.Expr:
 def _text_digits_lost(texts: pl.Series, decimal: str) -> pl.Series:
     """``float_loses_digits`` for numbers typed as text: a whole part that a decimal number doesn't
     keep exactly, or decimal places other than zeros whose decimal number has other digits."""
-    plain = _apply(texts, _number_text(_VALUE, decimal))  # each text once: a select works out what it uses for each use
+    plain = _apply_once(texts, _number_text(_VALUE, decimal))  # each text once: a select works out what it uses for each use
     # 1.5e3: the digits 15, of which 1 is the whole part
     split = plain.to_frame("value").select(mantissa=_VALUE.str.replace(r"[eE].*$", ""), number=_VALUE.cast(pl.Float64, strict=False))
     split = split.with_columns(whole=pl.col("mantissa").str.split_exact(".", 1).struct.field("field_0").str.strip_chars_start("+-0"))
@@ -745,7 +745,7 @@ def plain_numbers(s: pl.Series, decimal: str = ",") -> pl.Series:
     without spaces, currency signs at the ends and thousands separators, with a minus first and a
     point as the decimal separator (-1234.50). The digits stay as they are: for an exact decimal
     (Decimal), or to count them. A text that is no number comes out changed in the same way."""
-    return _apply(s, _number_text(_VALUE, decimal))
+    return _apply_once(s, _number_text(_VALUE, decimal))
 
 
 def whole_numbers_to_int(df: pl.DataFrame) -> pl.DataFrame:
@@ -1140,11 +1140,31 @@ def _apply(s: pl.Series, expr: pl.Expr) -> pl.Series:
     return pl.DataFrame([s.alias("value")]).select(expr.alias(s.name)).to_series()
 
 
+_ONCE = 10_000  # from so many values on, a query that works out each part of an expression once is quicker
+_ONCE_PART = 1 << 15  # the values of such a query at a time: with 131,072 a million long texts took 300 MB more
+
+
+def _apply_once(s: pl.Series, expr: pl.Expr) -> pl.Series:
+    """``_apply`` for an expression that uses its parts several times, as ``_number_text`` does:
+    for many values, a lazy query works each part out once (an eager select did it for each use,
+    six times as long for a million values); for a few, the eager select is quicker. The query
+    keeps the parts it works out once until its end, so it runs in parts of the values (a million
+    long texts at once took 300 MB more)."""
+    if s.len() < _ONCE:
+        return _apply(s, expr)
+    query = pl.DataFrame([s.alias("value")]).lazy()
+    parts = [query.slice(start, _ONCE_PART).select(expr.alias(s.name)).collect().to_series() for start in range(0, s.len(), _ONCE_PART)]
+    return parts[0] if len(parts) == 1 else pl.concat(parts)
+
+
 def _number_text(expr: pl.Expr, decimal: str) -> pl.Expr:
     """A number typed as text, without spaces, currency signs and thousands separators, with a
-    leading minus and a point as the decimal separator."""
+    leading minus and a point as the decimal separator. The currency sign can be at either end, also
+    after the sign (-$3.00 and -€3,00 are -3, as the imports read them), and a number can start
+    with its decimal separator (,5 is 0.5)."""
     thousands = "." if decimal == "," else ","
     text = expr.cast(pl.String).str.strip_chars().str.replace_all(_SPACES, "").str.strip_chars(_CURRENCY)
+    text = text.str.replace(f"^([+-])[{_CURRENCY}]", "${1}")  # the sign before the currency sign: -$3.00
     text = pl.when(text.str.ends_with("-")).then(pl.lit("-") + text.str.strip_suffix("-")).otherwise(text)
     text = (
         pl.when(text.str.contains(_GROUPED[decimal]))
