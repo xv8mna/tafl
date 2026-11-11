@@ -1829,21 +1829,34 @@ def test_sqlserver_commands_run_in_one_transaction(registry):
         with pytest.raises(ActionError, match=r"^The command began a transaction and didn't end it \(BEGIN TRAN without COMMIT\), so the step stopped and its changes were undone"):
             command(f"INSERT INTO {name} VALUES (5); BEGIN TRAN; INSERT INTO {name} VALUES (6)")
         assert rows() == [1, 2]
-        ended = r"^The command ended the transaction of the step \(with a COMMIT or ROLLBACK that has no BEGIN TRAN of its own, in the batch that ends in line "
-        with pytest.raises(ActionError, match=ended + r"3\), so the step stopped\. What the command changed up to there may already be stored"):
+        ended = r"^The command ended the transaction of the step with "
+        with pytest.raises(ActionError, match=ended + r"a COMMIT that has no BEGIN TRAN of its own \(in the batch that ends in line 3\), "
+                           r"so the step stopped\. What the command changed before the COMMIT is stored, and the statements after it"):
             command(f"INSERT INTO {name} VALUES (7)\nCOMMIT\nINSERT INTO {name} VALUES (8)\nGO\nINSERT INTO {name} VALUES (9)")
-        assert rows() == [1, 2, 7, 8]  # what the message says may be stored; the next batch didn't run
-        with pytest.raises(ActionError, match=ended + "1"):
+        assert rows() == [1, 2, 7, 8]  # as the message says; the next batch didn't run
+        rollback = ended + r"a ROLLBACK \(in the batch that ends in line 1\), so the step stopped\. A ROLLBACK ends every open transaction, also"
+        with pytest.raises(ActionError, match=rollback):
             command(f"INSERT INTO {name} VALUES (10); ROLLBACK; INSERT INTO {name} VALUES (11)")
         assert rows() == [1, 2, 7, 8, 11]  # 10 was rolled back, 11 ran without a transaction
+        with pytest.raises(ActionError, match=rollback):  # its own BEGIN TRAN: the ROLLBACK ends the step's transaction too
+            command(f"BEGIN TRAN; INSERT INTO {name} VALUES (14); ROLLBACK;")
+        either = ended + r"a COMMIT or ROLLBACK \(in the batch that ends in line 1\), so the step stopped\. A COMMIT without a BEGIN TRAN"
+        with pytest.raises(ActionError, match=either):  # which one ran can't be read from the command
+            command(f"BEGIN TRAN; INSERT INTO {name} VALUES (15); IF (SELECT COUNT(*) FROM {name}) > 0 ROLLBACK ELSE COMMIT;")
+        with pytest.raises(ActionError, match=either):  # a CATCH with ROLLBACK and no THROW
+            command(f"BEGIN TRY BEGIN TRAN; INSERT INTO {name} VALUES (16); SELECT 1/0; COMMIT; END TRY "
+                    "BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK; END CATCH")  # fmt: skip
+        assert rows() == [1, 2, 7, 8, 11]  # none of them is stored
+        command(f"BEGIN TRAN; INSERT INTO {name} VALUES (17); IF @@ERROR <> 0 ROLLBACK ELSE COMMIT;")  # the COMMIT ran: balanced
+        assert ctx.messages[-1] == ("info", "Done: 1 row changed") and rows() == [1, 2, 7, 8, 11, 17]
         command(f"CREATE PROCEDURE {proc} AS BEGIN INSERT INTO {name} VALUES (100); COMMIT; END")  # alone in its batch: no check
         with pytest.raises(ActionError, match=r"^A procedure or an EXEC in the command ended its transaction \(with COMMIT or ROLLBACK\)"):
             command(f"INSERT INTO {name} VALUES (12)\nEXEC {proc}")
-        assert rows() == [1, 2, 7, 8, 11, 12, 100]  # SQL Server committed them: the message says so
+        assert rows() == [1, 2, 7, 8, 11, 12, 17, 100]  # SQL Server committed them: the message says so
         with pytest.raises(ActionError, match=r"^A procedure or an EXEC in the command began a transaction and didn't end it"):
             command(f"INSERT INTO {name} VALUES (13); EXEC('BEGIN TRAN')")
         command(f"ALTER PROCEDURE {proc} AS BEGIN BEGIN TRAN; INSERT INTO {name} VALUES (101); COMMIT; END\nGO\nEXEC {proc}")
-        assert ctx.messages[-1] == ("info", "Done: 1 row changed") and rows() == [1, 2, 7, 8, 11, 12, 100, 101]
+        assert ctx.messages[-1] == ("info", "Done: 1 row changed") and rows() == [1, 2, 7, 8, 11, 12, 17, 100, 101]
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{proc}') IS NOT NULL DROP PROCEDURE {proc}")

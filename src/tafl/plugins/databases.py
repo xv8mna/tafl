@@ -553,7 +553,7 @@ class SqlServer(Connector):
                             rows = all_results(cursor)  # an error in a later statement of the batch shows up here
                         except Exception as e:
                             line = sql.count("\n", 0, start + len(batch.rstrip())) + 1  # where the batch ends
-                            if (message := _transaction_count_message(e, line)) is not None:
+                            if (message := _transaction_count_message(e, line, batch)) is not None:
                                 raise ActionError(message) from e
                             raise
                         if rows >= 0:
@@ -1026,13 +1026,15 @@ def _batch_spans(sql: str) -> list[tuple[int, int, int]]:
     return batches
 
 
-def _transaction_count_message(error: Exception, line: int = 0) -> str | None:
-    """A plain message for the check that ``run_script`` appends to a batch (the batch, which
+def _transaction_count_message(error: Exception, line: int = 0, batch: str = "") -> str | None:
+    """A plain message for the check that ``run_script`` appends to a batch (the ``batch``, which
     ends in ``line``, ended the transaction of the step with COMMIT or ROLLBACK), and for SQL
     Server's error 266 (a procedure, or an EXEC of a text, ended the command's transaction, or
     began one of its own and didn't end it, which the step's rollback then undoes); None for other
-    errors. After a COMMIT that ended it, what came before is stored, and the rest of that batch
-    ran without a transaction."""
+    errors. After a COMMIT that ended it, what came before is stored; a ROLLBACK ends every open
+    transaction, also one that the command began itself, and undoes what the step's transaction
+    held. Either way, the rest of that batch ran without a transaction. The batch's own words
+    tell which one it was (``_ending_words``); with both, or neither, the message says both."""
     text = " ".join(str(arg) for arg in error.args)
     for record in _RECORDS.split(text):  # a procedure's first: the batch's own check comes after it
         if not re.search(r"\(266\)", record):
@@ -1052,15 +1054,39 @@ def _transaction_count_message(error: Exception, line: int = 0) -> str | None:
             f"changes were undone. {APP_NAME} runs the command in one transaction: leave BEGIN TRAN and COMMIT out of "
             "the procedures and texts that it runs, too."
         )
-    if _TRANSACTION_ENDED in text:
+    if _TRANSACTION_ENDED not in text:
+        return None
+    words = _ending_words(batch)
+    if words == {"COMMIT"}:
         return (
-            f"The command ended the transaction of the step (with a COMMIT or ROLLBACK that has no BEGIN TRAN of its own, "
-            f"in the batch that ends in line {line}), so the step stopped. What the command changed up to there may "
-            "already be stored: a COMMIT stored what came before it, and the statements after it ran without a "
-            f"transaction. {APP_NAME} runs the command in one transaction, so that a failed command changes nothing: "
-            "end only the transactions that the command begins itself."
+            f"The command ended the transaction of the step with a COMMIT that has no BEGIN TRAN of its own (in the batch "
+            f"that ends in line {line}), so the step stopped. What the command changed before the COMMIT is stored, and "
+            f"the statements after it in that batch ran without a transaction. {APP_NAME} runs the command in one "
+            "transaction, so that a failed command changes nothing: end only the transactions that the command begins "
+            "itself."
         )
-    return None
+    if words == {"ROLLBACK"}:
+        return (
+            f"The command ended the transaction of the step with a ROLLBACK (in the batch that ends in line {line}), so "
+            "the step stopped. A ROLLBACK ends every open transaction, also the step's, and undoes what the command "
+            "changed in it up to there; the statements after it in that batch ran without a transaction. To undo only a "
+            "part of the command, use SAVE TRAN name and ROLLBACK TRAN name."
+        )
+    return (
+        f"The command ended the transaction of the step with a COMMIT or ROLLBACK (in the batch that ends in line {line}), "
+        "so the step stopped. A COMMIT without a BEGIN TRAN of the command stores what the command changed before it; "
+        "a ROLLBACK ends every open transaction, also the step's, and undoes it. The statements after it in that batch "
+        f"ran without a transaction. {APP_NAME} runs the command in one transaction: end only the transactions that the "
+        "command begins itself, and to undo only a part of it, use SAVE TRAN name and ROLLBACK TRAN name."
+    )
+
+
+def _ending_words(batch: str) -> set[str]:
+    """COMMIT and ROLLBACK, as far as statements of ``batch`` hold them (texts, comments and [names]
+    don't count; both are reserved words, so they are no other names)."""
+    tokens = _tsql_tokens(batch, parameters.sql_spans(batch, **_SQLSERVER_SQL))
+    found = {match[0].upper() for kind, start in tokens if kind == "name" and (match := _WORD.match(batch, start))}
+    return found & {"COMMIT", "ROLLBACK"}
 
 
 # What each batch of a command ends with: SQL Server stops the batch when the transaction of the

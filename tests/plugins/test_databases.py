@@ -2426,6 +2426,30 @@ def test_sqlserver_commands_check_their_transaction_in_the_same_request(registry
     assert conn.sent[0] == conn.sent[-1] == "SELECT @@TRANCOUNT"
 
 
+@pytest.mark.parametrize(
+    ("batch", "words"),
+    [
+        ("INSERT INTO t VALUES (1); COMMIT", {"COMMIT"}),
+        ("BEGIN TRAN; INSERT INTO t VALUES (1); rollback transaction;", {"ROLLBACK"}),
+        ("BEGIN TRAN; IF @@ERROR <> 0 ROLLBACK ELSE COMMIT", {"COMMIT", "ROLLBACK"}),
+        ("INSERT INTO t VALUES ('COMMIT') -- ROLLBACK\nSELECT [commit] /* ROLLBACK */ FROM t", set()),
+    ],
+)
+def test_sqlserver_a_command_that_ends_the_step_says_how(batch, words):
+    """The message for a batch that ended the transaction of the step: a COMMIT stored what came
+    before it, a ROLLBACK undid it (it ends every open transaction, also one that the command
+    began itself; it said "a COMMIT stored what came before it" too). The batch's own words tell
+    which one it was; with both, the message says what each does."""
+    assert databases._ending_words(batch) == words
+    error = Exception("[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]" + databases._TRANSACTION_ENDED + " (50000)")
+    message = databases._transaction_count_message(error, 1, batch)
+    starts = {
+        frozenset({"COMMIT"}): "The command ended the transaction of the step with a COMMIT that has no BEGIN TRAN of its own",
+        frozenset({"ROLLBACK"}): "The command ended the transaction of the step with a ROLLBACK (in the batch that ends in line 1)",
+    }
+    assert message.startswith(starts.get(frozenset(words), "The command ended the transaction of the step with a COMMIT or ROLLBACK"))
+
+
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_reads_sql_variant_and_clr_columns(registry):
     """pyodbc can't read them: a whole table gets them as text, a query stops with a hint."""
