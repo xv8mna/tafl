@@ -5,17 +5,18 @@ import json
 import os
 import subprocess
 import sys
+import time
 import types
 
 import pytest
-from PySide6.QtGui import QTextDocument
+from PySide6.QtGui import QTextDocument, QTextOption
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 from tafl.api import ActionError, action
 from tafl.core import Connection, Project, Registry, Status, StepResult, TableResult
 from tafl.ui import theme
 from tafl.ui.connections_dialog import ConnectionsDialog
-from tafl.ui.labels import LONG_TIP_LINES, ElidedLabel, MessageBox, WrappedLabel, tooltip_text
+from tafl.ui.labels import LONG_TIP_LINES, ElidedLabel, MessageBox, WrappedLabel, _wrap_mode, tooltip_text
 from tafl.ui.main_window import MainWindow
 from tafl.ui.session import Session
 
@@ -222,6 +223,48 @@ def test_a_message_box_lays_out_its_text_at_its_own_width(qtbot):
             if not view.verticalScrollBar().isVisible():  # then all the lines show
                 assert view.height() == len(widths) * view.fontMetrics().lineSpacing() + 1, (width, count)
             host.close()
+
+
+def test_a_message_with_a_very_long_word_shows_at_once(qtbot):
+    """A value of 300,000 characters quoted in a message: Qt breaks such a word into lines in a
+    time that grows with the square of its length (it took about 15 s, a million characters some
+    minutes). Its box wraps that text anywhere; other texts wrap at spaces, as before."""
+    host = QWidget()
+    qtbot.addWidget(host)
+    layout = QVBoxLayout(host)
+    box = MessageBox("ErrorBox", host)
+    layout.addWidget(box)
+    layout.addStretch(1)
+    host.resize(400, 800)
+    host.show()
+    QApplication.processEvents()
+    text = "The value '" + "7" * 300_000 + "' can't be read as a date"
+    started = time.perf_counter()
+    box.setText(text)
+    QApplication.processEvents()
+    host.resize(650, 800)  # another width: the lines are made again, once
+    QApplication.processEvents()
+    assert time.perf_counter() - started < 3
+    box.view.selectAll()
+    assert box.view.textCursor().selectedText() == text  # all of it can be copied
+    ordinary = "A message with words, which wrap at the spaces between them as they always did, in a narrow box"
+    started = time.perf_counter()
+    box.setText(ordinary)  # (the long text is not laid out again first)
+    QApplication.processEvents()
+    assert time.perf_counter() - started < 3
+    block = box.view.document().firstBlock()
+    ends = [block.layout().lineAt(i).textStart() + block.layout().lineAt(i).textLength() for i in range(block.layout().lineCount())]
+    assert len(ends) > 1 and all(end == len(ordinary) or ordinary[end - 1] == " " for end in ends)
+
+
+def test_looking_for_a_very_long_word_takes_linear_time():
+    """A million characters in words of 1,000 (none too long): the look for a long word starts at
+    each word, not at each character (that took 2 s)."""
+    many = ("8" * 1000 + " ") * 1000
+    started = time.perf_counter()
+    assert _wrap_mode(many) == QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
+    assert time.perf_counter() - started < 0.4
+    assert _wrap_mode(many + "9" * 1001) == QTextOption.WrapMode.WrapAnywhere
 
 
 def test_a_wrapped_label_ends_what_doesnt_fit_with_dots(qtbot):

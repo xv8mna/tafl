@@ -9,6 +9,7 @@ So a label or a box that takes such text is PlainText, and a tooltip, which can'
 from __future__ import annotations
 
 import html
+import re
 import textwrap
 from typing import Any
 
@@ -242,6 +243,10 @@ class MessageBox(QFrame):
         text = text or ""
         if text != self._full:
             self._full = text
+            mode = _wrap_mode(text)
+            if self.view.wordWrapMode() != mode:
+                self.view.setPlainText("")  # the text before isn't laid out again the other way first
+                self.view.setWordWrapMode(mode)
             self.view.setPlainText(text)
             self.fit()
 
@@ -268,11 +273,22 @@ class MessageBox(QFrame):
             view.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
 
 
-def _line_count(text: str, widget: QWidget, width: int, most: int) -> int:
-    """The lines of ``text`` in ``widget`` at ``width`` pixels, wrapped at spaces and, in a word
-    that is too long, anywhere; ``most`` at most (for a long text)."""
+def _wrap_mode(text: str) -> QTextOption.WrapMode:
+    """How a MessageBox wraps ``text``: at spaces, and anywhere in a word that is too long for a
+    line. A text with a word of more than 1,000 characters (a long value or path) wraps anywhere:
+    for such a word, Qt's other way takes time that grows with the square of its length (a word
+    of a million characters took minutes)."""
+    return QTextOption.WrapMode.WrapAnywhere if _LONG_WORD.search(text) else QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
+
+
+_LONG_WORD = re.compile(r"(?<!\S)\S{1001}")  # (from the start of a word only: linear time for many long words)
+
+
+def _line_count(text: str, widget: QPlainTextEdit, width: int, most: int) -> int:
+    """The lines of ``text`` in ``widget`` at ``width`` pixels, wrapped as ``widget`` wraps them;
+    ``most`` at most (for a long text)."""
     option = QTextOption()
-    option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+    option.setWrapMode(widget.wordWrapMode())
     count = 0
     for paragraph in text.split("\n"):
         layout = QTextLayout(paragraph, widget.font(), widget)
