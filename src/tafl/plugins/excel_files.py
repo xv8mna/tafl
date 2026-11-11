@@ -430,6 +430,8 @@ def _write(df: pl.DataFrame, workbook, sheet: str, p) -> None:
     dtype_formats: dict = {pl.Date: p.date_format, pl.Datetime: p.datetime_format, pl.Duration: "[h]:mm:ss"}
     dtype_formats |= {t: p.integer_format for t in _INTEGER_TYPES}
     dtype_formats |= {pl.Float32: p.number_format, pl.Float64: p.number_format, pl.Decimal: p.number_format}
+    # exact decimals without decimal places, such as IDs of a database, are whole numbers (by their own type)
+    dtype_formats |= {t: p.integer_format for t in df.schema.values() if isinstance(t, pl.Decimal) and not t.scale}
     xlsx.write_frame(
         df,
         book,

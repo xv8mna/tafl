@@ -133,6 +133,35 @@ def test_export_binary_values_decimals_and_long_texts(act, tmp_path):
 
 
 @pytest.mark.parametrize("existing", ["file", "sheet"])
+def test_exact_decimals_without_decimal_places_get_the_whole_number_format(act, tmp_path, existing):
+    """Every exact decimal got the decimal number format, so an ID of a decimal(30, 0) from a
+    database showed as 12,345,678,901,234,600,000,000.00. Those without decimal places get the
+    whole number format now, in a new workbook and in one sheet of an existing one; a format for
+    the single column still comes first."""
+    D = decimal.Decimal
+    df = pl.DataFrame(
+        {
+            "Id": pl.Series([D("12345678901234567890123"), D("5")], dtype=pl.Decimal(30, 0)),
+            "Code": pl.Series([D("17"), D("5")], dtype=pl.Decimal(5, 0)),
+            "Amount": pl.Series([D("1.50"), D("2.25")], dtype=pl.Decimal(10, 2)),
+            "Qty": [3, 5],
+        }
+    )
+    path = tmp_path / "ids.xlsx"
+    if existing == "sheet":
+        act("excel.export", pl.DataFrame({"x": [1]}), {"file": str(path), "sheet": "Other"}, StubContext(mode="run"))
+    params = {"file": str(path), "sheet": "Ids", "existing": existing}
+    act("excel.export", df, params, StubContext(mode="run"))
+    cells = openpyxl.load_workbook(path)["Ids"]
+    assert [cells[f"{c}2"].number_format for c in "ABCD"] == ["0", "0", "#,##0.00", "0"]
+    assert [cells["B2"].value, cells["C3"].value] == [17, 2.25]
+    formats = {"integer_format": "#,##0", "column_formats": [{"column": "Code", "format": "00000"}]}
+    act("excel.export", df, params | formats, StubContext(mode="run"))
+    cells = openpyxl.load_workbook(path)["Ids"]
+    assert [cells[f"{c}2"].number_format for c in "ABCD"] == ["#,##0", "00000", "#,##0.00", "#,##0"]
+
+
+@pytest.mark.parametrize("existing", ["file", "sheet"])
 def test_numbers_that_excel_rounds_are_counted(act, tmp_path, existing):
     """Excel keeps 15 significant digits: 9007199254740993 became 9007199254740992 without a
     word. Whole numbers and exact decimals stay numbers, and the step says how many of them each
@@ -191,6 +220,33 @@ assert ctx.warnings == [
     "(Change type / format)."
 ], ctx.warnings
 """
+
+
+_WIDE_IDS = """
+import sys
+from decimal import Decimal
+
+import openpyxl
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+df = pl.DataFrame({f"c{i}": pl.Series([Decimal(i)], dtype=pl.Decimal(20 + i % 2, 0)) for i in range(4_001)})
+registry.actions["excel.export"](df, {"file": sys.argv[1]}, StubContext(mode="run"))
+cells = openpyxl.load_workbook(sys.argv[1], read_only=True).active
+row = next(cells.iter_rows(min_row=2, max_row=2))
+assert [cell.value for cell in row] == list(range(4_001)) and {cell.number_format for cell in row} == {"0"}, row[:3]
+"""
+
+
+def test_exact_decimals_without_decimal_places_of_a_wide_table_get_the_whole_number_format(tmp_path):
+    """4,001 columns of two types of exact decimals without decimal places: each type gets the
+    whole number format (in a process of its own, so that an end of the process shows as a failed
+    test)."""
+    done = subprocess.run([sys.executable, "-c", _WIDE_IDS, str(tmp_path / "ids.xlsx")], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
 
 
 def test_numbers_that_excel_rounds_are_counted_in_a_wide_table(tmp_path):
