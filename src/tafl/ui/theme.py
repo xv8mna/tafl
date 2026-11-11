@@ -22,6 +22,12 @@ ACCENT = "#4f9ee3"  # borders, arrows, selected things
 ACCENT_TEXT = "#72b4ee"  # text in the accent color: 4.5 : 1 against WINDOW, BASE and ALTERNATE
 ERROR_TEXT = "#f2caca"  # messages about an error, on the dark background
 SELECTED_DIM = "#c5d4e3"  # secondary text on a selected row
+# The boxes with a message of the selected step: background, border, text
+BOXES = {
+    "ErrorBox": ("#4a2f31", "#7a3b3e", ERROR_TEXT),
+    "WarningBox": ("#4a4030", "#7a6538", "#f0dcb4"),
+    "InfoBox": ("#33414f", "#47617a", "#cfe0f0"),
+}
 
 # The project map
 MAP_CANVAS = "#2b2d2f"
@@ -84,6 +90,12 @@ STATUS_TEXT = {
     "skipped": TEXT_DIM,
 }
 
+# The message boxes (labels.MessageBox): the box; the text in it has the colors as its palette
+_BOX_STYLES = "\n".join(
+    f"QFrame#{name} {{ background: {background}; border: 1px solid {border}; border-radius: 4px; padding: 6px 8px; }}"
+    for name, (background, border, _text) in BOXES.items()
+)
+
 STYLE_SHEET = f"""
 QSplitter::handle {{ background: {BORDER}; }}
 QSplitter::handle:horizontal {{ width: 3px; }}
@@ -111,15 +123,7 @@ QToolTip {{ background: #4b4e51; color: #e6e6e6; border: 1px solid {BORDER}; pad
 QLabel#PanelTitle {{ color: {TEXT_DIM}; font-weight: 600; padding: 6px 2px 2px 2px; }}
 QLabel#Title {{ font-size: 11pt; font-weight: 600; }}
 QLabel#Dim {{ color: {TEXT_DIM}; }}
-QLabel#ErrorBox {{
-    background: #4a2f31; border: 1px solid #7a3b3e; color: {ERROR_TEXT}; border-radius: 4px; padding: 6px 8px;
-}}
-QLabel#WarningBox {{
-    background: #4a4030; border: 1px solid #7a6538; color: #f0dcb4; border-radius: 4px; padding: 6px 8px;
-}}
-QLabel#InfoBox {{
-    background: #33414f; border: 1px solid #47617a; color: #cfe0f0; border-radius: 4px; padding: 6px 8px;
-}}
+{_BOX_STYLES}
 QFrame#ProtectedBar {{ background: #4a4030; border-bottom: 1px solid #7a6538; }}
 QFrame#ProtectedBar QLabel {{ color: #f0dcb4; }}
 QLineEdit[missing="true"], QComboBox[missing="true"] {{ color: {STATUS_TEXT["error"]}; }}

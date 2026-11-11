@@ -13,7 +13,7 @@ from tafl.core import Status
 from tafl.core.index import NOTE
 
 from .forms import FormContext, ParamForm, flash
-from .labels import ElidedLabel, WrappedLabel
+from .labels import ElidedLabel, MessageBox, WrappedLabel
 from .session import Session, first_error, json_ready, missing_settings, waiting_text
 
 _KIND_TEXT = {
@@ -357,9 +357,7 @@ def _reflow(text: str) -> str:
     return "\n\n".join(p for p in paragraphs if p)
 
 
-def _box(name: str, parent: QWidget) -> QLabel:
-    label = WrappedLabel(parent=parent)  # a long path in a message can't make the panel wider
-    label.setObjectName(name)
-    label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    label.hide()
-    return label
+def _box(name: str, parent: QWidget) -> MessageBox:
+    box = MessageBox(name, parent)  # a long path can't make the panel wider, a long error scrolls
+    box.hide()
+    return box

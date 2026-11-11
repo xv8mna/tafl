@@ -102,7 +102,7 @@ class DataPanel(QWidget):
         self._copier.finished.connect(self._copied)
         self._copier.failed.connect(lambda text: self.status_message.emit("Copying failed: " + text.strip().splitlines()[-1]))
 
-        self.message = WrappedLabel(parent=self, narrowest=200)
+        self.message = WrappedLabel(parent=self, narrowest=200, fill=True)  # a long one ends with "…"
         self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.message.setMargin(40)
