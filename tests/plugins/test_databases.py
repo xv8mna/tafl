@@ -1818,6 +1818,52 @@ def test_sqlserver_keys_of_seven_digits_are_compared_to_the_microsecond(registry
     assert "DATEPART" in connector.insert_missing_sql("[t]", "#s", ["K", "V"], ["K"], kinds)
 
 
+_WIDE_FITTING = """
+import datetime as dt
+import decimal
+
+import polars as pl
+from tafl.plugins import databases
+
+width = 4_200
+kinds = ["date", "datetime2(0)", "time(0)", "datetimeoffset(0)", "int", "nvarchar(10)", "decimal(5,2)", "datetime"]
+names = ["*", "^a.*$", *(f"c{i}" for i in range(width - 2))]
+columns = {}
+for i, name in enumerate(names):
+    kind = kinds[i % len(kinds)]
+    if kind in ("int", "nvarchar(10)", "decimal(5,2)"):
+        columns[name] = pl.Series([decimal.Decimal("1.00"), None], dtype=pl.Decimal(10, 2))
+    elif kind == "datetime":
+        columns[name] = [dt.datetime(2026, 10, 1, 8, 0, 0, 123456), None]
+    else:
+        columns[name] = ["01.10.2026 08:00:00" if kind != "time(0)" else "08:00:00.5", None]
+df = pl.DataFrame(columns)
+types = {name: kinds[i % len(kinds)] for i, name in enumerate(names)}
+targets = {name: name for name in names}
+databases._check_whole_numbers(df, targets, types, "dbo.T")
+df, texts = databases._read_date_texts(df, targets, types, "dbo.T", "sqlserver")
+df = databases._fit_decimals(df, targets, types, "dbo.T", "sqlserver")
+df = databases._fit_whole_numbers(df, targets, types, "dbo.T", "sqlserver")
+df = databases._fit_lengths(df, targets, types, "dbo.T", [])
+warnings = databases._cut_seconds(df, types, texts, targets, "dbo.T")
+df = databases.SqlServer.fit_frame(df, types)
+assert df.width == width and len(warnings) == 2 * (width // len(kinds)), len(warnings)  # the time(0) and datetime columns
+assert df["*"][0] == dt.date(2026, 10, 1) and df["^a.*$"][0] == dt.datetime(2026, 10, 1, 8), df.row(0)[:2]
+described = [(name, str if i % 2 else dt.datetime, None, 26, 26, 7 * (i % 2 == 0), True) for i, name in enumerate(names)]
+read = pl.DataFrame({name: pl.Series([None], dtype=pl.Null) if i % 2 else [dt.datetime(2026, 10, 1, 8, 0, 1, 5)] for i, name in enumerate(names)})
+fitted, warnings = databases._as_described(read, described)
+assert fitted.width == width and len(warnings) == width // 2 and fitted.schema["^a.*$"] == pl.String
+print("ok")
+"""
+
+
+def test_sqlserver_fits_the_values_of_a_wide_table():
+    """The checks and fits of a SQL Server export and import go over every column: 4,200 of them,
+    named also * and ^a.*$ (in a process of its own: a deep Polars expression would end it)."""
+    done = subprocess.run([sys.executable, "-c", _WIDE_FITTING], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0 and done.stdout.strip() == "ok", f"exit code {done.returncode:#x}: {done.stderr[-1500:]}"
+
+
 def test_sqlserver_sends_texts_for_varchar_columns_as_unicode(registry):
     """The server converts them to the code page of the column's collation (as N'…'), in every
     mode; bound as varchar, the driver would convert them to this PC's code page first."""
