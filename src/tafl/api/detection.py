@@ -86,11 +86,10 @@ def detect_types(data: pl.DataFrame, decimals: Mapping[str, str], warn: Callable
     the column is one. Digits with spaces between them are numbers only in amounts and percentages,
     as thousands (see ``_SPACED``): 1 234 and +49 30 1234567 stay text, and so do numbers with a
     leading zero (0815, 00,5: codes). Numbers that a decimal number (Float64) would change keep all
-    their digits: a column of numbers, amounts or percentages with a number of more than 15
-    significant digits becomes exact decimals (Decimal) with the decimal places its values show;
-    beyond the 38 digits of an exact decimal it stays text, and ``warn`` is told. Whole numbers too
-    long to be kept exactly stay text, with a warning. All values of a column decide, not only the
-    first ones."""
+    their digits: a column with a number of more than 15 significant digits, or with a whole
+    number beyond Int64, becomes exact decimals (Decimal) with the decimal places its values show;
+    beyond the 38 digits of an exact decimal it stays text, and ``warn`` is told. All values of a
+    column decide, not only the first ones."""
     notes: dict[str, list[str]] = {}  # the warnings of infer_types, by column
     typed = data.with_columns(
         [dtypes.infer_series(data[name], decimals[name], notes.setdefault(name, []).append) for name in data.columns]
@@ -164,12 +163,12 @@ def _patterns(decimal: str) -> tuple[str, str, str, str]:
 
 
 def _whole_numbers(original: pl.Series, text: pl.Series, decimal: str) -> tuple[pl.Series, str | None] | None:
-    """Whole numbers (cleaned texts, see ``_clean``) as Int64; None beyond it: as ``infer_series``
-    made them."""
+    """Whole numbers (cleaned texts, see ``_clean``): Int64, or beyond it exact decimals
+    (Decimal(38, 0)), or beyond those text with a warning."""
     integers = dtypes.parse_integers(text, decimal)
     if integers.null_count() == text.null_count():
         return integers, None
-    return None  # beyond Int64: as infer_series made them
+    return _exact(original, text, decimal)
 
 
 def _decimal_numbers(original: pl.Series, column: pl.Series, decimal: str) -> tuple[pl.Series, str | None] | None:

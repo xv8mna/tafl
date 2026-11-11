@@ -93,14 +93,15 @@ def import_csv(df, p, ctx):
     Delimiter, encoding and decimal separator are detected automatically unless chosen (for
     each file); a file whose first line has no delimiter has one column. Numbers and dates are
     recognized when every value of a column fits, in all files together: also amounts like
-    1.234,50 €, -$3.00 or 123,45- and percentages like 12,5% (read as 0.125). Decimals of more
-    than 15 digits keep all their digits as exact decimals (up to 38 digits; longer ones stay
-    text, with a warning). Columns with leading zeros (customer numbers, postal codes, 00,5)
-    stay text, and so do digits with spaces between them (phone numbers, card numbers): spaces
-    between thousands count only in amounts and percentages (1 234,50 €). A value like 1.000
-    can be one thousand or one: it follows the other numbers of its column (like 0.500 or 2,5),
-    else those of the file, and without any it is one thousand in files with semicolons. Files
-    are matched by column names; a column missing in a file stays empty there.
+    1.234,50 €, -$3.00 or 123,45- and percentages like 12,5% (read as 0.125). Numbers keep all
+    their digits: whole numbers of up to 19 digits are integers, longer ones and decimals of
+    more than 15 digits exact decimals (up to 38 digits; longer ones stay text, with a warning).
+    Columns with leading zeros (customer numbers, postal codes, 00,5) stay text, and so do
+    digits with spaces between them (phone numbers, card numbers): spaces between thousands
+    count only in amounts and percentages (1 234,50 €). A value like 1.000 can be one thousand
+    or one: it follows the other numbers of its column (like 0.500 or 2,5), else those of the
+    file, and without any it is one thousand in files with semicolons. Files are matched by
+    column names; a column missing in a file stays empty there.
     """
     paths, folder = source_files(p, ctx)
     parts, separators, encodings = [], [], []

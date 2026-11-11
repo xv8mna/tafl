@@ -702,13 +702,28 @@ def test_detect_automatically_keeps_the_digits_of_long_decimals(project, registr
     assert df.to_dict(as_series=False) == {"comma": amounts, "point": [amounts[0], _D("1.5")]}
 
 
+_LONG_WHOLE = {"plain": ["9223372036854775808", "10000000000000000000"], "grouped": ["9.223.372.036.854.775.808", "1.000"]}
+
+
+def test_detect_automatically_keeps_the_digits_of_long_whole_numbers(project, registry, tmp_path):
+    """As the CSV import: whole numbers beyond Int64 become exact decimals. 2^63 and 10^19 became
+    decimal numbers, which a CSV export wrote as 9223372036854780000."""
+    _text_table(tmp_path / "data.db", "t", _LONG_WHOLE)
+    result = import_new(project, registry, table="t", detect_types=True)
+    assert result.df.schema == {"plain": pl.Decimal(38, 0), "grouped": pl.Decimal(38, 0)}
+    assert result.df.to_dict(as_series=False) == {"plain": [_D(2**63), _D(10**19)], "grouped": [_D(2**63), _D(1000)]}
+    assert result.steps[0].messages == [("info", "Decimal comma in grouped")]
+
+
 def test_a_step_saved_before_0_6_4_reads_long_numbers_as_before(project, registry, tmp_path):
     """A step of version 1 (Point) reads long numbers as 0.6.4 did: ``dtypes.infer_types`` decides
-    there, not the rules of Detect automatically. A decimal of 18 digits becomes a decimal number;
-    with a decimal comma it stays text."""
-    _text_table(tmp_path / "data.db", "t", _LONG_DECIMALS)
+    there, not the rules of Detect automatically. A decimal of 18 digits and 2^63 and 10^19 become
+    decimal numbers; with a decimal comma or thousands separators they stay text."""
+    _text_table(tmp_path / "data.db", "t", _LONG_DECIMALS | _LONG_WHOLE)
     df = import_table(project, registry, table="t", detect_types=True).df
-    assert df.to_dict(as_series=False) == {"comma": _LONG_DECIMALS["comma"], "point": [12345678901234.568, 1.5]}
+    assert df.to_dict(as_series=False) == {
+        "comma": _LONG_DECIMALS["comma"], "point": [12345678901234.568, 1.5], "plain": [2.0**63, 1e19], "grouped": _LONG_WHOLE["grouped"],
+    }  # fmt: skip
 
 
 def test_tafl_run_of_an_old_project_is_unchanged(registry, tmp_path, capsys):

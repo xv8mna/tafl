@@ -318,8 +318,8 @@ def test_a_file_with_one_column(act, tmp_path):
 
 
 def test_long_numbers_with_thousands_separators_keep_all_digits(act, tmp_path):
-    """Whole numbers up to 19 digits are integers, amounts of more than 15 digits exact decimals
-    (they stayed text, with a warning). Longer whole numbers stay text, with a warning."""
+    """Whole numbers up to 19 digits are integers; longer ones, and amounts of more than 15 digits,
+    are exact decimals (they stayed text, with a warning)."""
     (tmp_path / "l.csv").write_text(
         "Id;Code;Mehr;Betrag\n"
         "1.234.567.890.123.456.789;0815;98.765.432.109.876.543.210;12.345.678.901.234.567,89 €\n"
@@ -329,10 +329,43 @@ def test_long_numbers_with_thousands_separators_keep_all_digits(act, tmp_path):
     ctx = StubContext()
     df = act("csv.import", None, {"file": str(tmp_path / "l.csv")}, ctx)
     assert df["Id"].to_list() == [1234567890123456789, 9007199254740993] and df.schema["Id"] == pl.Int64
-    assert df.schema["Code"] == pl.String and df.schema["Mehr"] == pl.String
+    assert df.schema["Code"] == pl.String
+    assert df.schema["Mehr"] == pl.Decimal(38, 0) and df["Mehr"].to_list() == [Decimal("98765432109876543210"), Decimal(1)]
     assert df.schema["Betrag"] == pl.Decimal(38, 2)
     assert df["Betrag"].to_list() == [Decimal("12345678901234567.89"), Decimal("5.00")]
-    assert ctx.warnings == ["Mehr stays text: its numbers are too long to be kept exactly, e.g. '98.765.432.109.876.543.210'"]
+    assert not ctx.warnings
+
+
+def test_whole_numbers_beyond_int64_keep_their_digits(act, tmp_path):
+    """2^63 (9.223.372.036.854.775.808) and 10^19 became decimal numbers without a message, and the
+    export wrote 9223372036854780000; other whole numbers beyond Int64 stayed text. They are exact
+    decimals now, up to 38 digits, as in Import from database."""
+    longest = "9" * 38
+    (tmp_path / "w.csv").write_text(
+        "Grouped;Plain;Point;Twenty;Longest;Edge\n"
+        f'9.223.372.036.854.775.808;9223372036854775808;"9,223,372,036,854,775,808";12345678901234567890;{longest};9223372036854775807\n'
+        '10.000.000.000.000.000.000;10000000000000000000;"10,000,000,000,000,000,000";5;-5;-9223372036854775808\n',
+        encoding="utf-8",
+    )
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "w.csv")}, ctx)
+    exact = pl.Decimal(38, 0)
+    assert df.schema == {"Grouped": exact, "Plain": exact, "Point": exact, "Twenty": exact, "Longest": exact, "Edge": pl.Int64}
+    big = [Decimal(2**63), Decimal(10**19)]
+    assert df["Grouped"].to_list() == big and df["Plain"].to_list() == big and df["Point"].to_list() == big
+    assert df["Twenty"].to_list() == [Decimal("12345678901234567890"), Decimal(5)]
+    assert df["Longest"].to_list() == [Decimal(longest), Decimal(-5)] and df["Edge"].to_list() == [2**63 - 1, -(2**63)]
+    assert not ctx.warnings
+    act("csv.export", df, {"file": str(tmp_path / "out.csv")})
+    assert (tmp_path / "out.csv").read_text(encoding="utf-8-sig").splitlines()[1:] == [
+        f"9223372036854775808;9223372036854775808;9223372036854775808;12345678901234567890;{longest};9223372036854775807",
+        "10000000000000000000;10000000000000000000;10000000000000000000;5;-5;-9223372036854775808",
+    ]
+    (tmp_path / "x.csv").write_text("Id;Nr\n" + "1" * 39 + ";1\n5;2\n", encoding="utf-8")  # beyond 38 digits: text
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "x.csv")}, ctx)
+    assert df["Id"].to_list() == ["1" * 39, "5"] and df.schema["Nr"] == pl.Int64
+    assert ctx.warnings == [f"Id stays text: its numbers are too long to be kept exactly, e.g. '{'1' * 39}'"]
 
 
 def test_decimals_of_more_than_15_digits_keep_them(act, tmp_path):
