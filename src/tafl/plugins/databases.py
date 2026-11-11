@@ -888,15 +888,32 @@ _CUT_TO = {0: "whole seconds", 1: "1 digit of a second", 3: "milliseconds", 6: "
 
 def _second_digits(sql_type: str, text: bool) -> tuple[int, int] | None:
     """The digits of a second that a value keeps in a SQL Server column of this type, and those the
-    column holds, or None for a column without parts of a second (and for a date). The driver
-    passes date-times and times to the microsecond; it reads all 7 digits of a ``text`` for a
-    datetimeoffset column. A datetime holds 3, in steps of 1/300 s."""
+    column holds, or None for a column that holds no digits of its own (date, and datetime and
+    smalldatetime, whose steps of 1/300 s and whole minutes are their documented rule: no warning
+    there). The driver passes date-times and times to the microsecond; a ``text`` (for a
+    datetimeoffset column, and for datetime2(7) and time(7), ``_sent_as_text``) keeps all 7."""
     base, size, _scale = _kind(sql_type)
-    if base == "datetime":
-        return 3, 3
     if base not in _FRACTION_TYPES:
         return None
-    return (size if base == "datetimeoffset" and text else min(size, 6)), size
+    return (size if text else min(size, 6)), size
+
+
+def _sent_as_text(base: str, size: int) -> bool:
+    """Whether a text for a column of this type goes to SQL Server as a text (``_read_date_texts``
+    checks and writes it): for datetimeoffset, to keep its offset, and for datetime2(7) and time(7),
+    to keep the 7th digit of a second, which the driver doesn't pass in a date-time or time."""
+    return base == "datetimeoffset" or (base in ("datetime2", "time") and size == 7)
+
+
+def _seven_digit_texts(read: pl.Series, texts: pl.Series, base: str) -> pl.Series:
+    """Date-times or times that were read from ``texts``, for a datetime2(7) or time(7) column,
+    written as the text the driver and the server read the same in every language
+    (2026-10-01 08:30:15.1234567, 08:30:15.1234567: SQL Server reads year-month-day for datetime2
+    whatever its date format; the driver refuses a T there), with the digits of a second of the
+    text, up to 7."""
+    digits = texts.str.strip_chars().str.extract(r":[0-9]{2}\.([0-9]+)", 1).fill_null("").str.slice(0, 7).str.pad_end(7, "0")
+    whole = read.dt.strftime("%H:%M:%S" if base == "time" else "%Y-%m-%d %H:%M:%S")
+    return pl.select(pl.lit(whole) + "." + pl.lit(digits)).to_series().alias(read.name)
 
 
 def _digits_of_a_second(values: pl.Series, digits: int) -> pl.Series:
@@ -2052,8 +2069,11 @@ def _read_date_texts(
                 f"The column {target} of {table} holds {held} ({kind}), but {source} has texts that are {no_such} "
                 f"(e.g. “{text.filter(failed)[0]}”{more}). Write them as {forms}."
             )
+        size = _kind(kind)[1]
+        if base != "datetimeoffset" and _sent_as_text(base, size):  # all 7 digits of a second
+            read = _seven_digit_texts(read, text, base)
         changes.append(read.alias(source))
-        if digits := _second_digits(kind, base == "datetimeoffset"):  # a datetimeoffset gets a text
+        if digits := _second_digits(kind, _sent_as_text(base, size)):
             cut = text.str.contains(rf":[0-9]{{2}}\.[0-9]{{{digits[0]}}}[0-9]*[1-9]").fill_null(False)
             first = int(cut.arg_true()[0]) if (count := int(cut.sum())) else -1
             texts[source] = (count, text[first].strip() if count else "", first)

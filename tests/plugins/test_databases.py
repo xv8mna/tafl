@@ -1769,7 +1769,7 @@ def test_sqlserver_reads_texts_for_date_columns_with_the_rule_of_change_type():
     them to the server, which read them with its session's date format (01.10.2026 was 10 January).
     Now Tafl reads them in every mode, as Change type / format does without a format, and writes
     the dates, date-times and times; a datetimeoffset column keeps the offset of a text."""
-    D, T = dt.datetime, dt.time
+    D = dt.datetime
     df = pl.DataFrame({
         "Day": ["01.10.2026", " 2026-10-02 ", "  ", None, "1.10.26 08:30"],
         "At": ["01.10.2026 08:00", "2026-10-01T08:30:15", "", None, "2026-10-01 08:00:00.5"],
@@ -1781,14 +1781,13 @@ def test_sqlserver_reads_texts_for_date_columns_with_the_rule_of_change_type():
     read, texts = databases._read_date_texts(df, {c: c for c in df.columns}, types, "dbo.T", "sqlserver")
     assert read["Day"].to_list() == [dt.date(2026, 10, 1), dt.date(2026, 10, 2), None, None, dt.date(2026, 10, 1)]
     assert read["At"].to_list() == [D(2026, 10, 1, 8), D(2026, 10, 1, 8, 30, 15), None, None, D(2026, 10, 1, 8, 0, 0, 500000)]
-    assert read["Clock"].cast(pl.Int64).to_list() == [28_800 * 10**9, 29_100 * 10**9, 28_800_123_456_700, None, None]
+    assert read["Clock"].to_list() == ["08:00:00.0000000", "08:05:00.0000000", "08:00:00.1234567", None, None]  # time(7): all 7 digits
     assert read["Moment"].to_list() == [
         "2026-10-01 08:00:00 +02:00", "2026-10-01 08:00:00.1234567 +00:00", "2026-10-01 08:00:00.5", "2026-10-01 08:00:00 -05:30", None,
     ]  # fmt: skip
     assert read["Note"].equals(df["Note"])
     # for the warnings of digits of a second that are cut: how many texts had them, the first one, its row
-    assert texts == {"At": (0, "", -1), "Clock": (1, "08:00:00.1234567", 2), "Moment": (0, "", -1)}
-    assert read["Clock"].dtype == pl.Time and T(8, 0) == read["Clock"][0]
+    assert texts == {"At": (0, "", -1), "Clock": (0, "", -1), "Moment": (0, "", -1)}
     assert databases._read_date_texts(df, {c: c for c in df.columns}, types, "T", "sqlite")[0].equals(df)  # SQL Server only
 
 
@@ -1851,18 +1850,19 @@ def test_sqlserver_a_text_that_is_no_date_names_its_column(kind, texts, message)
          "V: 2 values were cut to whole seconds (e.g. '08:00:00.5' is 08:00:00): the column V of dbo.T holds no parts of a second (time(0))"),
         ([dt.time(8, 0, 0, 123456)], "time(3)",
          "V: 1 value was cut to milliseconds (e.g. 08:00:00.123456 is 08:00:00.123): the column V of dbo.T holds 3 digits of a second (time(3))"),
-        ([dt.datetime(2026, 10, 1, 8, 0, 0, 123456)], "datetime",
-         "V: 1 value was cut to milliseconds (e.g. 2026-10-01 08:00:00.123456 is 2026-10-01 08:00:00.123): the column V of dbo.T holds 3 "
-         "digits of a second (datetime)"),
+        ([dt.datetime(2026, 10, 1, 8, 0, 0, 123456)], "datetime", None),  # 1/300 s and whole minutes: the column's own rule
+        ([dt.datetime(2026, 10, 1, 8, 0, 29, 500000)], "smalldatetime", None),
         ([dt.datetime(2026, 10, 1, 8, 0, 0, 123456), dt.datetime(2026, 10, 1, 8, 0, 0, 123450)], "datetime2(5)",
          "V: 1 value was cut to 5 digits of a second (e.g. 2026-10-01 08:00:00.123456 is 2026-10-01 08:00:00.123450): the column V of "
          "dbo.T holds 5 digits of a second (datetime2(5))"),
         (["2026-10-01 08:00:00.5 +02:00"], "datetimeoffset(0)",
          "V: 1 value was cut to whole seconds (e.g. '2026-10-01 08:00:00.5 +02:00' is 2026-10-01 08:00:00 +02:00): the column V of "
          "dbo.T holds no parts of a second (datetimeoffset(0))"),
-        (["2026-10-01 08:00:00.1234567"], "datetime2(7)",
-         "V: 1 value was cut to whole microseconds (e.g. '2026-10-01 08:00:00.1234567' is 2026-10-01 08:00:00.123456): SQL Server's "
-         "driver passes no smaller parts of a second"),
+        (["2026-10-01T08:00:00.123456789"], "datetime2(7)",
+         "V: 1 value was cut to 7 digits of a second (e.g. '2026-10-01T08:00:00.123456789' is 2026-10-01 08:00:00.1234567): the "
+         "column V of dbo.T holds 7 digits of a second (datetime2(7))"),
+        (["2026-10-01 08:00:00.1234567", "20261001"], "datetime2(7)", None),  # a text keeps its 7 digits
+        ([dt.datetime(2026, 10, 1, 8, 0, 0, 123456)], "datetime2(7)", None),
         ([dt.datetime(2026, 10, 1, 8, 0, 0, 120000), dt.datetime(2026, 10, 1, 8)], "datetime2(2)", None),  # nothing to cut
         ([dt.datetime(2026, 10, 1, 8, 0, 0, 500000)], "date", None),  # a date column keeps the date, as before
         (["2026-10-01 08:00:00.1234567 +02:00"], "datetimeoffset(7)", None),  # the driver reads a text's 7 digits
@@ -1954,7 +1954,7 @@ df = databases._fit_whole_numbers(df, targets, types, "dbo.T", "sqlserver")
 df = databases._fit_lengths(df, targets, types, "dbo.T", [])
 warnings = databases._cut_seconds(df, types, texts, targets, "dbo.T")
 df = databases.SqlServer.fit_frame(df, types)
-assert df.width == width and len(warnings) == 2 * (width // len(kinds)), len(warnings)  # the time(0) and datetime columns
+assert df.width == width and len(warnings) == width // len(kinds), len(warnings)  # the time(0) columns (datetime: no warning)
 assert df["*"][0] == dt.date(2026, 10, 1) and df["^a.*$"][0] == dt.datetime(2026, 10, 1, 8), df.row(0)[:2]
 described = [(name, str if i % 2 else dt.datetime, None, 26, 26, 7 * (i % 2 == 0), True) for i, name in enumerate(names)]
 read = pl.DataFrame({name: pl.Series([None], dtype=pl.Null) if i % 2 else [dt.datetime(2026, 10, 1, 8, 0, 1, 5)] for i, name in enumerate(names)})

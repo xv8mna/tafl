@@ -2277,3 +2277,49 @@ def test_sqlserver_iso_8601_texts_for_date_columns_are_read_one_way_in_every_mod
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_texts_keep_their_7_digits_of_a_second_in_every_mode(registry):
+    """A text with 7 digits of a second for a datetime2(7) or time(7) column kept them in 0.6.4
+    (the driver or the server read the text): after Tafl has read and checked it, it goes as a
+    text again, in the form the driver and the server read the same. A key of such texts finds its
+    row, also beside a row that differs only in the 7th digit. datetime and smalldatetime columns
+    hold steps of 1/300 s and whole minutes by their own rule: no warning there."""
+    ctx, name = _sqlserver()
+    cases = {
+        "datetime2(7)": (["2026-10-01 08:00:00.1234567", "2026-10-01T08:00:01.7654321+02:00", "01.10.2026 08:00:02"],
+                         ["2026-10-01 08:00:00.1234567", "2026-10-01 08:00:01.7654321", "2026-10-01 08:00:02.0000000"]),
+        "time(7)": (["08:00:00.1234567", "2026-10-01T08:00:01.7654321", "8:5"], ["08:00:00.1234567", "08:00:01.7654321", "08:05:00.0000000"]),
+    }  # fmt: skip
+    try:
+        for kind, (texts, expected) in cases.items():
+            for mode in ("insert", "upsert", "update", "replace_keys"):
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                    db.execute(f"CREATE TABLE {name} (K int, V {kind})")
+                    if mode in ("update", "replace_keys"):
+                        db.execute(f"INSERT INTO {name} (K) VALUES (1), (2), (3)")
+                before = len(ctx.warnings)
+                data = pl.DataFrame({"K": [1, 2, 3], "V": texts})
+                registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": ["K"]}, ctx)
+                with ctx.database("server") as db:
+                    stored = db.read(f"SELECT CONVERT(nvarchar(40), V, 121) AS V FROM {name} ORDER BY K")["V"].to_list()
+                assert stored == expected and len(ctx.warnings) == before, (kind, mode)
+            # by such keys: only the row of the same 7th digit
+            with ctx.database("server") as db:
+                db.execute(f"DELETE FROM {name}; INSERT INTO {name} VALUES (1, '{expected[0]}'), (2, '{expected[0][:-1]}8')")
+            registry.actions["db.export"](pl.DataFrame({"V": [texts[0]], "K": [10]}), {"connection": "server", "table": name, "mode": "update",
+                                                                                       "key_columns": ["V"]}, ctx)  # fmt: skip
+            with ctx.database("server") as db:
+                assert sorted(db.read(f"SELECT K FROM {name}")["K"].to_list()) == [2, 10], kind
+        with ctx.database("server") as db:
+            db.execute(f"DROP TABLE {name}")
+            db.execute(f"CREATE TABLE {name} (K int, V datetime, M smalldatetime)")
+        before = len(ctx.warnings)
+        moment = dt.datetime(2026, 10, 1, 8, 0, 29, 123456)
+        registry.actions["db.export"](pl.DataFrame({"K": [1], "V": [moment], "M": [moment]}), {"connection": "server", "table": name}, ctx)
+        assert len(ctx.warnings) == before  # NOW() into a datetime column doesn't warn every day
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
