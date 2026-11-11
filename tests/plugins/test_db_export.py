@@ -701,7 +701,7 @@ def test_sqlserver_keyed_modes_store_values_as_add_does(registry):
 def test_sqlserver_cuts_digits_below_a_microsecond_with_a_warning(registry):
     """The driver passes fractions of a second to the microsecond: 08:30:00.000000001 became
     08:30:00 without a word, also as a key (an update gave two rows the values of one). A column
-    of fewer digits holds less anyway, as it always did: no warning there."""
+    of fewer digits cuts more: the warning says what that column holds."""
     ctx, name = _sqlserver()
     second = 1_735_720_200 * 10**9  # 2025-01-01 08:30:00
     data = pl.DataFrame({
@@ -737,7 +737,12 @@ def test_sqlserver_cuts_digits_below_a_microsecond_with_a_warning(registry):
             db.execute(f"DROP TABLE {name}")
             db.execute(f"CREATE TABLE {name} (N int, Stamp datetime2(3), Clock time(6))")
         export(data)
-        assert len(ctx.warnings) == 2  # no new ones
+        assert ctx.warnings[2:] == [
+            f"Stamp: 3 values were cut to milliseconds (e.g. 2025-01-01 08:30:00.000000001 is 2025-01-01 08:30:00): the column "
+            f"Stamp of {name} holds 3 digits of a second (datetime2(3))",
+            f"Clock: 1 value was cut to whole microseconds (e.g. 08:30:00.000000001 is 08:30:00): the column Clock of {name} "
+            "holds 6 digits of a second (time(6))",
+        ]
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
@@ -1450,7 +1455,7 @@ def test_sqlserver_keys_find_the_rows_that_add_stored(registry, kind, values):
             with ctx.database("server") as db:
                 db.execute(f"DELETE FROM {name}; INSERT INTO {name} SELECT * FROM {name}_added")
             export("new", mode=mode, key_columns=["K"])
-            assert ctx.messages[-1] == ("info", f"{name}: {message}"), mode
+            assert _logged(ctx) == ("info", f"{name}: {message}"), mode  # warnings of cut digits come after it
             assert rows() == ([] if mode == "delete" else sorted([(k, v, "new") for k, v, _note in stored], key=repr)), mode
         with ctx.database("server") as db:
             db.execute(f"DELETE FROM {name}")
@@ -1579,6 +1584,11 @@ def test_sqlserver_spaces_that_dont_fit_are_cut(registry):
 
 
 _KEYED_MODES = ("update", "upsert", "replace_keys", "delete")
+
+
+def _logged(ctx) -> tuple[str, str]:
+    """The last message of a step that is no warning: an export says what it changed, then warns."""
+    return next(message for message in reversed(ctx.messages) if message[0] != "warning")
 
 
 def _keyed_message(mode: str, n: int) -> str:
@@ -1867,7 +1877,7 @@ def test_sqlserver_a_synonym_is_written_as_its_table(registry):
                 with ctx.database("server") as db:
                     db.execute(f"DELETE FROM {base}; INSERT INTO {base} VALUES (1, '2026-10-01 08:00:00', 'abc', 0)")
                 export(by_second, target, mode=mode, key_columns=["D"])
-                assert ctx.messages[-1] == ("info", f"{target}: {message}") and stored() == rows, (target, mode)
+                assert _logged(ctx) == ("info", f"{target}: {message}") and stored() == rows, (target, mode)
             with ctx.database("server") as db:
                 db.execute(f"DELETE FROM {base}; INSERT INTO {base} VALUES (1, '2026-10-01 08:00:00', 'abc', 0)")
             export(pl.DataFrame({"C": ["abc", "ABC"], "V": [7, 8]}), target, mode="update", key_columns=["C"])  # case-sensitive
@@ -2080,6 +2090,47 @@ def test_sqlserver_texts_for_date_columns_are_read_one_way_in_every_mode(registr
             assert ctx.messages[-1] == ("info", f"{name}: deleted 2 rows"), kind
         with pytest.raises(ActionError, match=rf"^The column V of {re.escape(name)} holds dates and time.*e\.g\. “2026-10-01T08:00”"):
             registry.actions["db.export"](pl.DataFrame({"K": [1], "V": ["2026-10-01T08:00"]}), {"connection": "server", "table": name}, ctx)
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_digits_of_a_second_beyond_the_column_are_cut_in_every_mode_with_a_warning(registry):
+    """time(0) and datetime2(0) with 08:00:00.5: Add refused the text with a wrong message ("a text
+    is too long for its column"), Update and Upsert stored 08:00:01, and a date-time was cut to
+    08:00:00 without a word. Now every mode stores 08:00:00 and says so."""
+    ctx, name = _sqlserver()
+    cases = {
+        "time(0)": (["08:00:00.5", "08:00:02"], ["08:00:00", "08:00:02"], "'08:00:00.5' is 08:00:00"),
+        "datetime2(0)": (
+            [dt.datetime(2026, 10, 1, 8, 0, 0, 500000), dt.datetime(2026, 10, 1, 8, 0, 2)],
+            ["2026-10-01 08:00:00", "2026-10-01 08:00:02"],
+            "2026-10-01 08:00:00.500 is 2026-10-01 08:00:00",
+        ),
+        "datetimeoffset(1)": (
+            ["2026-10-01 08:00:00.25 +02:00", "2026-10-01T08:00:02Z"],
+            ["2026-10-01 08:00:00.2 +02:00", "2026-10-01 08:00:02.0 +00:00"],
+            "'2026-10-01 08:00:00.25 +02:00' is 2026-10-01 08:00:00.2 +02:00",
+        ),
+    }
+    try:
+        for kind, (values, expected, example) in cases.items():
+            for mode in ("insert", "upsert", "update", "replace_keys"):
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                    db.execute(f"CREATE TABLE {name} (K int, V {kind})")
+                    db.execute(f"INSERT INTO {name} (K) VALUES (1), (2)")
+                before = len(ctx.warnings)
+                data = pl.DataFrame({"K": [1, 2], "V": values})
+                registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": ["K"]}, ctx)
+                with ctx.database("server") as db:
+                    stored = db.read(f"SELECT CONVERT(nvarchar(40), V, 121) AS V FROM {name} WHERE V IS NOT NULL ORDER BY K")["V"].to_list()
+                assert stored == expected, (kind, mode)
+                assert ctx.warnings[before:] == [
+                    f"V: 1 value was cut to {'whole seconds' if kind != 'datetimeoffset(1)' else '1 digit of a second'} (e.g. {example}): "
+                    f"the column V of {name} holds {'no parts of a second' if kind != 'datetimeoffset(1)' else '1 digit of a second'} ({kind})"
+                ], (kind, mode)
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

@@ -419,7 +419,7 @@ class SqlServer(Connector):
         (Decimal) are rounded to the decimal places of a decimal column, half away from zero as
         SQL Server rounds (1.005 is 1.01 in a decimal(10,2)), and are floats for a float column.
         The driver takes fractions of a second to the microsecond: digits below it are cut here
-        too, as the driver would cut them (``_below_microseconds`` tells about them)."""
+        too, as the driver would cut them (``_cut_seconds`` tells about the digits that are cut)."""
         changes = []
         for name, dtype in df.schema.items():
             kind, size, scale = _kind(types.get(name, ""))
@@ -785,47 +785,62 @@ def _round_half_away(series: pl.Series, scale: int) -> pl.Series:
             return series
 
 
-def _below_microseconds(df: pl.DataFrame, types: dict[str, str], texts: dict[str, pl.Series] | None = None) -> list[str]:
-    """Warnings for the columns of ``df`` whose SQL Server column holds 100 nanoseconds
-    (datetime2, time or datetimeoffset with 7 digits), and that have values with digits below a
-    microsecond: the driver passes none (``fit_frame`` cuts them as it does). Columns of fewer
-    digits cut more anyway, as they hold the values. ``texts``: the texts that date-times of
-    ``df`` were read from (``_read_date_texts``), which had such digits."""
+def _cut_seconds(
+    df: pl.DataFrame, types: dict[str, str], texts: dict[str, pl.Series] | None = None, names: dict[str, str] | None = None, table: str = ""
+) -> list[str]:
+    """Warnings for the columns of ``df`` whose values lose digits of a second in their SQL Server
+    column, with how many and an example, the same in every mode (``fit_frame`` cuts them as the
+    driver does): a datetime2, time or datetimeoffset column holds as many digits as its type says
+    (datetime2(0) whole seconds, 08:00:00.5 is 08:00:00 there), a datetime column 3 (in steps of
+    1/300 s, to which SQL Server rounds them), and the driver passes no digits below a microsecond
+    (a column of 7 digits holds them). ``texts``: the texts that values of ``df`` were read from
+    (``_read_date_texts``), which show their digits as they were. ``names``: the columns of the
+    ``table``, by column of ``df``."""
     warnings = []
     for name, dtype in df.schema.items():
-        kind, size, _scale = _kind(types.get(name, ""))
-        text = (texts or {}).get(name)
-        if kind not in _FRACTION_TYPES or size != 7:
+        kind = types.get(name, "")
+        base, size, _scale = _kind(kind)
+        if base == "datetime":
+            size = 3
+        elif base not in _FRACTION_TYPES:
             continue
-        if text is not None and isinstance(dtype, pl.Datetime):  # read to the microsecond
-            cut = text.str.contains(r":[0-9]{2}\.[0-9]{6}[0-9]*[1-9]").fill_null(False)
-            count, shown, kept = int(cut.sum()), "", ""
-            if count:
-                shown = f"'{text.filter(cut).str.strip_chars()[0]}'"
-                kept = pl.select(dtypes.text_expr(pl.lit(df[name].alias("value").filter(cut).head(1)), dtype)).item()
-        elif dtype == pl.Time or getattr(dtype, "time_unit", "") == "ns":
-            values = df[name].alias("value")  # a fixed name, as in _round_half_away
-            cut = (values.dt.nanosecond() % 1000 != 0).fill_null(False)
-            count, shown, kept = int(cut.sum()), "", ""
-            if count:
-                example = values.filter(cut).head(1)
-                shown, kept = (pl.select(dtypes.text_expr(pl.lit(v), v.dtype)).item() for v in (example, _microseconds(example)))
+        text = (texts or {}).get(name)
+        kept = size if base == "datetimeoffset" and dtype == pl.String else min(size, 6)  # the driver reads a text's 7 digits
+        if text is not None:
+            cut = text.str.contains(rf":[0-9]{{2}}\.[0-9]{{{kept}}}[0-9]*[1-9]").fill_null(False)
+        elif isinstance(dtype, pl.Datetime) or dtype == pl.Time:
+            cut = (df[name].alias("value").dt.nanosecond() % 10 ** (9 - kept) != 0).fill_null(False)  # a fixed name, as in _round_half_away
         else:
             continue
-        if count:
-            values_were = "1 value was" if count == 1 else f"{count:,} values were"
-            warnings.append(
-                f"{name}: {values_were} cut to whole microseconds (e.g. {shown} is {kept}): SQL Server's driver passes "
-                "no smaller parts of a second"
-            )
+        if not (count := int(cut.sum())):
+            continue
+        example = df[name].alias("value").filter(cut).head(1)
+        if text is not None:
+            shown = f"'{text.filter(cut).str.strip_chars()[0]}'"
+        else:
+            shown = pl.select(dtypes.text_expr(pl.lit(example), dtype)).item()
+        written = _digits_of_a_second(example, kept)
+        written = written if written.dtype == pl.String else pl.select(dtypes.text_expr(pl.lit(written), written.dtype)).to_series()
+        values_were = "1 value was" if count == 1 else f"{count:,} values were"
+        if kept == 6 and size == 7:
+            why = "SQL Server's driver passes no smaller parts of a second"
+        else:
+            holds = "no parts of a second" if kept == 0 else f"{kept} digit{'s' if kept != 1 else ''} of a second"
+            why = f"the column {(names or {}).get(name, name)} of {table} holds {holds} ({kind})"
+        unit = {0: "whole seconds", 1: "1 digit of a second", 3: "milliseconds", 6: "whole microseconds"}.get(kept, f"{kept} digits of a second")
+        warnings.append(f"{name}: {values_were} cut to {unit} (e.g. {shown} is {written[0]}): {why}")
     return warnings
 
 
-def _microseconds(values: pl.Series) -> pl.Series:
-    """Date-times or times cut to whole microseconds."""
+def _digits_of_a_second(values: pl.Series, digits: int) -> pl.Series:
+    """Date-times, times or texts of datetimeoffset values (``_offset_texts``) cut to ``digits``
+    digits of a second."""
+    if values.dtype == pl.String:
+        return values.str.replace(rf"(:[0-9]{{2}}\.[0-9]{{{digits}}})[0-9]*", "${1}").str.replace(r":([0-9]{2})\.(\s|$)", ":${1}${2}")
+    step = 10 ** (9 - digits)  # nanoseconds
     if values.dtype == pl.Time:
-        return (values.cast(pl.Int64) // 1000 * 1000).cast(pl.Time)
-    return values.dt.truncate("1us")
+        return (values.cast(pl.Int64) // step * step).cast(pl.Time)
+    return values.dt.truncate(f"{step}ns") if values.dtype.time_unit == "ns" else values.dt.truncate(f"{max(step // 1000, 1)}us")
 
 
 def _data_binding(series: pl.Series) -> tuple[int, int, int]:
@@ -1599,7 +1614,7 @@ def export_database(df, p, ctx):
         data = _fit_lengths(data, names, types, p.table, finding, hexed)
         kinds = {name.lower(): kind for name, kind in types.items()}
         fitted = {c: kinds[names[c].lower()] for c in data.columns if names[c].lower() in kinds}
-        cut = _below_microseconds(data, fitted, read) if db.connector.id == "sqlserver" else []
+        cut = _cut_seconds(data, fitted, read, names, p.table) if db.connector.id == "sqlserver" else []
         data = db.connector.fit_frame(data, fitted)
         if p.mode in ("update", "upsert"):
             _check_unique(data, p.key_columns)  # as stored: 08:00:01.2 and .7 are one second in datetime2(0)

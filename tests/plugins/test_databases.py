@@ -1741,6 +1741,42 @@ def test_sqlserver_a_text_that_is_no_date_names_its_column(kind, texts, message)
     assert str(error.value).startswith(f"The column V of dbo.T {message}")
 
 
+@pytest.mark.parametrize(
+    ("values", "kind", "warning"),
+    [
+        ([dt.datetime(2026, 10, 1, 8, 0, 0, 500000), dt.datetime(2026, 10, 1, 8, 0, 1)], "datetime2(0)",
+         "V: 1 value was cut to whole seconds (e.g. 2026-10-01 08:00:00.500 is 2026-10-01 08:00:00): the column V of dbo.T holds no "
+         "parts of a second (datetime2(0))"),
+        (["08:00:00.5", "08:00:01.25", "08:00:02"], "time(0)",
+         "V: 2 values were cut to whole seconds (e.g. '08:00:00.5' is 08:00:00): the column V of dbo.T holds no parts of a second (time(0))"),
+        ([dt.time(8, 0, 0, 123456)], "time(3)",
+         "V: 1 value was cut to milliseconds (e.g. 08:00:00.123456 is 08:00:00.123): the column V of dbo.T holds 3 digits of a second (time(3))"),
+        ([dt.datetime(2026, 10, 1, 8, 0, 0, 123456)], "datetime",
+         "V: 1 value was cut to milliseconds (e.g. 2026-10-01 08:00:00.123456 is 2026-10-01 08:00:00.123): the column V of dbo.T holds 3 "
+         "digits of a second (datetime)"),
+        ([dt.datetime(2026, 10, 1, 8, 0, 0, 123456), dt.datetime(2026, 10, 1, 8, 0, 0, 123450)], "datetime2(5)",
+         "V: 1 value was cut to 5 digits of a second (e.g. 2026-10-01 08:00:00.123456 is 2026-10-01 08:00:00.123450): the column V of "
+         "dbo.T holds 5 digits of a second (datetime2(5))"),
+        (["2026-10-01 08:00:00.5 +02:00"], "datetimeoffset(0)",
+         "V: 1 value was cut to whole seconds (e.g. '2026-10-01 08:00:00.5 +02:00' is 2026-10-01 08:00:00 +02:00): the column V of "
+         "dbo.T holds no parts of a second (datetimeoffset(0))"),
+        (["2026-10-01 08:00:00.1234567"], "datetime2(7)",
+         "V: 1 value was cut to whole microseconds (e.g. '2026-10-01 08:00:00.1234567' is 2026-10-01 08:00:00.123456): SQL Server's "
+         "driver passes no smaller parts of a second"),
+        ([dt.datetime(2026, 10, 1, 8, 0, 0, 120000), dt.datetime(2026, 10, 1, 8)], "datetime2(2)", None),  # nothing to cut
+        ([dt.datetime(2026, 10, 1, 8, 0, 0, 500000)], "date", None),  # a date column keeps the date, as before
+        (["2026-10-01 08:00:00.1234567 +02:00"], "datetimeoffset(7)", None),  # the driver reads a text's 7 digits
+    ],
+)
+def test_sqlserver_warns_of_digits_of_a_second_that_are_cut(values, kind, warning):
+    """Fractions of a second beyond the column: Add refused texts with a wrong message ("a text is
+    too long"), Update and Upsert rounded them (08:00:00.5 was 08:00:01), date-times were cut
+    without a word. Now every mode cuts them, as the driver does, and says so."""
+    df, names, types = pl.DataFrame({"V": values}), {"V": "V"}, {"V": kind}
+    df, texts = databases._read_date_texts(df, names, types, "dbo.T", "sqlserver")
+    assert databases._cut_seconds(df, types, texts, names, "dbo.T") == ([warning] if warning else [])
+
+
 def test_sqlserver_sends_texts_for_varchar_columns_as_unicode(registry):
     """The server converts them to the code page of the column's collation (as N'…'), in every
     mode; bound as varchar, the driver would convert them to this PC's code page first."""
