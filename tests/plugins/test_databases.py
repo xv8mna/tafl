@@ -715,15 +715,22 @@ def test_detect_automatically_keeps_the_digits_of_long_whole_numbers(project, re
     assert result.steps[0].messages == [("info", "Decimal comma in grouped")]
 
 
-def test_a_step_saved_before_0_6_4_reads_long_numbers_as_before(project, registry, tmp_path):
-    """A step of version 1 (Point) reads long numbers as 0.6.4 did: ``dtypes.infer_types`` decides
-    there, not the rules of Detect automatically. A decimal of 18 digits and 2^63 and 10^19 become
-    decimal numbers; with a decimal comma or thousands separators they stay text."""
-    _text_table(tmp_path / "data.db", "t", _LONG_DECIMALS | _LONG_WHOLE)
-    df = import_table(project, registry, table="t", detect_types=True).df
-    assert df.to_dict(as_series=False) == {
-        "comma": _LONG_DECIMALS["comma"], "point": [12345678901234.568, 1.5], "plain": [2.0**63, 1e19], "grouped": _LONG_WHOLE["grouped"],
+def test_a_step_saved_before_0_6_4_reads_numbers_as_before_and_keeps_long_ones_as_text(project, registry, tmp_path):
+    """A step of version 1 (Point) reads numbers as 0.6.4 did, with ``dtypes.infer_types``, not with
+    the rules of Detect automatically: 1.5, and 2^63 and 10^19 (which a decimal number holds), are
+    decimal numbers; with a decimal comma or thousands separators they stay text. A decimal whose
+    decimal number has other digits stays text, with a warning: 12345678901234.5678 became
+    12345678901234.568 without a message."""
+    _text_table(tmp_path / "data.db", "t", _LONG_DECIMALS | _LONG_WHOLE | {"ordinary": ["1.5", "2.25"]})
+    result = import_table(project, registry, table="t", detect_types=True)
+    assert result.df.to_dict(as_series=False) == {
+        "comma": _LONG_DECIMALS["comma"], "point": _LONG_DECIMALS["point"], "plain": [2.0**63, 1e19], "grouped": _LONG_WHOLE["grouped"],
+        "ordinary": [1.5, 2.25],
     }  # fmt: skip
+    assert result.df.schema["plain"] == pl.Float64 and result.df.schema["ordinary"] == pl.Float64
+    assert [message for message in result.steps[0].messages if message[0] == "warning"] == [
+        ("warning", "point stays text: its numbers are too long to be kept exactly, e.g. '12345678901234.5678'")
+    ]
 
 
 def test_tafl_run_of_an_old_project_is_unchanged(registry, tmp_path, capsys):
