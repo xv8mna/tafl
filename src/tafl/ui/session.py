@@ -573,6 +573,13 @@ class Session(QObject):
             self._stopping = True
         self._runner.cancel()
 
+    def cancel_calculation(self) -> None:
+        """Stop the calculation of the tables (not a run), e.g. when the window closes: it ends
+        after the step that runs, a formula or a database query at once, and reports nothing
+        more. A calculation that waits for an edit to be over doesn't start."""
+        self._timer.stop()
+        self._worker.forget()
+
     @property
     def run_engine(self) -> Engine:
         """The engine with the project as the latest run has it, for the report of that run."""

@@ -17,6 +17,24 @@ from tafl.ui.map import view as map_view
 from tafl.ui.session import Session
 
 STARTED, RELEASE, FAIL = threading.Event(), threading.Event(), threading.Event()
+CALCULATING, CANCELLED = threading.Event(), threading.Event()
+
+
+@action("test.wait_on_calculation", "Wait (when calculated)")
+def _wait_on_calculation(df, p, ctx):
+    """While the table is calculated (not in a run): says it started, then takes 20 s, unless the
+    calculation is cancelled."""
+    if ctx.mode == Mode.PREVIEW:
+        CALCULATING.set()
+        end = time.monotonic() + 20
+        while time.monotonic() < end:
+            try:
+                ctx.check_cancelled()
+            except BaseException:
+                CANCELLED.set()
+                raise
+            time.sleep(0.01)
+    return df
 
 
 @action("test.wait_on_run", "Wait (when run)")
@@ -37,6 +55,7 @@ def slow_registry():
     registry.load_builtin()
     module = types.ModuleType("waiting")
     module.wait = _wait_on_run
+    module.calculating = _wait_on_calculation
     registry.add_module(module)
     return registry
 
@@ -364,6 +383,34 @@ def test_closing_during_a_run_can_stop_it(running, qtbot, monkeypatch):
     RELEASE.set()
     qtbot.waitUntil(lambda: not window.isVisible(), timeout=10_000)
     assert window.run_panel.summary.text().startswith("Run stopped at ")
+
+
+def test_closing_during_a_calculation_stops_it_at_once(qapp, qtbot, slow_registry, tmp_path):
+    """Up to 0.6.4 closing the window waited 5 s for the calculation of the selected table, which
+    then went on for as long as it took."""
+    CALCULATING.clear()
+    CANCELLED.clear()
+    (tmp_path / "data.csv").write_text("A;B\n1;2\n", encoding="utf-8")
+    project = Project()
+    table = project.add_table("Slow")
+    project.add_step(table, slow_registry.actions["csv.import"], {"file": "data.csv"})
+    project.add_step(table, slow_registry.actions["test.wait_on_calculation"], {})
+    path = project.save(tmp_path / "slow.tafl")
+    qapp.setOrganizationName("Tafl Tests")
+    session = Session(slow_registry)
+    window = MainWindow(session)
+    window.show()
+    window.open_path(path)
+    try:
+        assert CALCULATING.wait(10) and session.busy
+        started = time.monotonic()
+        assert window.close()
+        assert time.monotonic() - started < 2
+        assert CANCELLED.wait(2) and session.wait(2000)  # its thread ended
+    finally:
+        session._worker.cancel()  # when the test fails: the next tests don't wait for the 20 s
+        session.wait()
+        window.deleteLater()
 
 
 def test_closing_during_a_run_can_be_cancelled(running, monkeypatch):

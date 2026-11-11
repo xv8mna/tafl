@@ -874,6 +874,7 @@ class MainWindow(QMainWindow):
         for key, splitter in self._splitters().items():
             self.settings.setValue(key, splitter.saveState())
         self.session.cancel_run()
+        self.session.cancel_calculation()  # else closing waits for it, and it goes on after that
         checks().stop_all()  # the checks of formula fields: nothing waits for them
         self.session.wait(5000)
         event.accept()
