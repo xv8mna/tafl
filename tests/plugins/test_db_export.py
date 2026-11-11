@@ -1796,8 +1796,9 @@ def test_sqlserver_keyed_modes_take_xml_and_clr_columns_of_any_name(registry, co
 def test_sqlserver_commands_run_in_one_transaction(registry):
     """BEGIN TRAN without COMMIT said "Done: 1 row changed" and stored nothing; after a COMMIT
     inside the command, the rest ran without a transaction, and a failed command kept its rows.
-    Now such a command changes nothing, and a procedure that ends or begins a transaction (SQL
-    Server's error 266) gets a message that says what that means."""
+    A script's own BEGIN TRAN … COMMIT (also across GO) and a CATCH with ROLLBACK and THROW work as
+    in SSMS and in 0.6.4; a command that ends the transaction of the step, or leaves one open,
+    stops with a plain message, and so does a procedure that does it (SQL Server's error 266)."""
     ctx, name = _sqlserver()
     proc = f"{name}_commits"
 
@@ -1811,25 +1812,34 @@ def test_sqlserver_commands_run_in_one_transaction(registry):
     try:
         with ctx.database("server") as db:
             db.execute(f"CREATE TABLE {name} (N int)")
-        for sql in (
-            f"BEGIN TRAN; INSERT INTO {name} VALUES (1);",
-            f"INSERT INTO {name} VALUES (2); COMMIT; INSERT INTO {name} VALUES (3); SELECT 1/0;",
-            f"INSERT INTO {name} VALUES (5); ROLLBACK;",
-        ):
-            with pytest.raises(ActionError, match=r"in one transaction, so that a failed command changes nothing: leave out BEGIN TRAN"):
-                command(sql)
-            assert rows() == [], sql
-        command(f"CREATE PROCEDURE {proc} AS BEGIN INSERT INTO {name} VALUES (100); COMMIT; END")  # runs when it is called
-        ended = r"^A procedure or an EXEC in the command ended its transaction \(with COMMIT or ROLLBACK\), so the step stopped: "
-        with pytest.raises(ActionError, match=ended + r"what the command changed before may be kept, and so is what the rest"):
-            command(f"INSERT INTO {name} VALUES (10)\nEXEC {proc}\nINSERT INTO {name} VALUES (11)")
-        assert rows() == [10, 11, 100]  # SQL Server committed them: the message says so
-        began = r"^A procedure or an EXEC in the command began a transaction and didn't end it, so the step stopped and its changes"
-        with pytest.raises(ActionError, match=began):
-            command(f"INSERT INTO {name} VALUES (12); EXEC('BEGIN TRAN')")
-        assert rows() == [10, 11, 100]
-        command(f"INSERT INTO {name} VALUES (13)")
-        assert ctx.messages[-1] == ("info", "Done: 1 row changed") and rows() == [10, 11, 13, 100]
+        command(f"BEGIN TRAN; INSERT INTO {name} VALUES (1); COMMIT;")  # balanced: stored with the step
+        assert ctx.messages[-1] == ("info", "Done: 1 row changed") and rows() == [1]
+        command(f"BEGIN TRANSACTION\nGO\nINSERT INTO {name} VALUES (2)\nGO\nCOMMIT TRANSACTION")  # also across batches
+        assert rows() == [1, 2]
+        with pytest.raises(ActionError, match="Divide by zero"):  # its own COMMIT inside the step's: nothing stays
+            command(f"BEGIN TRAN; INSERT INTO {name} VALUES (3); COMMIT; SELECT 1/0;")
+        catch = "BEGIN CATCH\n  IF @@TRANCOUNT > 0 ROLLBACK;\n  THROW;\nEND CATCH"
+        with pytest.raises(ActionError, match="Divide by zero"):  # fails cleanly
+            command(f"BEGIN TRY\n  BEGIN TRAN\n  INSERT INTO {name} VALUES (4)\n  SELECT 1/0\n  COMMIT\nEND TRY\n{catch}")
+        assert rows() == [1, 2]
+        with pytest.raises(ActionError, match=r"^The command began a transaction and didn't end it \(BEGIN TRAN without COMMIT\), so the step stopped and its changes were undone"):
+            command(f"INSERT INTO {name} VALUES (5); BEGIN TRAN; INSERT INTO {name} VALUES (6)")
+        assert rows() == [1, 2]
+        ended = r"^The command ended the transaction of the step \(with a COMMIT or ROLLBACK that has no BEGIN TRAN of its own, in the batch that ends in line "
+        with pytest.raises(ActionError, match=ended + r"3\), so the step stopped\. What the command changed up to there may already be stored"):
+            command(f"INSERT INTO {name} VALUES (7)\nCOMMIT\nINSERT INTO {name} VALUES (8)\nGO\nINSERT INTO {name} VALUES (9)")
+        assert rows() == [1, 2, 7, 8]  # what the message says may be stored; the next batch didn't run
+        with pytest.raises(ActionError, match=ended + "1"):
+            command(f"INSERT INTO {name} VALUES (10); ROLLBACK; INSERT INTO {name} VALUES (11)")
+        assert rows() == [1, 2, 7, 8, 11]  # 10 was rolled back, 11 ran without a transaction
+        command(f"CREATE PROCEDURE {proc} AS BEGIN INSERT INTO {name} VALUES (100); COMMIT; END")  # alone in its batch: no check
+        with pytest.raises(ActionError, match=r"^A procedure or an EXEC in the command ended its transaction \(with COMMIT or ROLLBACK\)"):
+            command(f"INSERT INTO {name} VALUES (12)\nEXEC {proc}")
+        assert rows() == [1, 2, 7, 8, 11, 12, 100]  # SQL Server committed them: the message says so
+        with pytest.raises(ActionError, match=r"^A procedure or an EXEC in the command began a transaction and didn't end it"):
+            command(f"INSERT INTO {name} VALUES (13); EXEC('BEGIN TRAN')")
+        command(f"ALTER PROCEDURE {proc} AS BEGIN BEGIN TRAN; INSERT INTO {name} VALUES (101); COMMIT; END\nGO\nEXEC {proc}")
+        assert ctx.messages[-1] == ("info", "Done: 1 row changed") and rows() == [1, 2, 7, 8, 11, 12, 100, 101]
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{proc}') IS NOT NULL DROP PROCEDURE {proc}")

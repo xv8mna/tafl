@@ -1403,18 +1403,27 @@ def test_sqlserver_explains_the_drivers_own_syntax_errors(registry):
 
 
 class _Recorder:
-    """A connection that keeps the batches it is given."""
+    """A connection that keeps the batches it is given (``sent``: all it was given; ``batches``:
+    the command's batches, without the check of the transaction at their end), with one open
+    transaction."""
 
     def __init__(self):
-        self.batches = []
+        self.batches, self.sent = [], []
         self.rowcount = -1
 
     def cursor(self):
         return self
 
     def execute(self, sql):
-        self.batches.append(sql)
+        self.sent.append(sql)
+        if sql == "SELECT @@TRANCOUNT":
+            self.rowcount = -1
+            return
+        self.batches.append(sql.split(databases._TRANSACTION_CHECK.format(count=1))[0])
         self.rowcount = 1
+
+    def fetchone(self):
+        return (1,)
 
     def nextset(self):
         return False
@@ -2335,40 +2344,27 @@ def test_sqlserver_go_with_a_repeat_count_and_a_comment(registry):
 
 
 @pytest.mark.parametrize(
-    ("sql", "found"),
+    ("sql", "checked"),
     [
-        ("BEGIN TRAN; INSERT INTO t VALUES (1)", "BEGIN TRAN in line 1"),
-        ("INSERT INTO t VALUES (1)\nbegin transaction", "BEGIN TRANSACTION in line 2"),
-        ("INSERT INTO t VALUES (2)\nCOMMIT\nINSERT INTO t VALUES (3)", "COMMIT in line 2"),
-        ("SELECT 1\nGO\nIF @@TRANCOUNT > 0 ROLLBACK TRAN", "ROLLBACK in line 3"),
-        ("SAVE TRAN x", "SAVE TRAN in line 1"),
-        ("BEGIN DISTRIBUTED TRANSACTION", "BEGIN DISTRIBUTED TRANSACTION in line 1"),
-        ("BEGIN TRY\n  SELECT 1\nEND TRY\nBEGIN CATCH\n  ROLLBACK;\n  THROW;\nEND CATCH", "ROLLBACK in line 5"),
-        ("CREATE TABLE t (n int); COMMIT", "COMMIT in line 1"),
-        ("IF 1 = 1 BEGIN SELECT 1 END\nBEGIN TRY SELECT 2 END TRY BEGIN CATCH THROW; END CATCH", None),
-        ("-- COMMIT\nSELECT 'ROLLBACK', N'BEGIN TRAN' /* SAVE TRAN /* COMMIT */ */", None),
-        ("SELECT [COMMIT], [BEGIN] FROM t; EXEC('COMMIT')", None),  # an EXEC of a text: SQL Server reports it
-        ("CREATE PROCEDURE p AS BEGIN INSERT INTO t VALUES (1); COMMIT END", None),  # runs only when it is called
-        ("CREATE OR ALTER TRIGGER tr ON t AFTER INSERT AS ROLLBACK\nGO\nALTER PROC p AS COMMIT", None),
+        ("BEGIN TRAN; INSERT INTO t VALUES (1); COMMIT", [True]),
+        ("INSERT INTO t VALUES (1)\nGO 2\n-- a comment\nSELECT 1 -- no newline at the end", [True, True, True]),
+        ("CREATE PROCEDURE p AS BEGIN INSERT INTO t VALUES (1); COMMIT END\nGO\nEXEC p", [False, True]),
+        ("/* first */ CREATE OR ALTER VIEW v AS SELECT 1 AS a\nGO\nALTER TRIGGER tr ON t AFTER INSERT AS ROLLBACK", [False, False]),
+        ("create function f() returns int as begin return 1 end\nGO\nCREATE TABLE t (n int); COMMIT", [False, True]),
+        ("BEGIN TRY\n  INSERT INTO t VALUES (1)\nEND TRY\nBEGIN CATCH\n  IF @@TRANCOUNT > 0 ROLLBACK;\n  THROW;\nEND CATCH", [True]),
     ],
 )
-def test_sqlserver_commands_leave_out_the_statements_of_a_transaction(registry, sql, found):
-    """The command runs in one transaction: BEGIN TRAN without COMMIT said "Done: 1 row changed"
-    and stored nothing, and after a COMMIT the rest ran without a transaction, so a failed command
-    kept rows. Such a command is refused before anything runs; words in texts, comments and names
-    don't count, nor does the body of a procedure, function or trigger that a batch defines."""
+def test_sqlserver_commands_check_their_transaction_in_the_same_request(registry, sql, checked):
+    """BEGIN TRAN, COMMIT and ROLLBACK are no longer refused: a script with its own BEGIN TRAN …
+    COMMIT, or a CATCH with ROLLBACK and THROW, worked in 0.6.4 and works. Each batch ends with a
+    check of the open transactions in the same request (a later one would find the new transaction
+    that the driver begins); a batch that must be alone (CREATE PROCEDURE, VIEW, …) gets none. The
+    count at the start, and after the last batch, comes from the server."""
     conn = _Recorder()
-    if found is None:
-        registry.connectors["sqlserver"].run_script(conn, sql)
-        assert conn.batches
-        return
-    with pytest.raises(ActionError) as error:
-        registry.connectors["sqlserver"].run_script(conn, sql)
-    assert str(error.value) == (
-        "Tafl runs the command in one transaction, so that a failed command changes nothing: leave out BEGIN TRAN, "
-        f"COMMIT, ROLLBACK and SAVE TRAN ({found})"
-    )
-    assert conn.batches == []  # nothing ran
+    registry.connectors["sqlserver"].run_script(conn, sql)
+    commands = [sent for sent in conn.sent if sent != "SELECT @@TRANCOUNT"]
+    assert [command.endswith(databases._TRANSACTION_CHECK.format(count=1)) for command in commands] == checked
+    assert conn.sent[0] == conn.sent[-1] == "SELECT @@TRANCOUNT"
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")

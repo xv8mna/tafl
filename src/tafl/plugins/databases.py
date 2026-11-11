@@ -527,36 +527,44 @@ class SqlServer(Connector):
 
     def run_script(self, conn, sql):
         """T-SQL; batches separated by GO lines (like in SSMS) run one after the other, and
-        ``GO 3`` runs the batch before it three times. The command runs in one transaction, so
-        BEGIN TRAN, COMMIT, ROLLBACK and SAVE TRAN are refused before anything runs (after a
-        COMMIT, the rest of its batch would run without a transaction, and a failed command would
-        keep its changes). A procedure or an EXEC that ends the transaction or begins one of its
-        own: SQL Server reports it (error 266), and the message says what that means."""
-        batches = _batch_spans(sql)
-        for start, end, _count in batches:
-            if found := _transaction_statement(sql[start:end]):
-                word, at = found
-                line = sql.count("\n", 0, start + at) + 1
-                raise ActionError(
-                    f"{APP_NAME} runs the command in one transaction, so that a failed command changes nothing: leave "
-                    f"out BEGIN TRAN, COMMIT, ROLLBACK and SAVE TRAN ({word} in line {line})"
-                )
+        ``GO 3`` runs the batch before it three times. The command runs in one transaction, its
+        own BEGIN TRAN … COMMIT inside it, also across batches, and a CATCH with ROLLBACK and THROW
+        work as in SSMS. Each batch ends with a check of the open transactions in the same request
+        (a later request would find a new one, which the driver begins): a COMMIT or ROLLBACK that
+        ended the transaction of the step stops it with a plain message (what ran up to there may
+        be stored, and the rest of that batch ran without a transaction); so does a transaction
+        that the command began and didn't end, after its last batch (the step's rollback undoes
+        it all). Not appended to a batch that must be alone (CREATE PROCEDURE …). A procedure or
+        an EXEC that ends the transaction or begins one of its own: SQL Server reports it (error
+        266), and the message says what that means."""
         total, counted = 0, False
         cursor = conn.cursor()
         try:
-            for start, end, count in batches:
+            cursor.execute("SELECT @@TRANCOUNT")
+            open_at_start = cursor.fetchone()[0]
+            check = _TRANSACTION_CHECK.format(count=int(open_at_start))
+            for start, end, count in _batch_spans(sql):
                 batch = sql[start:end]
                 if batch.strip():
+                    sent = batch if _alone_in_batch(batch) else batch + check
                     for _ in range(count):
                         try:
-                            cursor.execute(batch)
+                            cursor.execute(sent)
                             rows = all_results(cursor)  # an error in a later statement of the batch shows up here
                         except Exception as e:
-                            if (message := _transaction_count_message(e)) is not None:
+                            line = sql.count("\n", 0, start + len(batch.rstrip())) + 1  # where the batch ends
+                            if (message := _transaction_count_message(e, line)) is not None:
                                 raise ActionError(message) from e
                             raise
                         if rows >= 0:
                             total, counted = total + rows, True
+            cursor.execute("SELECT @@TRANCOUNT")
+            if cursor.fetchone()[0] > open_at_start:
+                raise ActionError(
+                    "The command began a transaction and didn't end it (BEGIN TRAN without COMMIT), so the step stopped "
+                    f"and its changes were undone. Add the COMMIT, or leave out the BEGIN TRAN: {APP_NAME} runs the command "
+                    "in one transaction."
+                )
         finally:
             cursor.close()
         return total if counted else -1
@@ -1000,18 +1008,20 @@ def _batch_spans(sql: str) -> list[tuple[int, int, int]]:
     return batches
 
 
-def _transaction_count_message(error: Exception) -> str | None:
-    """A plain message for SQL Server's error 266, or None for other errors: a procedure, or an
-    EXEC of a text, ended the command's transaction (with COMMIT or ROLLBACK; then what the
-    command changed before may be kept, and so is what the rest of that batch changed, which ran
-    without a transaction), or began one of its own and didn't end it (then the step's rollback
-    undoes it all)."""
-    for record in _RECORDS.split(" ".join(str(arg) for arg in error.args)):
+def _transaction_count_message(error: Exception, line: int = 0) -> str | None:
+    """A plain message for the check that ``run_script`` appends to a batch (the batch, which
+    ends in ``line``, ended the transaction of the step with COMMIT or ROLLBACK), and for SQL
+    Server's error 266 (a procedure, or an EXEC of a text, ended the command's transaction, or
+    began one of its own and didn't end it, which the step's rollback then undoes); None for other
+    errors. After a COMMIT that ended it, what came before is stored, and the rest of that batch
+    ran without a transaction."""
+    text = " ".join(str(arg) for arg in error.args)
+    for record in _RECORDS.split(text):  # a procedure's first: the batch's own check comes after it
         if not re.search(r"\(266\)", record):
             continue
         counts = [int(number) for number in re.findall(r"=\s*(\d+)", record)]
         if len(counts) < 2:
-            return None
+            break
         if counts[1] < counts[0]:
             return (
                 "A procedure or an EXEC in the command ended its transaction (with COMMIT or ROLLBACK), so the step "
@@ -1024,40 +1034,35 @@ def _transaction_count_message(error: Exception) -> str | None:
             f"changes were undone. {APP_NAME} runs the command in one transaction: leave BEGIN TRAN and COMMIT out of "
             "the procedures and texts that it runs, too."
         )
+    if _TRANSACTION_ENDED in text:
+        return (
+            f"The command ended the transaction of the step (with a COMMIT or ROLLBACK that has no BEGIN TRAN of its own, "
+            f"in the batch that ends in line {line}), so the step stopped. What the command changed up to there may "
+            "already be stored: a COMMIT stored what came before it, and the statements after it ran without a "
+            f"transaction. {APP_NAME} runs the command in one transaction, so that a failed command changes nothing: "
+            "end only the transactions that the command begins itself."
+        )
     return None
 
 
-# The statements that begin, end or mark a transaction (BEGIN DISTRIBUTED TRAN too); after BEGIN and
-# SAVE only with TRAN or TRANSACTION after them: BEGIN alone starts a block, also BEGIN TRY
-_TRANSACTION_WORDS = {"COMMIT": None, "ROLLBACK": None, "BEGIN": ("TRAN", "TRANSACTION", "DISTRIBUTED"), "SAVE": ("TRAN", "TRANSACTION")}
-# A batch that defines a procedure, a function or a trigger: its statements run only when it is called
-_DEFINITION = ("PROC", "PROCEDURE", "FUNCTION", "TRIGGER")
+# What each batch of a command ends with: SQL Server stops the batch when the transaction of the
+# step has ended (_transaction_count_message knows it by its text). The ; ends the batch's last
+# statement, also one written without it.
+_TRANSACTION_ENDED = "The transaction of the step ended in this batch."
+_TRANSACTION_CHECK = "\n;IF @@TRANCOUNT < {count} THROW 50000, N'" + _TRANSACTION_ENDED + "', 1;"
+# Statements that must be alone in their batch: nothing can follow them there
+_ALONE = ("PROC", "PROCEDURE", "FUNCTION", "TRIGGER", "VIEW", "RULE", "DEFAULT", "SCHEMA")
 _WORD = re.compile(r"(?:[^\W\d]|#)[\w@$#]*")
 
 
-def _transaction_statement(batch: str) -> tuple[str, int] | None:
-    """The first statement of ``batch`` that begins, ends or marks a transaction, as it is
-    written (e.g. "COMMIT" or "BEGIN TRAN"), and where it starts; texts, comments and [names]
-    don't count, nor does the body of a procedure, function or trigger that the batch defines."""
+def _alone_in_batch(batch: str) -> bool:
+    """Whether ``batch`` creates or alters a procedure, function, trigger, view, rule, default or
+    schema: such a statement must be alone in its batch (texts and comments before it don't count)."""
     tokens = _tsql_tokens(batch, parameters.sql_spans(batch, **_SQLSERVER_SQL))
-    words = [(found[0].upper() if kind == "name" and (found := _WORD.match(batch, start)) else "") for kind, start in tokens]
+    words = [(found[0].upper() if kind == "name" and (found := _WORD.match(batch, start)) else "") for kind, start in tokens[:4]]
     if words[:1] == ["CREATE"] and words[1:3] == ["OR", "ALTER"]:
-        defined = words[3:4]
-    elif words[:1] in (["CREATE"], ["ALTER"]):
-        defined = words[1:2]
-    else:
-        defined = []
-    if defined and defined[0] in _DEFINITION:
-        return None
-    for index, word in enumerate(words):
-        if word not in _TRANSACTION_WORDS:
-            continue
-        after = _TRANSACTION_WORDS[word]
-        following = words[index + 1 : index + 3] + ["", ""]
-        if after is None or following[0] in after:
-            written = [word, *following[: 2 if following[0] == "DISTRIBUTED" else 1 if after else 0]]
-            return " ".join(part for part in written if part), tokens[index][1]
-    return None
+        return words[3:4] != [] and words[3] in _ALONE
+    return words[:1] in (["CREATE"], ["ALTER"]) and words[1:2] != [] and words[1] in _ALONE
 
 
 # SQL Server's messages come in records joined by "; [", each with the driver's prefix and the
@@ -2432,8 +2437,9 @@ def run_sql(df, p, ctx):
     """Runs SQL in a database, e.g. a stored procedure after an export, or DELETE / UPDATE
     statements. SQL Server: separate batches with GO lines, as in SSMS (GO 3 runs a batch three
     times). Runs only when the project is run, in one transaction: if it fails, its changes are
-    rolled back: leave out BEGIN, COMMIT and ROLLBACK (and SAVE TRAN on SQL Server), which the
-    step refuses. Stop ends a statement that runs. The table passes through unchanged."""
+    rolled back. SQLite refuses BEGIN, COMMIT and ROLLBACK; on SQL Server, a BEGIN TRAN … COMMIT
+    of the command's own works, and a COMMIT or ROLLBACK that ends the transaction of the step
+    stops it with a message. Stop ends a statement that runs. The table passes through unchanged."""
     with ctx.database(p.connection) as db:
         count = db.run_script(p.sql)
     ctx.log("Done" + (f": {count:,} row{'s' if count != 1 else ''} changed" if count >= 0 else ""))
