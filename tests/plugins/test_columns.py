@@ -378,6 +378,33 @@ def test_two_digit_years_without_a_format(act):
     assert change(act, df, "Short", "datetime").to_list()[0] == dt.datetime(2025, 12, 31)
 
 
+def test_tiny_numbers_to_text_without_a_format_keep_their_digits(act):
+    """Without a format, 1e-12 became the text 0, and 6e-11 the text 0,0000000001."""
+    df = pl.DataFrame({"v": [1e-12, 6e-11, 1234.5, 2 / 3, None]})
+    assert change(act, df, "v", "text").to_list() == ["0,000000000001", "0,00000000006", "1234,5", "0,6666666667", None]
+    assert change(act, df, "v", "text", decimal=".").to_list()[:2] == ["0.000000000001", "0.00000000006"]
+
+
+_TEXT_WIDE = """
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+df = pl.DataFrame({f"v{i}": [1e-12, 1.5] for i in range(4001)})
+out = registry.actions["columns.change_type"](df, {"columns": [{"column": c, "type": "text", "format": ""} for c in df.columns]}, StubContext())
+assert out.row(0) == ("0,000000000001",) * 4001 and out.row(1) == ("1,5",) * 4001, out
+"""
+
+
+def test_tiny_numbers_of_a_wide_table_to_text():
+    """4,001 decimal-number columns to text, each on its own (in a process of its own, so that an
+    end of the process shows as a failed test)."""
+    done = subprocess.run([sys.executable, "-c", _TEXT_WIDE], capture_output=True, encoding="utf-8", errors="replace", timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
+
+
 def test_numbers_to_text_with_percent_and_text(act):
     df = pl.DataFrame({"Rate": [0.05, 0.1], "Price": [1234.5, -2.0]})
     assert change(act, df, "Rate", "text", "0%").to_list() == ["5%", "10%"]
@@ -551,7 +578,7 @@ def test_exact_decimals_of_a_wide_table_to_numbers():
     """4,001 columns of exact decimals near their 38 digits to whole numbers (every second one)
     and to decimal numbers: each one is rounded and checked on its own. In a process of its own,
     so that a stack overflow of a deep Polars expression shows as a failed test."""
-    done = subprocess.run([sys.executable, "-c", _CHANGE_WIDE], capture_output=True, text=True, timeout=300)
+    done = subprocess.run([sys.executable, "-c", _CHANGE_WIDE], capture_output=True, encoding="utf-8", errors="replace", timeout=300)
     assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
 
 

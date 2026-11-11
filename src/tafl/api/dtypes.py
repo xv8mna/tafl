@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import functools
 import re
+import struct
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -978,10 +979,11 @@ def format_numbers(s: pl.Series, fmt: str = "", decimal: str = ",") -> pl.Series
     """
     sections = _number_sections(fmt)
     swap = str.maketrans({",": ".", ".": ","}) if decimal == "," else None
+    single = s.dtype == pl.Float32
 
     def one(value) -> str:
         if sections is None or value != value or value in _INFINITE:
-            text = str(value) if isinstance(value, int) else _plain_float(value)
+            text = str(value) if isinstance(value, int) else _plain_float(value, single)
             return text.translate(swap) if swap else text
         number = value if isinstance(value, Decimal) else Decimal(repr(value))
         section = sections[0]
@@ -1080,15 +1082,49 @@ def _format_text(fmt: str, tokens: list[str]) -> str:
     return "".join(out)
 
 
-def _plain_float(value: float | Decimal) -> str:
+def _plain_float(value: float | Decimal, single: bool = False) -> str:
+    """A number as it is: up to 10 decimal places, an exact decimal with all its digits.
+    ``single``: the value of a 32-bit number (Float32)."""
     if value != value or value in (float("inf"), float("-inf")):
         return str(value)
     if isinstance(value, Decimal):  # all its digits
         text = format(value, "f")
         text = text.rstrip("0").rstrip(".") if "." in text else text
+    elif value and -_TINY < value < _TINY and (tiny := _tiny_float(value, single)) is not None:
+        text = tiny
     else:
         text = f"{value:.10f}".rstrip("0").rstrip(".")
     return "0" if text in ("", "-0") else text
+
+
+_TINY = 0.0001  # below it, 10 decimal places can write a number as 0, or without some of its digits
+
+
+def _tiny_float(value: float, single: bool) -> str | None:
+    """A number between -0.0001 and 0.0001 (not 0) with all its digits, without an exponent, as
+    ``text_expr`` writes it (1e-12 is 0.000000000001), when 10 decimal places don't write them all;
+    else None. As in the grid, a digit that only comes from computing in binary is none: a 64-bit
+    number counts with 15 digits (0.00003 can be 2.9999999999999997e-05, and stays 0.00003)."""
+    mantissa, _, exponent = _shortest_float(value, single).partition("e")  # with an exponent: 1.25e-05
+    digits, power = mantissa.lstrip("-").replace(".", ""), int(exponent)
+    counted = len(digits), power
+    if not single and len(digits) > 15:
+        shown, _, shown_power = f"{abs(value):.15g}".partition("e")
+        counted = len(shown.replace(".", "")), int(shown_power)
+    if counted[0] - 1 - counted[1] <= 10:  # the decimal places that its digits need
+        return None
+    return ("-" if value < 0 else "") + "0." + "0" * (-power - 1) + digits
+
+
+def _shortest_float(value: float, single: bool) -> str:
+    """The shortest text that is exactly ``value`` (Python's repr), or the 32-bit number ``value``
+    (a Float32 value has fewer digits: 1e-12, not 9.999999960041972e-13)."""
+    if single:
+        for digits in range(1, 10):
+            text = f"{value:.{digits}g}"
+            if struct.unpack("<f", struct.pack("<f", float(text)))[0] == value:
+                return text
+    return repr(value)
 
 
 # --- internals -------------------------------------------------------------------------------

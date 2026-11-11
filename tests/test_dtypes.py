@@ -209,6 +209,26 @@ def test_decimals_that_lose_digits_as_decimal_numbers():
     assert dtypes.float_loses_digits(big).to_list() == [True, False]
 
 
+def test_format_numbers_without_a_format_writes_tiny_numbers_with_all_their_digits():
+    """10 decimal places wrote 1e-12 and 4e-11 as 0, 6e-11 as 0,0000000001 and 1.23456789012e-05
+    as 0,0000123457: values changed without a message. A number below 0.0001 whose digits need
+    more places is written with all of them, without an exponent, as text_expr writes it. As in the
+    grid, a digit that only comes from computing in binary is none (2.9999999999999997e-05 stays
+    0,00003); the other numbers are written as before."""
+    tiny = pl.Series([1e-12, -1e-12, 4e-11, 6e-11, 1.5e-10, 1.23456789012e-05])
+    assert dtypes.format_numbers(tiny, "", ".").to_list() == pl.select(dtypes.text_expr(pl.lit(tiny), pl.Float64)).to_series().to_list()
+    assert dtypes.format_numbers(tiny, "", ",").to_list() == [
+        "0,000000000001", "-0,000000000001", "0,00000000004", "0,00000000006", "0,00000000015", "0,0000123456789012"
+    ]  # fmt: skip
+    others = pl.Series([1e-10, 0.1 * 0.0003, 0.00001, 0.00012345678901, -0.0, 2 / 3, 0.1 + 0.2, 1234.5, 1e20, math.nan, math.inf, None])
+    assert dtypes.format_numbers(others, "", ",").to_list() == [
+        "0,0000000001", "0,00003", "0,00001", "0,0001234568", "0", "0,6666666667", "0,3", "1234,5", "100000000000000000000", "nan",
+        "inf", None,
+    ]  # fmt: skip
+    single = pl.Series([1e-12, 4e-11, 3e-05], dtype=pl.Float32)  # their own digits, not those of 9.999999960041972e-13
+    assert dtypes.format_numbers(single, "", ",").to_list() == ["0,000000000001", "0,00000000004", "0,00003"]
+
+
 def test_decimals_to_text_keep_their_digits():
     values = [Decimal("0.123456789012345678"), Decimal("-1.100000000000000000"), Decimal("0")]
     s = pl.Series(values, dtype=pl.Decimal(38, 18))
