@@ -6,6 +6,7 @@ import pytest
 
 from tafl.api import ActionError
 from tafl.api.params import ValidationContext
+from tafl.api.testing import StubContext
 
 
 def test_calculate_columns(act, people):
@@ -23,6 +24,29 @@ def test_calculate_columns(act, people):
     assert out["Label"].to_list()[:2] == ["Anna (34)", "ben (27)"]
     assert out["Label"][3] == "? (19)"
     assert out["Band"].to_list() == ["junior", "junior", "senior", "junior", "senior"]
+
+
+def test_formulas_on_exact_decimals_say_which_values_lost_digits(act):
+    """A formula's result with decimal places is a decimal number (about 15 digits), as in 0.6.4:
+    12345678901234.5678 and …5677 both became 12345678901234.568, without a warning. Each new
+    column whose values lost digits says so; CAST(... AS VARCHAR), which the warning names, keeps
+    all of them as text."""
+    amounts = [D("12345678901234.5678"), D("12345678901234.5677"), D("1.5"), None]
+    df = pl.DataFrame({"Amount": pl.Series(amounts, dtype=pl.Decimal(18, 4)), "Rate": pl.Series([D("1.1")] * 4, dtype=pl.Decimal(38, 18))})
+    ctx = StubContext()
+    columns = [
+        {"name": "Net", "formula": "[Amount] + 0"},
+        {"name": "Rated", "formula": "[Rate] * [Net]"},  # decimal numbers: nothing to say
+        {"name": "Twice", "formula": "[Rate] * 2"},
+        {"name": "Exact", "formula": "CAST([Amount] AS VARCHAR)"},
+    ]
+    out = act("calc.columns", df, {"columns": columns}, ctx)
+    assert out.schema["Net"] == pl.Float64 and out["Net"].to_list() == [12345678901234.568, 12345678901234.568, 1.5, None]
+    assert out["Exact"].to_list() == ["12345678901234.5678", "12345678901234.5677", "1.5000", None]
+    assert ctx.warnings == [
+        "[Net]: 2 value(s) were rounded, e.g. 12345678901234.5678 to 12345678901234.568: a formula's result with decimal "
+        "places is a decimal number, which keeps about 15 digits (CAST(... AS VARCHAR) keeps them all, as text)"
+    ]
 
 
 def test_two_new_columns_need_different_names(act, people):

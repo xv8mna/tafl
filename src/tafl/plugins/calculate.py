@@ -65,7 +65,7 @@ def calculate_columns(df, p, ctx):
                 f"Two new columns are named “{name}” (rows {first} and {number}). "
                 "Give each one its own name."
             )
-    return expressions.add_columns(df, list(zip(names, (c.formula for c in p.columns), strict=True)))
+    return expressions.add_columns(df, list(zip(names, (c.formula for c in p.columns), strict=True)), warn=ctx.warn)
 
 
 @action(

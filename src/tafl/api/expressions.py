@@ -33,7 +33,7 @@ from pathlib import Path
 import duckdb
 import polars as pl
 
-from .dtypes import normalize
+from .dtypes import float_loses_digits, normalize, text_expr
 from .errors import ActionError
 from .files import _new_scratch_folder
 
@@ -368,17 +368,21 @@ def _with_row_number(df: pl.DataFrame, formula: str) -> pl.DataFrame:
     return pl.DataFrame([numbered.get_column(name) for name in numbered.columns if name == _ROW or _fold(name) in named])
 
 
-def evaluate(df: pl.DataFrame, formula: str, *, condition: bool = False) -> pl.Series:
+def evaluate(
+    df: pl.DataFrame, formula: str, *, condition: bool = False, warn: Callable[[str], None] | None = None
+) -> pl.Series:
     """Evaluate a formula for every row; returns one value per row, in row order. With
-    ``condition``, the result must be true or false."""
+    ``condition``, the result must be true or false. A result of exact decimals with decimal
+    places becomes decimal numbers, which keep about 15 digits: ``warn`` is told when values lose
+    digits that way."""
     scope = _split.set({})
     try:
-        return _evaluate(df, formula, condition=condition)
+        return _evaluate(df, formula, condition=condition, warn=warn)
     finally:
         _split.reset(scope)
 
 
-def _evaluate(df: pl.DataFrame, formula: str, *, condition: bool) -> pl.Series:
+def _evaluate(df: pl.DataFrame, formula: str, *, condition: bool, warn: Callable[[str], None] | None = None) -> pl.Series:
     """``evaluate``, in which each formula is split into tokens once."""
     if not formula or all(t.kind in ("space", "comment") for t in tokenize(formula)):
         raise ActionError("The formula is empty")
@@ -428,7 +432,23 @@ def _evaluate(df: pl.DataFrame, formula: str, *, condition: bool) -> pl.Series:
             "The formula must give one value per row. For totals use the Aggregate action, "
             "or a window function such as SUM([Amount]) OVER ()."
         )
+    if warn is not None and isinstance(values.dtype, pl.Decimal) and values.dtype.scale:
+        _warn_rounded(values, warn)
     return normalize(values)
+
+
+def _warn_rounded(values: pl.Series, warn: Callable[[str], None]) -> None:
+    """Exact decimals with decimal places that a formula gives become decimal numbers (see
+    ``normalize``), which keep about 15 digits: ``warn`` is told how many values lost digits, with
+    one of them, and how to keep them all."""
+    lost = float_loses_digits(values)
+    if count := lost.sum():
+        exact = values.filter(lost).head(1)
+        rounded = pl.select(text_expr(pl.lit(exact.cast(pl.Float64)), pl.Float64)).item()
+        warn(
+            f"{count:,} value(s) were rounded, e.g. {exact[0]:f} to {rounded}: a formula's result with decimal places "
+            "is a decimal number, which keeps about 15 digits (CAST(... AS VARCHAR) keeps them all, as text)"
+        )
 
 
 def _calculate(
@@ -688,14 +708,18 @@ def _beyond_its_digits(values: pl.Series, result_type: str) -> bool:
     return bool(((units >= high) | (units <= low)).any())
 
 
-def add_columns(df: pl.DataFrame, columns: Sequence[tuple[str, str]]) -> pl.DataFrame:
+def add_columns(
+    df: pl.DataFrame, columns: Sequence[tuple[str, str]], warn: Callable[[str], None] | None = None
+) -> pl.DataFrame:
     """Add columns calculated from formulas; a column that exists is replaced in place.
-    Later formulas can use the columns calculated before them."""
+    Later formulas can use the columns calculated before them. ``warn`` is told which columns
+    lost digits (see ``evaluate``)."""
     for name, formula in columns:
         if not name.strip():
             raise ActionError("A new column needs a name")
+        told = None if warn is None else (lambda text, name=name: warn(f"[{name}]: {text}"))
         try:
-            values = evaluate(df, formula)
+            values = evaluate(df, formula, warn=told)
         except ActionError as e:  # say which of several formulas is wrong
             text = str(e)
             if text.startswith("Formula error: "):

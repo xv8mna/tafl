@@ -566,6 +566,35 @@ def test_whole_numbers_beyond_int64_keep_their_digits():
     assert expressions.evaluate(df, "[n] * 1.5").dtype == pl.Float64  # as before: decimal numbers
 
 
+def test_a_result_of_exact_decimals_that_loses_digits_says_so():
+    """A result with decimal places is a decimal number, as in 0.6.4: 12345678901234.5678 and …5677
+    both became 12345678901234.568, without a warning. Now ``warn`` is told how many values lost
+    digits, with one of them and the formula that keeps them all, which works. Results that keep
+    their digits, whole numbers and conditions say nothing, nor do formulas without ``warn``."""
+    amounts = [Decimal("12345678901234.5678"), Decimal("12345678901234.5677"), Decimal("1.5"), None]
+    df = pl.DataFrame(
+        {
+            "Amount": pl.Series(amounts, dtype=pl.Decimal(18, 4)),
+            "Rate": pl.Series([Decimal("1.1"), Decimal("0.5"), Decimal("2"), None], dtype=pl.Decimal(38, 18)),
+            "Id": pl.Series([Decimal(10**22 + 1), Decimal(5), Decimal(7), None], dtype=pl.Decimal(30, 0)),
+        }
+    )
+    warnings: list[str] = []
+    out = expressions.evaluate(df, "[Amount] + 0", warn=warnings.append)
+    assert out.dtype == pl.Float64 and out.to_list() == [12345678901234.568, 12345678901234.568, 1.5, None]
+    assert warnings == [
+        "2 value(s) were rounded, e.g. 12345678901234.5678 to 12345678901234.568: a formula's result with decimal places "
+        "is a decimal number, which keeps about 15 digits (CAST(... AS VARCHAR) keeps them all, as text)"
+    ]
+    assert expressions.evaluate(df, "CAST([Amount] AS VARCHAR)").to_list() == ["12345678901234.5678", "12345678901234.5677", "1.5000", None]
+    warnings.clear()
+    for formula in ("[Rate] * 2", "ROUND([Amount], 2)", "[Id] + 1", "[Amount] = 12345678901234.5677"):
+        expressions.evaluate(df, formula, warn=warnings.append)
+    assert expressions.evaluate(df.slice(2), "[Amount] * 1.5", warn=warnings.append).to_list() == [2.25, None]
+    assert warnings == []
+    assert expressions.evaluate(df, "[Amount]").to_list()[0] == 12345678901234.568  # no warn: as before
+
+
 def test_a_result_beyond_38_digits_says_how_to_get_a_decimal_number():
     """A result beyond Int64 is an exact decimal: a next formula that made it longer than 38 digits
     stopped with DuckDB's hint to cast it to a decimal with a smaller scale, which doesn't help.
