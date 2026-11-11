@@ -247,6 +247,27 @@ CURATED: tuple[Function, ...] = (
        "SUM([Amount]) OVER (PARTITION BY [Customer] ORDER BY [Date])", f"SUM({CURSOR}) OVER (ORDER BY )",
        note="Rows with the same value in the ORDER BY column get the same total; add a second column to ORDER BY, "
        "or ROWS UNBOUNDED PRECEDING, to add them one by one."),
+    _f("Moving average", WINDOW, "AVG(value) OVER (ORDER BY column ROWS BETWEEN n PRECEDING AND CURRENT ROW)",
+       "The average of the row and the n rows before it, in the given order (with SUM: the moving sum)",
+       "AVG([Amount]) OVER (ORDER BY [Date] ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)",
+       f"AVG({CURSOR}) OVER (ORDER BY  ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)",
+       note="The first rows have fewer rows before them: theirs is the average of the rows there are. Empty values "
+       "don't count. For each customer apart, write PARTITION BY [Customer] before ORDER BY."),
+    _f("STDDEV_SAMP ... OVER", WINDOW, "STDDEV_SAMP(value) OVER (...)",
+       "The standard deviation of the values: of the whole column with OVER (), of the last rows with ROWS BETWEEN",
+       "STDDEV_SAMP([Amount]) OVER ()", f"STDDEV_SAMP({CURSOR}) OVER ()",
+       note="Of the row and the 2 rows before it: STDDEV_SAMP([Amount]) OVER (ORDER BY [Date] ROWS BETWEEN 2 PRECEDING "
+       "AND CURRENT ROW). It is the standard deviation of a sample, as Excel's STDEV.S; STDDEV_POP is the one of a "
+       "whole population (STDEV.P). Empty values don't count; with fewer than 2 values the result is empty.",
+       aliases=("STDDEV",), instead_of=("STDEV", "STDEV.S")),
+    _f("Change in %", WINDOW, "100.0 * (value - LAG(value) OVER (ORDER BY ...)) / NULLIF(LAG(value) OVER (ORDER BY ...), 0)",
+       "The change from the row before, in percent: 25 for 80 after 64",
+       "100.0 * ([Amount] - LAG([Amount]) OVER (ORDER BY [Date])) / NULLIF(LAG([Amount]) OVER (ORDER BY [Date]), 0)",
+       f"100.0 * ({CURSOR} - LAG() OVER (ORDER BY )) / NULLIF(LAG() OVER (ORDER BY ), 0)",
+       note="The first row has no row before it: its change is empty, and so is the change of an empty value and of "
+       "the value after one. After a 0 the change is empty too (NULLIF): dividing by 0 would give ∞. For each customer "
+       "apart, write PARTITION BY [Customer] in both OVER (...). Without 100.0 * the change is a fraction (0.25), for "
+       "the Excel format 0%."),
     _f("ROW_NUMBER", WINDOW, "ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)", "Numbers the rows 1, 2, 3 ... within each group",
        "ROW_NUMBER() OVER (PARTITION BY [Customer] ORDER BY [Date])", f"ROW_NUMBER() OVER (ORDER BY {CURSOR})"),
     _f("RANK", WINDOW, "RANK() OVER (ORDER BY ...)", "The rank; equal values share a rank, then numbers are skipped",

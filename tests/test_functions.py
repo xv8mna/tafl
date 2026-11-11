@@ -1,6 +1,7 @@
 """The described list of formula functions."""
 
 import datetime as dt
+import statistics
 
 import polars as pl
 import pytest
@@ -35,6 +36,23 @@ SAMPLE = pl.DataFrame(
 @pytest.mark.parametrize("function", [f for f in CURATED if f.example], ids=lambda f: f.name)
 def test_every_example_works(function):
     expressions.evaluate(SAMPLE, function.example)
+
+
+def test_moving_average_standard_deviation_and_change_in_percent_give_what_their_notes_say():
+    """The new entries of "Groups and order": the first rows, empty values and 0 as the notes say."""
+    df = pl.DataFrame({"Date": [dt.date(2025, 1, day) for day in range(1, 8)], "Amount": [64, 80, 0, 50, None, 120, 60]})
+    entries = {f.name: f for f in CURATED}
+    moving = expressions.evaluate(df, entries["Moving average"].example).to_list()
+    assert moving == pytest.approx([64, 72, 48, 130 / 3, 25, 85, 90])  # the first rows: of the rows there are
+    spread = expressions.evaluate(df, entries["STDDEV_SAMP ... OVER"].example).to_list()
+    assert spread == pytest.approx([statistics.stdev([64, 80, 0, 50, 120, 60])] * 7)  # empty values don't count
+    last = expressions.evaluate(df, "STDDEV_SAMP([Amount]) OVER (ORDER BY [Date] ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)")
+    assert last[0] is None and last[1] == pytest.approx(statistics.stdev([64, 80]))  # one value: empty
+    change = expressions.evaluate(df, entries["Change in %"].example).to_list()
+    assert change == [None, 25.0, -100.0, None, None, None, -50.0]  # first row, after 0, empty, after empty
+    assert [f.name for f in functions.search("moving")][:1] == ["Moving average"]
+    assert functions.search("stdev")[0].name == "STDDEV_SAMP ... OVER"
+    assert "Change in %" in [f.name for f in functions.search("percent")]
 
 
 def test_the_list_is_complete_and_consistent():
