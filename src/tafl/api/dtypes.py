@@ -477,9 +477,11 @@ def decimal_separator(text: str) -> str:
     value of Filter rows, Fill empty values or Replace: with both, the last of , and . (1.234,5 and
     1,234.5); a comma alone (1,5 and 1,000 are one and a half and one); a point alone unless it
     splits the number into thousands, groups of three digits after one to three digits (1.5 and
-    1.0000 are decimals, 1.000 and 1.234.567 thousands). The result goes to ``parse_numbers``,
-    ``parse_decimal`` and ``parse_integers``."""
-    value = text.strip()
+    1.0000 are decimals, 1.000 and 1.234.567 thousands). That is decided without spaces, currency
+    signs and a minus at the end, as the number is read (-€1.000, 1.000 € and 1.000- are -1000,
+    1000 and -1000, as 1.000 is 1000). The result goes to ``parse_numbers``, ``parse_decimal`` and
+    ``parse_integers``."""
+    value = _apply(pl.Series([text], dtype=pl.String), _bare_number(_VALUE))[0] or ""
     comma, point = value.rfind(","), value.rfind(".")
     if comma >= 0 and point >= 0:
         return "," if comma > point else "."
@@ -1155,15 +1157,22 @@ def _number_text(expr: pl.Expr, decimal: str) -> pl.Expr:
     after the sign (-$3.00 and -€3,00 are -3, as the imports read them), and a number can start
     with its decimal separator (,5 is 0.5)."""
     thousands = "." if decimal == "," else ","
-    text = expr.cast(pl.String).str.strip_chars().str.replace_all(_SPACES, "").str.strip_chars(_CURRENCY)
-    text = text.str.replace(f"^([+-])[{_CURRENCY}]", "${1}")  # the sign before the currency sign: -$3.00
-    text = pl.when(text.str.ends_with("-")).then(pl.lit("-") + text.str.strip_suffix("-")).otherwise(text)
+    text = _bare_number(expr)
     text = (
         pl.when(text.str.contains(_GROUPED[decimal]))
         .then(text.str.replace_all(thousands, "", literal=True))
         .otherwise(text)
     )
     return text.str.replace(",", ".", literal=True) if decimal == "," else text
+
+
+def _bare_number(expr: pl.Expr) -> pl.Expr:
+    """A number typed as text without spaces and currency signs, with its minus at the start:
+    -$3.00, -€1.000, 1.000 € and 1.000- are -3.00, -1.000, 1.000 and -1.000. ``_number_text`` and
+    ``decimal_separator`` read its separators."""
+    text = expr.cast(pl.String).str.strip_chars().str.replace_all(_SPACES, "").str.strip_chars(_CURRENCY)
+    text = text.str.replace(f"^([+-])[{_CURRENCY}]", "${1}")  # the sign before the currency sign: -$3.00
+    return pl.when(text.str.ends_with("-")).then(pl.lit("-") + text.str.strip_suffix("-")).otherwise(text)
 
 
 def _too_long(s: pl.Series, examples: pl.Series, warn: Callable[[str], None] | None) -> pl.Series:

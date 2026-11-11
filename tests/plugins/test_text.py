@@ -208,6 +208,24 @@ def test_a_typed_number_is_read_as_in_filter_rows_and_fill(act):
     assert kept["N"].to_list() == [1000] and filled["N"].to_list() == [1, 1000, 1000]
 
 
+@pytest.mark.parametrize(
+    ("typed", "number"),
+    [("-€1.000", -1000.0), ("-$1.000", -1000.0), ("€1.000", 1000.0), ("1.000 €", 1000.0), ("1.000-", -1000.0), ("-1.000 €", -1000.0)],
+)
+def test_a_typed_number_with_a_currency_sign_or_a_minus_at_the_end_is_read_the_same_everywhere(act, typed, number):
+    """The separator was decided on the text as typed, so that Filter rows, Fill and Replace read
+    these as ±1 (1.000 alone is 1000), while Change type (Comma) read them as ±1000; 0.6.4 said
+    "'-€1.000' is not a number". All read them as ±1000 now."""
+    df = pl.DataFrame({"Amount": [-1000.0, -1.0, 1.0, 1000.0, None]})
+    kept = act("rows.filter", df, {"conditions": [{"column": "Amount", "operator": "=", "value": typed}]})
+    assert kept["Amount"].to_list() == [number]
+    assert act("rows.fill", df, {"columns": ["Amount"], "method": "value", "value": typed})["Amount"][4] == number
+    replaced = replace(act, df, ["Amount"], [(typed, "99")])["Amount"].to_list()
+    assert [a for a, b in zip(df["Amount"].to_list(), replaced) if b == 99] == [number]
+    changed = act("columns.change_type", pl.DataFrame({"T": [typed]}), {"columns": [{"column": "T", "type": "number", "format": ""}]})
+    assert changed["T"].to_list() == [number]
+
+
 def test_replace_exact_decimals(act):
     ids = [Decimal("12345678901234567890.1234"), Decimal("12345678901234567890.1235"), Decimal("1.1000")]
     df = pl.DataFrame({"n": pl.Series(ids, dtype=pl.Decimal(30, 4))})
