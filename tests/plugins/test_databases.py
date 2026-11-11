@@ -1928,6 +1928,43 @@ def test_sqlserver_go_with_a_repeat_count_and_a_comment(registry):
     ]  # fmt: skip
 
 
+@pytest.mark.parametrize(
+    ("sql", "found"),
+    [
+        ("BEGIN TRAN; INSERT INTO t VALUES (1)", "BEGIN TRAN in line 1"),
+        ("INSERT INTO t VALUES (1)\nbegin transaction", "BEGIN TRANSACTION in line 2"),
+        ("INSERT INTO t VALUES (2)\nCOMMIT\nINSERT INTO t VALUES (3)", "COMMIT in line 2"),
+        ("SELECT 1\nGO\nIF @@TRANCOUNT > 0 ROLLBACK TRAN", "ROLLBACK in line 3"),
+        ("SAVE TRAN x", "SAVE TRAN in line 1"),
+        ("BEGIN DISTRIBUTED TRANSACTION", "BEGIN DISTRIBUTED TRANSACTION in line 1"),
+        ("BEGIN TRY\n  SELECT 1\nEND TRY\nBEGIN CATCH\n  ROLLBACK;\n  THROW;\nEND CATCH", "ROLLBACK in line 5"),
+        ("CREATE TABLE t (n int); COMMIT", "COMMIT in line 1"),
+        ("IF 1 = 1 BEGIN SELECT 1 END\nBEGIN TRY SELECT 2 END TRY BEGIN CATCH THROW; END CATCH", None),
+        ("-- COMMIT\nSELECT 'ROLLBACK', N'BEGIN TRAN' /* SAVE TRAN /* COMMIT */ */", None),
+        ("SELECT [COMMIT], [BEGIN] FROM t; EXEC('COMMIT')", None),  # an EXEC of a text: SQL Server reports it
+        ("CREATE PROCEDURE p AS BEGIN INSERT INTO t VALUES (1); COMMIT END", None),  # runs only when it is called
+        ("CREATE OR ALTER TRIGGER tr ON t AFTER INSERT AS ROLLBACK\nGO\nALTER PROC p AS COMMIT", None),
+    ],
+)
+def test_sqlserver_commands_leave_out_the_statements_of_a_transaction(registry, sql, found):
+    """The command runs in one transaction: BEGIN TRAN without COMMIT said "Done: 1 row changed"
+    and stored nothing, and after a COMMIT the rest ran without a transaction, so a failed command
+    kept rows. Such a command is refused before anything runs; words in texts, comments and names
+    don't count, nor does the body of a procedure, function or trigger that a batch defines."""
+    conn = _Recorder()
+    if found is None:
+        registry.connectors["sqlserver"].run_script(conn, sql)
+        assert conn.batches
+        return
+    with pytest.raises(ActionError) as error:
+        registry.connectors["sqlserver"].run_script(conn, sql)
+    assert str(error.value) == (
+        "Tafl runs the command in one transaction, so that a failed command changes nothing: leave out BEGIN TRAN, "
+        f"COMMIT, ROLLBACK and SAVE TRAN ({found})"
+    )
+    assert conn.batches == []  # nothing ran
+
+
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_reads_sql_variant_and_clr_columns(registry):
     """pyodbc can't read them: a whole table gets them as text, a query stops with a hint."""

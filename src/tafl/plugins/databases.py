@@ -482,15 +482,34 @@ class SqlServer(Connector):
 
     def run_script(self, conn, sql):
         """T-SQL; batches separated by GO lines (like in SSMS) run one after the other, and
-        ``GO 3`` runs the batch before it three times."""
+        ``GO 3`` runs the batch before it three times. The command runs in one transaction, so
+        BEGIN TRAN, COMMIT, ROLLBACK and SAVE TRAN are refused before anything runs (after a
+        COMMIT, the rest of its batch would run without a transaction, and a failed command would
+        keep its changes). A procedure or an EXEC that ends the transaction or begins one of its
+        own: SQL Server reports it (error 266), and the message says what that means."""
+        batches = _batch_spans(sql)
+        for start, end, _count in batches:
+            if found := _transaction_statement(sql[start:end]):
+                word, at = found
+                line = sql.count("\n", 0, start + at) + 1
+                raise ActionError(
+                    f"{APP_NAME} runs the command in one transaction, so that a failed command changes nothing: leave "
+                    f"out BEGIN TRAN, COMMIT, ROLLBACK and SAVE TRAN ({word} in line {line})"
+                )
         total, counted = 0, False
         cursor = conn.cursor()
         try:
-            for batch, count in _batches(sql):
+            for start, end, count in batches:
+                batch = sql[start:end]
                 if batch.strip():
                     for _ in range(count):
-                        cursor.execute(batch)
-                        rows = all_results(cursor)  # an error in a later statement of the batch shows up here
+                        try:
+                            cursor.execute(batch)
+                            rows = all_results(cursor)  # an error in a later statement of the batch shows up here
+                        except Exception as e:
+                            if (message := _transaction_count_message(e)) is not None:
+                                raise ActionError(message) from e
+                            raise
                         if rows >= 0:
                             total, counted = total + rows, True
         finally:
@@ -715,16 +734,81 @@ _GO = re.compile(r"^[ \t]*GO(?:[ \t]+([1-9][0-9]*))?[ \t]*;?[ \t]*(?:--[^\r\n]*)
 def _batches(sql: str) -> list[tuple[str, int]]:
     """T-SQL split at its GO lines, with how many times each batch runs; a GO line inside a text
     or a comment doesn't count."""
+    return [(sql[start:end], count) for start, end, count in _batch_spans(sql)]
+
+
+def _batch_spans(sql: str) -> list[tuple[int, int, int]]:
+    """The batches of ``_batches`` as (start, end, count)."""
     quoted = parameters.sql_spans(sql, **_SQLSERVER_SQL)
     starts = [begin for begin, _end, _kind in quoted]
     batches, start = [], 0
     for line in _GO.finditer(sql):
         k = bisect.bisect_right(starts, line.start()) - 1  # the last text or comment that starts before it
         if k < 0 or quoted[k][1] <= line.start():
-            batches.append((sql[start : line.start()], int(line[1] or 1)))
+            batches.append((start, line.start(), int(line[1] or 1)))
             start = line.end()
-    batches.append((sql[start:], 1))
+    batches.append((start, len(sql), 1))
     return batches
+
+
+def _transaction_count_message(error: Exception) -> str | None:
+    """A plain message for SQL Server's error 266, or None for other errors: a procedure, or an
+    EXEC of a text, ended the command's transaction (with COMMIT or ROLLBACK; then what the
+    command changed before may be kept, and so is what the rest of that batch changed, which ran
+    without a transaction), or began one of its own and didn't end it (then the step's rollback
+    undoes it all)."""
+    for record in _RECORDS.split(" ".join(str(arg) for arg in error.args)):
+        if not re.search(r"\(266\)", record):
+            continue
+        counts = [int(number) for number in re.findall(r"=\s*(\d+)", record)]
+        if len(counts) < 2:
+            return None
+        if counts[1] < counts[0]:
+            return (
+                "A procedure or an EXEC in the command ended its transaction (with COMMIT or ROLLBACK), so the step "
+                "stopped: what the command changed before may be kept, and so is what the rest of that batch changed. "
+                f"{APP_NAME} runs the command in one transaction, so that a failed command changes nothing: leave COMMIT "
+                "and ROLLBACK out of the procedures and texts that it runs, too."
+            )
+        return (
+            "A procedure or an EXEC in the command began a transaction and didn't end it, so the step stopped and its "
+            f"changes were undone. {APP_NAME} runs the command in one transaction: leave BEGIN TRAN and COMMIT out of "
+            "the procedures and texts that it runs, too."
+        )
+    return None
+
+
+# The statements that begin, end or mark a transaction (BEGIN DISTRIBUTED TRAN too); after BEGIN and
+# SAVE only with TRAN or TRANSACTION after them: BEGIN alone starts a block, also BEGIN TRY
+_TRANSACTION_WORDS = {"COMMIT": None, "ROLLBACK": None, "BEGIN": ("TRAN", "TRANSACTION", "DISTRIBUTED"), "SAVE": ("TRAN", "TRANSACTION")}
+# A batch that defines a procedure, a function or a trigger: its statements run only when it is called
+_DEFINITION = ("PROC", "PROCEDURE", "FUNCTION", "TRIGGER")
+_WORD = re.compile(r"(?:[^\W\d]|#)[\w@$#]*")
+
+
+def _transaction_statement(batch: str) -> tuple[str, int] | None:
+    """The first statement of ``batch`` that begins, ends or marks a transaction, as it is
+    written (e.g. "COMMIT" or "BEGIN TRAN"), and where it starts; texts, comments and [names]
+    don't count, nor does the body of a procedure, function or trigger that the batch defines."""
+    tokens = _tsql_tokens(batch, parameters.sql_spans(batch, **_SQLSERVER_SQL))
+    words = [(found[0].upper() if kind == "name" and (found := _WORD.match(batch, start)) else "") for kind, start in tokens]
+    if words[:1] == ["CREATE"] and words[1:3] == ["OR", "ALTER"]:
+        defined = words[3:4]
+    elif words[:1] in (["CREATE"], ["ALTER"]):
+        defined = words[1:2]
+    else:
+        defined = []
+    if defined and defined[0] in _DEFINITION:
+        return None
+    for index, word in enumerate(words):
+        if word not in _TRANSACTION_WORDS:
+            continue
+        after = _TRANSACTION_WORDS[word]
+        following = words[index + 1 : index + 3] + ["", ""]
+        if after is None or following[0] in after:
+            written = [word, *following[: 2 if following[0] == "DISTRIBUTED" else 1 if after else 0]]
+            return " ".join(part for part in written if part), tokens[index][1]
+    return None
 
 
 # SQL Server's messages come in records joined by "; [", each with the driver's prefix and the
