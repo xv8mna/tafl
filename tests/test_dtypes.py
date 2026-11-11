@@ -319,7 +319,7 @@ def test_parse_integers_is_exact_and_rounds_like_excel():
 
 def test_float_loses_digits():
     text = pl.Series(["1234567890123456789", "9007199254740993", "9007199254740992", "123456789012345,678", "x", None])
-    assert dtypes.float_loses_digits(text, ",").to_list() == [True, True, False, False, False, False]
+    assert dtypes.float_loses_digits(text, ",").to_list() == [True, True, False, True, False, False]
     numbers = pl.Series([2**53, 2**53 + 1, -5, None])
     assert dtypes.float_loses_digits(numbers).to_list() == [False, True, False, False]
     assert not dtypes.float_loses_digits(pl.Series([1.5])).any()
@@ -329,6 +329,33 @@ def test_float_loses_digits():
     assert dtypes.float_loses_digits(wide).to_list() == [True, False, False, False]
     top = pl.Series([2**128 - 1, 2**127, 2**64 - 1, None], dtype=pl.UInt128)
     assert dtypes.float_loses_digits(top).to_list() == [True, False, True, False]
+
+
+def test_float_loses_digits_counts_all_significant_digits():
+    """Of a text, only the whole part counted: 12345678901234,5678 and …5677 both became
+    12345678901234.568 with no value counted. A value with decimal places loses digits when its
+    decimal number reads back with other digits; 16 and 17 digits that read back as they are stay.
+    Of an exact decimal with many decimal places, the decimal number made exact again counted, with
+    digits that it never showed: 1.1 became 1.100000000000000128 there, a value that lost digits."""
+    text = [
+        "12345678901234,5678", "0,12345678901234567", "0,1234567890123456", "1152921504606846976,5", "1152921504606846976",
+        "1.000.000.000.000,25", "1,0000000000000001e16", "1,5e3", "1234567890123456789012345678901234567890abc", None,
+    ]  # fmt: skip
+    assert dtypes.float_loses_digits(pl.Series(text), ",").to_list() == [True, True, False, True, False, False, True, False, False, False]
+    assert dtypes.float_loses_digits(pl.Series(["12,345,678,901,234.5678", "0.1234567890123456"]), ".").to_list() == [True, False]
+    rates = ["1.1", "0.123456789012345678", "0.3", "1152921504606846976", "-0.000000000000000001", "123.456789012345678", None]
+    exact = pl.Series([None if v is None else Decimal(v) for v in rates], dtype=pl.Decimal(38, 18))
+    assert dtypes.float_loses_digits(exact).to_list() == [False, True, False, False, False, True, False]
+    amounts = ["12345678901234.5678", "1152921504606846976.0000", "9007199254740993.0000", "-123456789012.3450", "-9999999999999.9999"]
+    exact = pl.Series([Decimal(v) for v in amounts], dtype=pl.Decimal(38, 4))
+    assert dtypes.float_loses_digits(exact).to_list() == [True, False, True, False, True]
+
+
+def test_rounded_to_whole_of_exact_decimals_near_their_38_digits():
+    """Polars rounds an exact decimal in its own type: -9999999999999999999999999999.9999999999 of
+    a decimal(38, 10) would need 39 digits, and stopped with "overflow in decimal rounding"."""
+    values = pl.Series([Decimal("-9999999999999999999999999999.9999999999"), Decimal("1.5"), Decimal("7"), None], dtype=pl.Decimal(38, 10))
+    assert dtypes.rounded_to_whole(values).to_list() == [True, True, False, False]
 
 
 def test_two_digit_years_like_excel():

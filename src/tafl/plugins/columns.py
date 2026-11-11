@@ -142,13 +142,20 @@ def _beyond_day_numbers(source: pl.Series, failed: pl.Series, c) -> bool:
 
 
 def _warn_rounded(name: str, source: pl.Series, converted: pl.Series, decimal: str, ctx) -> None:
-    """A decimal number keeps about 15 digits: say which values lost some."""
+    """A decimal number keeps about 15 digits: say which values lost some, and which types keep
+    them: a whole number only those without decimal places."""
     rounded = dtypes.float_loses_digits(source, decimal) & converted.is_not_null()
     if rounded.any():
-        examples = _examples(source.filter(rounded))
+        values = source.filter(rounded)
+        if not dtypes.rounded_to_whole(values, decimal).any():
+            keep = "Whole number and Text keep them all"
+        elif isinstance(source.dtype, pl.Decimal):
+            keep = "exact decimals and Text keep them all"
+        else:
+            keep = "Text keeps them all"
         ctx.warn(
-            f"{name}: {rounded.sum():,} value(s) were rounded, e.g. {examples}: a decimal number keeps "
-            "about 15 digits (Whole number and Text keep them all)"
+            f"{name}: {rounded.sum():,} value(s) were rounded, e.g. {_examples(values)}: a decimal number keeps "
+            f"about 15 digits ({keep})"
         )
 
 

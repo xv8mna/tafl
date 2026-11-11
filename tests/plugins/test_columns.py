@@ -303,6 +303,47 @@ def test_long_numbers_to_decimal_numbers_warn(act):
     ]
 
 
+def test_decimals_with_more_than_15_digits_to_decimal_numbers_warn(act):
+    """Only the whole part of a text counted: 12345678901234,5678 and …5677 both became
+    12345678901234.568 without a warning. A whole number keeps no decimal places, so only Text is
+    named for them. 16 digits that a decimal number keeps give no warning."""
+    df = pl.DataFrame({"Amount": ["12345678901234,5678", "12345678901234,5677", "1,5", "0,1234567890123456", None]})
+    ctx = StubContext()
+    assert change(act, df, "Amount", "number", ctx=ctx).to_list() == [12345678901234.568, 12345678901234.568, 1.5, 0.1234567890123456, None]
+    assert ctx.warnings == [
+        "Amount: 2 value(s) were rounded, e.g. '12345678901234,5678', '12345678901234,5677': a decimal number keeps "
+        "about 15 digits (Text keeps them all)"
+    ]
+    ctx = StubContext()
+    change(act, pl.DataFrame({"Amount": ["12,345,678,901,234.5678", "1,000"]}), "Amount", "number", ctx=ctx, decimal=".")
+    assert ctx.warnings == [
+        "Amount: 1 value(s) were rounded, e.g. '12,345,678,901,234.5678': a decimal number keeps about 15 digits (Text keeps them all)"
+    ]
+
+
+def test_exact_decimals_with_many_decimal_places_to_decimal_numbers_warn_only_for_lost_digits(act):
+    """1.1 of a decimal(38, 18) counted as rounded: the decimal number 1.1, made exact again, is
+    1.100000000000000128. Values near the 38 digits don't stop the step."""
+    rates = [D("1.1"), D("0.123456789012345678"), D("0.25"), None]
+    df = pl.DataFrame({"Rate": pl.Series(rates, dtype=pl.Decimal(38, 18))})
+    ctx = StubContext()
+    assert change(act, df, "Rate", "number", ctx=ctx).to_list() == [1.1, 0.12345678901234568, 0.25, None]
+    assert ctx.warnings == [
+        "Rate: 1 value(s) were rounded, e.g. '0.123456789012345678': a decimal number keeps about 15 digits "
+        "(exact decimals and Text keep them all)"
+    ]
+    ctx = StubContext()
+    change(act, pl.DataFrame({"Rate": pl.Series([D("1.1"), D("0.5")], dtype=pl.Decimal(38, 18))}), "Rate", "number", ctx=ctx)
+    assert ctx.warnings == []
+    big = pl.DataFrame({"P": pl.Series([D("-9999999999999999999999999999.9999999999"), D("2")], dtype=pl.Decimal(38, 10))})
+    ctx = StubContext()
+    assert change(act, big, "P", "number", ctx=ctx).to_list() == [-1e28, 2.0]
+    assert ctx.warnings == [
+        "P: 1 value(s) were rounded, e.g. '-9999999999999999999999999999.9999999999': a decimal number keeps about "
+        "15 digits (exact decimals and Text keep them all)"
+    ]
+
+
 def test_two_digit_years_without_a_format(act):
     df = pl.DataFrame({"Short": ["31.12.25", "01.01.26", "29.02.24", "01.01.30"]})
     expected = [dt.date(2025, 12, 31), dt.date(2026, 1, 1), dt.date(2024, 2, 29), dt.date(1930, 1, 1)]
@@ -424,7 +465,7 @@ def test_exact_decimals(act):
     assert change(act, df, "Amount", "number", ctx=ctx).to_list() == [12345678901234.568, 2.5, -2.5, None]
     assert ctx.warnings == [
         "Amount: 1 value(s) were rounded, e.g. '12345678901234.5678': a decimal number keeps about 15 digits "
-        "(Whole number and Text keep them all)"
+        "(exact decimals and Text keep them all)"
     ]
     assert change(act, df, "Amount", "integer").to_list() == [12345678901235, 3, -3, None]
     assert change(act, df, "Amount", "text").to_list() == ["12345678901234,5678", "2,5", "-2,5", None]
