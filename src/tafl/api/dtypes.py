@@ -244,7 +244,7 @@ def rounded_to_whole(s: pl.Series, decimal: str = ",") -> pl.Series:
         return rounded
     if s.dtype.is_float():
         return (s.round(0) != s).fill_null(False).alias(name)  # NaN and infinity are equal to themselves here
-    if isinstance(s.dtype, pl.Decimal):  # by the units (the digits without the point): a rounding can be too long for the type
+    if isinstance(s.dtype, pl.Decimal):  # by the units (the digits without the point): a rounding can need 39 digits
         fraction = _VALUE.to_physical() % pl.lit(10**s.dtype.scale, dtype=pl.Int128)
         return _apply(s, (fraction != 0).fill_null(False)).alias(name)
     return pl.repeat(False, s.len(), eager=True).alias(name)
@@ -459,9 +459,9 @@ _PART_VALUES = 1 << 17  # the values whose digits are compared together (see _in
 
 
 def _in_parts(s: pl.Series, check: Callable[[pl.Series], pl.Series]) -> pl.Series:
-    """``check`` of the values of ``s``, in parts of at most ``_PART_VALUES``: the texts that the
-    comparison of digits makes for each value took twice the memory of the check of 0.6.4 at
-    once (600 MB for a million values)."""
+    """``check`` of the values of ``s``, in parts of at most ``_PART_VALUES``: the comparison of
+    digits makes several texts for each value, which for all values at once took much memory (a
+    million long texts: 450 MB in all, 250 MB in parts)."""
     if s.len() <= _PART_VALUES:
         return check(s)
     return pl.concat([check(s.slice(start, _PART_VALUES)) for start in range(0, s.len(), _PART_VALUES)])
