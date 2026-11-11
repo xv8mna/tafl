@@ -595,6 +595,20 @@ def test_a_result_of_exact_decimals_that_loses_digits_says_so():
     assert expressions.evaluate(df, "[Amount]").to_list()[0] == 12345678901234.568  # no warn: as before
 
 
+def test_the_example_of_lost_digits_has_no_zeros_of_the_type():
+    """The example kept the zeros of the result's decimal places: "e.g.
+    13580246791358.0245800000000000000000 to 13580246791358.025"."""
+    df = pl.DataFrame(
+        {
+            "A": pl.Series([Decimal("12345678901234.5678")], dtype=pl.Decimal(18, 4)),
+            "B": pl.Series([Decimal("1.1")], dtype=pl.Decimal(38, 18)),
+        }
+    )
+    warnings: list[str] = []
+    expressions.evaluate(df, "[A] * [B]", warn=warnings.append)
+    assert len(warnings) == 1 and warnings[0].startswith("1 value(s) were rounded, e.g. 13580246791358.02458 to 13580246791358.025:")
+
+
 def test_a_result_beyond_38_digits_says_how_to_get_a_decimal_number():
     """A result beyond Int64 is an exact decimal: a next formula that made it longer than 38 digits
     stopped with DuckDB's hint to cast it to a decimal with a smaller scale, which doesn't help.

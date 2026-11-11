@@ -28,6 +28,7 @@ import tempfile
 import threading
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 import duckdb
@@ -448,9 +449,16 @@ def _warn_rounded(values: pl.Series, warn: Callable[[str], None]) -> None:
         exact = values.filter(lost).head(1)
         rounded = pl.select(text_expr(pl.lit(exact.cast(pl.Float64)), pl.Float64)).item()
         warn(
-            f"{count:,} value(s) were rounded, e.g. {exact[0]:f} to {rounded}: a formula's result with decimal places "
-            "is a decimal number, which keeps about 15 digits (CAST(... AS VARCHAR) keeps them all, as text)"
+            f"{count:,} value(s) were rounded, e.g. {_exact_text(exact[0])} to {rounded}: a formula's result with decimal "
+            "places is a decimal number, which keeps about 15 digits (CAST(... AS VARCHAR) keeps them all, as text)"
         )
+
+
+def _exact_text(value: Decimal) -> str:
+    """An exact decimal with its digits, without the zeros at the end that only its type has
+    (13580246791358.02458, not 13580246791358.0245800000000000000000)."""
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def _calculate(
