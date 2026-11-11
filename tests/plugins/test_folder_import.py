@@ -2,6 +2,9 @@
 
 import datetime as dt
 import re
+import subprocess
+import sys
+import time
 from decimal import Decimal
 
 import polars as pl
@@ -50,9 +53,116 @@ def test_all_csv_files_of_a_data_lake(act, lake):
     assert out["File"].to_list() == ["orders_2025-01-02.csv"] * 2 + ["orders_2025-01-10.csv", "orders_2025-02-01.csv"]
     assert out["Path"][3] == str(lake.joinpath("2025", "02", "orders_2025-02-01.csv").relative_to(lake))
     assert out["Kunde"].to_list() == ["Müller", "Bäcker", "Huber", "Weiß"]  # each file's own encoding
-    assert out["Netto"].to_list() == [1.5, 20.0, 7.0, 3.25]  # types detected for all files together
+    assert out["Netto"].to_list() == [1.5, 20.0, 7.0, 3.25]  # whole numbers in one file, decimals in the others
     assert out["Datum"][0] == dt.date(2025, 1, 2)
     assert out["Notiz"].to_list() == [None, None, "eilig", None]  # only one file has it
+
+
+def test_each_file_of_a_folder_is_read_with_its_own_formats(act, tmp_path):
+    """The numbers and dates of all files were detected together: 1,50 in north.csv and 1.50 in
+    south.csv gave a text column, and so did dates like 31.01.2026 in one file and 2026-02-01 in
+    another, without a message. Each file is detected on its own now, and the files are put
+    together as Append puts tables together."""
+    (tmp_path / "north.csv").write_text("Item;Qty;Price;Day;At\nA;3;1,50;31.01.2026;31.01.2026 08:30\n", encoding="utf-8")
+    (tmp_path / "south.csv").write_text("Item,Qty,Price,Day,At\nB,1,1.50,2026-02-01,2026-02-01T09:15:00\n", encoding="utf-8")
+    ctx = StubContext()
+    out = act("csv.import", None, folder(tmp_path), ctx)
+    assert out.schema == {"File": pl.String, "Item": pl.String, "Qty": pl.Int64, "Price": pl.Float64, "Day": pl.Date, "At": pl.Datetime("us")}
+    rows = [("A", 3, 1.5, dt.date(2026, 1, 31), dt.datetime(2026, 1, 31, 8, 30)), ("B", 1, 1.5, dt.date(2026, 2, 1), dt.datetime(2026, 2, 1, 9, 15))]
+    assert out.drop("File").rows() == rows
+    assert ctx.warnings == []
+    log = "2 files; encodings utf-8; delimiters comma, semicolon; decimal comma in north.csv, decimal point in south.csv"
+    assert ctx.messages[-1] == ("info", log)
+    # files with the same separators and other date formats (these files are looked at together first)
+    dates = tmp_path / "dates"
+    dates.mkdir()
+    (dates / "a.csv").write_text("Item;Day;At\nA;31.01.2026;31.01.2026 08:30\n", encoding="utf-8")
+    (dates / "b.csv").write_text("Item;Day;At\nB;2026-02-01;2026-02-01T09:15:00\n", encoding="utf-8")
+    ctx = StubContext()
+    out = act("csv.import", None, folder(dates, file_column=False), ctx)
+    assert out.schema == {"Item": pl.String, "Day": pl.Date, "At": pl.Datetime("us")} and not ctx.warnings
+    assert out.rows() == [(row[0], *row[3:]) for row in rows]
+
+
+def test_a_column_of_other_types_in_the_files_of_a_folder(act, tmp_path):
+    """A column of a date in one file and a number in another becomes text, with Append's warning;
+    one that is text in a file (a code with a leading zero, n/a) stays text without a message, as
+    in one file. Such a column has the text of the files: 1,50, not 1.5."""
+    (tmp_path / "a.csv").write_text("Nr;When;Code;Amount;Rate\n1;31.01.2026;0815;1,50;0,5\n", encoding="utf-8")
+    (tmp_path / "b.csv").write_text("Nr,When,Code,Amount,Rate\n2,7,17,n/a,0.25\n", encoding="utf-8")  # a decimal point
+    ctx = StubContext()
+    out = act("csv.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out.to_dict(as_series=False) == {
+        "Nr": [1, 2], "When": ["31.01.2026", "7"], "Code": ["0815", "17"], "Amount": ["1,50", "n/a"], "Rate": [0.5, 0.25],
+    }  # fmt: skip
+    assert ctx.warnings == ["“When” is text: it has different types in the files (date, integer)"]
+
+
+def test_long_numbers_in_one_file_of_a_folder_keep_their_digits(act, tmp_path):
+    """Files with the same decimal separator are looked at together, as one file: a decimal of more
+    than 15 digits in one of them makes the column exact decimals (in 0.6.4 12345678901234.568)."""
+    (tmp_path / "a.csv").write_text("Nr;Wert\n1;12345678901234,5678\n", encoding="utf-8")
+    (tmp_path / "b.csv").write_text("Nr;Wert\n2;1,5\n", encoding="utf-8")
+    ctx = StubContext()
+    out = act("csv.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out.schema == {"Nr": pl.Int64, "Wert": pl.Decimal(38, 4)} and not ctx.warnings
+    assert out["Wert"].to_list() == [Decimal("12345678901234.5678"), Decimal("1.5")]
+
+
+def test_many_small_files_take_no_long_time(act, tmp_path):
+    """Each file is detected as it would be on its own, but files with the same decimal separators
+    are looked at together: one by one, 300 small files took 18 s instead of 0.7 s."""
+    header = ";".join(f"c{c}" for c in range(12)) + "\n"
+    rows = "".join(";".join([f"{n}", f"{n},5", f"0{n}", f"{n % 28 + 1:02d}.01.2026"] * 3) + "\n" for n in range(1, 21))
+    for i in range(300):
+        (tmp_path / f"day{i:03d}.csv").write_text(header + rows, encoding="utf-8")
+    start = time.perf_counter()
+    out = act("csv.import", None, folder(tmp_path))
+    assert time.perf_counter() - start < 6
+    assert out.height == 6_000 and out.schema["c1"] == pl.Float64 and out.schema["c2"] == pl.String and out.schema["c3"] == pl.Date
+
+
+_WIDE_FOLDER = """
+import datetime as dt
+import sys
+from pathlib import Path
+
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+folder = Path(sys.argv[1])
+names = ";".join(f"c{i}" for i in range(4_001))
+(folder / "a.csv").write_text(names + "\\n" + ";".join(["1,5", "31.01.2026", "x", "7"] * 50 + [""] * 3_800 + ["1"]) + "\\n", encoding="utf-8")
+(folder / "b.csv").write_text(names + "\\n" + ";".join(["2,5", "2026-02-01", "y", "n/a"] * 50 + [""] * 3_800 + ["2"]) + "\\n", encoding="utf-8")
+ctx = StubContext()
+out = registry.actions["csv.import"](None, {"source": "folder", "folder": str(folder), "pattern": "*.csv", "file_column": False}, ctx)
+assert out.shape == (2, 4_001), out.shape
+assert out.row(0)[:4] == (1.5, dt.date(2026, 1, 31), "x", "7") and out.row(1)[:4] == (2.5, dt.date(2026, 2, 1), "y", "n/a"), out.rows()
+assert out.row(1)[200:202] == (None, None) and out.row(1)[-1] == 2 and out.schema["c4000"] == pl.Int64, out.row(1)[198:204]
+assert not ctx.warnings, ctx.warnings[:3]
+"""
+
+
+def test_a_folder_of_wide_files(tmp_path):
+    """Two files of 4,001 columns, 50 of them dates in another format in each file: every column is
+    looked at, and a deep Polars expression would end the process. In a process of its own, so that
+    such an end shows as a failed test."""
+    done = subprocess.run([sys.executable, "-c", _WIDE_FOLDER, str(tmp_path)], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
+
+
+def test_a_warning_about_a_column_of_several_files_is_given_once(act, tmp_path):
+    """Files with other decimal separators are detected one by one: a warning about the same column
+    is given once, with the example of the first file."""
+    (tmp_path / "a.csv").write_text(f"Id;Rate\n{'1' * 39};0,5\n", encoding="utf-8")
+    (tmp_path / "b.csv").write_text(f"Id,Rate\n{'2' * 39},0.25\n", encoding="utf-8")
+    ctx = StubContext()
+    out = act("csv.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out.to_dict(as_series=False) == {"Id": ["1" * 39, "2" * 39], "Rate": [0.5, 0.25]}
+    assert ctx.warnings == [f"Id stays text: its numbers are too long to be kept exactly, e.g. '{'1' * 39}'"]
 
 
 def test_folder_without_matching_files(act, lake):

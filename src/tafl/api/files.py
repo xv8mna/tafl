@@ -57,6 +57,7 @@ from . import params as P
 from .context import Context
 from .endpoints import FOLDER, IN, Endpoint, file_endpoint
 from .errors import ActionError, SkipRest
+from .names import col
 
 _IN_FOLDER = {"source": "folder"}
 ONE_COLUMN = "\x1f"  # the delimiter for files that have none: text doesn't contain it
@@ -216,6 +217,7 @@ def combine(
     prepare: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
     *,
     warn: Callable[[str], None] | None = None,
+    prepare_each: Callable[[int, pl.DataFrame], pl.DataFrame] | None = None,
 ) -> pl.DataFrame:
     """One table from several files (or sheets): ``parts`` are (file, sheet or None, data).
 
@@ -224,19 +226,24 @@ def combine(
     (``dtypes.stack``): one that holds all its values, or text, which ``warn`` (the step's
     ``ctx.warn``) is told about; lists or records beside other values are an ActionError.
     ``prepare`` runs once on all the data (e.g. to detect types); it must keep the rows as
-    they are. For a folder, columns with the file name and/or the path below the folder come
-    first (as chosen in ``params``); with ``sheet_column``, one with the sheet name. Without
-    parts, the table has only these columns and no rows."""
+    they are. ``prepare_each`` runs on the data of each part on its own, with the part's number,
+    before they are put together (e.g. to detect the types of each file, as its own formats are);
+    it must keep the rows and the columns. A column that becomes text then gets the data of the
+    parts as they were before ``prepare_each``, as text (the text of the files: 1,50, not 1.5):
+    without a message when it is text in a part (as in one file whose values don't all fit a
+    type), else with Append's. For a folder, columns with the file name and/or the path below the
+    folder come first (as chosen in ``params``); with ``sheet_column``, one with the sheet name.
+    Without parts, the table has only these columns and no rows."""
     parts = list(parts)
     frames = [frame for _, _, frame in parts]
     if not frames:
         data = pl.DataFrame()
     elif len(frames) == 1:
-        data = frames[0]
+        data = frames[0] if prepare_each is None else prepare_each(0, frames[0])
     else:
         sources = "sheets" if len({path for path, _, _ in parts}) == 1 else "files"
         try:
-            data = dtypes.stack(frames, warn, sources)
+            data = dtypes.stack(frames, warn, sources) if prepare_each is None else _stack_each(frames, prepare_each, warn, sources)
         except pl.exceptions.PolarsError as error:
             raise ActionError(f"The files don't fit together: {str(error).splitlines()[0]}") from None
     if prepare is not None and frames:
@@ -258,6 +265,38 @@ def combine(
         ]
         columns.append(pl.concat(pieces).alias(name) if pieces else pl.Series(name, [], dtype=pl.String))
     return pl.concat([pl.DataFrame(columns), data], how="horizontal")
+
+
+def _stack_each(
+    texts: list[pl.DataFrame], prepare_each: Callable[[int, pl.DataFrame], pl.DataFrame], warn: Callable[[str], None] | None, sources: str
+) -> pl.DataFrame:
+    """``combine`` with ``prepare_each``: each part prepared on its own, then one below the other.
+    The columns that become text get the parts' data from before (``texts``), as text."""
+    frames = [prepare_each(i, frame) for i, frame in enumerate(texts)]
+    schemas = [frame.schema for frame in frames]
+    kept, mixed = [], []  # the columns that get the data from before; those whose parts all have types
+    for name in dict.fromkeys(name for schema in schemas for name in schema):
+        where = [i for i, schema in enumerate(schemas) if name in schema]
+        if len({schemas[i][name] for i in where}) == 1:
+            continue
+        common = dtypes.common_type([frames[i][name] for i in where])
+        if common.dtype != pl.String:
+            continue
+        kept.append(name)
+        counted = [schemas[i][name] for i, counts in zip(where, common.counted, strict=True) if counts]
+        if all(dtypes.type_label(dtype) != "text" for dtype in counted):
+            mixed.append(name)
+    if mixed and warn is not None:  # Append's warning about them, in its words
+        dtypes.stack([frame.select([name for name in mixed if name in frame.columns]) for frame in frames], warn, sources)
+    if kept:
+        frames = [frame.with_columns(_texts(text, [name for name in kept if name in text.columns])) for frame, text in zip(frames, texts, strict=True)]
+    return dtypes.stack(frames, warn, sources)
+
+
+def _texts(frame: pl.DataFrame, names: list[str]) -> list[pl.Series]:
+    """These columns of ``frame`` as text, as ``dtypes.text_expr`` writes them (text as it is)."""
+    schema = frame.schema
+    return frame.select([dtypes.text_expr(col(name), schema[name]).alias(name) for name in names]).get_columns()
 
 
 def _source_value(extra: str, path: Path, sheet: str | None, folder: Path | None) -> str | None:

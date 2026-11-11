@@ -6,15 +6,20 @@ number).
 
     decimal, own = detection.guess_decimal(df, default=".")
     typed = detection.detect_types(df, {name: own.get(name, decimal) for name in df.columns}, warn)
+
+For the files of a folder, each with its own formats, ``guess_decimals`` gives each file's decimal
+separator and own columns, as ``guess_decimal`` gives them for one file, and ``detect_files`` the
+types of each file's columns.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 
 import polars as pl
 
 from . import dtypes
+from .names import col, cols
 
 # Numbers as text: 1.234,56 or 1234,56 or ,5 (decimal comma) and 1,234.56 or 1234.56 or .5 (decimal
 # point). Thousands separators come after 1 to 3 digits that don't start with 0: 0.500 is a decimal.
@@ -38,6 +43,9 @@ _CODE = r"^[+-]?0[0-9]"  # a leading zero before another digit: a code (0815, 00
 _FLOAT_DIGITS = 15  # the significant digits that a decimal number (Float64) keeps, as Excel and the CSV export
 _MOST_DIGITS = 38  # of an exact decimal (Decimal)
 _SAMPLE = 1_000  # values that most columns are told apart by
+_SHOWN = 2_000  # rows whose values show the decimal separator of a file
+_PART = "\x1fpart"  # the number of a file among several: no column of a file has this name (see files.ONE_COLUMN)
+_ISO_T = r"^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}T[0-9]"  # a date-time like 2026-01-31T08:30:00, which has a letter
 
 
 def guess_decimal(df: pl.DataFrame, default: str) -> tuple[str, dict[str, str]]:
@@ -47,9 +55,40 @@ def guess_decimal(df: pl.DataFrame, default: str) -> tuple[str, dict[str, str]]:
     like 1.000 and 1,000 fit both. A column with a value that shows a point has a decimal point,
     else one with a value that shows a comma a decimal comma. For all columns together, the
     separator that more values of a sample show; without a difference, ``default``."""
+    comma, point, columns = _shown(df)
+    if comma != point:
+        return ("," if comma > point else "."), columns
+    return default, columns
+
+
+def guess_decimals(frames: Sequence[pl.DataFrame], defaults: Sequence[str]) -> tuple[str, list[tuple[str, dict[str, str]]]]:
+    """``guess_decimal`` for the files of a folder (``frames``), each with its own formats and
+    ``default`` (that of its delimiter): the separator of all files together, and for each file
+    its separator and that of its columns whose values show one, in the file or else in the other
+    files. A column follows the values of its file that show a separator; else those of the same
+    column in the other files (1.000 beside 0.500 there, as when all files are read together); else
+    the other columns of its file; else the values of all files; without any, its default."""
+    shown = _shown_files(frames)
+    comma, point = sum(counts[0] for counts in shown), sum(counts[1] for counts in shown)
+    every = None if comma == point else "," if comma > point else "."
+    columns: dict[str, str] = {}  # a point in one file gives the column a point, as in one file
+    for _commas, _points, own in shown:
+        for name, decimal in own.items():
+            if decimal == "." or name not in columns:
+                columns[name] = decimal
+    files = []
+    for frame, (commas, points, own), default in zip(frames, shown, defaults, strict=True):
+        decimal = ("," if commas > points else ".") if commas != points else every or default
+        files.append((decimal, {name: own.get(name) or columns[name] for name in frame.columns if name in own or name in columns}))
+    return every or (defaults[0] if defaults else "."), files
+
+
+def _shown(df: pl.DataFrame) -> tuple[int, int, dict[str, str]]:
+    """How many values of a sample of the text columns of ``df`` show a decimal comma and how many
+    a decimal point, and the separator of each column whose values show one (see ``guess_decimal``)."""
     comma = point = 0
     columns: dict[str, str] = {}
-    sample = df.head(2000)
+    sample = df.head(_SHOWN)
     texts = [name for name, dtype in df.schema.items() if dtype == pl.String]
     # Only a column with a comma or a point can show either (at once for all: column by column takes long)
     marked = df.select(pl.col(pl.String).str.contains("[.,]").any()).row(0) if texts else ()
@@ -64,9 +103,41 @@ def guess_decimal(df: pl.DataFrame, default: str) -> tuple[str, dict[str, str]]:
             commas, points = _shown_decimals(rest.filter(~rest.str.contains(_EITHER)))
         if commas or points:
             columns[name] = "." if points else ","
-    if comma != point:
-        return ("," if comma > point else "."), columns
-    return default, columns
+    return comma, point, columns
+
+
+def _shown_files(frames: Sequence[pl.DataFrame]) -> list[tuple[int, int, dict[str, str]]]:
+    """``_shown`` of each of several frames. Those of up to 2,000 rows (all their values are the
+    sample) are looked at in one go, for up to 100 columns at a time: one by one, many small files
+    take long."""
+    small = [i for i, frame in enumerate(frames) if 0 < frame.height <= _SHOWN] if len(frames) > 1 else []
+    together = set(small)
+    shown = [(0, 0, {}) if i in together else _shown(frame) for i, frame in enumerate(frames)]
+    parts = [frames[i].select(pl.col(pl.String)).with_columns(pl.lit(n, pl.UInt32).alias(_PART)) for n, i in enumerate(small)]
+    stacked = pl.concat(parts, how="diagonal") if parts else pl.DataFrame()
+    texts = [name for name in stacked.columns if name != _PART]
+    marked = stacked.select(pl.col(pl.String).str.contains("[.,]").any()).row(0) if texts else ()  # only these can show one
+    names = [name for name, separators in zip(texts, marked, strict=True) if separators]
+    for start in range(0, len(names), 100):
+        chunk = names[start : start + 100]
+        flags = [flag.alias(f"{kind}{k}") for k, name in enumerate(chunk) for kind, flag in zip("cp", _shows(col(name)), strict=True)]
+        # the values first, then only sums by file: patterns inside the groups take much memory
+        for n, *values in stacked.select(col(_PART), *flags).group_by(_PART).sum().iter_rows():
+            commas, points, own = shown[small[n]]
+            found = {name: "." if p else "," for name, c, p in zip(chunk, values[0::2], values[1::2], strict=True) if c or p}
+            shown[small[n]] = (commas + sum(values[0::2]), points + sum(values[1::2]), own | found)
+    return shown
+
+
+def _shows(text: pl.Expr) -> tuple[pl.Expr, pl.Expr]:
+    """Whether a value shows only a decimal comma, and whether only a decimal point: the values
+    that ``_shown_decimals`` counts, as expressions."""
+    stripped = text.str.strip_chars()
+    bare = pl.when(stripped == "").then(None).otherwise(stripped).str.replace_all(_SPACES, "")
+    bare = bare.str.replace_all(f"[{_CURRENCY}]", "").str.strip_chars("%").str.strip_suffix("-")
+    number = ~bare.str.contains(r"^[+-]?[0-9]+$")
+    comma, point = bare.str.contains(f"^[+-]?{_NUMBER[',']}$"), bare.str.contains(f"^[+-]?{_NUMBER['.']}$")
+    return comma & ~point & number, point & ~comma & number
 
 
 def _shown_decimals(s: pl.Series) -> tuple[int, int]:
@@ -76,6 +147,80 @@ def _shown_decimals(s: pl.Series) -> tuple[int, int]:
     values = values.filter(~values.str.contains(r"^[+-]?[0-9]+$"))
     fits_comma, fits_point = values.str.contains(f"^[+-]?{_NUMBER[',']}$"), values.str.contains(f"^[+-]?{_NUMBER['.']}$")
     return (fits_comma & ~fits_point).sum(), (fits_point & ~fits_comma).sum()
+
+
+def detect_files(
+    frames: Sequence[pl.DataFrame],
+    guesses: Sequence[tuple[str, Mapping[str, str]]],
+    warn: Callable[[str], None],
+    between: Callable[[], None] | None = None,
+) -> list[pl.DataFrame]:
+    """``detect_types`` for each of the files of a folder (``frames``, with their ``guesses`` from
+    ``guess_decimals``): each file's columns get the types that the file on its own gives them, with
+    its own decimal separators and date formats. Files with the same separators are looked at
+    together, which is as for each one on its own, only faster for many small files; a column that
+    is text there is looked at in each of these files (one can have dates as 31.01.2026, another as
+    2026-01-31). ``between`` runs between the groups of files, e.g. to stop when asked to."""
+    typed = list(frames)
+    groups: dict[tuple, list[int]] = {}
+    for i, (decimal, own) in enumerate(guesses):
+        groups.setdefault((decimal, tuple(sorted(own.items()))), []).append(i)
+    for (decimal, own), members in groups.items():
+        if between is not None:
+            between()
+        files, shown = [frames[i] for i in members], dict(own)
+        together = files[0] if len(files) == 1 else pl.concat(files, how="diagonal")
+        decimals = {name: shown.get(name, decimal) for name in together.columns}
+        result = detect_types(together, decimals, warn)
+        each = _each_file(result, together, files, decimals, warn) if len(files) > 1 else {}
+        offset = 0
+        for k, (i, frame) in enumerate(zip(members, files, strict=True)):
+            part = result.slice(offset, frame.height)
+            part = part if part.columns == frame.columns else part.select(cols(frame.columns))  # its own columns, in its order
+            changes = [found[k] for name, found in each.items() if name in frame.columns]
+            typed[i] = part.with_columns(changes) if changes else part
+            offset += frame.height
+    return typed
+
+
+def _each_file(
+    result: pl.DataFrame, together: pl.DataFrame, files: list[pl.DataFrame], decimals: Mapping[str, str], warn: Callable[[str], None]
+) -> dict[str, list[pl.Series]]:
+    """For ``detect_files``: the columns that stayed text in ``result`` (the files together), as
+    each file gives them, where every file gives a type: column -> a column for each file. Each
+    column is looked at in one file after the other, up to the first that keeps it text. A column
+    with a word or a code like 0815 in its first values stays text at once: a file with one of
+    them gives no type (true and false and date-times like 2026-01-31T08:30 have letters, but they
+    can)."""
+    before, after = together.schema, result.schema
+    empty = dict(zip(together.columns, together.null_count().row(0), strict=True))  # a column without values has no type
+    texts = {
+        name: col(name).str.strip_chars()
+        for name in together.columns
+        if before[name] == pl.String and after[name] == pl.String and empty[name] < together.height
+    }
+    if not texts:
+        return {}
+    words = {name: text.str.contains("[A-Za-z]") & ~text.str.to_lowercase().is_in(["true", "false"]) & ~text.str.contains(_ISO_T) for name, text in texts.items()}
+    seen = together.head(_SAMPLE).select([(words[name] | text.str.contains(r"^[+-]?0[0-9]+$")).any().alias(name) for name, text in texts.items()])
+    each: dict[str, list[pl.Series]] = {}
+    for name, stays in zip(texts, seen.row(0), strict=True):
+        if stays:
+            continue
+        found, notes = [], []
+        for frame in files:
+            if name not in frame.columns:
+                found.append(pl.Series(name, [], pl.String))  # not used: the file has no such column
+                continue
+            column = detect_types(frame.select(col(name)), {name: decimals[name]}, notes.append)[name]
+            if column.dtype == pl.String and column.null_count() < column.len():
+                break  # text in this file: text in all of them, as in one file
+            found.append(column)
+        else:
+            each[name] = found
+            for message in notes:
+                warn(message)
+    return each
 
 
 def detect_types(data: pl.DataFrame, decimals: Mapping[str, str], warn: Callable[[str], None]) -> pl.DataFrame:

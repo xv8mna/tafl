@@ -90,18 +90,22 @@ def import_csv(df, p, ctx):
     """Reads a delimited text file (CSV, TXT, TSV), or all such files of a folder (and its
     subfolders) into one table: daily exports, for example.
 
-    Delimiter, encoding and decimal separator are detected automatically unless chosen (for
-    each file); a file whose first line has no delimiter has one column. Numbers and dates are
-    recognized when every value of a column fits, in all files together: also amounts like
-    1.234,50 €, -$3.00 or 123,45- and percentages like 12,5% (read as 0.125). Numbers keep all
-    their digits: whole numbers of up to 19 digits are integers, longer ones and decimals of
-    more than 15 digits exact decimals (up to 38 digits; longer ones stay text, with a warning).
-    Columns with leading zeros (customer numbers, postal codes, 00,5) stay text, and so do
-    digits with spaces between them (phone numbers, card numbers): spaces between thousands
-    count only in amounts and percentages (1 234,50 €). A value like 1.000 can be one thousand
-    or one: it follows the other numbers of its column (like 0.500 or 2,5), else those of the
-    file, and without any it is one thousand in files with semicolons. Files are matched by
-    column names; a column missing in a file stays empty there.
+    Delimiter, encoding and decimal separator are detected automatically unless chosen; a file
+    whose first line has no delimiter has one column. Numbers and dates are recognized when
+    every value of a column fits: also amounts like 1.234,50 €, -$3.00 or 123,45- and
+    percentages like 12,5% (read as 0.125). Numbers keep all their digits: whole numbers of up
+    to 19 digits are integers, longer ones and decimals of more than 15 digits exact decimals
+    (up to 38 digits; longer ones stay text, with a warning). Columns with leading zeros
+    (customer numbers, postal codes, 00,5) stay text, and so do digits with spaces between them
+    (phone numbers, card numbers): spaces between thousands count only in amounts and
+    percentages (1 234,50 €). A value like 1.000 can be one thousand or one: it follows the
+    other numbers of its column (like 0.500 or 2,5, also in the other files of a folder), else
+    those of its file, and without any it is one thousand in files with semicolons.
+
+    In a folder, each file is read with its own delimiter, encoding, decimal separator and date
+    format. Files are matched by column names; a column missing in a file stays empty there. A
+    column with other types in other files gets a type that holds every value, as in Append,
+    or becomes text with a warning; one that is text in a file stays text, as the files have it.
     """
     paths, folder = source_files(p, ctx)
     parts, separators, encodings = [], [], []
@@ -111,22 +115,24 @@ def import_csv(df, p, ctx):
         parts.append((path, None, frame))
         separators.append(separator)
         encodings.append(encoding)
-    decimals = []
+    texts = [frame for _, _, frame in parts]
+    overall, guesses = p.decimal, [(p.decimal, {})] * len(texts)
+    if p.detect_types and p.decimal == "auto":  # without a difference, a decimal comma in files with semicolons, else a point
+        overall, guesses = detection.guess_decimals(texts, ["," if s == ";" else "." for s in separators])
+    said: set[str] = set()
 
-    def detect_types(data: pl.DataFrame) -> pl.DataFrame:
-        if not p.detect_types:
-            return data
-        # without a difference, a decimal comma in files with semicolons, else a point
-        default = "," if separators[0] == ";" else "."
-        decimal, columns = (p.decimal, {}) if p.decimal != "auto" else detection.guess_decimal(data, default)
-        typed = detection.detect_types(data, {name: columns.get(name, decimal) for name in data.columns}, ctx.warn)
-        others = [name for name, own in columns.items() if own != decimal]
-        schema = typed.schema  # once: each call builds the types of all columns again
-        decimals.append((decimal, [name for name in others if schema[name].is_numeric()]))  # others stayed text
-        return typed
+    def warn_once(message: str) -> None:  # a warning about a column of several files once, with the first example
+        if (key := message.split(", e.g.")[0]) not in said:
+            said.add(key)
+            ctx.warn(message)
 
-    out = combine(parts, p, folder, prepare=detect_types, warn=ctx.warn)
-    decimal = [_describe_decimals(*decimals[0])] if decimals else []
+    typed = detection.detect_files(texts, guesses, warn_once, ctx.check_cancelled) if p.detect_types else texts
+    out = combine(parts, p, folder, warn=ctx.warn, prepare_each=(lambda i, _text: typed[i]) if p.detect_types else None)
+    used: list[dict[str, str]] = []  # of each file: its numbers' columns whose values show a decimal separator, with it
+    for frame, (_decimal, own) in zip(typed, guesses, strict=True) if p.detect_types else ():
+        schema = frame.schema  # once: each call builds the types of all columns again
+        used.append({name: own[name] for name in own if schema[name].is_numeric()})  # the others stayed text
+    decimal = [_describe_decimals(overall, guesses, used, paths)] if used else []
     if len(paths) == 1:
         ctx.log(", ".join([f"Encoding {encodings[0]}", f"delimiter {_describe_separator(separators[0])}", *decimal]))
     elif paths:
@@ -471,10 +477,29 @@ def _describe_separator(separator: str) -> str:
     return names.get(separator, repr(separator))
 
 
-def _describe_decimals(decimal: str, others: list[str]) -> str:
-    """For the log: the decimal separator of the files, and the columns that have the other one."""
-    text = f"decimal {'comma' if decimal == ',' else 'point'}"
+def _describe_decimals(overall: str, guesses: list[tuple[str, dict[str, str]]], used: list[dict[str, str]], paths: list[Path]) -> str:
+    """For the log: the decimal separator of the files, and the columns that have the other one.
+    When files have another one in the same column, the separator of each file instead."""
+    by_column: dict[str, set[str]] = {}
+    for columns in used:
+        for name, decimal in columns.items():
+            by_column.setdefault(name, set()).add(decimal)
+    if len(used) == 1:
+        overall = guesses[0][0]
+    elif any(len(decimals) > 1 for decimals in by_column.values()):
+        files: dict[str, list[str]] = {}
+        for path, (decimal, _own) in zip(paths, guesses, strict=True):
+            files.setdefault(decimal, []).append(path.name)
+        return ", ".join(
+            f"decimal {_DECIMAL_WORDS[decimal]} in {names[0] if len(names) == 1 else f'{len(names):,} files'}"
+            for decimal, names in sorted(files.items())
+        )
+    others = [name for name, decimals in by_column.items() if decimals != {overall}]
+    text = f"decimal {_DECIMAL_WORDS[overall]}"
     if not others:
         return text
     named = ", ".join(others[:5]) + (f" and {len(others) - 5} more" if len(others) > 5 else "")
-    return f"{text} (decimal {'point' if decimal == ',' else 'comma'} in {named})"
+    return f"{text} (decimal {_DECIMAL_WORDS['.' if overall == ',' else ',']} in {named})"
+
+
+_DECIMAL_WORDS = {",": "comma", ".": "point"}
