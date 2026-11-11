@@ -1,6 +1,7 @@
 """Numbers and dates in text columns, as the CSV import detects them: the decimal separator the
 values show, and the types the columns get (``dtypes.infer_series`` with the decimal separator of
-each column, and also numbers with thousands separators only, amounts and percentages).
+each column, and also numbers with thousands separators only, numbers without a digit before the
+decimal separator, amounts and percentages).
 
     decimal, own = detection.guess_decimal(df, default=".")
     typed = detection.detect_types(df, {name: own.get(name, decimal) for name in df.columns}, warn)
@@ -14,11 +15,11 @@ import polars as pl
 
 from . import dtypes
 
-# Numbers as text: 1.234,56 or 1234,56 (decimal comma) and 1,234.56 or 1234.56 (decimal point).
-# Thousands separators come after 1 to 3 digits that don't start with 0: 0.500 is a decimal.
+# Numbers as text: 1.234,56 or 1234,56 or ,5 (decimal comma) and 1,234.56 or 1234.56 or .5 (decimal
+# point). Thousands separators come after 1 to 3 digits that don't start with 0: 0.500 is a decimal.
 _NUMBER = {
-    ",": r"([0-9]+|[1-9][0-9]{0,2}(\.[0-9]{3})+)(,[0-9]+)?",
-    ".": r"([0-9]+|[1-9][0-9]{0,2}(,[0-9]{3})+)(\.[0-9]+)?",
+    ",": r"(([0-9]+|[1-9][0-9]{0,2}(\.[0-9]{3})+)(,[0-9]+)?|,[0-9]+)",
+    ".": r"(([0-9]+|[1-9][0-9]{0,2}(,[0-9]{3})+)(\.[0-9]+)?|\.[0-9]+)",
 }
 _WHOLE = {",": r"^[+-]?([0-9]+|[1-9][0-9]{0,2}(\.[0-9]{3})+)$", ".": r"^[+-]?([0-9]+|[1-9][0-9]{0,2}(,[0-9]{3})+)$"}
 _EITHER = r"^[+-]?([0-9]+|[1-9][0-9]{0,2}[.,][0-9]{3})$"  # 12, 1.250 and 1,250 fit both decimal separators
@@ -27,15 +28,19 @@ _CURRENCY = "€$£"
 # Amounts and percentages can also have spaces between the thousands (1 234,50 €), only in groups
 # of three digits: other digits with spaces between them (phone numbers, 2025 01 31) stay text.
 _SPACED = {
-    ",": rf"([0-9]+|[1-9][0-9]{{0,2}}(\.[0-9]{{3}})+|[1-9][0-9]{{0,2}}({_SPACES}[0-9]{{3}})+)(,[0-9]+)?",
-    ".": rf"([0-9]+|[1-9][0-9]{{0,2}}(,[0-9]{{3}})+|[1-9][0-9]{{0,2}}({_SPACES}[0-9]{{3}})+)(\.[0-9]+)?",
+    ",": rf"(([0-9]+|[1-9][0-9]{{0,2}}(\.[0-9]{{3}})+|[1-9][0-9]{{0,2}}({_SPACES}[0-9]{{3}})+)(,[0-9]+)?|,[0-9]+)",
+    ".": rf"(([0-9]+|[1-9][0-9]{{0,2}}(,[0-9]{{3}})+|[1-9][0-9]{{0,2}}({_SPACES}[0-9]{{3}})+)(\.[0-9]+)?|\.[0-9]+)",
 }
+# The sign of an amount comes after its currency sign or before it: $-3.00, -$3.00, -3,00 €
+_SIGNED = rf"([{_CURRENCY}]?{_SPACES}*[+-]?|[+-]{_SPACES}*[{_CURRENCY}])"
+_CODE = r"^[+-]?0[0-9]"  # a leading zero before another digit: a code (0815, 00,5), not a number
+_SAMPLE = 1_000  # values that most columns are told apart by
 
 
 def guess_decimal(df: pl.DataFrame, default: str) -> tuple[str, dict[str, str]]:
     """The decimal separator ("," or ".") of the text columns of ``df`` together, and of each
-    column whose values show one. A value shows a decimal comma (1.234,56 / 12,5 / 0,500 /
-    1.234.567) or a decimal point (1,234.56 / 12.5 / 0.500) when it fits only that one; values
+    column whose values show one. A value shows a decimal comma (1.234,56 / 12,5 / ,5 / 0,500 /
+    1.234.567) or a decimal point (1,234.56 / 12.5 / .5 / 0.500) when it fits only that one; values
     like 1.000 and 1,000 fit both. A column with a value that shows a point has a decimal point,
     else one with a value that shows a comma a decimal comma. For all columns together, the
     separator that more values of a sample show; without a difference, ``default``."""
@@ -72,59 +77,106 @@ def _shown_decimals(s: pl.Series) -> tuple[int, int]:
 
 def detect_types(data: pl.DataFrame, decimals: Mapping[str, str], warn: Callable[[str], None]) -> pl.DataFrame:
     """``dtypes.infer_types`` with the decimal separator of each column (``decimals``: column ->
-    "," or "."), and also: numbers with thousands separators only (1.000) become whole numbers
-    (exact, up to 19 digits); amounts (1.234,50 €, 1 234,50 €, 123,45-) and percentages (12,5% is
-    0.125) become numbers when every value of the column is one. Digits with spaces between them
-    are numbers only in amounts and percentages, as thousands (see ``_SPACED``): 1 234 and +49 30
-    1234567 stay text. Numbers too long to be kept exactly stay text, and ``warn`` is told."""
+    "," or "."), and also: numbers with thousands separators only (1.000) become whole numbers,
+    numbers without a digit before the decimal separator (,5) numbers; amounts (1.234,50 €,
+    1 234,50 €, 123,45-, -$3.00) and percentages (12,5% is 0.125) become numbers when every value of
+    the column is one. Digits with spaces between them are numbers only in amounts and percentages,
+    as thousands (see ``_SPACED``): 1 234 and +49 30 1234567 stay text, and so do numbers with a
+    leading zero (0815, 00,5: codes). Numbers too long to be kept exactly stay text, and ``warn``
+    is told. All values of a column decide, not only the first ones."""
     notes: dict[str, list[str]] = {}  # the warnings of infer_types, by column
     typed = data.with_columns(
         [dtypes.infer_series(data[name], decimals[name], notes.setdefault(name, []).append) for name in data.columns]
     )
+    schema = typed.schema  # once: each call builds the types of all columns again
     updates = []
     for name, dtype in data.schema.items():
-        kind = typed[name].dtype
-        if dtype != pl.String or kind not in (pl.Float64, pl.String):
+        if dtype != pl.String or schema[name] not in (pl.Float64, pl.String):
             continue
-        decimal = decimals[name]
-        number, gap = _SPACED[decimal], f"{_SPACES}*"
-        whole, percent = _WHOLE[decimal], f"^[+-]?{gap}{number}{gap}%$"
-        amount = f"^[{_CURRENCY}]?{gap}[+-]?{gap}{number}{gap}-?{gap}[{_CURRENCY}]?$"
-        column = data[name].alias("value")  # a fixed name, as in guess_decimal
-        sample = _clean(column.drop_nulls().head(1000)).drop_nulls()  # most columns end here, quickly
-        if not sample.str.contains("[0-9]").any():  # names and such: no pattern below fits them
-            continue
-        if kind == pl.Float64 or _fit(sample, whole):  # text: numbers too long for a decimal number
-            pattern = whole
-        else:
-            pattern = percent if _fit(sample, percent) else amount
-        if not _fit(sample, pattern) or (pattern == amount and not _amounts(sample)):
-            continue
-        text = _clean(column)
-        values = text.drop_nulls()
-        if not values.str.contains(pattern).all():
-            continue
-        if pattern == whole:
-            if kind == pl.String and values.str.contains(r"^[+-]?0[0-9]").any():
-                continue  # codes like 0815
-            integers = dtypes.parse_integers(text, decimal)
-            if integers.null_count() == text.null_count():  # else beyond Int64: the text stays
-                updates.append(integers.alias(name))
-                notes.pop(name, None)
-            continue
-        lost = dtypes.float_loses_digits(_bare(values), decimal)
-        if lost.any():
-            notes[name].append(f"{name} stays text: its numbers are too long to be kept exactly, e.g. '{values.filter(lost)[0]}'")
-        elif pattern == percent:
-            updates.append(_percentages(text, decimal).alias(name))
-        elif _amounts(values):
-            parsed = dtypes.parse_numbers(text, decimal)
-            if parsed.null_count() == text.null_count():
-                updates.append(parsed.alias(name))
+        found = _numbers(data[name], decimals[name], floats=schema[name] == pl.Float64)
+        if found is not None:
+            column, message = found
+            updates.append(column.alias(name))
+            notes[name] = [message] if message else []
     for messages in notes.values():
         for message in messages:
             warn(message)
     return typed.with_columns(updates)
+
+
+def _numbers(original: pl.Series, decimal: str, floats: bool) -> tuple[pl.Series, str | None] | None:
+    """What a text column of numbers becomes (see ``detect_types``), with a warning or None; None
+    when it stays as ``infer_series`` made it. ``floats``: that made decimal numbers of it (every
+    value is a number like 12,5 or 1.000)."""
+    column = original.alias("value")  # a fixed name, as in guess_decimal
+    sample = _clean(column.drop_nulls().head(_SAMPLE)).drop_nulls()  # most columns end here, quickly
+    if not sample.len():  # only spaces so far
+        sample = _clean(column).drop_nulls()
+    if not sample.str.contains("[0-9]").any():  # names and such: no pattern below fits them
+        return None
+    whole, plain, percent, amount = _patterns(decimal)
+    if floats:
+        if _fit(sample, whole):
+            text = _clean(column)
+            if text.drop_nulls().str.contains(whole).all():
+                return _whole_numbers(original, text, decimal)
+        return _decimal_numbers(original, column)
+    # A pattern that a value of the sample doesn't fit fits not all values; one that every value of
+    # the sample fits may still not fit a later value: all of them decide
+    fitting = [pattern for pattern in (whole, plain, percent, amount) if _fit(sample, pattern)]
+    if not fitting:
+        return None
+    text = _clean(column)
+    values = text.drop_nulls()
+    for pattern in fitting:
+        if not values.str.contains(pattern).all():
+            continue
+        if pattern in (whole, plain) and values.str.contains(_CODE).any():
+            return original, None  # codes like 0815 or 00,5
+        if pattern == whole:
+            return _whole_numbers(original, text, decimal)
+        if pattern == amount and not _amounts(values):
+            return None
+        lost = dtypes.float_loses_digits(_bare(values), decimal)
+        if lost.any():
+            return original, _too_long(original.name, values.filter(lost)[0])
+        if pattern == percent:
+            return _percentages(text, decimal), None
+        parsed = dtypes.parse_numbers(text.str.replace_all(f"[{_CURRENCY}]", ""), decimal)  # also -$3.00
+        return (parsed, None) if parsed.null_count() == text.null_count() else None
+    return None
+
+
+def _patterns(decimal: str) -> tuple[str, str, str, str]:
+    """The patterns of whole numbers (1.000), numbers (1.234,5 and ,5), percentages (12,5 %) and
+    amounts (1 234,50 €, -$3.00, 123,45-) with this decimal separator. Each one fits the values of
+    the one before it, except percentages: they are tried in this order."""
+    number, gap = _SPACED[decimal], f"{_SPACES}*"
+    percent = f"^[+-]?{gap}{number}{gap}%$"
+    amount = f"^{_SIGNED}{gap}{number}{gap}-?{gap}[{_CURRENCY}]?$"
+    return _WHOLE[decimal], f"^[+-]?{_NUMBER[decimal]}$", percent, amount
+
+
+def _whole_numbers(original: pl.Series, text: pl.Series, decimal: str) -> tuple[pl.Series, str | None] | None:
+    """Whole numbers (cleaned texts, see ``_clean``) as Int64; None beyond it: as ``infer_series``
+    made them."""
+    integers = dtypes.parse_integers(text, decimal)
+    if integers.null_count() == text.null_count():
+        return integers, None
+    return None  # beyond Int64: as infer_series made them
+
+
+def _decimal_numbers(original: pl.Series, column: pl.Series) -> tuple[pl.Series, str | None] | None:
+    """A column that ``infer_series`` made decimal numbers (``column``: its texts): codes with a
+    leading zero (00,5) stay text. They are looked for in the texts as they are, without cleaning
+    all of them first: most columns have none."""
+    if column.str.contains(r"^\s*[+-]?0[0-9]").any():
+        return original, None
+    return None
+
+
+def _too_long(name: str, example: str) -> str:
+    return f"{name} stays text: its numbers are too long to be kept exactly, e.g. '{example}'"
 
 
 def _fit(values: pl.Series, pattern: str) -> bool:
@@ -134,7 +186,7 @@ def _fit(values: pl.Series, pattern: str) -> bool:
 def _amounts(values: pl.Series) -> bool:
     """Amounts with a currency sign or a minus at the end (else they would be numbers already),
     without leading zeros (codes like 0815 stay text)."""
-    leading_zero = f"^[{_CURRENCY}]?{_SPACES}*[+-]?{_SPACES}*0[0-9]"
+    leading_zero = f"^{_SIGNED}{_SPACES}*0[0-9]"
     return values.str.contains(f"[{_CURRENCY}]|-$").any() and not values.str.contains(leading_zero).any()
 
 
@@ -153,5 +205,7 @@ def _clean(s: pl.Series) -> pl.Series:
 
 
 def _bare(s: pl.Series) -> pl.Series:
-    """The numbers in amounts and percentages, without spaces, for counting decimal separators."""
-    return _clean(s).drop_nulls().str.replace_all(_SPACES, "").str.strip_chars(_CURRENCY + "%").str.strip_suffix("-")
+    """The numbers in amounts and percentages, without spaces and currency signs (also after a
+    sign: -$3.00), for counting decimal separators."""
+    bare = _clean(s).drop_nulls().str.replace_all(_SPACES, "").str.replace_all(f"[{_CURRENCY}]", "")
+    return bare.str.strip_chars("%").str.strip_suffix("-")

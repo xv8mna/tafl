@@ -652,6 +652,40 @@ def test_point_and_comma_can_be_chosen(project, registry, tmp_path):
     }  # fmt: skip
 
 
+def _text_table(path: Path, table: str, columns: dict[str, list[str]]) -> None:
+    """A SQLite table of text columns, for Detect numbers and dates."""
+    with closing(sqlite3.connect(path)) as con, con:
+        con.execute(f"CREATE TABLE {table} ({', '.join(f'{c} TEXT' for c in columns)})")
+        con.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' for _ in columns)})", zip(*columns.values()))
+
+
+_GAPS = {  # numbers as text, and what Detect automatically gives (None: the text as it is)
+    "dollar": (["-$3.00", "$4.00"], [-3.0, 4.0]),
+    "euro": (["-€3,00", "€4,00"], [-3.0, 4.0]),
+    "comma": ([",5", "1,5"], [0.5, 1.5]),
+    "dot": ([".5", "1.5"], [0.5, 1.5]),
+    "code": (["00,5", "1,5"], None),
+    "codes": (["00.5", "1.5"], None),
+    "zero": (["0,5", "1,5"], [0.5, 1.5]),
+}
+
+
+def test_detect_automatically_reads_more_numbers_as_the_csv_import(project, registry, tmp_path):
+    """-$3.00, -€3,00, ,5 and .5 are numbers (they stayed text), 00,5 is a code (it became 0.5), and
+    a 5,00 € after the first 1,000 values counts (the column stayed text)."""
+    _text_table(tmp_path / "data.db", "t", {name: texts for name, (texts, _) in _GAPS.items()})
+    _text_table(tmp_path / "data.db", "late", {"amount": [f"{n},50" for n in range(1, 1201)] + ["5,00 €"]})
+    result = import_new(project, registry, table="t", detect_types=True)
+    assert result.df.to_dict(as_series=False) == {name: texts if new is None else new for name, (texts, new) in _GAPS.items()}
+    assert result.steps[0].messages == [("info", "Decimal comma in euro, comma, zero")]
+    late = import_new(project, registry, table="late", detect_types=True).df
+    assert late.schema["amount"] == pl.Float64 and late["amount"].to_list()[-2:] == [1200.5, 5.0]
+    # a step of version 1 (Point), as 0.6.3 saved it, reads them as 0.6.4 did: 00.5 is 0.5 there
+    old = import_table(project, registry, table="t", detect_types=True).df
+    assert old.to_dict(as_series=False) == {name: [0.5, 1.5] if name == "codes" else texts for name, (texts, _) in _GAPS.items()}
+    assert import_table(project, registry, table="late", detect_types=True).df.schema["amount"] == pl.String
+
+
 def test_tafl_run_of_an_old_project_is_unchanged(registry, tmp_path, capsys):
     """An old project that turned German amounts into numbers itself (Replace, then Change type)
     gives what 0.6.3 gave. With Detect automatically, its import would give numbers already, and the

@@ -334,6 +334,50 @@ def test_long_numbers_with_thousands_separators_keep_all_digits(act, tmp_path):
     ]
 
 
+def test_a_sign_before_the_currency_sign_and_no_digit_before_the_separator(act, tmp_path):
+    """-$3.00 and -€3,00 stayed text (the sign could only come after the currency sign), and so did
+    ,5 and .5."""
+    (tmp_path / "s.csv").write_text(
+        "Dollar;Euro;Spaced;Comma;Share\n-$3.00;-€3,00;- € 1.234,50;,5;,5%\n$4.00;€4,00;€ 7;-,25;1%\n+$1.5;+€2;5 €;1,5;+,25 %\n",
+        encoding="utf-8",
+    )
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "s.csv")}, ctx)
+    assert df.to_dict(as_series=False) == {
+        "Dollar": [-3.0, 4.0, 1.5], "Euro": [-3.0, 4.0, 2.0], "Spaced": [-1234.5, 7.0, 5.0], "Comma": [0.5, -0.25, 1.5],
+        "Share": [0.005, 0.01, 0.0025],
+    }  # fmt: skip
+    assert ctx.messages == [("info", "Encoding utf-8, delimiter semicolon, decimal comma (decimal point in Dollar)")]
+    (tmp_path / "p.csv").write_text("Amount,Price\n.5,-$.5\n1.5,$2\n", encoding="utf-8")
+    assert act("csv.import", None, {"file": str(tmp_path / "p.csv")}).to_dict(as_series=False) == {
+        "Amount": [0.5, 1.5], "Price": [-0.5, 2.0]
+    }  # fmt: skip
+
+
+def test_a_leading_zero_keeps_decimals_text_too(act, tmp_path):
+    """00,5 became 0.5, while 00017 stays text: a leading zero before another digit makes a code, in
+    decimals too. 0,5 stays a number."""
+    (tmp_path / "z.csv").write_text("Code;Signed;Late;Value;Nr\n00,5;-01,5;,5;0,5;0815\n1,5;1,5;00,25;-0,5;1\n", encoding="utf-8")
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "z.csv")}, ctx)
+    assert df.to_dict(as_series=False) == {
+        "Code": ["00,5", "1,5"], "Signed": ["-01,5", "1,5"], "Late": [",5", "00,25"], "Value": [0.5, -0.5], "Nr": ["0815", "1"],
+    }  # fmt: skip
+    assert not ctx.warnings
+
+
+def test_every_value_decides_not_only_the_first_thousand(act, tmp_path):
+    """A 5,00 € or 5,00- in row 1,201 kept a column of numbers like 1,50 text, and so did amounts
+    after 1,200 values like 1.000: the detection decided on the first 1,000 values."""
+    rows = "".join(f"{n},50;{n},50;{n % 900 + 1}.000; \n" for n in range(1, 1201))
+    (tmp_path / "late.csv").write_text("Euro;Minus;Thousands;Blank\n" + rows + "5,00 €;5,00-;7,00 €;1.234,50 €\n", encoding="utf-8")
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "late.csv")}, ctx)
+    assert df.schema == dict.fromkeys(["Euro", "Minus", "Thousands", "Blank"], pl.Float64)
+    assert df.row(0) == (1.5, 1.5, 2000.0, None) and df.row(-1) == (5.0, -5.0, 7.0, 1234.5)
+    assert not ctx.warnings
+
+
 def test_amounts_percentages_and_a_minus_at_the_end(act, tmp_path):
     (tmp_path / "a.csv").write_text(
         "Betrag;Rabatt;Saldo;Kunde;Notiz\n"
