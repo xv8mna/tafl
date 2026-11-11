@@ -11,7 +11,7 @@ import polars as pl
 import pytest
 import xlsxwriter
 
-from tafl.api import ActionError, Mode, SkipRest, find_files, sources_fingerprint
+from tafl.api import ActionError, Mode, SkipRest, detection, find_files, sources_fingerprint
 from tafl.api.files import in_folder
 from tafl.api.params import resolve
 from tafl.api.testing import StubContext
@@ -120,6 +120,97 @@ def test_long_numbers_in_one_file_of_a_folder_keep_their_digits(act, tmp_path):
     out = act("csv.import", None, folder(tmp_path, file_column=False), ctx)
     assert out.schema == {"Nr": pl.Int64, "Wert": pl.Decimal(38, 4)} and not ctx.warnings
     assert out["Wert"].to_list() == [Decimal("12345678901234.5678"), Decimal("1.5")]
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        ["Item;Price;Day\nA;1,50;31.01.2026\nB;2,75;01.02.2026\n", "Item;Price;Day;Discount\nC;   ;   ;0,5\n"],
+        ['"Item";"Price";"Day"\n"A";"1,50";"31.01.2026"\n"B";"2,75";"01.02.2026"\n', '"Item";"Price";"Day";"Discount"\n"C";"";"";"0,5"\n'],
+        ["Item;Price;Day\nA;1,50;31.01.2026\nB;2,75;01.02.2026\n", "Item,Price,Day,Discount\nC,   ,   ,0.5\n"],
+        ["Item;Price;Day\nA;1,50;31.01.2026\n", "Item;Price;Day\nB;2,75;2026-02-01\n", "Item;Price;Day;Discount\nC;   ;   ;0,5\n"],
+    ],
+    ids=["spaces", "quoted", "other-separators", "other-date-formats"],
+)
+def test_a_column_of_only_blanks_in_one_file_of_a_folder(act, tmp_path, files):
+    """A column with only blanks (spaces, "") in one file is empty there, when another file gives it
+    a type, as blanks beside numbers in one file are: the file with one more column made Price and
+    Day text in all files, without a message (with the same columns they were numbers and dates)."""
+    for name, text in zip("abc", files):
+        (tmp_path / f"{name}.csv").write_text(text, encoding="utf-8")
+    ctx = StubContext()
+    out = act("csv.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out.schema == {"Item": pl.String, "Price": pl.Float64, "Day": pl.Date, "Discount": pl.Float64} and not ctx.warnings
+    assert out["Price"].to_list() == [1.5, 2.75, None] and out["Day"].null_count() == 1
+    # a column with only blanks in every file stays text, with its blanks
+    for name, text in zip("abc", ["Item;Note\nA;   \n", "Item,Note,Discount\nC,  ,0.5\n", "Item;Note\nD;\n"]):
+        (tmp_path / f"{name}.csv").write_text(text, encoding="utf-8")
+    out = act("csv.import", None, folder(tmp_path, file_column=False))
+    assert out["Note"].to_list() == ["   ", "  ", None]
+
+
+_LONG = "1" * 31
+
+
+@pytest.mark.parametrize(
+    "a, b, dtype, values, warnings",
+    [
+        (
+            "A;12345678901234,5678\n",
+            "B|1,500.25\n",
+            pl.Decimal(38, 4),
+            [Decimal("12345678901234.5678"), Decimal("1500.25")],
+            [],
+        ),
+        ("A;1,5\n", "B|9007199254740993\nC|2.5\n", pl.Decimal(38, 1), [Decimal("1.5"), Decimal("9007199254740993"), Decimal("2.5")], []),
+        ("A;12,345678901234567%\n", "B|1.5\n", pl.Decimal(38, 17), [Decimal("0.12345678901234567"), Decimal("1.5")], []),
+        ("A;1,5\n", "B|18014398509481984\nC|1,000,000\n", pl.Float64, [1.5, 2.0**54, 1e6], []),
+        (
+            f"A;{_LONG},5\n",
+            "B|0.1234567890123456789\n",
+            pl.String,
+            [f"{_LONG},5", "0.1234567890123456789"],
+            [f"V stays text: its numbers are too long to be kept exactly, e.g. '{_LONG},5'"],
+        ),
+    ],
+    ids=["exact-decimal", "beyond-2^53", "percentage", "2^54", "too-long"],
+)
+def test_numbers_in_files_with_other_decimal_separators_are_read_as_in_one_file(act, tmp_path, a, b, dtype, values, warnings):
+    """A column of numbers in every file gets the numbers that one file of all of them gives, each
+    file read with its own decimal separator: exact decimals when a decimal number would change one
+    of them, else decimal numbers; beyond 38 digits text with the warning. Such a column was text
+    with "(exact decimal, number)", or without a message beside a whole number beyond 2^53."""
+    (tmp_path / "a.csv").write_text("Item;V\n" + a, encoding="utf-8")
+    (tmp_path / "b.csv").write_text("Item|V\n" + b, encoding="utf-8")
+    ctx = StubContext()
+    out = act("csv.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out.schema["V"] == dtype and out["V"].to_list() == values
+    assert ctx.warnings == warnings
+
+
+def test_files_with_more_columns_are_looked_at_with_the_files_of_their_format(act, tmp_path):
+    """A file with one more column is looked at together with the other files of its format, as one
+    file: a decimal of more than 15 digits in a.csv makes V exact decimals in all files. Such a file
+    was looked at on its own, and V became text with "(exact decimal, number)"."""
+    (tmp_path / "a.csv").write_text("Item;V\nA;12345678901234,5678\n", encoding="utf-8")
+    (tmp_path / "b.csv").write_text("Item;V;D\nB;1,5;0,5\n", encoding="utf-8")
+    ctx = StubContext()
+    out = act("csv.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out.schema == {"Item": pl.String, "V": pl.Decimal(38, 4), "D": pl.Float64} and not ctx.warnings
+    assert out.rows() == [("A", Decimal("12345678901234.5678"), None), ("B", Decimal("1.5"), 0.5)]
+
+
+def test_files_of_one_format_with_columns_of_their_own_are_looked_at_at_once(act, tmp_path, monkeypatch):
+    """Files whose decimal separators agree on the columns they share are looked at together, also
+    when each has a column of its own: such files were looked at one by one (300 of them took 5 s
+    instead of 3 s)."""
+    for i in range(30):
+        (tmp_path / f"day{i:02d}.csv").write_text(f"Item;Price;c{i}\nA;1,50;{i},5\n", encoding="utf-8")
+    heights, detect = [], detection.detect_types
+    monkeypatch.setattr(detection, "detect_types", lambda data, *args: heights.append(data.height) or detect(data, *args))
+    out = act("csv.import", None, folder(tmp_path, file_column=False))
+    assert heights == [30]
+    assert out.schema["Price"] == pl.Float64 and out["c29"].to_list() == [None] * 29 + [29.5]
 
 
 def test_many_small_files_take_no_long_time(act, tmp_path):

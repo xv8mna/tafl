@@ -157,20 +157,21 @@ def detect_files(
 ) -> list[pl.DataFrame]:
     """``detect_types`` for each of the files of a folder (``frames``, with their ``guesses`` from
     ``guess_decimals``): each file's columns get the types that the file on its own gives them, with
-    its own decimal separators and date formats. Files with the same separators are looked at
-    together, which is as for each one on its own, only faster for many small files; a column that
-    is text there is looked at in each of these files (one can have dates as 31.01.2026, another as
-    2026-01-31). ``between`` runs between the groups of files, e.g. to stop when asked to."""
+    its own decimal separators and date formats. Files whose separators agree on the columns they
+    share are looked at together, as one file: files of one format give what all their rows in one
+    file give; a column that is text there is looked at in each of these files (one can have dates
+    as 31.01.2026, another as 2026-01-31). Then the files are made to fit together as one file of
+    all their values would: a column with only blanks in a file has no values there when another
+    file gives the column a type, and a column of numbers in every file has the numbers that one
+    file of all of them gives (see ``_numbers_of_files``). ``between`` runs between the groups of
+    files, e.g. to stop when asked to."""
     typed = list(frames)
-    groups: dict[tuple, list[int]] = {}
-    for i, (decimal, own) in enumerate(guesses):
-        groups.setdefault((decimal, tuple(sorted(own.items()))), []).append(i)
-    for (decimal, own), members in groups.items():
+    mappings = [{name: own.get(name, decimal) for name in frame.columns} for frame, (decimal, own) in zip(frames, guesses, strict=True)]
+    for decimals, members in _groups(mappings):
         if between is not None:
             between()
-        files, shown = [frames[i] for i in members], dict(own)
+        files = [frames[i] for i in members]
         together = files[0] if len(files) == 1 else pl.concat(files, how="diagonal")
-        decimals = {name: shown.get(name, decimal) for name in together.columns}
         result = detect_types(together, decimals, warn)
         each = _each_file(result, together, files, decimals, warn) if len(files) > 1 else {}
         offset = 0
@@ -180,15 +181,115 @@ def detect_files(
             changes = [found[k] for name, found in each.items() if name in frame.columns]
             typed[i] = part.with_columns(changes) if changes else part
             offset += frame.height
+    if len(frames) > 1:
+        _without_blanks(typed)
+        _numbers_of_files(typed, frames, mappings, warn)
     return typed
+
+
+def _groups(mappings: list[dict[str, str]]) -> list[tuple[dict[str, str], list[int]]]:
+    """The files (by their decimal separator of each column, ``mappings``) in groups whose separators
+    agree on every column that two of them have: each group's separators and files, in file
+    order. A file with more or fewer columns joins the files of its format."""
+    groups: list[tuple[dict[str, str], list[int]]] = []
+    for i, mapping in enumerate(mappings):
+        for decimals, members in groups:
+            if all(decimals.get(name, decimal) == decimal for name, decimal in mapping.items()):
+                decimals.update(mapping)
+                members.append(i)
+                break
+        else:
+            groups.append((dict(mapping), [i]))
+    return groups
+
+
+def _kinds(schemas: list[pl.Schema]) -> dict[str, set[pl.DataType]]:
+    """The types that each column has in these files."""
+    kinds: dict[str, set[pl.DataType]] = {}
+    for schema in schemas:
+        for name, dtype in schema.items():
+            kinds.setdefault(name, set()).add(dtype)
+    return kinds
+
+
+def _blank(s: pl.Series) -> bool:
+    """Whether a text column has only blanks (spaces, "") or no values."""
+    return not (s.alias("value").str.strip_chars().str.len_bytes().max() or 0)
+
+
+def _without_blanks(typed: list[pl.DataFrame]) -> None:
+    """For ``detect_files``: a column that is text in a file only because all its values are blank
+    (spaces, "") has no values there, when another file gives the column a type: as in one file,
+    where blanks beside numbers are empty. A column that is blank in every file stays text."""
+    schemas = [frame.schema for frame in typed]
+    for name, kinds in _kinds(schemas).items():
+        if pl.String not in kinds or len(kinds) < 2:
+            continue
+        for i, schema in enumerate(schemas):
+            if schema.get(name) == pl.String and _blank(typed[i][name]):
+                typed[i] = typed[i].with_columns(pl.lit(None, pl.String).alias(name))
+
+
+def _numbers_of_files(typed: list[pl.DataFrame], texts: Sequence[pl.DataFrame], mappings: list[dict[str, str]], warn: Callable[[str], None]) -> None:
+    """For ``detect_files``: a column of numbers in every file (whole numbers, decimal numbers, exact
+    decimals) whose types Append can't put together without changing a value (a decimal number
+    beside an exact decimal, a whole number beyond 2^53 beside decimal numbers) gets the numbers
+    that one file of all its values gives (see ``_numbers_together``)."""
+    schemas = [frame.schema for frame in typed]
+    for name, kinds in _kinds(schemas).items():
+        numbers = kinds - {pl.String}  # a column of a file can be text without values
+        if len(numbers) < 2 or not all(kind.is_numeric() for kind in numbers):
+            continue
+        where = [i for i, schema in enumerate(schemas) if name in schema and typed[i][name].null_count() < typed[i].height]
+        columns = [typed[i][name] for i in where]
+        if any(column.dtype == pl.String for column in columns) or dtypes.common_type(columns).dtype != pl.String:
+            continue  # text in a file (0815, n/a), as in one file; or Append keeps every value
+        found = _numbers_together(name, columns, [texts[i][name] for i in where], [mappings[i][name] for i in where], warn)
+        for i, column in zip(where, found or [], strict=found is not None):
+            typed[i] = typed[i].with_columns(column.alias(name))
+
+
+def _numbers_together(
+    name: str, columns: list[pl.Series], texts: list[pl.Series], decimals: list[str], warn: Callable[[str], None]
+) -> list[pl.Series] | None:
+    """The numbers of a column in several files (``columns``, from ``texts`` with the decimal
+    separators ``decimals``) as one file of all of them gives them: exact decimals when a decimal
+    number would change one of them (see ``_beyond_floats``), with the decimal places that the
+    values show; beyond the 38 digits of an exact decimal the texts, and ``warn`` is told; else
+    decimal numbers. Each file's texts are read with its own decimal separator. None when a value
+    isn't read as the file read it."""
+    cleaned = [_clean(text.alias("value")) for text in texts]
+    percents = [_fit(text.drop_nulls(), _patterns(decimal)[2]) for text, decimal in zip(cleaned, decimals, strict=True)]
+    parts = list(zip(columns, cleaned, decimals, percents, strict=True))
+    if not any(_beyond_floats(text.drop_nulls(), decimal, percent) for _, text, decimal, percent in parts):
+        found = [  # e.g. a whole number beyond 2^53 that a decimal number keeps, or 10^20
+            column if column.dtype == pl.Float64
+            else column.cast(pl.Float64) if column.dtype.is_integer()
+            else _percentages(text, decimal) if percent
+            else dtypes.parse_numbers(text, decimal)
+            for column, text, decimal, percent in parts
+        ]
+    else:
+        plains = [_plain(text, decimal).to_frame() for text, decimal in zip(cleaned, decimals, strict=True)]
+        plain = pl.concat([frame.select(_hundredths(pl.col("value"))) if percent else frame for frame, percent in zip(plains, percents, strict=True)])
+        exact, longest = _exact_numbers(plain["value"])
+        if exact is None:
+            warn(_too_long(name, pl.concat(cleaned)[longest]))
+            return list(texts)
+        found, offset = [], 0
+        for text in texts:
+            found.append(exact.slice(offset, text.len()))
+            offset += text.len()
+    return found if all(number.null_count() == text.null_count() for number, text in zip(found, cleaned, strict=True)) else None
 
 
 def _each_file(
     result: pl.DataFrame, together: pl.DataFrame, files: list[pl.DataFrame], decimals: Mapping[str, str], warn: Callable[[str], None]
 ) -> dict[str, list[pl.Series]]:
     """For ``detect_files``: the columns that stayed text in ``result`` (the files together), as
-    each file gives them, where every file gives a type: column -> a column for each file. Each
-    column is looked at in one file after the other, up to the first that keeps it text. A column
+    each file gives them, where every file gives a type or has only blanks there (and one gives a
+    type): column -> a column for each file. Each column is looked at in one file after the other,
+    up to the first that keeps it text. A column
     with a word or a code like 0815 in its first values stays text at once: a file with one of
     them gives no type (true and false and date-times like 2026-01-31T08:30 have letters, but they
     can)."""
@@ -213,13 +314,14 @@ def _each_file(
                 found.append(pl.Series(name, [], pl.String))  # not used: the file has no such column
                 continue
             column = detect_types(frame.select(col(name)), {name: decimals[name]}, notes.append)[name]
-            if column.dtype == pl.String and column.null_count() < column.len():
+            if column.dtype == pl.String and not _blank(column):
                 break  # text in this file: text in all of them, as in one file
-            found.append(column)
+            found.append(column)  # only blanks: no values (see _without_blanks)
         else:
-            each[name] = found
-            for message in notes:
-                warn(message)
+            if any(column.dtype != pl.String for column in found):
+                each[name] = found
+                for message in notes:
+                    warn(message)
     return each
 
 
@@ -399,15 +501,23 @@ def _exact(original: pl.Series, text: pl.Series, decimal: str, percent: bool = F
     plain = _plain(text, decimal).to_frame()
     if percent:
         plain = plain.select(_hundredths(pl.col("value")))
-    numbers = plain["value"]
-    counts = plain.select(**_counts(pl.col("value")))
+    exact, longest = _exact_numbers(plain["value"])
+    if exact is None:
+        return original, _too_long(original.name, text[longest])
+    return (exact, None) if exact.null_count() == text.null_count() else None
+
+
+def _exact_numbers(numbers: pl.Series) -> tuple[pl.Series | None, int]:
+    """Numbers as plain text (-1234.50, named "value") as exact decimals with the decimal places
+    they show, or with as few as they need when those are too many: the decimals, or None and the
+    row of the longest number when they need more than the 38 digits of an exact decimal."""
+    counts = numbers.to_frame().select(**_counts(pl.col("value")))
     whole, places = counts["whole"], counts["places"]
     written, most = places.max() or 0, whole.max() or 0
     scale = written if most + written <= _MOST_DIGITS else counts["needed"].max() or 0
     if most + scale > _MOST_DIGITS:
-        return original, _too_long(original.name, text[(whole + places).arg_max()])
-    exact = numbers.cast(pl.Decimal(_MOST_DIGITS, scale), strict=False)
-    return (exact, None) if exact.null_count() == text.null_count() else None
+        return None, (whole + places).arg_max()
+    return numbers.cast(pl.Decimal(_MOST_DIGITS, scale), strict=False), -1
 
 
 def _hundredths(plain: pl.Expr) -> pl.Expr:
