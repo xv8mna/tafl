@@ -598,9 +598,10 @@ def test_a_result_of_exact_decimals_that_loses_digits_says_so():
 def test_a_result_beyond_38_digits_says_how_to_get_a_decimal_number():
     """A result beyond Int64 is an exact decimal: a next formula that made it longer than 38 digits
     stopped with DuckDB's hint to cast it to a decimal with a smaller scale, which doesn't help.
-    The decimal places count too: 12.5 * 10 of two decimals with 18 decimal places (as Spark writes
-    them) needs 36 of them. DuckDB's own text stays for decimals of 18 digits, such as amounts of
-    money: there its hint, a bigger decimal, helps."""
+    Exact decimals whose result is too long for their type are calculated again with 38 digits and
+    the decimal places that their values use: 12.5 * 10 of two decimals with 18 decimal places (as
+    Spark writes them) needed 36 of them and stopped, and DuckDB multiplies amounts of 18 digits in
+    18 ("Overflow in multiplication of DECIMAL(18)", with its hint, a bigger decimal)."""
     needs = (
         "the result needs more than 38 digits, decimal places included, more than an exact number holds. "
         "For a decimal number (about 15 digits) write CAST(... AS DOUBLE)"
@@ -623,15 +624,11 @@ def test_a_result_beyond_38_digits_says_how_to_get_a_decimal_number():
     assert out["Square"].to_list() == [pytest.approx(3.24e38)] * 3
 
     spark = pl.DataFrame({"Price": [Decimal("12.5")], "Quantity": [Decimal(10)]}, schema={"Price": pl.Decimal(38, 18), "Quantity": pl.Decimal(38, 18)})
-    with pytest.raises(ActionError) as raised:
-        expressions.add_columns(spark, [("Total", "[Price] * [Quantity]")])
-    assert str(raised.value) == f"Formula error in [Total]: {needs}\nFormula: [Price] * [Quantity]"
+    assert expressions.add_columns(spark, [("Total", "[Price] * [Quantity]")])["Total"].to_list() == [125.0]
     assert expressions.add_columns(spark, [("Total", "CAST([Price] AS DOUBLE) * [Quantity]")])["Total"].to_list() == [125.0]
 
     money = pl.DataFrame({"Amount": [Decimal(10_000_000)], "Rate": [Decimal(10_000_000)]}, schema={"Amount": pl.Decimal(18, 2), "Rate": pl.Decimal(18, 2)})
-    with pytest.raises(ActionError) as raised:
-        expressions.add_columns(money, [("Total", "[Amount] * [Rate]")])
-    assert re.fullmatch(r"Formula error in \[Total\]: Overflow in multiplication of DECIMAL\(18\) \(.*\)\. .* a bigger decimal\.\nFormula: \[Amount\] \* \[Rate\]", str(raised.value))
+    assert expressions.add_columns(money, [("Total", "[Amount] * [Rate]")])["Total"].to_list() == [1e14]
     assert expressions.add_columns(money, [("Total", "CAST([Amount] AS DECIMAL(38, 2)) * [Rate]")])["Total"].to_list() == [1e14]
 
 
@@ -936,15 +933,16 @@ def test_a_sum_beyond_38_digits_stops():
     """DuckDB adds up exact decimals without checking their 38 digits: SUM() OVER () of 6×10^37
     twice gave a text of 39 digits, while [v] + [v] stopped. Such a sum is calculated again with the
     decimal places that the values use; only when it still needs more than 38 digits does it stop
-    (a sum of 6000000000000000000.5 twice with 19 decimal places is a decimal number, as in 0.6.3).
-    Whole numbers of 128 bits keep their 39 digits as text, as before."""
+    (a sum of 6000000000000000000.5 twice with 19 decimal places is a decimal number, as in 0.6.3;
+    so is [v] + [v] of them, which stopped in 0.6.4). Whole numbers of 128 bits keep their 39
+    digits as text, as before."""
     needs = "the result needs more than 38 digits, decimal places included"
     whole = pl.DataFrame({"v": pl.Series([Decimal(6 * 10**37)] * 2, dtype=pl.Decimal(38, 0))})
     scaled = pl.DataFrame({"v": pl.Series([Decimal("6000000000000000000.5")] * 2, dtype=pl.Decimal(38, 19))})
-    for df, formula in [(whole, "SUM([v]) OVER ()"), (whole, "[v] + [v]"), (whole, "LIST_SUM(LIST_VALUE([v], [v]))"), (scaled, "[v] + [v]")]:
-        with pytest.raises(ActionError, match=needs):  # [v] + [v] by its decimal places, as in 0.6.3
+    for df, formula in [(whole, "SUM([v]) OVER ()"), (whole, "[v] + [v]"), (whole, "LIST_SUM(LIST_VALUE([v], [v]))")]:
+        with pytest.raises(ActionError, match=needs):
             expressions.evaluate(df, formula)
-    for formula in ("SUM([v]) OVER ()", "LIST_SUM(LIST_VALUE([v], [v]))"):
+    for formula in ("SUM([v]) OVER ()", "LIST_SUM(LIST_VALUE([v], [v]))", "[v] + [v]"):
         assert expressions.evaluate(scaled, formula).to_list() == [pytest.approx(1.2e19)] * 2
     assert expressions.evaluate(whole, "SUM([v]) OVER () - [v]").to_list() == [Decimal(6 * 10**37)] * 2
     wide = pl.DataFrame({"h": pl.Series([6 * 10**37] * 2, dtype=pl.Int128)})

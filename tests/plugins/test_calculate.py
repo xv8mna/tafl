@@ -49,6 +49,24 @@ def test_formulas_on_exact_decimals_say_which_values_lost_digits(act):
     ]
 
 
+def test_formulas_on_amounts_of_18_digits_are_calculated_in_38_when_they_need_it(act):
+    """DuckDB multiplies exact decimals of up to 18 digits in 18 digits: [Amount] * 1.5 on a
+    decimal(18, 4) amount of 70,000,000,000,000 stopped with "Overflow in multiplication of
+    DECIMAL(18) … add an explicit cast", also after Fill empty values (0.6.4's Fill made the column a
+    decimal(38, 4)), and so did the function list's Change in % on a change of 100 billion. Such a
+    formula is calculated again with the amounts in 38 digits, as after a cast error."""
+    df = pl.DataFrame({"Amount": pl.Series([D("70000000000000.0000"), None, D("1.5")], dtype=pl.Decimal(18, 4))})
+    filled = act("rows.fill", df, {"columns": ["Amount"], "method": "value", "value": "0"})
+    out = act("calc.columns", filled, {"columns": [{"name": "Gross", "formula": "[Amount] * 1.5"}]})
+    assert out["Gross"].to_list() == [105000000000000.0, 0.0, 2.25]
+    change = "100.0 * ([Amount] - LAG([Amount]) OVER (ORDER BY [Date])) / NULLIF(LAG([Amount]) OVER (ORDER BY [Date]), 0)"
+    days = pl.DataFrame(
+        {"Date": [dt.date(2025, 1, 1), dt.date(2025, 1, 2)], "Amount": pl.Series([D("120000000000.0000"), D("10.0000")], dtype=pl.Decimal(18, 4))}
+    )
+    changed = act("calc.columns", days, {"columns": [{"name": "Change", "formula": change}]})["Change"].to_list()
+    assert changed[0] is None and changed[1] == pytest.approx(-99.99999999166667)
+
+
 def test_two_new_columns_need_different_names(act, people):
     with pytest.raises(ActionError, match="Two new columns are named “test” \\(rows 2 and 3\\)"):
         act("calc.columns", people, {"columns": [

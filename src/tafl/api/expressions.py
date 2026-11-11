@@ -132,6 +132,8 @@ _TIME_MIX = re.compile(  # not TIME WITH TIME ZONE (TIMETZ), for which a CAST AS
 )
 # DuckDB's message when a value doesn't fit into the exact decimal it brings two of them to
 _DECIMAL_CAST = re.compile(r"(?:Casting value .*? to type|Could not cast value .*? to) DECIMAL\((\d+),\s*\d+\)")
+# ... and when a result of exact decimals doesn't fit their type: 18 digits of DECIMAL(18, 4) amounts times 1.5
+_DECIMAL_OVERFLOW = re.compile(r"Overflow in \w+ of DECIMAL\(\d+\)")
 # DuckDB's messages when a function or an operator gets values of a type it doesn't take (see _text_hint)
 _CALL = re.compile(
     r"No function matches the given name and argument types '([^\n]+)'\. You might need"
@@ -522,11 +524,13 @@ def _wider(
     error: Exception, frame: pl.DataFrame, kinds: dict[str, str], unsigned: Sequence[str], tried: set[str]
 ) -> dict[str, str] | None:
     """The types to try a formula again with after ``error``, once each; None when there are none.
-    Exact decimals that DuckDB brings to one type, or that its SUM makes too long: each column as
+    Exact decimals that DuckDB brings to one type, whose result is too long for their type (DuckDB
+    multiplies DECIMAL(18, 4) amounts in 18 digits), or that its SUM makes too long: each column as
     DECIMAL(38, the decimal places its values use), as long as they fit (the text of such a decimal
     loses its last zeros, 1.50 becomes 1.5: only then). Unsigned 64-bit numbers below 2^63, which go
     as BIGINT: as HUGEINT after an overflow, as an unsigned number held them."""
-    if (isinstance(error, _TooLong) or _DECIMAL_CAST.search(str(error))) and "decimals" not in tried:
+    text = str(error)
+    if (isinstance(error, _TooLong) or _DECIMAL_CAST.search(text) or _DECIMAL_OVERFLOW.search(text)) and "decimals" not in tried:
         tried.add("decimals")
         return _decimal_kinds(frame, kinds)
     if unsigned and "unsigned" not in tried and re.search(r"Overflow in \w+ of INT64", str(error)):
