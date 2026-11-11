@@ -851,9 +851,10 @@ def _cut_seconds(
     names: dict[str, str] | None = None,
     table: str = "",
 ) -> list[str]:
-    """Warnings for the columns of ``df`` whose values lose digits of a second in their SQL Server
-    column, with how many and an example, the same in every mode (``fit_frame`` cuts them as the
-    driver does): a datetime2, time or datetimeoffset column holds as many digits as its type says
+    """The warning for the columns of ``df`` whose values lose digits of a second in their SQL
+    Server column, the same in every mode (``fit_frame`` cuts them as the driver does): one
+    warning, with how many values and an example for each of the first 3 columns, then how many
+    more columns there are: a datetime2, time or datetimeoffset column holds as many digits as its type says
     (datetime2(0) whole seconds, 08:00:00.5 is 08:00:00 there), a datetime column 3 (in steps of
     1/300 s, to which SQL Server rounds them), and the driver passes no digits below a microsecond
     (a column of 7 digits holds them). ``texts``: for the columns read from texts
@@ -869,11 +870,10 @@ def _cut_seconds(
         (col(name).dt.nanosecond() % 10 ** (9 - held[name][0]) != 0).fill_null(False).sum() for name in by_value
     ).row(0) if by_value else ())}  # fmt: skip
     found = counted | {name: texts[name] for name in held if name in texts}
-    warnings = []
-    for name in (name for name in df.columns if name in found):  # in the order of the columns
+    cut = [name for name in df.columns if name in found and found[name][0]]  # in the order of the columns
+    entries = []
+    for name in cut[:_CUT_SHOWN]:  # an example for the first ones only: one warning says it all
         count, shown, row = found[name]
-        if not count:
-            continue
         kept, size = held[name]
         values = df[name].alias("value")  # a fixed name, as in _round_half_away
         if row < 0:  # the first value with such digits
@@ -883,18 +883,33 @@ def _cut_seconds(
             shown = f"'{shown}'"
         written = _digits_of_a_second(values.slice(row, 1), kept)
         written = written if written.dtype == pl.String else pl.select(dtypes.text_expr(pl.lit(written), written.dtype)).to_series()
+        driver = kept == 6 and size == 7
+        entries.append((name, count, _CUT_TO.get(kept, f"{kept} digits of a second"), f"{shown} is {written[0]}", driver, kept))
+    if not entries:
+        return []
+    if len(cut) == 1:
+        name, count, unit, example, driver, kept = entries[0]
         values_were = "1 value was" if count == 1 else f"{count:,} values were"
-        if kept == 6 and size == 7:
+        if driver:
             why = "SQL Server's driver passes no smaller parts of a second"
         else:
             holds = "no parts of a second" if kept == 0 else f"{kept} digit{'s' if kept != 1 else ''} of a second"
             why = f"the column {(names or {}).get(name, name)} of {table} holds {holds} ({types[name]})"
-        unit = _CUT_TO.get(kept, f"{kept} digits of a second")
-        warnings.append(f"{name}: {values_were} cut to {unit} (e.g. {shown} is {written[0]}): {why}")
-    return warnings
+        return [f"{name}: {values_were} cut to {unit} (e.g. {example}): {why}"]
+    listed = [
+        f"{name}: {count:,} value{'s' if count != 1 else ''} to {unit} (e.g. {example}; "
+        + ("SQL Server's driver passes no smaller parts of a second" if driver else types[name])
+        + ")"
+        for name, count, unit, example, driver, _kept in entries
+    ]
+    more = len(cut) - len(entries)
+    if more:
+        listed.append(f"and {more:,} more column{'s' if more != 1 else ''}")
+    return [f"Parts of a second that their columns don't hold were cut in {len(cut):,} columns: " + "; ".join(listed) + "."]
 
 
 _CUT_TO = {0: "whole seconds", 1: "1 digit of a second", 3: "milliseconds", 6: "whole microseconds"}
+_CUT_SHOWN = 3  # columns that the warning about cut digits of a second shows, each with an example
 
 
 def _second_digits(sql_type: str, text: bool) -> tuple[int, int] | None:

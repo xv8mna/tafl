@@ -1886,6 +1886,24 @@ def test_sqlserver_warns_of_digits_of_a_second_that_are_cut(values, kind, warnin
     assert databases._cut_seconds(df, types, texts, names, "dbo.T") == ([warning] if warning else [])
 
 
+def test_sqlserver_warns_once_of_digits_of_a_second_cut_in_several_columns():
+    """One warning for all columns, with how many values and an example for each of the first 3,
+    then how many more columns: a wide export gave a warning for each column."""
+    moment, whole = dt.datetime(2026, 10, 1, 8, 0, 0, 500000), dt.datetime(2026, 10, 1, 8)
+    df = pl.DataFrame({
+        "A": [moment, moment], "B": [dt.time(8, 0, 0, 250000), dt.time(8)], "C": ["08:00:00.25", "08:00"], "D": [moment, whole],
+        "E": [whole, moment], "F": [whole, whole],
+    })  # fmt: skip
+    types = {"A": "datetime2(0)", "B": "time(1)", "C": "time(0)", "D": "datetime2(0)", "E": "datetimeoffset(0)", "F": "datetime2(0)"}
+    names = {c: c for c in df.columns}
+    df, texts = databases._read_date_texts(df, names, types, "dbo.T", "sqlserver")
+    assert databases._cut_seconds(df, types, texts, names, "dbo.T") == [
+        "Parts of a second that their columns don't hold were cut in 5 columns: A: 2 values to whole seconds (e.g. 2026-10-01 "
+        "08:00:00.500 is 2026-10-01 08:00:00; datetime2(0)); B: 1 value to 1 digit of a second (e.g. 08:00:00.250 is "
+        "08:00:00.200; time(1)); C: 1 value to whole seconds (e.g. '08:00:00.25' is 08:00:00; time(0)); and 2 more columns."
+    ]
+
+
 def test_sqlserver_datetimeoffset_is_read_as_a_moment_in_utc(registry):
     """It was text with 6 digits of a second (2026-10-01T08:00:01.123456+02:00); now a date-time
     in UTC. pyodbc describes it as text: with digits of a second it has a scale, without them it
@@ -1963,7 +1981,8 @@ df = databases._fit_whole_numbers(df, targets, types, "dbo.T", "sqlserver")
 df = databases._fit_lengths(df, targets, types, "dbo.T", [])
 warnings = databases._cut_seconds(df, types, texts, targets, "dbo.T")
 df = databases.SqlServer.fit_frame(df, types)
-assert df.width == width and len(warnings) == width // len(kinds), len(warnings)  # the time(0) columns (datetime: no warning)
+assert df.width == width and len(warnings) == 1, len(warnings)  # one for the time(0) columns (datetime: no warning)
+assert warnings[0].startswith(f"Parts of a second that their columns don't hold were cut in {width // len(kinds):,} columns: c0: "), warnings
 assert df["*"][0] == dt.date(2026, 10, 1) and df["^a.*$"][0] == dt.datetime(2026, 10, 1, 8), df.row(0)[:2]
 described = [(name, str if i % 2 else dt.datetime, None, 26, 26, 7 * (i % 2 == 0), True) for i, name in enumerate(names)]
 read = pl.DataFrame({name: pl.Series([None], dtype=pl.Null) if i % 2 else [dt.datetime(2026, 10, 1, 8, 0, 1, 5)] for i, name in enumerate(names)})

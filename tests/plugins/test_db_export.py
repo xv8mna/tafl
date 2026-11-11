@@ -715,11 +715,11 @@ def test_sqlserver_cuts_digits_below_a_microsecond_with_a_warning(registry):
 
     try:
         export(data)
-        assert ctx.warnings == [
-            "Stamp: 2 values were cut to whole microseconds (e.g. 2025-01-01 08:30:00.000000001 is 2025-01-01 08:30:00): "
-            "SQL Server's driver passes no smaller parts of a second",
-            "Clock: 1 value was cut to whole microseconds (e.g. 08:30:00.000000001 is 08:30:00): SQL Server's driver passes "
-            "no smaller parts of a second",
+        assert ctx.warnings == [  # one warning for all columns
+            "Parts of a second that their columns don't hold were cut in 2 columns: Stamp: 2 values to whole microseconds (e.g. "
+            "2025-01-01 08:30:00.000000001 is 2025-01-01 08:30:00; SQL Server's driver passes no smaller parts of a second); Clock: "
+            "1 value to whole microseconds (e.g. 08:30:00.000000001 is 08:30:00; SQL Server's driver passes no smaller parts of a "
+            "second)."
         ]
         with ctx.database("server") as db:
             rows = db.read(f"SELECT N, CONVERT(nvarchar(30), Stamp, 121) AS S, CONVERT(nvarchar(30), Clock) AS C FROM {name} ORDER BY N")
@@ -732,17 +732,21 @@ def test_sqlserver_cuts_digits_below_a_microsecond_with_a_warning(registry):
         with pytest.raises(ActionError, match=message):  # as the column holds them, rows 1 and 2 have one key
             export(data.with_columns(N=pl.col("N") * 10), mode="update", key_columns=["Stamp"])
         export(data.with_columns(N=pl.col("N") * 10).tail(1), mode="update", key_columns=["Stamp"])
-        assert ctx.messages[-1] == ("info", f"{name}: updated 1 row") and len(ctx.warnings) == 2
+        assert ctx.messages[-1] == ("info", f"{name}: updated 1 row") and len(ctx.warnings) == 1
         with ctx.database("server") as db:
             db.execute(f"DROP TABLE {name}")
             db.execute(f"CREATE TABLE {name} (N int, Stamp datetime2(3), Clock time(6))")
         export(data)
-        assert ctx.warnings[2:] == [
-            f"Stamp: 3 values were cut to milliseconds (e.g. 2025-01-01 08:30:00.000000001 is 2025-01-01 08:30:00): the column "
-            f"Stamp of {name} holds 3 digits of a second (datetime2(3))",
-            f"Clock: 1 value was cut to whole microseconds (e.g. 08:30:00.000000001 is 08:30:00): the column Clock of {name} "
-            "holds 6 digits of a second (time(6))",
+        assert ctx.warnings[1:] == [
+            "Parts of a second that their columns don't hold were cut in 2 columns: Stamp: 3 values to milliseconds (e.g. "
+            "2025-01-01 08:30:00.000000001 is 2025-01-01 08:30:00; datetime2(3)); Clock: 1 value to whole microseconds (e.g. "
+            "08:30:00.000000001 is 08:30:00; time(6))."
         ]
+        export(data.select("N", "Stamp"))
+        assert ctx.warnings[-1] == (  # one column: as before
+            f"Stamp: 3 values were cut to milliseconds (e.g. 2025-01-01 08:30:00.000000001 is 2025-01-01 08:30:00): the column "
+            f"Stamp of {name} holds 3 digits of a second (datetime2(3))"
+        )
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
