@@ -298,6 +298,30 @@ def test_fill_with_more_decimal_places_than_the_values_of_the_column_allow(act):
     assert act("rows.fill", empty, {"columns": ["d"], "method": "value", "value": "0," + "1" * 37})["d"][0] == D("0." + "1" * 37)
 
 
+def test_filling_exact_decimals_keeps_their_type(act):
+    """Polars made a filled column of exact decimals one of 38 digits: a decimal(10, 2) filled with 0
+    became a decimal(38, 2), with -0,00001 a decimal(38, 5), and an ID of decimal(30, 0) a
+    decimal(38, 0); a SQLite export then wrote text where it wrote numbers, and a new SQL Server
+    table got decimal(38, 2). The column keeps its type when the value fits it, and gets only the
+    decimal places and the digits before the point that the value needs."""
+    df = pl.DataFrame(
+        {
+            "Small": pl.Series([D("1.50"), None, D("-12345678.99")], dtype=pl.Decimal(10, 2)),
+            "ID": pl.Series([D("12345678901234567890123"), None, D("5")], dtype=pl.Decimal(30, 0)),
+        }
+    )
+    filled = act("rows.fill", df, {"columns": ["Small", "ID"], "method": "value", "value": "0"})
+    assert filled.schema == df.schema
+    assert filled.rows() == [(D("1.50"), D("12345678901234567890123")), (D("0.00"), D("0")), (D("-12345678.99"), D("5"))]
+    tiny = act("rows.fill", df, {"columns": ["Small", "ID"], "method": "value", "value": "-0,00001"})
+    assert tiny.schema == {"Small": pl.Decimal(13, 5), "ID": pl.Decimal(35, 5)}
+    assert tiny["Small"].to_list() == [D("1.5"), D("-0.00001"), D("-12345678.99")] and tiny["ID"][1] == D("-0.00001")
+    big = act("rows.fill", df, {"columns": ["Small"], "method": "value", "value": "123.456.789.012,5"})
+    assert big.schema["Small"] == pl.Decimal(14, 2) and big["Small"].to_list() == [D("1.5"), D("123456789012.5"), D("-12345678.99")]
+    wide = pl.DataFrame({"Max": pl.Series([D("5"), None], dtype=pl.Decimal(38, 0))})
+    assert act("rows.fill", wide, {"columns": ["Max"], "method": "value", "value": "0,5"}).schema["Max"] == pl.Decimal(38, 1)
+
+
 def test_fill_exact_decimals_with_long_values_that_fit(act, decimals):
     filled = act("rows.fill", decimals, {"columns": ["ID", "Small"], "method": "value", "value": "1" * 36})
     assert filled["ID"].to_list()[3] == D("1" * 36) and filled["Small"].to_list()[3] == D("1" * 36)
@@ -1382,6 +1406,7 @@ def test_contains_on_long_decimal_columns_stays_small_in_memory():
 _WIDE = """
 import datetime as dt
 import time
+from decimal import Decimal
 
 import polars as pl
 
@@ -1398,6 +1423,7 @@ stamps = pl.DataFrame({f"d{i}": pl.Series([day, None, day + dt.timedelta(millise
 later = dt.datetime(2025, 1, 1, 8, 30, 0, 500)
 decimals = pl.DataFrame({f"f{i}": [17.0, 2.5, 1e16, None] for i in range(4001)})
 longer = pl.DataFrame({f"f{i}": [17.0, 2.5, 1e16, None] * 16 + [17.0, 2.5] for i in range(4001)})  # 66 rows
+exact = pl.DataFrame({f"e{i}": pl.Series([Decimal("1.50"), None, Decimal("2")], dtype=pl.Decimal(10, 2)) for i in range(4001)})
 steps = [
     # the text of decimal numbers: 17, 2.5, 10000000000000000 (Python wrote it in each thread of Polars)
     ("filter decimal texts", keep, decimals, {"conditions": [{"column": c, "operator": "contains", "value": "17"}
@@ -1414,6 +1440,9 @@ steps = [
      [(day,), (later,), (day + dt.timedelta(milliseconds=1),)]),
     ("filter date-times", keep, stamps, {"conditions": [{"column": c, "operator": ">", "value": "2025-01-01 08:30:00.0005"}
      for c in stamps.columns]}, [(day + dt.timedelta(milliseconds=1),)]),
+    # exact decimals keep their type: decimal(10, 2), not decimal(38, 2)
+    ("fill exact decimals", fill, exact, {"columns": exact.columns, "method": "value", "value": "0"},
+     [(Decimal("1.50"),), (Decimal("0.00"),), (Decimal("2.00"),)]),
 ]
 for label, action, df, params, rows in steps:
     start = time.perf_counter()
@@ -1421,6 +1450,7 @@ for label, action, df, params, rows in steps:
     seconds = time.perf_counter() - start
     assert out.width == 4001 and out.rows() == [row * 4001 for row in rows], (label, out.shape)
     assert seconds < 5, f"{label} took {seconds:.1f} s"  # 30 s and more when every column made the table's schema anew
+    assert out.schema == df.schema or label == "fill date-times", label
 """
 
 

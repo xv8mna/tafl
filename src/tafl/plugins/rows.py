@@ -266,6 +266,11 @@ def fill(df, p, ctx):
                     f"'{p.value}' doesn't fit column '{name}': with it the column holds decimal numbers, which keep "
                     f"about 15 digits, so it would become {becomes}"
                 )
+            if isinstance(value, Decimal) and isinstance(dtype, pl.Decimal):  # Polars would make it a decimal(38, …)
+                target = _decimal_type_with(dtype, value)
+                widened = column if target == dtype else column.cast(target)
+                updates.append(widened.fill_null(pl.lit(value, dtype=target)).alias(name))
+                continue
             updates.append(column.fill_null(_for_polars(value, dtype)).alias(name))
         else:
             updates.append(column.fill_null(strategy="forward" if p.method == "down" else "backward").alias(name))
@@ -525,6 +530,18 @@ def _fits_decimal(value: Decimal, scale: int) -> bool:
     more decimal places if it needs them."""
     places = max(scale, -value.as_tuple().exponent)
     return places <= _DECIMAL_DIGITS and value.copy_abs() < Decimal(1).scaleb(_DECIMAL_DIGITS - places)
+
+
+def _decimal_type_with(dtype: pl.DataType, value: Decimal) -> pl.DataType:
+    """The type of an exact decimal column (``dtype``) that is filled with ``value``: its own, or with
+    the decimal places and the digits before the point that the value needs too, at most 38 digits
+    (``_fits_decimal`` and ``_too_long_with`` say whether the value and the column's values fit). A
+    filled column of Polars has 38 digits: a database export would make a column of them, and SQLite
+    one of text."""
+    _, digits, exponent = value.as_tuple()
+    places = max(dtype.scale, -exponent)
+    whole = max((dtype.precision or _DECIMAL_DIGITS) - dtype.scale, len(digits) + exponent)
+    return pl.Decimal(min(whole + places, _DECIMAL_DIGITS), places)
 
 
 def _too_long_with(values: pl.Series, value: Decimal) -> Decimal | None:
