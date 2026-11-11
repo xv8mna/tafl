@@ -408,6 +408,26 @@ def test_decimals_of_more_than_15_digits_keep_them(act, tmp_path):
     ]
 
 
+def test_whole_parts_beyond_int64_keep_their_digits_in_amounts_and_percentages(act, tmp_path):
+    """2^63 (9223372036854775808), which a decimal number holds, stayed one as an amount, with ,0
+    and as a percentage, and an export wrote 9223372036854780000. A whole part beyond
+    9,223,372,036,854,775,807 makes exact decimals, as whole numbers beyond it do."""
+    (tmp_path / "b.csv").write_text(
+        "Amount;Minus;Comma;Share\n"
+        "9.223.372.036.854.775.808 €;9223372036854775808-;9223372036854775808,0;922337203685477580800%\n"
+        "1,00 €;5-;5,5;5%\n",
+        encoding="utf-8",
+    )
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "b.csv")}, ctx)
+    assert df.schema == {"Amount": pl.Decimal(38, 2), "Minus": pl.Decimal(38, 0), "Comma": pl.Decimal(38, 1), "Share": pl.Decimal(38, 2)}
+    big = Decimal(2**63)
+    assert df.rows() == [(big, -big, big, big), (Decimal(1), Decimal(-5), Decimal("5.5"), Decimal("0.05"))] and not ctx.warnings
+    act("csv.export", df, {"file": str(tmp_path / "out.csv")})
+    lines = (tmp_path / "out.csv").read_text(encoding="utf-8-sig").splitlines()
+    assert lines[1] == "9223372036854775808,00;-9223372036854775808;9223372036854775808,0;9223372036854775808,00"
+
+
 def test_decimals_that_a_decimal_number_keeps_stay_decimal_numbers(act, tmp_path):
     """A program writes its decimal numbers with as many digits as tell them apart, up to 17:
     0.3333333333333333 and 0.30000000000000004 come back from a decimal number with the same digits,

@@ -326,7 +326,7 @@ def _decimal_numbers(original: pl.Series, column: pl.Series, decimal: str) -> tu
     neither."""
     if column.str.contains(r"^\s*[+-]?0[0-9]").any():
         return original, None
-    if not _tiny(column, decimal):  # the texts as they are: spaces around them don't change the numbers
+    if not _beyond_digits(column, decimal):  # the texts as they are: spaces around them don't change the numbers
         return None
     return _exact(original, _clean(column), decimal)
 
@@ -336,7 +336,7 @@ def _beyond_floats(values: pl.Series, decimal: str, percent: bool = False) -> bo
     pattern of numbers, also with spaces around them; with ``percent``, divided by 100): one that
     its decimal number gives back with other digits (``dtypes.float_loses_digits``:
     12345678901234.5678, not 0.30000000000000004 or 0.3333333333333333, which a program writes for
-    its decimal numbers), or one too close to 0 (``_tiny``). Only numbers of more than 15 digits can
+    its decimal numbers), or one of ``_beyond_digits``. Only numbers of more than 15 digits can
     be such a number; the first of them are looked at first: in a column of them, one tells."""
     rows = (values.str.len_bytes() > _FLOAT_DIGITS).fill_null(False).arg_true()  # shorter ones have at most 15 digits
     for part in (rows.head(_SAMPLE), rows.slice(_SAMPLE)):
@@ -348,21 +348,29 @@ def _beyond_floats(values: pl.Series, decimal: str, percent: bool = False) -> bo
         plain = plain.select(_hundredths(pl.col("value"))) if percent else plain
         if dtypes.float_loses_digits(plain["value"], ".").any():
             return True
-    return _tiny(values, decimal)
+    return _beyond_digits(values, decimal, percent)
 
 
-def _tiny(values: pl.Series, decimal: str) -> bool:
-    """Whether one of these numbers is so close to 0 that its decimal number is 0 (below about
-    1e-307): ``dtypes.float_loses_digits`` looks at the digits, and such a number has few. It is
-    written with more than 300 characters."""
-    rows = (values.str.len_bytes() > 300).fill_null(False).arg_true()
+def _beyond_digits(values: pl.Series, decimal: str, percent: bool = False) -> bool:
+    """Whether one of these numbers is beyond decimal numbers whatever its digits: so close to 0
+    that its decimal number is 0 (below about 1e-307), or with a whole part beyond Int64
+    (9,223,372,036,854,775,807) of more than 15 significant digits: a decimal number holds some of
+    them, as 2^63, but an export writes them with 15 digits (9223372036854780000), while 1.5e20 is
+    written as it is. ``dtypes.float_loses_digits`` looks at the digits only. Such a number takes
+    more than 18 characters."""
+    rows = (values.str.len_bytes() > 18).fill_null(False).arg_true()
     if not rows.len():
         return False
     plain = _plain(values.gather(rows), decimal).to_frame()
+    plain = plain.select(_hundredths(pl.col("value"))) if percent else plain
     counts = _counts(pl.col("value"))
     number = pl.col("value").str.strip_chars_start("+-").str.strip_chars_start("0")  # .000123 for 0.000123
     zeros = number.str.len_bytes().cast(pl.Int64) - number.str.strip_chars_start(".0").str.len_bytes().cast(pl.Int64) - 1
-    return bool(plain.select(((counts["whole"] == 0) & (counts["significant"] > 0) & (zeros > 306)).any()).item())
+    tiny = (counts["whole"] == 0) & (counts["significant"] > 0) & (zeros > 306)
+    whole = number.str.head(counts["whole"])  # the digits before the point
+    beyond = (counts["whole"] > 19) | ((counts["whole"] == 19) & (whole.cast(pl.UInt64, strict=False) > 2**63 - 1))
+    big = beyond & (whole.str.strip_chars_end("0").str.len_bytes() > _FLOAT_DIGITS)
+    return bool(plain.select((tiny | big).any()).item())
 
 
 def _counts(plain: pl.Expr) -> dict[str, pl.Expr]:
