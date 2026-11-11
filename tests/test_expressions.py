@@ -595,6 +595,36 @@ def test_a_result_of_exact_decimals_that_loses_digits_says_so():
     assert expressions.evaluate(df, "[Amount]").to_list()[0] == 12345678901234.568  # no warn: as before
 
 
+def test_a_result_of_decimal_numbers_from_exact_decimals_that_lose_digits_says_so():
+    """DuckDB divides and averages exact decimals as decimal numbers: [A] / 2 gave 6172839450617.284
+    from 12345678901234.5678 without a warning, while [A] * 0.5 (an exact result) warned. Now a
+    result of decimal numbers says which exact decimals it read lost digits; one from exact
+    decimals that a decimal number keeps, and one from other columns, says nothing."""
+    df = pl.DataFrame(
+        {
+            "A": pl.Series([Decimal("12345678901234.5678"), Decimal("12345678901234.5677")], dtype=pl.Decimal(18, 4)),
+            "Small": pl.Series([Decimal("1.5"), Decimal("2.25")], dtype=pl.Decimal(18, 4)),
+            "Date": [1, 2],
+            "F": [1.5, 2.5],
+        }
+    )
+    told = (
+        "2 value(s) of [A] were rounded, e.g. 12345678901234.5678 to 12345678901234.568: the formula calculates with them "
+        "as decimal numbers, which keep about 15 digits"
+    )
+    for formula in ("[A] / 2", "[A] / 100", "[A] / 1", "AVG([A]) OVER (ORDER BY [Date] ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)"):
+        warnings: list[str] = []
+        assert expressions.evaluate(df, formula, warn=warnings.append).dtype == pl.Float64
+        assert warnings == [told], formula
+    for formula in ("[Small] / 2", "[F] / 2", "[Date] / 3", "AVG([Small]) OVER ()", "[A] > 1"):
+        warnings = []
+        expressions.evaluate(df, formula, warn=warnings.append)
+        assert warnings == [], formula
+    warnings = []
+    expressions.evaluate(df, "[A] * 0.5", warn=warnings.append)  # an exact result: its own warning, once
+    assert len(warnings) == 1 and warnings[0].startswith("2 value(s) were rounded, e.g. 6172839450617.2839 to")
+
+
 def test_the_example_of_lost_digits_has_no_zeros_of_the_type():
     """The example kept the zeros of the result's decimal places: "e.g.
     13580246791358.0245800000000000000000 to 13580246791358.025"."""

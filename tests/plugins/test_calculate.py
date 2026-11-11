@@ -49,6 +49,19 @@ def test_formulas_on_exact_decimals_say_which_values_lost_digits(act):
     ]
 
 
+def test_a_division_of_exact_decimals_says_which_column_lost_digits(act):
+    """[Net] / 2 of decimal(18, 4) amounts gave decimal numbers without a warning; [Net] * 0.5
+    warned. Both warn now, the division with the column it read."""
+    df = pl.DataFrame({"Net": pl.Series([D("12345678901234.5678"), D("2.5")], dtype=pl.Decimal(18, 4))})
+    ctx = StubContext()
+    out = act("calc.columns", df, {"columns": [{"name": "Half", "formula": "[Net] / 2"}]}, ctx)
+    assert out["Half"].to_list() == [6172839450617.284, 1.25]
+    assert ctx.warnings == [
+        "[Half]: 1 value(s) of [Net] were rounded, e.g. 12345678901234.5678 to 12345678901234.568: the formula "
+        "calculates with them as decimal numbers, which keep about 15 digits"
+    ]
+
+
 def test_formulas_on_amounts_of_18_digits_are_calculated_in_38_when_they_need_it(act):
     """DuckDB multiplies exact decimals of up to 18 digits in 18 digits: [Amount] * 1.5 on a
     decimal(18, 4) amount of 70,000,000,000,000 stopped with "Overflow in multiplication of

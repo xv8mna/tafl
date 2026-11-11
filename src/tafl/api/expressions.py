@@ -437,6 +437,10 @@ def _evaluate(df: pl.DataFrame, formula: str, *, condition: bool, warn: Callable
         )
     if warn is not None and isinstance(values.dtype, pl.Decimal) and values.dtype.scale:
         _warn_rounded(values, warn)
+    elif warn is not None and values.dtype.is_float():  # DuckDB divides and averages exact decimals as decimal numbers
+        for name, dtype in df.schema.items():
+            if isinstance(dtype, pl.Decimal) and reads(name):
+                _warn_read_rounded(df[name], name, warn)
     return normalize(values)
 
 
@@ -451,6 +455,20 @@ def _warn_rounded(values: pl.Series, warn: Callable[[str], None]) -> None:
         warn(
             f"{count:,} value(s) were rounded, e.g. {_exact_text(exact[0])} to {rounded}: a formula's result with decimal "
             "places is a decimal number, which keeps about 15 digits (CAST(... AS VARCHAR) keeps them all, as text)"
+        )
+
+
+def _warn_read_rounded(values: pl.Series, name: str, warn: Callable[[str], None]) -> None:
+    """A formula whose result is a decimal number calculates with the exact decimals of the column
+    ``name`` (``values``) as decimal numbers, which keep about 15 digits (DuckDB divides them so:
+    [Amount] / 2, AVG([Amount]) OVER ...): ``warn`` is told how many of them lost digits, with one."""
+    lost = float_loses_digits(values)
+    if count := lost.sum():
+        exact = values.filter(lost).head(1)
+        rounded = pl.select(text_expr(pl.lit(exact.cast(pl.Float64)), pl.Float64)).item()
+        warn(
+            f"{count:,} value(s) of [{name}] were rounded, e.g. {_exact_text(exact[0])} to {rounded}: the formula "
+            "calculates with them as decimal numbers, which keep about 15 digits"
         )
 
 
