@@ -244,7 +244,7 @@ def test_warnings_give_different_examples(act):
     ctx = StubContext()
     change(act, pl.DataFrame({"v": ["12345678901234567890", "12345678901234567890", "1"]}), "v", "number", ctx=ctx)
     assert ctx.warnings == [
-        "v: 2 value(s) were rounded, e.g. '12345678901234567890': a decimal number keeps about 15 digits (Whole number and Text keep them all)"
+        "v: 2 value(s) were rounded, e.g. '12345678901234567890': a decimal number keeps about 15 digits (Text keeps them all)"
     ]
 
 
@@ -301,6 +301,32 @@ def test_long_numbers_to_decimal_numbers_warn(act):
         "Code: 1 value(s) were rounded, e.g. '1234567890123456789': a decimal number keeps about 15 digits "
         "(Whole number and Text keep them all)"
     ]
+
+
+@pytest.mark.parametrize(
+    ("values", "dtype", "keep"),
+    [
+        (["9223372036854775807", "-9223372036854775808", "9007199254740993"], pl.String, "Whole number and Text keep them all"),
+        (["12345678901234567890", "9007199254740993"], pl.String, "Text keeps them all"),
+        (["1" + "0" * 38, "7"], pl.String, "Text keeps them all"),  # 39 digits
+        (["-9223372036854775809", "7"], pl.String, "Text keeps them all"),
+        ([2**53 + 1, 2**63 - 1], pl.Int64, "Whole number and Text keep them all"),
+        ([2**64 - 1, 7], pl.UInt64, "Text keeps them all"),
+        ([D(2**53 + 1), D(7)], pl.Decimal(38, 0), "Whole number and Text keep them all"),
+        ([D(10**20 + 1), D(7)], pl.Decimal(38, 0), "exact decimals and Text keep them all"),
+    ],
+)
+def test_the_rounding_warning_names_whole_number_only_for_values_it_holds(act, values, dtype, keep):
+    """Whole number goes up to 9,223,372,036,854,775,807 and makes a longer value empty, as text,
+    as an unsigned number or as an exact decimal. The warning of Decimal number said that Whole
+    number keeps all their digits."""
+    df = pl.DataFrame({"v": pl.Series(values, dtype=dtype)})
+    ctx = StubContext()
+    change(act, df, "v", "number", ctx=ctx)
+    assert ctx.warnings and ctx.warnings[0].endswith(f": a decimal number keeps about 15 digits ({keep})"), ctx.warnings
+    ctx = StubContext()
+    holds = change(act, df, "v", "integer", ctx=ctx).null_count() == 0  # what Whole number does with them
+    assert holds == keep.startswith("Whole number"), ctx.warnings
 
 
 def test_decimals_with_more_than_15_digits_to_decimal_numbers_warn(act):

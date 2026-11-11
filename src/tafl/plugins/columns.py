@@ -143,13 +143,14 @@ def _beyond_day_numbers(source: pl.Series, failed: pl.Series, c) -> bool:
 
 def _warn_rounded(name: str, source: pl.Series, converted: pl.Series, decimal: str, ctx) -> None:
     """A decimal number keeps about 15 digits: say which values lost some, and which types keep
-    them: a whole number only those without decimal places."""
+    them: a whole number only those without decimal places, up to 9,223,372,036,854,775,807."""
     rounded = dtypes.float_loses_digits(source, decimal) & converted.is_not_null()
     if rounded.any():
         values, numbers = source.filter(rounded), converted.filter(rounded)
         # decimal places: in a decimal number that isn't whole, else read from the values (a long
         # whole number such as 1234567890123456789,5 is a whole decimal number)
-        if not (numbers != numbers.floor()).any() and not dtypes.rounded_to_whole(values, decimal).any():
+        whole = not (numbers != numbers.floor()).any() and not dtypes.rounded_to_whole(values, decimal).any()
+        if whole and _whole_numbers_hold(values, numbers, decimal):
             keep = "Whole number and Text keep them all"
         elif isinstance(source.dtype, pl.Decimal):
             keep = "exact decimals and Text keep them all"
@@ -159,6 +160,14 @@ def _warn_rounded(name: str, source: pl.Series, converted: pl.Series, decimal: s
             f"{name}: {rounded.sum():,} value(s) were rounded, e.g. {_examples(values)}: a decimal number keeps "
             f"about 15 digits ({keep})"
         )
+
+
+def _whole_numbers_hold(values: pl.Series, numbers: pl.Series, decimal: str) -> bool:
+    """Whether Whole number holds all these whole values (``numbers``: their decimal numbers): it
+    goes up to 9,223,372,036,854,775,807, and makes a longer one empty. A value whose decimal number
+    is below 9.2 × 10^18 fits; the others are converted, as Change type to Whole number does."""
+    near = (numbers.abs() >= 9.2e18).fill_null(False)
+    return not near.any() or not _convert(values.filter(near), "integer", "", decimal).is_null().any()
 
 
 def _warn_whole(name: str, source: pl.Series, converted: pl.Series, decimal: str, ctx, rounded: pl.Series | None) -> None:
