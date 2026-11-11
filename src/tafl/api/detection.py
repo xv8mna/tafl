@@ -163,17 +163,21 @@ def detect_files(
     as 31.01.2026, another as 2026-01-31). Then the files are made to fit together as one file of
     all their values would: a column with only blanks in a file has no values there when another
     file gives the column a type, and a column of numbers in every file has the numbers that one
-    file of all of them gives (see ``_numbers_of_files``). ``between`` runs between the groups of
-    files, e.g. to stop when asked to."""
+    file of all of them gives (see ``_numbers_of_files``). ``warn`` is told what ``detect_types``
+    tells, but not that digits of date-times were cut in a column that ends as text, with all its
+    digits. ``between`` runs between the groups of files, e.g. to stop when asked to."""
     typed = list(frames)
+    notes: list[tuple[str, str, bool]] = []  # (column, warning, whether the column has a type there), in order
     mappings = [{name: own.get(name, decimal) for name in frame.columns} for frame, (decimal, own) in zip(frames, guesses, strict=True)]
     for decimals, members in _groups(mappings):
         if between is not None:
             between()
         files = [frames[i] for i in members]
         together = files[0] if len(files) == 1 else pl.concat(files, how="diagonal")
-        result = detect_types(together, decimals, warn)
-        each = _each_file(result, together, files, decimals, warn) if len(files) > 1 else {}
+        result, found = _detect(together, decimals)
+        schema = result.schema  # once: each call builds the types of all columns again
+        notes += [(name, message, schema[name] != pl.String) for name, messages in found.items() for message in messages]
+        each = _each_file(result, together, files, decimals, notes) if len(files) > 1 else {}
         offset = 0
         for k, (i, frame) in enumerate(zip(members, files, strict=True)):
             part = result.slice(offset, frame.height)
@@ -183,8 +187,25 @@ def detect_files(
             offset += frame.height
     if len(frames) > 1:
         _without_blanks(typed)
-        _numbers_of_files(typed, frames, mappings, warn)
+        _numbers_of_files(typed, frames, mappings, notes)
+    typed_notes = {name for name, _message, has_type in notes if has_type}
+    text = _text_at_last(typed, typed_notes) if len(frames) > 1 and typed_notes else set()
+    for name, message, has_type in notes:
+        if not (has_type and name in text):  # e.g. "the digits below a nanosecond were cut"
+            warn(message)
     return typed
+
+
+def _text_at_last(typed: list[pl.DataFrame], names: set[str]) -> set[str]:
+    """Those of these columns that putting the files together makes text (``files.combine``, as
+    Append does): their types in the files have no type in common that keeps every value."""
+    schemas = [frame.schema for frame in typed]
+    text = set()
+    for name in names:
+        columns = [frame[name] for frame, schema in zip(typed, schemas, strict=True) if name in schema]
+        if len({column.dtype for column in columns}) > 1 and dtypes.common_type(columns).dtype == pl.String:
+            text.add(name)
+    return text
 
 
 def _groups(mappings: list[dict[str, str]]) -> list[tuple[dict[str, str], list[int]]]:
@@ -230,11 +251,12 @@ def _without_blanks(typed: list[pl.DataFrame]) -> None:
                 typed[i] = typed[i].with_columns(pl.lit(None, pl.String).alias(name))
 
 
-def _numbers_of_files(typed: list[pl.DataFrame], texts: Sequence[pl.DataFrame], mappings: list[dict[str, str]], warn: Callable[[str], None]) -> None:
+def _numbers_of_files(typed: list[pl.DataFrame], texts: Sequence[pl.DataFrame], mappings: list[dict[str, str]], notes: list[tuple[str, str, bool]]) -> None:
     """For ``detect_files``: a column of numbers in every file (whole numbers, decimal numbers, exact
     decimals) whose types Append can't put together without changing a value (a decimal number
     beside an exact decimal, a whole number beyond 2^53 beside decimal numbers) gets the numbers
-    that one file of all its values gives (see ``_numbers_together``)."""
+    that one file of all its values gives (see ``_numbers_together``), and a warning about it goes to
+    ``notes``."""
     schemas = [frame.schema for frame in typed]
     for name, kinds in _kinds(schemas).items():
         numbers = kinds - {pl.String}  # a column of a file can be text without values
@@ -244,6 +266,7 @@ def _numbers_of_files(typed: list[pl.DataFrame], texts: Sequence[pl.DataFrame], 
         columns = [typed[i][name] for i in where]
         if any(column.dtype == pl.String for column in columns) or dtypes.common_type(columns).dtype != pl.String:
             continue  # text in a file (0815, n/a), as in one file; or Append keeps every value
+        warn = lambda message, name=name: notes.append((name, message, False))  # noqa: E731
         found = _numbers_together(name, columns, [texts[i][name] for i in where], [mappings[i][name] for i in where], warn)
         for i, column in zip(where, found or [], strict=found is not None):
             typed[i] = typed[i].with_columns(column.alias(name))
@@ -284,7 +307,11 @@ def _numbers_together(
 
 
 def _each_file(
-    result: pl.DataFrame, together: pl.DataFrame, files: list[pl.DataFrame], decimals: Mapping[str, str], warn: Callable[[str], None]
+    result: pl.DataFrame,
+    together: pl.DataFrame,
+    files: list[pl.DataFrame],
+    decimals: Mapping[str, str],
+    notes: list[tuple[str, str, bool]],
 ) -> dict[str, list[pl.Series]]:
     """For ``detect_files``: the columns that stayed text in ``result`` (the files together), as
     each file gives them, where every file gives a type or has only blanks there (and one gives a
@@ -292,7 +319,8 @@ def _each_file(
     up to the first that keeps it text. A column
     with a word or a code like 0815 in its first values stays text at once: a file with one of
     them gives no type (true and false and date-times like 2026-01-31T08:30 have letters, but they
-    can)."""
+    can). The warnings about a column go to ``notes`` (see ``detect_files``) when it gets a type in
+    every file."""
     before, after = together.schema, result.schema
     empty = dict(zip(together.columns, together.null_count().row(0), strict=True))  # a column without values has no type
     texts = {
@@ -308,20 +336,21 @@ def _each_file(
     for name, stays in zip(texts, seen.row(0), strict=True):
         if stays:
             continue
-        found, notes = [], []
+        found, said = [], []
         for frame in files:
             if name not in frame.columns:
                 found.append(pl.Series(name, [], pl.String))  # not used: the file has no such column
                 continue
-            column = detect_types(frame.select(col(name)), {name: decimals[name]}, notes.append)[name]
+            detected, messages = _detect(frame.select(col(name)), {name: decimals[name]})
+            column = detected[name]
             if column.dtype == pl.String and not _blank(column):
                 break  # text in this file: text in all of them, as in one file
             found.append(column)  # only blanks: no values (see _without_blanks)
+            said += [(name, message, column.dtype != pl.String) for message in messages.get(name, [])]
         else:
             if any(column.dtype != pl.String for column in found):
                 each[name] = found
-                for message in notes:
-                    warn(message)
+                notes += said
     return each
 
 
@@ -338,6 +367,15 @@ def detect_types(data: pl.DataFrame, decimals: Mapping[str, str], warn: Callable
     becomes exact decimals (Decimal) with the decimal places its values show; beyond the 38 digits
     of an exact decimal it stays text, and ``warn`` is told. A decimal number as a program writes it
     (0.30000000000000004) stays one. All values of a column decide, not only the first ones."""
+    typed, notes = _detect(data, decimals)
+    for messages in notes.values():
+        for message in messages:
+            warn(message)
+    return typed
+
+
+def _detect(data: pl.DataFrame, decimals: Mapping[str, str]) -> tuple[pl.DataFrame, dict[str, list[str]]]:
+    """``detect_types``, with its warnings by column instead of telling them."""
     notes: dict[str, list[str]] = {}  # the warnings of infer_types, by column
     typed = data.with_columns(
         [dtypes.infer_series(data[name], decimals[name], notes.setdefault(name, []).append) for name in data.columns]
@@ -352,10 +390,7 @@ def detect_types(data: pl.DataFrame, decimals: Mapping[str, str], warn: Callable
             column, message = found
             updates.append(column.alias(name))
             notes[name] = [message] if message else []
-    for messages in notes.values():
-        for message in messages:
-            warn(message)
-    return typed.with_columns(updates)
+    return typed.with_columns(updates), notes
 
 
 def _numbers(original: pl.Series, decimal: str, floats: bool) -> tuple[pl.Series, str | None] | None:

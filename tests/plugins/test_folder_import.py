@@ -98,6 +98,37 @@ def test_a_column_of_other_types_in_the_files_of_a_folder(act, tmp_path):
     assert ctx.warnings == ["“When” is text: it has different types in the files (date, integer)"]
 
 
+_TEXT_T = "“T” is text: it has different types in the files (date-time, integer)"
+
+
+@pytest.mark.parametrize(
+    "a, b, dtype, warnings",
+    [
+        ("Item;T\nA;2026-01-31 08:30:00.1234567891\n", "Item;T\nB;17\n", pl.String, [_TEXT_T]),
+        ("Item;T\nA;1500-01-31 08:30:00.1234567\n", "Item;T\nB;17\n", pl.String, [_TEXT_T]),
+        ("Item;T\nA;2026-01-31 08:30:00.1234567891\n", "Item,T\nB,17\n", pl.String, [_TEXT_T]),
+        (
+            "Item;T\nA;2026-01-31 08:30:00.1234567891\n",
+            "Item;T\nB;2026-02-01 09:00:00\n",
+            pl.Datetime("ns"),
+            ["T: the digits below a nanosecond were cut, e.g. in '2026-01-31 08:30:00.1234567891'"],
+        ),
+    ],
+    ids=["nanoseconds", "microseconds", "other-separators", "date-times"],
+)
+def test_no_warning_about_cut_digits_of_a_column_that_ends_as_text(act, tmp_path, a, b, dtype, warnings):
+    """A date-time with digits below a nanosecond in one file and a whole number in another make the
+    column text, with all its digits: the step also said that the digits below a nanosecond (or a
+    microsecond) were cut. A column of date-times still says so."""
+    (tmp_path / "a.csv").write_text(a, encoding="utf-8")
+    (tmp_path / "b.csv").write_text(b, encoding="utf-8")
+    ctx = StubContext()
+    out = act("csv.import", None, folder(tmp_path, file_column=False), ctx)
+    assert out.schema["T"] == dtype and ctx.warnings == warnings
+    if dtype == pl.String:
+        assert out["T"].to_list() == [a.split("\n")[1][2:], "17"]
+
+
 @pytest.mark.parametrize("name", ["*", "^a.*$", "c12*"])
 def test_names_like_patterns_in_the_files_of_a_folder(act, tmp_path, name):
     """A column named *, ^a.*$ or c12* with a date in one file and a whole number in the other gets
@@ -206,8 +237,8 @@ def test_files_of_one_format_with_columns_of_their_own_are_looked_at_at_once(act
     instead of 3 s)."""
     for i in range(30):
         (tmp_path / f"day{i:02d}.csv").write_text(f"Item;Price;c{i}\nA;1,50;{i},5\n", encoding="utf-8")
-    heights, detect = [], detection.detect_types
-    monkeypatch.setattr(detection, "detect_types", lambda data, *args: heights.append(data.height) or detect(data, *args))
+    heights, detect = [], detection._detect
+    monkeypatch.setattr(detection, "_detect", lambda data, *args: heights.append(data.height) or detect(data, *args))
     out = act("csv.import", None, folder(tmp_path, file_column=False))
     assert heights == [30]
     assert out.schema["Price"] == pl.Float64 and out["c29"].to_list() == [None] * 29 + [29.5]
