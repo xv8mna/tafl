@@ -473,6 +473,62 @@ def test_exact_decimals(act):
     assert change(act, df, "Amount", "text", "#,##0.00").to_list() == ["12.345.678.901.234,57", "2,50", "-2,50", None]
 
 
+def test_exact_decimals_near_their_digits_to_whole_numbers(act):
+    """Polars rounded them with their decimal places, where a result can need more than 38 digits:
+    -9999999999999999999999999999.9999999999 of a decimal(38, 10), and also -0.5 of a
+    decimal(38, 38) or 999999999999999999.5 of a decimal(38, 20), whose whole numbers fit. The step
+    stopped with "ComputeError: overflow in decimal rounding", with both choices of Values that
+    can't be converted. Now the values that fit are rounded, and the others can't be converted. A
+    decimal(6, 2) gave 10000 for 9999.99 before too."""
+    values = [D("-9999999999999999999999999999.9999999999"), D("1.5"), D("-2.5"), D("9223372036854775807.4"), D("0.4999999999"), None]
+    df = pl.DataFrame({"P": pl.Series(values, dtype=pl.Decimal(38, 10))})
+    ctx = StubContext()
+    assert change(act, df, "P", "integer", ctx=ctx).to_list() == [None, 2, -3, 2**63 - 1, 0, None]
+    assert ctx.warnings == [
+        "P: 1 value(s) could not be converted to Whole number, e.g. '-9999999999999999999999999999.9999999999' (now empty). "
+        "Whole numbers go up to 9,223,372,036,854,775,807: keep longer IDs as text",
+        "P: 4 value(s) were rounded, e.g. '1.5000000000', '-2.5000000000', '9223372036854775807.4000000000': a whole number "
+        "has no decimal places (Decimal number and Text keep them)",
+    ]
+    with pytest.raises(ActionError, match=r"^P: 1 value\(s\) could not be converted to Whole number, e\.g\. '-9{28}\.9{10}'\. Whole"):
+        change(act, df, "P", "integer", on_error="fail")
+    small = pl.DataFrame({"S": pl.Series([D("9999.99"), D("-9999.50"), D("0.49"), D("-0.50")], dtype=pl.Decimal(6, 2))})
+    assert change(act, small, "S", "integer").to_list() == [10000, -10000, 0, -1]
+    fine = pl.DataFrame({"F": pl.Series([D("0.5E-37"), D("-0.5"), D("0.9" + "9" * 37)], dtype=pl.Decimal(38, 38))})
+    assert change(act, fine, "F", "integer").to_list() == [0, -1, 1]
+    long = pl.DataFrame({"L": pl.Series([D("999999999999999999.5"), D("-0.5")], dtype=pl.Decimal(38, 20))})
+    assert change(act, long, "L", "integer").to_list() == [10**18, -1]
+
+
+_CHANGE_WIDE = """
+from decimal import Decimal
+
+import polars as pl
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+change = registry.actions["columns.change_type"]
+big = Decimal("-9999999999999999999999999999.9999999999")
+df = pl.DataFrame({f"P{i}": pl.Series([big, Decimal("1.5")], dtype=pl.Decimal(38, 10)) for i in range(4001)})
+kinds = ["integer" if i % 2 else "number" for i in range(4001)]
+ctx = StubContext()
+out = change(df, {"columns": [{"column": c, "type": kind, "format": ""} for c, kind in zip(df.columns, kinds)]}, ctx)
+assert out.width == 4001 and out.row(1) == tuple(2 if kind == "integer" else 1.5 for kind in kinds), out
+assert out.row(0) == tuple(None if kind == "integer" else -1e28 for kind in kinds), out
+assert len(ctx.warnings) == 2 * 2000 + 2001, ctx.warnings[:3]
+"""
+
+
+def test_exact_decimals_of_a_wide_table_to_numbers():
+    """4,001 columns of exact decimals near their 38 digits to whole numbers (every second one)
+    and to decimal numbers: each one is rounded and checked on its own. In a process of its own,
+    so that a stack overflow of a deep Polars expression shows as a failed test."""
+    done = subprocess.run([sys.executable, "-c", _CHANGE_WIDE], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-800:]}"
+
+
 def test_exact_decimals_with_38_digits_to_text_with_a_format(act):
     df = pl.DataFrame(
         {

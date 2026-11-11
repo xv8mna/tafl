@@ -211,7 +211,9 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
             raise ActionError(f"{s.name}: {_kind(source)} can't become a number")
         if target == "number":
             return s.cast(pl.Float64)
-        if source.is_float() or isinstance(source, pl.Decimal):
+        if isinstance(source, pl.Decimal) and source.scale:
+            return _whole_of_decimals(s)
+        if source.is_float():
             s = s.alias("value").round(0, mode="half_away_from_zero").alias(s.name)  # a fixed name, as in change_type
         return s.cast(pl.Int64, strict=False)
     if target in ("date", "datetime"):
@@ -235,6 +237,19 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
             return s
         raise ActionError(f"{s.name}: {_kind(source)} can't become true/false")
     raise ActionError(f"Unknown type '{target}'")
+
+
+def _whole_of_decimals(s: pl.Series) -> pl.Series:
+    """Exact decimals rounded half away from zero to whole numbers (empty beyond those), worked out
+    from their units, the digits without the point: Polars rounds them with their decimal places,
+    where the result can need more than 38 digits (-9999999999999999999999999999.9999999999 of a
+    decimal(38, 10) becomes -10000000000000000000000000000.0000000000), and then stops the step."""
+    units = pl.col("value").to_physical()  # a fixed name, as in change_type
+    one, half = (pl.lit(n, dtype=pl.Int128) for n in (10**s.dtype.scale, 10**s.dtype.scale // 2))
+    magnitude = units.abs()
+    whole = magnitude // one + (magnitude % one >= half).cast(pl.Int128)
+    rounded = pl.when(units < 0).then(pl.lit(0, dtype=pl.Int128) - whole).otherwise(whole)  # Polars has no - for Int128
+    return s.alias("value").to_frame().select(rounded.cast(pl.Int64, strict=False).alias(s.name)).to_series()
 
 
 # Two date-times that differ in every part that a date format writes, also in AM/PM and the weekday
