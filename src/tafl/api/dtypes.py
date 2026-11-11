@@ -212,8 +212,12 @@ def float_loses_digits(s: pl.Series, decimal: str = ",") -> pl.Series:
     if s.dtype.is_integer() or (isinstance(s.dtype, pl.Decimal) and not s.dtype.scale):
         back = s.cast(pl.Float64).cast(s.dtype, strict=False)  # empty when rounded beyond the type: 2^127 for 2^127 - 1
         return ((back != s).fill_null(True) & s.is_not_null()).alias(name)
+    if isinstance(s.dtype, pl.Decimal) and s.len() <= _FEW_DECIMALS:  # Python is quicker than Polars' calls here
+        return pl.Series(name, [_decimal_lost(value) for value in s.to_list()], dtype=pl.Boolean)
     lost = pl.repeat(False, s.len(), eager=True).alias(name)
     if isinstance(s.dtype, pl.Decimal):  # below 10^15 units (its digits without the point) a value has at most 15 digits
+        if max((abs(value) for value in (s.min(), s.max()) if value is not None), default=0) < Decimal(10) ** (15 - s.dtype.scale):
+            return lost
         rows = (s.to_physical().abs() >= 10**15).fill_null(False).arg_true()
         if rows.len():
             lost = lost.scatter(rows, _in_parts(s.gather(rows), _decimal_digits_lost))
@@ -428,6 +432,20 @@ def _digits_lost(digits: pl.Series, numbers: pl.Series) -> pl.Series:
         shown = numbers.gather(close).cast(pl.String).str.split_exact("e", 1).struct.field("field_0")
         lost = lost.scatter(close, _apply(shown, _significant_digits(_VALUE)) != digits.gather(close))
     return lost
+
+
+_FEW_DECIMALS = 64  # up to so many exact decimals, Python looks at them in less time than a call of Polars takes
+
+
+def _decimal_lost(value: Decimal | None) -> bool:
+    """``float_loses_digits`` for one exact decimal: its nearest decimal number (Polars makes that
+    one too) is another number when it is whole, else reads back as another number."""
+    if value is None:
+        return False
+    number = float(value)
+    if value == value.to_integral_value():
+        return Decimal(number) != value
+    return Decimal(repr(number)) != value
 
 
 def _significant_digits(text: pl.Expr) -> pl.Expr:
