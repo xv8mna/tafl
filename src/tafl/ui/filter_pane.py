@@ -68,6 +68,7 @@ from .filters import (
     range_labels,
     selection,
     stored_values,
+    threshold_text,
     thresholds,
     unusable,
     value_key,
@@ -527,7 +528,7 @@ class FilterCard(QFrame):
         return box
 
     def _limits_changed(self) -> None:
-        limits = parse_thresholds(self.limits.text(), self.pane.display.decimal)
+        limits = parse_thresholds(self.limits.text())  # (as the steps read a number typed into a setting)
         self.pane.set_options(self.index, {"thresholds": limits, "lower_inclusive": bool(self.side.currentData())})
 
     def _sync_options(self, f: Filter) -> None:
@@ -539,7 +540,7 @@ class FilterCard(QFrame):
         if f.facet == "period":
             self.period.setCurrentIndex(max(0, self.period.findData(f.options.get("by", "month"))))
         elif f.facet == "ranges":
-            self.limits.setText("; ".join(self.pane.display.number(t) for t in thresholds(f)))
+            self.limits.setText("; ".join(threshold_text(self.pane.display.number(t)) for t in thresholds(f)))
             self.side.setCurrentIndex(0 if f.options.get("lower_inclusive", True) else 1)
         elif f.facet == "regex" and not self.pattern.hasFocus():
             self.pattern.setText(str(f.options.get("pattern") or ""))

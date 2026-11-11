@@ -36,7 +36,7 @@ from typing import Any
 
 import polars as pl
 
-from tafl.api import ActionError, col, expressions
+from tafl.api import ActionError, col, dtypes, expressions
 
 VALUE, COUNT = "value", "count"  # the columns of a facet
 MATCH, NO_MATCH = "match", "no match"
@@ -255,30 +255,28 @@ def range_labels(limits: list[float], lower_inclusive: bool, number: Callable[[f
     return labels
 
 
-def parse_thresholds(text: str, decimal: str = ".") -> list[float]:
-    """Numbers typed by the user, separated by ";" or spaces: 1000, 1.5, 1,5, 1,000 or 1.000,5
-    (with both separators, the last one is the decimal one; ``decimal`` decides "1,000")."""
+def parse_thresholds(text: str) -> list[float]:
+    """Numbers typed by the user, separated by ";" or spaces, read as the steps read a number
+    typed into a setting (Filter rows, Fill empty values, Replace: ``dtypes.decimal_separator``):
+    1.000 is a thousand, 1.5 and 1,5 are one and a half, 1.000,5 and 1,000.5 a thousand and a
+    half. What is no number is left out."""
     numbers = []
     for part in re.split(r"[;\s]+", text.strip()):
-        number = _number(part, decimal)
+        number = _number(part) if part else None
         if number is not None and math.isfinite(number):
             numbers.append(number)
     return sorted(set(numbers))
 
 
-def _number(text: str, decimal: str) -> float | None:
-    if "," in text and "." in text:
-        last = "," if text.rfind(",") > text.rfind(".") else "."
-        text = text.replace("." if last == "," else ",", "").replace(",", ".")
-    elif text.count(",") > 1:  # 1,000,000
-        text = text.replace(",", "")
-    elif "," in text:
-        thousands = decimal != "," and len(text.split(",")[1]) == 3  # 1,000 (but 1,5 is one and a half)
-        text = text.replace(",", "" if thousands else ".")
-    try:
-        return float(text)
-    except ValueError:
-        return None
+def _number(text: str) -> float | None:
+    return dtypes.parse_numbers(pl.Series([text], dtype=pl.String), dtypes.decimal_separator(text))[0]
+
+
+def threshold_text(shown: str) -> str:
+    """A threshold as its field shows it, so that the field reads it back as the same number:
+    ``shown`` as the grid shows the number. With a point as the decimal separator, 1.234 would
+    be a thousand two hundred and thirty-four there: it is 1.2340."""
+    return shown + "0" if dtypes.decimal_separator(shown) == "," and "," not in shown else shown
 
 
 @functools.lru_cache(maxsize=64)

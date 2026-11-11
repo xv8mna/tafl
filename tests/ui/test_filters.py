@@ -11,6 +11,7 @@ import pytest
 from PySide6.QtCore import QLocale, QPoint, Qt
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QWidget
 
+from tafl.api import dtypes
 from tafl.api.dtypes import text_key
 from tafl.api.testing import StubContext
 from tafl.core import Project
@@ -397,11 +398,44 @@ def test_modes_group_the_values():
 
 
 def test_thresholds_and_their_ranges():
-    assert parse_thresholds("1000; 100 1,5 1.000,5 2,000,000 x") == [1.5, 100, 1000, 1000.5, 2_000_000]
-    assert parse_thresholds("1,000", decimal=",") == [1.0]  # a decimal comma
+    assert parse_thresholds("1000; 100 1,5 1.000,5 1,000,000.5 x") == [1.5, 100, 1000, 1000.5, 1_000_000.5]
+    assert parse_thresholds("1,000") == [1.0]  # a comma alone: the decimal one
     assert range_labels([100, 1000], True, str) == ["< 100", "100 to < 1000", "≥ 1000"]
     assert range_labels([100, 1000], False, str) == ["≤ 100", "> 100 to ≤ 1000", "> 1000"]
     assert range_labels([], True, str) == ["all numbers"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["1.000", "1.234.567", "-1.000", "1.5", "1.0000", "12.34", "0.500", "1,5", "1,000", "1.234,5", "1,234.5",
+     "1,234,567.5", "7", "2,000,000", "1E-12", "1,5E-05"],
+)  # fmt: skip
+def test_a_threshold_is_read_as_the_steps_read_a_typed_number(text):
+    """As in Filter rows, Fill empty values and Replace. Before, the filter pane had a rule of its
+    own: 1.000 was one there, and 1,000 a thousand."""
+    steps = dtypes.parse_numbers(pl.Series([text]), dtypes.decimal_separator(text))[0]
+    assert parse_thresholds(text) == ([] if steps is None else [steps])
+
+
+def test_the_field_of_thresholds_reads_back_what_it_shows(session):
+    """With a point as the decimal separator, the threshold 1.234 shows as 1.2340: typed as 1.234
+    it is a thousand two hundred and thirty-four, as in the steps."""
+    df = pl.DataFrame({"n": [0.5, 1.5, 2000.0]})
+    table = session.project.add_table("T")
+    limits = {"thresholds": [1.234, 1000], "lower_inclusive": True}
+    for language, country, shown in (("English", "UnitedKingdom", "1.2340; 1000"), ("German", "Germany", "1,234; 1000")):
+        session.set_filters(table.id, [Filter("n", [], "ranges", limits).to_dict()])
+        pane = FilterPane(session)
+        pane.display = DisplayFormat(QLocale(getattr(QLocale.Language, language), getattr(QLocale.Country, country)))
+        pane.show_data(table.id, df)
+        (card,) = pane.cards
+        assert card.limits.text() == shown
+        card.limits.editingFinished.emit()  # Enter: the thresholds stay
+        card.side.setCurrentIndex(1)  # the other side of a threshold: the field is read again
+        assert Filter.from_dict(session.filters(table.id)[0]).options["thresholds"] == [1.234, 1000]
+    card.limits.setText("1.000; 2,5")  # typed
+    card.limits.editingFinished.emit()
+    assert Filter.from_dict(session.filters(table.id)[0]).options["thresholds"] == [2.5, 1000]
 
 
 def test_modes_are_saved_with_the_filter():
