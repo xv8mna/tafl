@@ -1,6 +1,6 @@
 # Changes
 
-## 0.6.5 – unreleased
+## 0.6.5 – 2026-11-12
 
 This version keeps the digits of long numbers, or says which values lost some: the imports detect
 exact decimals, and **Change type**, **Fill empty values** and formulas keep them or warn. Each

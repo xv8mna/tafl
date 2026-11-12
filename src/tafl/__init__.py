@@ -5,7 +5,7 @@
 
 import os
 
-__version__ = "0.6.4"
+__version__ = "0.6.5"
 
 # Polars keeps the memory of tables that are gone for later use (in its allocator, mimalloc). With
 # this option it gives that memory back at once: a big table should not hold the memory of the PC.
