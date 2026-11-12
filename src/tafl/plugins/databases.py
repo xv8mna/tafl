@@ -1860,6 +1860,7 @@ def export_database(df, p, ctx):
         # After the rows that _fit_lengths leaves out: the cut digits of a second are counted, with
         # their rows, in the rows that are written
         data, read = _read_date_texts(data, names, types, p.table, db.connector.id)
+        data = _times_on_1900(data, names, types, db.connector.id)
         kinds = {name.lower(): kind for name, kind in types.items()}
         fitted = {c: kinds[names[c].lower()] for c in data.columns if names[c].lower() in kinds}
         cut = _cut_seconds(data, fitted, read, names, p.table) if db.connector.id == "sqlserver" else []
@@ -2171,11 +2172,28 @@ def _then(read: pl.Series, texts: pl.Series, reader) -> pl.Series:
     return _or_else(read, reader(texts.zip_with(rest, texts.clear(texts.len()))))
 
 
-def _on_1900(times: pl.Series) -> pl.Series:
+def _on_1900(times: pl.Series, time_unit: str = "us") -> pl.Series:
     """Times as date-times on 1 January 1900 (to the microsecond), the date that SQL Server gives a
     time alone in a datetime, smalldatetime or datetime2 column: CAST('08:30' AS datetime) is
     1900-01-01 08:30. Tables made before SQL Server had a time type keep times so."""
-    return pl.select(pl.lit(dt.date(1900, 1, 1)).dt.combine(pl.lit(times), time_unit="us")).to_series().alias(times.name)
+    return pl.select(pl.lit(dt.date(1900, 1, 1)).dt.combine(pl.lit(times), time_unit=time_unit)).to_series().alias(times.name)
+
+
+def _times_on_1900(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], connector_id: str) -> pl.DataFrame:
+    """Time values for a SQL Server datetime, smalldatetime or datetime2 column as date-times on 1
+    January 1900, as SQL Server converts a time (CAST(time AS datetime2)) and as a time alone in a
+    text is written (``_on_1900``), with all their digits of a second (``_cut_seconds`` then says
+    what the column can't hold). The driver gave them the date of the day of the run, and whole
+    seconds only. (A datetimeoffset column keeps the driver's way.)"""
+    if connector_id != "sqlserver":
+        return df
+    kinds = {name.lower(): kind for name, kind in types.items()}
+    changes = [
+        _on_1900(df[source].alias("value"), "ns").alias(source)  # a fixed name, as in _round_half_away
+        for source, dtype in df.schema.items()
+        if dtype == pl.Time and _kind(kinds.get(names[source].lower(), ""))[0] in ("datetime", "smalldatetime", "datetime2")
+    ]
+    return df.with_columns(changes) if changes else df
 
 
 def _read_date_texts(
