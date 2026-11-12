@@ -1880,7 +1880,7 @@ def export_database(df, p, ctx):
         # After the rows that _fit_lengths leaves out: the cut digits of a second are counted, with
         # their rows, in the rows that are written
         data, read = _read_date_texts(data, names, types, p.table, db.connector.id)
-        data = _times_on_1900(data, names, types, db.connector.id)
+        data = _times_on_1900(data, names, types, p.table, db.connector.id)
         kinds = {name.lower(): kind for name, kind in types.items()}
         fitted = {c: kinds[names[c].lower()] for c in data.columns if names[c].lower() in kinds}
         cut = _cut_seconds(data, fitted, read, names, p.table) if db.connector.id == "sqlserver" else []
@@ -2199,20 +2199,33 @@ def _on_1900(times: pl.Series, time_unit: str = "us") -> pl.Series:
     return pl.select(pl.lit(dt.date(1900, 1, 1)).dt.combine(pl.lit(times), time_unit=time_unit)).to_series().alias(times.name)
 
 
-def _times_on_1900(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], connector_id: str) -> pl.DataFrame:
+def _times_on_1900(df: pl.DataFrame, names: dict[str, str], types: dict[str, str], table: str, connector_id: str) -> pl.DataFrame:
     """Time values for a SQL Server datetime, smalldatetime or datetime2 column as date-times on 1
     January 1900, as SQL Server converts a time (CAST(time AS datetime2)) and as a time alone in a
     text is written (``_on_1900``), with all their digits of a second (``_cut_seconds`` then says
     what the column can't hold). The driver gave them the date of the day of the run, and whole
-    seconds only. (A datetimeoffset column keeps the driver's way.)"""
+    seconds only. For a datetimeoffset or date column, a time stops the export with a message
+    that names the column, as a time alone in a text does there: a moment needs a date (the
+    driver gave a datetimeoffset the date of the run and this PC's offset, and refused it for a
+    date with words that named no column)."""
     if connector_id != "sqlserver":
         return df
     kinds = {name.lower(): kind for name, kind in types.items()}
-    changes = [
-        _on_1900(df[source].alias("value"), "ns").alias(source)  # a fixed name, as in _round_half_away
-        for source, dtype in df.schema.items()
-        if dtype == pl.Time and _kind(kinds.get(names[source].lower(), ""))[0] in ("datetime", "smalldatetime", "datetime2")
-    ]
+    changes = []
+    for source, dtype in df.schema.items():
+        if dtype != pl.Time:
+            continue
+        target = names[source]
+        kind = kinds.get(target.lower(), "")
+        base = _kind(kind)[0]
+        if base in ("datetime", "smalldatetime", "datetime2"):
+            changes.append(_on_1900(df[source].alias("value"), "ns").alias(source))  # a fixed name, as in _round_half_away
+        elif base in ("datetimeoffset", "date") and (times := df[source].drop_nulls()).len():
+            fix = "Change them to date-times with their date first." if base == "datetimeoffset" else "Write them into a column of times."
+            raise ActionError(
+                f"The column {target} of {table} holds {_DATE_TEXTS[base][0]} ({kind}), but {source} has times, which have "
+                f"no date (e.g. {_value_text(times)}). {fix}"
+            )
     return df.with_columns(changes) if changes else df
 
 

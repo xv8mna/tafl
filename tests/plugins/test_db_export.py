@@ -2607,3 +2607,37 @@ def test_sqlserver_datetimeoffset_as_text_is_read_as_before(registry):
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_a_time_value_for_a_datetimeoffset_or_date_column_stops(registry):
+    """A time value (not a text) for a datetimeoffset column got the date of the day of the run,
+    this PC's offset and whole seconds; for a date column the driver stopped with words that named
+    no column ("Restricted data type attribute violation"). A moment needs a date: the export stops
+    with a message that names the column, in every mode and for keys too, as a time alone in a
+    text does. Empty values are written."""
+    ctx, name = _sqlserver()
+    data = pl.DataFrame({"K": [1, 2], "V": [None, dt.time(8, 30, 15, 500000)]})
+    try:
+        for kind, held, fix in (
+            ("datetimeoffset(0)", "dates and times with their offset from UTC", "Change them to date-times with their date first."),
+            ("date", "dates", "Write them into a column of times."),
+        ):
+            for mode, keys in (("insert", ["K"]), ("upsert", ["K"]), ("update", ["K"]), ("replace_keys", ["V"]), ("delete", ["V"])):
+                with ctx.database("server") as db:
+                    db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                    db.execute(f"CREATE TABLE {name} (K int, V {kind})")
+                    db.execute(f"INSERT INTO {name} (K) VALUES (1), (2)")
+                with pytest.raises(ActionError) as error:
+                    registry.actions["db.export"](data.select("V") if mode == "delete" else data,
+                                                  {"connection": "server", "table": name, "mode": mode, "key_columns": keys}, ctx)  # fmt: skip
+                assert str(error.value) == (
+                    f"The column V of {name} holds {held} ({kind}), but V has times, which have no date (e.g. 08:30:15.500). {fix}"
+                ), (kind, mode)
+                with ctx.database("server") as db:
+                    assert db.read(f"SELECT COUNT(*) AS n FROM {name} WHERE V IS NULL")["n"][0] == 2, (kind, mode)  # nothing written
+            registry.actions["db.export"](data.head(1), {"connection": "server", "table": name, "mode": "insert"}, ctx)  # only empty: written
+            assert _logged(ctx) == ("info", f"{name}: added 1 row"), kind
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
