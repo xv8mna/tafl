@@ -9,7 +9,7 @@ possible with the other filters white, excluded ones grey.
 from __future__ import annotations
 
 import datetime as dt
-import json
+import operator
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -63,6 +63,7 @@ from .filters import (
     default_options,
     facet,
     facets_for,
+    fingerprint,
     formula,
     parse_thresholds,
     range_labels,
@@ -85,6 +86,8 @@ _LIST_ROWS = 8  # rows a card shows before it scrolls
 MAX_CARDS = 100  # the filters after these only apply, without a card: a card takes about 1 MB of widgets
 _SLICE = 32_768  # values turned into Python's values at a time
 _AT_ONCE = 20_000  # rows (of all the lists to make) that are listed at once; more in the background
+_LISTS_AFTER_MS = 50  # the lists of big data start once the window has shown the change (see FilterPane) ...
+_BIG_LISTS = 500_000  # ... from these rows (or values of a list marked anew); others at once
 _ADD_TIP = "Add a filter for a column (or right-click a column or a cell in the grid)"
 
 
@@ -132,7 +135,7 @@ def _marked(listing: _Listing, f: Filter, how: Arrangement) -> _Listing:
     """``listing`` with the values that ``f`` applies now: the counts stay. New items: the card
     shows the old ones meanwhile."""
     applies = f.picker()
-    items = [[*item[:5], applies(item[2]), item[6]] for item in listing.all]
+    items = [[value, count, stored, text, lower, applies(stored), rank] for value, count, stored, text, lower, _, rank in listing.all]
     return _arranged(items, bool(f.values), listing.total, listing.label, how)
 
 
@@ -151,7 +154,10 @@ def _arranged(
     applied.sort(key=key, reverse=descending)  # (by value: the items are in that order already)
     others.sort(key=key, reverse=descending)
     # Without filtering, either no value is applied or all are (all but none)
-    count = sum(1 for item in items if item[5]) if filtering else (len(items) if items and items[0][5] else 0)
+    if not filtering:
+        count = len(items) if items and items[0][5] else 0
+    else:
+        count = len(applied) if shown is items else sum(1 for item in items if item[5])
     first = len(applied) if filtering else (len(others) if count else 0)
     return _Listing(items, applied + others, filtering, total, label, how, count, first)
 
@@ -282,7 +288,7 @@ class _Plan:
     why: str | None  # why nothing can be listed
     label: Callable[[Any], str]
     arrangement: Arrangement
-    made: tuple[Any, str]  # what the list is made from, and what it is marked for
+    made: tuple[Any, Any]  # what the list is made from, and what it is marked for
     data: pl.DataFrame | None = None  # the data of a list that is made anew (None: it is marked anew)
     old: _Listing | None = field(default=None, repr=False)  # the list that is marked anew
 
@@ -316,9 +322,7 @@ def _make(plans: list[_Plan], more: list[Filter], cancel: threading.Event | None
     return made
 
 
-def _rank(item: list[Any]) -> int:
-    """The place of a value in the order of the values (see ``_listing``)."""
-    return item[6]
+_rank = operator.itemgetter(6)  # the place of a value in the order of the values (see _listing)
 
 
 class _CountBar(QStyledItemDelegate):
@@ -357,7 +361,7 @@ class FilterCard(QFrame):
         self._dtype: pl.DataType | None = None
         self._filter = f
         self._made: tuple[Any, ...] | None = None  # what the list shown is made from (see prepare)
-        self._marked = ""  # the values it marks as applied
+        self._marked: tuple[Any, ...] | None = None  # the values it marks as applied
         self._status = ""  # the status line of the list shown
         self._why: str | None = None  # why it lists nothing
         self.updating = False  # a list is being made in the background
@@ -559,21 +563,28 @@ class FilterCard(QFrame):
     # --- showing -------------------------------------------------------------------------------
 
     def prepare(
-        self, df: pl.DataFrame | None, filters: list[Filter], index: int, display: DisplayFormat, more: str
+        self,
+        df: pl.DataFrame | None,
+        filters: list[Filter],
+        index: int,
+        display: DisplayFormat,
+        prints: list[tuple[Any, ...]],
+        more: list[tuple[Any, ...]],
     ) -> _Plan | None:
         """Take the card's filter (``filters[index]``) and data, and say what its list needs: None
         when the list it shows is the list for them. A list is made anew when its data changed:
         the data, the filter's column, mode and settings, or another filter (the counts are among
         the rows of the others, ``more`` are the filters without a card); when only the filter's
-        values changed, it is marked anew."""
+        values changed, it is marked anew. ``prints``: the fingerprint of each filter (the same
+        for all cards: a long list of values is not looked at once per card)."""
         f = filters[index]
         self.index = index
         self._filter = f
         self._dtype = df.schema[f.column] if df is not None and f.column in df.columns else None
         self._sync_options(f)
-        others = json.dumps([g.to_dict() for i, g in enumerate(filters) if i != index], default=str)
-        made = (df, display, (f.column, f.facet, json.dumps(f.options, default=str), others, more))
-        marked = json.dumps([f.values, f.excluded], default=str)
+        others = prints[:index] + prints[index + 1 : len(filters)]
+        made = (df, display, (*prints[index][:3], others, more))  # (column, mode and settings)
+        marked = prints[index][3:]  # (excluded, the values)
         before = self._made
         if before is not None and before[0] is df and before[1] is display and before[2] == made[2]:
             if marked == self._marked:
@@ -677,13 +688,8 @@ class FilterCard(QFrame):
 
     def pending(self) -> list[Any]:
         """The stored form of the selected values, in list order."""
-        return [self.model.rows[row][2] for row in self._selected_rows()]
-
-    def _selected_rows(self) -> list[int]:
-        rows: set[int] = set()
-        for selected in self.view.selectionModel().selection():  # not selectedRows(): fast with many values
-            rows.update(range(selected.top(), selected.bottom() + 1))
-        return sorted(rows)
+        rows = self.model.rows  # (not selectedRows(), nor row by row: fast with many values)
+        return [item[2] for top, bottom in self._merged_selection() for item in rows[top : bottom + 1]]
 
     def _stored(self, chosen: list[Any]) -> tuple[list[Any], bool]:
         """How the filter stores these chosen values: ``filters.selection``."""
@@ -806,12 +812,20 @@ class FilterPane(QWidget):
         self._lister.finished.connect(self._listed)
         self._lister.failed.connect(self._not_listed)
         self._making: list[_Plan] = []  # the plans of the lists being made
+        self._others: list[Filter] = []  # ... and the filters without a card
+        # They start once the change is done; lists of big data once the window has shown it (the
+        # data panels too, and it draws them a moment later): in the background they would take
+        # turns with it for Python's lock, and the drawing, many short calls into Python, would wait
+        # each time. Small lists don't wait: they are made in less time than that.
+        self._soon = QTimer(self)
+        self._soon.setSingleShot(True)
+        self._soon.timeout.connect(self._start_lists)
         self._lists = True  # the cards have their lists (else: once the pane comes into sight)
 
     @property
     def updating(self) -> bool:
         """Lists are being made in the background (their cards show "…")."""
-        return self._lister.busy
+        return self._lister.busy or self._soon.isActive()
 
     def filters(self) -> list[Filter]:
         return [Filter.from_dict(f) for f in self.session.filters(self.table_id)] if self.table_id else []
@@ -836,6 +850,7 @@ class FilterPane(QWidget):
 
     def stop(self) -> None:
         """Stop making lists (the window closes)."""
+        self._soon.stop()
         self._lister.forget()
 
     def show_data(self, table_id: str | None, df: pl.DataFrame | None) -> None:
@@ -846,9 +861,11 @@ class FilterPane(QWidget):
 
     def _show(self, table_id: str | None, df: pl.DataFrame | None, lists: bool) -> None:
         filters = [Filter.from_dict(f) for f in self.session.filters(table_id)] if table_id else []
-        shown = (table_id, id(df), json.dumps([f.to_dict() for f in filters], default=str))
+        prints = [fingerprint(f) for f in filters]  # once for all cards
+        shown = (table_id, id(df), prints)
         if shown == self._shown and df is self.df and (self._lists or not lists):
             return
+        self._soon.stop()
         self._lister.forget()  # a list for the data or filters before: not wanted any more
         self._shown, self.table_id, self.df, self._lists = shown, table_id, df, lists
         first = filters[:MAX_CARDS]  # the number of a card is the index of its filter
@@ -861,10 +878,9 @@ class FilterPane(QWidget):
             for number, card in enumerate(self.cards):
                 self.cards_layout.insertWidget(number + 1, card)
         others = filters[MAX_CARDS:]
-        others_key = json.dumps([f.to_dict() for f in others], default=str)
         plans = []
         for number, card in enumerate(self.cards):
-            plan = card.prepare(df, first, number, self.display, others_key)
+            plan = card.prepare(df, first, number, self.display, prints, prints[MAX_CARDS:])
             if plan is None:
                 card.show_current()
             else:
@@ -880,8 +896,9 @@ class FilterPane(QWidget):
         if self._making:
             for plan in self._making:
                 plan.card.show_updating()
-            making = list(self._making)
-            self._lister.start(lambda cancel: _make(making, others, cancel))
+            self._others = others
+            biggest = max(len(plan.data) if plan.data is not None else len(plan.old.all if plan.old else []) for plan in self._making)
+            self._soon.start(_LISTS_AFTER_MS if biggest >= _BIG_LISTS else 0)
         more = len(filters) - len(first)
         full = len(filters) >= MAX_CARDS
         most = f"A table shows {MAX_CARDS} filters at most: remove {f'{more + 1:,}' if more else 'one'} to add another."
@@ -892,6 +909,11 @@ class FilterPane(QWidget):
         self.hint.setVisible(not filters)
         self.add_button.setEnabled(table_id is not None and not full)
         self.add_button.setToolTip(tooltip_text(most if full else _ADD_TIP))
+
+    def _start_lists(self) -> None:
+        making, others = list(self._making), self._others
+        if making:
+            self._lister.start(lambda cancel: _make(making, others, cancel))
 
     def _listed(self, made: list[tuple[_Plan, Any]]) -> None:
         self._making = []

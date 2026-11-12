@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import datetime as dt
 import functools
+import json
 import math
 import re
 import struct
@@ -41,6 +42,7 @@ from tafl.api import ActionError, col, dtypes, expressions
 VALUE, COUNT = "value", "count"  # the columns of a facet
 MATCH, NO_MATCH = "match", "no match"
 _LONG = 500  # more chosen values are stored as the ones left out, if those are fewer
+_PLAIN = frozenset({str, int, float, bool, type(None)})  # the values of JSON that are not lists or records
 FACETS = {
     "values": "Values",
     "period": "Time periods",
@@ -127,9 +129,11 @@ class Filter:
         right type counts as not set, so that the window can show such a filter."""
         facet = str(data.get("facet") or "values")
         values, options = data.get("values"), data.get("options")
+        if isinstance(values, list):  # (a long list of plain values: a copy, not a look at each value)
+            values = list(values) if set(map(type, values)) <= _PLAIN else [v for v in values if not isinstance(v, (list, dict))]
         f = cls(
             str(data.get("column") or ""),
-            [v for v in values if not isinstance(v, (list, dict))] if isinstance(values, list) else [],
+            values if isinstance(values, list) else [],
             facet if facet in FACETS else "values",
             {k: v for k, v in options.items() if isinstance(v, _OPTIONS.get(k, object))} if isinstance(options, dict) else {},
             data.get("except") is True,
@@ -139,11 +143,24 @@ class Filter:
         return f
 
     def picker(self) -> Callable[[Any], bool]:
-        """A function: whether a value (as stored) is one the filter lets through."""
-        chosen = {value_key(v) for v in self.values}
+        """A function: whether a value (as stored) is one the filter lets through. As value_key
+        looks them up, but without its call for each value (see ``selection``)."""
+        chosen = set(self.values)
+        if any(v != v for v in self.values):  # NaN: one picks all of them
+            if self.excluded:
+                return lambda stored: stored == stored and stored not in chosen
+            return lambda stored: stored != stored or stored in chosen
         if self.excluded:
-            return lambda stored: value_key(stored) not in chosen
-        return lambda stored: value_key(stored) in chosen
+            return lambda stored: stored not in chosen
+        return lambda stored: stored in chosen
+
+
+def fingerprint(f: Filter) -> tuple[Any, ...]:
+    """The filter in a form that is quick to compare: filters with the same fingerprint filter
+    the same way. For many values a tenth of the time of their JSON text; each value counts with
+    its type (1, 1.0 and True are not the same here)."""
+    values = tuple(f.values)
+    return f.column, f.facet, json.dumps(f.options, default=str), f.excluded, values, tuple(map(type, values))
 
 
 def value_key(value: Any) -> Any:
@@ -155,8 +172,13 @@ def selection(chosen: list[Any], offered: list[Any]) -> tuple[list[Any], bool]:
     """How a filter stores ``chosen`` of the ``offered`` values (all as stored): the values, or
     the values left out (then the second item is True) when all are chosen or the list would be
     long: a value that isn't there yet (e.g. after another step) passes then."""
-    picked = {value_key(v) for v in chosen}
-    left_out = [v for v in offered if value_key(v) not in picked]
+    # As value_key looks them up, without its call for each value: a stored value (JSON) that isn't
+    # equal to itself is NaN, and one NaN chosen picks all of them
+    picked = set(chosen)
+    if any(v != v for v in chosen):
+        left_out = [v for v in offered if v == v and v not in picked]
+    else:
+        left_out = [v for v in offered if v not in picked]
     everything = bool(chosen) and not left_out
     if everything or (len(chosen) > _LONG and len(left_out) < len(chosen)):
         return left_out, True
@@ -383,6 +405,8 @@ def from_json(values: list[Any], dtype: pl.DataType) -> list[Any]:
     """Stored values (without the empty one) in a column's type; values that don't fit are left out.
     Date-times, times and time spans are whole numbers of the column's time unit (since 1970, in UTC
     with a time zone; since midnight): Python's values have no nanoseconds (see ``_series``)."""
+    if (same := _as_they_are(values, dtype)) is not None:
+        return same
     convert = _temporal(dtype) or (lambda value: _convert(value, dtype))
     converted = []
     for value in values:
@@ -393,6 +417,32 @@ def from_json(values: list[Any], dtype: pl.DataType) -> list[Any]:
         except (TypeError, ValueError, ArithmeticError):
             continue
     return converted
+
+
+def _as_they_are(values: list[Any], dtype: pl.DataType) -> list[Any] | None:
+    """``from_json`` of values that are values of the column's type already, which ``_convert``
+    leaves as they are (texts, true or false, numbers): all at once, for a long list a fraction
+    of the time. None when a value needs a look of its own."""
+    kinds = set(map(type, values))
+    if dtype == pl.String or isinstance(dtype, pl.Categorical | pl.Enum):
+        allowed: set[type] = {str}
+    elif dtype == pl.Boolean:
+        allowed = {bool}
+    elif dtype.is_float():
+        allowed = {float}
+    elif dtype.is_integer():  # (True is not among them: its type is bool)
+        allowed = {int}
+    else:
+        return None
+    if not kinds <= allowed | {type(None)}:
+        return None
+    same = [value for value in values if value is not None] if type(None) in kinds else list(values)
+    if int in allowed and same and not -_BIG < min(same) <= max(same) < _BIG:
+        return None  # a number too big for a float: _convert leaves it out
+    return same
+
+
+_BIG = 2**1023  # whole numbers below this can be floats
 
 
 def _temporal(dtype: pl.DataType) -> Callable[[Any], int] | None:

@@ -3,6 +3,7 @@
 import datetime as dt
 import json
 import math
+import random
 import time
 from decimal import Decimal as D
 
@@ -22,10 +23,12 @@ from tafl.ui.filters import (
     PERIODS,
     Filter,
     NotAStep,
+    _convert,
     _days,
     apply,
     facet,
     facets_for,
+    fingerprint,
     formula,
     from_json,
     parse_thresholds,
@@ -34,6 +37,7 @@ from tafl.ui.filters import (
     stored_values,
     to_json,
     unusable,
+    value_key,
 )
 from tafl.ui.frame_model import DisplayFormat
 from tafl.ui.labels import tooltip_text
@@ -538,6 +542,70 @@ def test_a_long_selection_is_stored_as_the_values_left_out():
     assert selection([], offered) == ([], False)
 
 
+def test_values_are_looked_up_as_value_key_says():
+    """selection and the picker of a filter look values up without a call of value_key for each
+    one (much faster for many values): with the same result. NaN picks NaN, 1 = 1.0 = True."""
+    nan = float("nan")
+    pool = [nan, float("nan"), None, 0.0, -0.0, 1, 1.0, True, False, "1", "", 2.5]
+    many = [i / 8 for i in range(1200)] + [nan, None, float("nan")]
+    rng = random.Random(5)
+    for round_ in range(3000):
+        offered = rng.sample(many if round_ % 10 == 0 else pool, rng.randint(0, 600 if round_ % 10 == 0 else len(pool)))
+        chosen = rng.sample(offered, rng.randint(0, len(offered)))
+        keys = {value_key(v) for v in chosen}
+        left_out = [v for v in offered if value_key(v) not in keys]
+        if (chosen and not left_out) or (len(chosen) > 500 and len(left_out) < len(chosen)):
+            expected = (left_out, True)
+        else:
+            expected = (chosen, False)
+        assert repr(selection(chosen, offered)) == repr(expected)
+        for excluded in (False, True):
+            applies = Filter("A", chosen, excluded=excluded).picker()
+            assert [applies(v) for v in pool] == [(value_key(v) in keys) != excluded for v in pool]
+
+
+def test_a_fingerprint_tells_values_of_other_types_apart():
+    """The filter pane and the grid compare filters by fingerprint (their JSON text took seconds
+    for many values): 1, 1.0 and True filter a column of texts differently."""
+    prints = [fingerprint(Filter("A", [value])) for value in (1, 1.0, True, "1")]
+    assert len(set(prints)) == 4
+    f = Filter("A", [2.5, None, "x"], "values", {"by": "month"})
+    assert fingerprint(f) == fingerprint(Filter.from_dict(f.to_dict()))
+    for other in (Filter("A", [2.5, None, "x"], "values", {"by": "week"}), Filter("A", [2.5, None, "x"], "period", {"by": "month"}),
+                  Filter("A", [2.5, None], "values", {"by": "month"}), Filter("A", [2.5, None, "x"], "values", {"by": "month"}, True),
+                  Filter("B", [2.5, None, "x"], "values", {"by": "month"})):  # fmt: skip
+        assert fingerprint(other) != fingerprint(f)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [pl.String, pl.Categorical, pl.Enum(["a", "1"]), pl.Boolean, pl.Int8, pl.Int64, pl.UInt64, pl.Float32, pl.Float64, pl.Date],
+    ids=str,
+)
+def test_stored_values_that_fit_as_they_are_are_read_as_one_by_one(dtype):
+    """from_json takes a list of values that fit the column as they are at once (fast for many
+    values), with the result of converting them one by one."""
+    samples = [["a", None, "1"], [True, False, None], [1, 2, None, -3], [1.5, None, -0.0, float("nan")], [1, True], [1, 1.0],
+               [10**400, 5], [-(10**400), 5], [2**63, -(2**63) - 1, 7], ["x", 1], [None], [], ["2025-01-02", None]]  # fmt: skip
+    for values in samples:
+        expected = []
+        for value in (value for value in values if value is not None):  # (None: the empty value)
+            try:
+                expected.append(_convert(value, dtype))
+            except (TypeError, ValueError, ArithmeticError):
+                pass
+        assert repr(from_json(values, dtype)) == repr(expected), values
+
+
+def test_many_stored_values_are_read_at_once():
+    """Half of the values of a big column applied: the grid reads them for each change (one by
+    one that took about a second for 400,000)."""
+    for values, dtype in (([i / 8 for i in range(400_000)], pl.Float64), ([f"C{i}" for i in range(400_000)], pl.String)):
+        started = time.perf_counter()
+        assert from_json([*values, None], dtype) == values
+        assert time.perf_counter() - started < 0.15
+
+
 @pytest.fixture
 def made(monkeypatch):
     """How many lists the filter pane made anew (with a count of every value) and marked anew."""
@@ -575,6 +643,22 @@ def test_a_change_lists_again_only_the_cards_it_changes(session, made):
     assert made == {"lists": 5, "marked": 1}
     pane.show_data(table.id, df.head(50))  # other data: every list
     assert made == {"lists": 8, "marked": 1}
+
+
+def test_a_search_doesnt_change_how_many_values_are_selected(session, qtbot):
+    """The count of the selected values is that of all of them, also of the ones that a search
+    hides, when the list is marked anew."""
+    df = pl.DataFrame({"A": ["x1", "x2", "y1", "y2", "y3"]})
+    table = session.project.add_table("T")
+    session.set_filters(table.id, [{"column": "A", "values": ["x1", "y1"]}])
+    pane = FilterPane(session)
+    qtbot.addWidget(pane)
+    pane.show_data(table.id, df)
+    (card,) = pane.cards
+    card.search.setText("y")
+    session.set_filters(table.id, [{"column": "A", "values": ["x1", "y1", "y2"]}])
+    pane.show_data(table.id, df)
+    assert card.status.text() == "5 values · 3 selected" and [row[2] for row in card.model.rows] == ["y1", "y2", "y3"]
 
 
 def test_a_closed_pane_and_the_view_not_shown_make_no_lists(window, settle, session, demo, made):
@@ -691,6 +775,34 @@ def test_all_values_then_apply_is_fast_and_short(session, qtbot):
     card.apply()
     assert session.filters(table.id) == [{"column": "Customer", "except": True, "values": [card.model.rows[5][2]]}]
     assert apply(df, [Filter.from_dict(f) for f in session.filters(table.id)]).height == 99_999
+
+
+def test_applying_half_of_many_values_is_short(window, settle, session, registry, tmp_path, qtbot):
+    """Half of 400,000 different values, Apply, with a filter on 8 columns. Before, the window
+    froze for seconds: for each card both filter panes wrote all filters with their values as
+    text, and both data panels converted each stored value on its own."""
+    i = pl.int_range(0, 400_000, eager=True)
+    df = pl.DataFrame({"Price": i / 100, **{f"N{k}": i % (k * 7) for k in range(1, 8)}})
+    panel = saved_project_of(window, settle, session, registry, tmp_path, df)
+    table_id = session.table.id
+    session.set_filters(table_id, [{"column": column, "values": []} for column in df.columns])
+    panel.filter_button.setChecked(True)
+    pane = panel.filter_pane
+    qtbot.waitUntil(lambda: not pane.updating, timeout=60_000)
+    card = pane.cards[0]
+    card._select_rows(range(200_000))
+    QApplication.processEvents()
+    started = time.perf_counter()
+    card.apply()
+    took = time.perf_counter() - started
+    assert took < 0.5, f"{took:.2f} s"  # (0.15 s here, 2.7 s before)
+    stored = session.filters(table_id)[0]
+    assert stored == {"column": "Price", "values": [row[2] for row in card.model.rows[:200_000]]}
+    assert panel.model.rowCount() == window.map_view.data.model.rowCount() == 200_000
+    qtbot.waitUntil(lambda: not pane.updating, timeout=60_000)
+    assert card.status.text() == "400,000 values · 200,000 selected"
+    assert sum(row[1] for row in pane.cards[7].model.all) == 200_000  # the rows of the selected prices
+    panel.filter_button.setChecked(False)
 
 
 MALFORMED = [

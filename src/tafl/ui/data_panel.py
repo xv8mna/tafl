@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import threading
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -29,7 +29,7 @@ from tafl.core import Status
 
 from . import theme
 from .filter_pane import FilterPane
-from .filters import Filter, apply, stored_values
+from .filters import Filter, apply, fingerprint, stored_values
 from .frame_model import FrameModel
 from .labels import ElidedLabel, WrappedLabel
 from .session import PROTECTED, Session, count, first_error, missing_settings, size_text, waiting_text
@@ -39,6 +39,21 @@ MAX_COPY_CELLS = 2_000_000  # more is a case for an export
 _COPY_AT_ONCE = 20_000  # more cells are copied in the background
 
 Ranges = list[tuple[int, int, int, int]]  # selected cells: (top, bottom, left, right), inclusive
+
+# The data filtered last, the fingerprints of its filters and the rows that passed them
+_last: tuple[weakref.ref[pl.DataFrame], list[tuple[Any, ...]], weakref.ref[pl.DataFrame]] | None = None
+
+
+def _passing(df: pl.DataFrame, filters: list[Filter], key: list[tuple[Any, ...]]) -> pl.DataFrame:
+    """The rows of ``df`` that pass ``filters`` (``key``: their fingerprints). The data panel of
+    the tables and that of the map show the same data with the same filters: the second one takes
+    the rows the first one got. Held weakly: nothing is kept for this."""
+    global _last
+    if _last is not None and _last[0]() is df and _last[1] == key and (rows := _last[2]()) is not None:
+        return rows
+    rows = apply(df, filters)
+    _last = (weakref.ref(df), key, weakref.ref(rows))
+    return rows
 
 
 class DataPanel(QWidget):
@@ -134,7 +149,7 @@ class DataPanel(QWidget):
         layout.addWidget(self.body, 1)
 
         self._source: pl.DataFrame | None = None  # the data the grid shows (before filtering) ...
-        self._source_filters = ""  # ... and the filters it was filtered with
+        self._source_filters: list[tuple[Any, ...]] = []  # ... and the filters it was filtered with
         self._fitted: pl.DataFrame | None = None  # the data the column widths were fitted to
         session.selection_changed.connect(self.refresh)
         session.results_changed.connect(self.refresh)
@@ -238,12 +253,12 @@ class DataPanel(QWidget):
 
     def _filtered(self, table_id: str, df: pl.DataFrame) -> pl.DataFrame:
         """The rows that pass the table's instant filters (the same frame again if nothing changed)."""
-        filters = self.session.filters(table_id)
-        key = json.dumps(filters, default=str)
+        filters = [Filter.from_dict(f) for f in self.session.filters(table_id)]
+        key = [fingerprint(f) for f in filters]  # (not their JSON text: slow for long lists of values)
         if df is self._source and key == self._source_filters and self.model.frame is not None:
             return self.model.frame
         self._source, self._source_filters = df, key
-        return apply(df, [Filter.from_dict(f) for f in filters])
+        return _passing(df, filters, key)
 
     def _show_frame(self, df: pl.DataFrame, shown: pl.DataFrame) -> None:
         """Show (filtered) data; column widths stay when only the filters changed."""
