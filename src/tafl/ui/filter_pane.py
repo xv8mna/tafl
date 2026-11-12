@@ -544,7 +544,8 @@ class FilterCard(QFrame):
         if f.facet == "period":
             self.period.setCurrentIndex(max(0, self.period.findData(f.options.get("by", "month"))))
         elif f.facet == "ranges":
-            self.limits.setText("; ".join(threshold_text(self.pane.display.number(t)) for t in thresholds(f)))
+            display = self.pane.display
+            self.limits.setText("; ".join(threshold_text(t, display.number, display.decimal) for t in thresholds(f)))
             self.side.setCurrentIndex(0 if f.options.get("lower_inclusive", True) else 1)
         elif f.facet == "regex" and not self.pattern.hasFocus():
             self.pattern.setText(str(f.options.get("pattern") or ""))

@@ -442,6 +442,28 @@ def test_the_field_of_thresholds_reads_back_what_it_shows(session):
     assert Filter.from_dict(session.filters(table.id)[0]).options["thresholds"] == [2.5, 1000]
 
 
+def test_the_field_of_thresholds_keeps_all_digits_of_a_threshold(session):
+    """A threshold with more than 10 decimal places keeps them (at most 15 digits, as the grid
+    shows a number below 0.0001). Before, the field showed 0.000674382292 as the grid does,
+    0.0006743823, and Enter made it that."""
+    df = pl.DataFrame({"n": [0.5, 1.5, 2000.0]})
+    table = session.project.add_table("T")
+    typed = [-1.00000000004, 1e-12, 0.000674382292, 0.1 + 0.2, 2.5]
+    for language, country, shown in (
+        ("English", "UnitedKingdom", "-1.00000000004; 1E-12; 0.000674382292; 0.3; 2.5"),
+        ("German", "Germany", "-1,00000000004; 1E-12; 0,000674382292; 0,3; 2,5"),
+    ):
+        session.set_filters(table.id, [Filter("n", [], "ranges", {"thresholds": typed, "lower_inclusive": True}).to_dict()])
+        pane = FilterPane(session)
+        pane.display = DisplayFormat(QLocale(getattr(QLocale.Language, language), getattr(QLocale.Country, country)))
+        pane.show_data(table.id, df)
+        (card,) = pane.cards
+        assert card.limits.text() == shown
+        card.limits.editingFinished.emit()  # Enter
+        card.side.setCurrentIndex(1)  # the field is read again
+        assert Filter.from_dict(session.filters(table.id)[0]).options["thresholds"] == [-1.00000000004, 1e-12, 0.000674382292, 0.3, 2.5]
+
+
 def test_modes_are_saved_with_the_filter():
     chosen = Filter("Date", ["2025-01"], "period", {"by": "month"})
     assert chosen.to_dict() == {"column": "Date", "facet": "period", "options": {"by": "month"}, "values": ["2025-01"]}

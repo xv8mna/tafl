@@ -294,10 +294,20 @@ def _number(text: str) -> float | None:
     return dtypes.parse_numbers(pl.Series([text], dtype=pl.String), dtypes.decimal_separator(text))[0]
 
 
-def threshold_text(shown: str) -> str:
-    """A threshold as its field shows it, so that the field reads it back as the same number:
-    ``shown`` as the grid shows the number. With a point as the decimal separator, 1.234 would
-    be a thousand two hundred and thirty-four there: it is 1.2340."""
+def threshold_text(value: float, number: Callable[[float], str], decimal: str) -> str:
+    """A threshold as its field shows it, so that the field reads it back as the same number: as
+    the grid shows it (``number``, with ``decimal`` as the decimal separator), or with all its
+    digits where the grid shows fewer, at most 15 as for a number below 0.0001: 0.000674382292,
+    not 0.0006743823. With a point as the decimal separator, 1.234 would be a thousand two
+    hundred and thirty-four there: it is 1.2340."""
+    digits = f"{value:.15g}"
+    shown = _as_typed(number(value))
+    if "e" not in digits and _number(shown) != float(digits):
+        shown = _as_typed(format(Decimal(digits), "f").replace(".", decimal))
+    return shown
+
+
+def _as_typed(shown: str) -> str:
     return shown + "0" if dtypes.decimal_separator(shown) == "," and "," not in shown else shown
 
 
