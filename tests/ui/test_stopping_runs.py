@@ -37,6 +37,19 @@ def _wait_on_calculation(df, p, ctx):
     return df
 
 
+BUSY = threading.Event()
+
+
+@action("test.busy_on_calculation", "Busy (when calculated)")
+def _busy_on_calculation(df, p, ctx):
+    """While the table is calculated: says it started, then takes 1.5 s that can't be stopped, as
+    a big import does."""
+    if ctx.mode == Mode.PREVIEW:
+        BUSY.set()
+        time.sleep(1.5)
+    return df
+
+
 @action("test.wait_on_run", "Wait (when run)")
 def _wait_on_run(df, p, ctx):
     """In a run: says it started, then waits until the test lets it go on, and fails if the test
@@ -56,6 +69,7 @@ def slow_registry():
     module = types.ModuleType("waiting")
     module.wait = _wait_on_run
     module.calculating = _wait_on_calculation
+    module.busy = _busy_on_calculation
     registry.add_module(module)
     return registry
 
@@ -409,6 +423,37 @@ def test_closing_during_a_calculation_stops_it_at_once(qapp, qtbot, slow_registr
         assert CANCELLED.wait(2) and session.wait(2000)  # its thread ended
     finally:
         session._worker.cancel()  # when the test fails: the next tests don't wait for the 20 s
+        session.wait()
+        window.deleteLater()
+
+
+def test_closing_during_a_step_that_cant_stop_hides_the_window_at_once(qapp, qtbot, slow_registry, tmp_path, monkeypatch):
+    """A step that can't stop in its middle ends before the program does: closing waits for it
+    without the window. Before, the window stayed until the step ended, up to 5 s."""
+    BUSY.clear()
+    (tmp_path / "data.csv").write_text("A;B\n1;2\n", encoding="utf-8")
+    project = Project()
+    table = project.add_table("Busy")
+    project.add_step(table, slow_registry.actions["csv.import"], {"file": "data.csv"})
+    project.add_step(table, slow_registry.actions["test.busy_on_calculation"], {})
+    path = project.save(tmp_path / "busy.tafl")
+    qapp.setOrganizationName("Tafl Tests")
+    session = Session(slow_registry)
+    window = MainWindow(session)
+    window.show()
+    window.open_path(path)
+    waits = []
+    wait = session.wait
+    monkeypatch.setattr(session, "wait", lambda msecs=30_000: (waits.append((window.isVisible(), time.monotonic())), wait(msecs))[1])
+    try:
+        assert BUSY.wait(10) and session.busy
+        started = time.monotonic()
+        assert window.close()
+        assert time.monotonic() - started > 0.5  # (it waited for the step)
+        (visible, at), *_ = waits
+        assert not visible and at - started < 0.5
+        assert not window.isVisible() and not session._worker.running
+    finally:
         session.wait()
         window.deleteLater()
 

@@ -878,6 +878,9 @@ class MainWindow(QMainWindow):
         for panel in (self.data_panel, self.map_view.data):
             panel.filter_pane.stop()
         checks().stop_all()  # the checks of formula fields: nothing waits for them
+        # A step that can't stop in its middle (a big import) ends before the program does: the
+        # window goes first, so that it closes at once for the one who closes it
+        self.hide()
         self.session.wait(5000)
         event.accept()
 
