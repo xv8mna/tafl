@@ -428,6 +428,29 @@ def test_whole_parts_beyond_int64_keep_their_digits_in_amounts_and_percentages(a
     assert lines[1] == "9223372036854775808,00;-9223372036854775808;9223372036854775808,0;9223372036854775808,00"
 
 
+def test_whole_parts_of_16_digits_keep_them_in_amounts_and_with_decimal_places(act, tmp_path):
+    """A whole part of 16 to 19 significant digits in an amount, with ,0 or beside decimals stayed a
+    decimal number, which holds it, but an export wrote 15 digits (1234567890123460): it keeps its
+    digits as an exact decimal, as beyond Int64. As plain digits it is a whole number, and ordinary
+    amounts stay decimal numbers."""
+    (tmp_path / "b.csv").write_text(
+        "Amount;Comma;Minus;Big;Beside;Plain;Price\n"
+        "1.234.567.890.123.456 €;1234567890123456,0;9007199254740994-;1.234.567.890.123.456.000 €;18014398509481984;1234567890123456;1.234,50 €\n"
+        "1 €;1,5;5-;1 €;1,5;1;2,00 €\n",
+        encoding="utf-8",
+    )
+    ctx = StubContext()
+    df = act("csv.import", None, {"file": str(tmp_path / "b.csv")}, ctx)
+    exact, places = pl.Decimal(38, 0), pl.Decimal(38, 1)
+    assert df.schema == {"Amount": exact, "Comma": places, "Minus": exact, "Big": exact, "Beside": places, "Plain": pl.Int64, "Price": pl.Float64}
+    row = (Decimal(1234567890123456), Decimal("1234567890123456.0"), Decimal(-9007199254740994), Decimal(1234567890123456000), Decimal(2**54))
+    assert df.row(0) == (*row, 1234567890123456, 1234.5)
+    act("csv.export", df, {"file": str(tmp_path / "out.csv")})
+    lines = (tmp_path / "out.csv").read_text(encoding="utf-8-sig").splitlines()
+    line = "1234567890123456;1234567890123456,0;-9007199254740994;1234567890123456000;18014398509481984,0;1234567890123456;1234,5"
+    assert lines[1] == line and not ctx.warnings
+
+
 def test_decimals_that_a_decimal_number_keeps_stay_decimal_numbers(act, tmp_path):
     """A program writes its decimal numbers with as many digits as tell them apart, up to 17:
     0.3333333333333333 and 0.30000000000000004 come back from a decimal number with the same digits,

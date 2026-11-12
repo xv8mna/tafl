@@ -249,7 +249,7 @@ _LONG = "1" * 31
         ),
         ("A;1,5\n", "B|9007199254740993\nC|2.5\n", pl.Decimal(38, 1), [Decimal("1.5"), Decimal("9007199254740993"), Decimal("2.5")], []),
         ("A;12,345678901234567%\n", "B|1.5\n", pl.Decimal(38, 17), [Decimal("0.12345678901234567"), Decimal("1.5")], []),
-        ("A;1,5\n", "B|18014398509481984\nC|1,000,000\n", pl.Float64, [1.5, 2.0**54, 1e6], []),
+        ("A;1,5\n", "B|10000000000000000\nC|1,000,000\n", pl.Float64, [1.5, 1e16, 1e6], []),
         (
             f"A;{_LONG},5\n",
             "B|0.1234567890123456789\n",
@@ -258,7 +258,7 @@ _LONG = "1" * 31
             [f"V stays text: its numbers are too long to be kept exactly, e.g. '{_LONG},5'"],
         ),
     ],
-    ids=["exact-decimal", "beyond-2^53", "percentage", "2^54", "too-long"],
+    ids=["exact-decimal", "beyond-2^53", "percentage", "10^16", "too-long"],
 )
 def test_numbers_in_files_with_other_decimal_separators_are_read_as_in_one_file(act, tmp_path, a, b, dtype, values, warnings):
     """A column of numbers in every file gets the numbers that one file of all of them gives, each

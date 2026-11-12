@@ -577,12 +577,12 @@ def _beyond_floats(values: pl.Series, decimal: str, percent: bool = False) -> bo
 
 def _beyond_digits(values: pl.Series, decimal: str, percent: bool = False) -> bool:
     """Whether one of these numbers is beyond decimal numbers whatever its digits: so close to 0
-    that its decimal number is 0 (below about 1e-307), or with a whole part beyond Int64
-    (9,223,372,036,854,775,807) of more than 15 significant digits: a decimal number holds some of
-    them, as 2^63, but an export writes them with 15 digits (9223372036854780000), while 1.5e20 is
-    written as it is. ``dtypes.float_loses_digits`` looks at the digits only. Such a number takes
-    more than 18 characters."""
-    rows = (values.str.len_bytes() > 18).fill_null(False).arg_true()
+    that its decimal number is 0 (below about 1e-307), or with a whole part of more than 15
+    significant digits: a decimal number holds some of them, as 1234567890123456 or 2^63, but an
+    export writes them with 15 digits (1234567890123460), while 1.5e20 is written as it is.
+    ``dtypes.float_loses_digits`` looks at the digits only. Such a number takes more than 15
+    characters."""
+    rows = (values.str.len_bytes() > _FLOAT_DIGITS).fill_null(False).arg_true()
     if not rows.len():
         return False
     plain = _plain(values.gather(rows), decimal).to_frame()
@@ -592,8 +592,7 @@ def _beyond_digits(values: pl.Series, decimal: str, percent: bool = False) -> bo
     zeros = number.str.len_bytes().cast(pl.Int64) - number.str.strip_chars_start(".0").str.len_bytes().cast(pl.Int64) - 1
     tiny = (counts["whole"] == 0) & (counts["significant"] > 0) & (zeros > 306)
     whole = number.str.head(counts["whole"])  # the digits before the point
-    beyond = (counts["whole"] > 19) | ((counts["whole"] == 19) & (whole.cast(pl.UInt64, strict=False) > 2**63 - 1))
-    big = beyond & (whole.str.strip_chars_end("0").str.len_bytes() > _FLOAT_DIGITS)
+    big = whole.str.strip_chars_end("0").str.len_bytes() > _FLOAT_DIGITS
     return bool(plain.select((tiny | big).any()).item())
 
 
