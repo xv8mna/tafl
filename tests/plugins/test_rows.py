@@ -322,6 +322,18 @@ def test_filling_exact_decimals_keeps_their_type(act):
     assert act("rows.fill", wide, {"columns": ["Max"], "method": "value", "value": "0,5"}).schema["Max"] == pl.Decimal(38, 1)
 
 
+@pytest.mark.parametrize("value", ["NaN", "inf", "-Infinity"])
+def test_filling_exact_decimals_with_nan_or_infinity_says_why_it_cant(act, value):
+    """Polars made the column decimal numbers (Float64) without a word: an exact decimal holds no
+    NaN and no infinity. With no empty cell nothing changes, as with other values."""
+    df = pl.DataFrame({"d": pl.Series([D("1.50"), None], dtype=pl.Decimal(10, 2))})
+    message = rf"^'{value}' doesn't fit column 'd': an exact decimal holds no NaN or infinity \(a decimal number does\)$"
+    with pytest.raises(ActionError, match=message):
+        act("rows.fill", df, {"columns": ["d"], "method": "value", "value": value})
+    full = df.drop_nulls()
+    assert act("rows.fill", full, {"columns": ["d"], "method": "value", "value": value}).equals(full)
+
+
 def test_fill_exact_decimals_with_long_values_that_fit(act, decimals):
     filled = act("rows.fill", decimals, {"columns": ["ID", "Small"], "method": "value", "value": "1" * 36})
     assert filled["ID"].to_list()[3] == D("1" * 36) and filled["Small"].to_list()[3] == D("1" * 36)

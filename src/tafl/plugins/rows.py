@@ -241,6 +241,10 @@ def fill(df, p, ctx):
                 target, value = _moment_fill(df[name], p.value, value, name)
                 updates.append((column if target == dtype else column.cast(target)).fill_null(value).alias(name))
                 continue
+            if isinstance(dtype, pl.Decimal) and isinstance(value, float):  # Polars made the column decimal numbers
+                raise ActionError(
+                    f"'{p.value}' doesn't fit column '{name}': an exact decimal holds no NaN or infinity (a decimal number does)"
+                )
             if isinstance(value, Decimal) and not _fits_decimal(value, dtype.scale):
                 raise ActionError(
                     f"'{p.value}' has too many digits for column '{name}': "
