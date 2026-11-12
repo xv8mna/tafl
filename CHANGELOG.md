@@ -123,15 +123,6 @@ with a message that says what to change.
   the **Whole number format**, also when only one sheet is replaced. Before, they got the **Decimal
   number format**: the ID 5 showed as `5.00`, and 12345678901234567890123 as
   `12,345,678,901,234,600,000,000.00`. A format for the single column still comes first.
-- **Import from database** (SQL Server): a `datetimeoffset` column becomes date-times in UTC, the
-  moments it holds: `2026-10-01 08:30:00 +02:00` is 2026-10-01 06:30:00 UTC. Before, it was text in
-  ISO form, with up to 6 digits of a second (`2026-10-01T08:30:00+02:00`,
-  `2026-10-01T08:30:00.123456+02:00`). Steps that use the column as text, and exports of it, get
-  the date-time now. Written back into a `datetimeoffset` column, the same moment is stored with the
-  offset `+00:00`. A value whose moment in UTC is before the year 1 or after 9999, such as
-  `0001-01-01 08:00 +14:00`, stops the import with a message that shows how to read the column as
-  text in the query (`CONVERT(nvarchar(34), …)`); in 0.6.4, it was text as every value of such a
-  column.
 - **Export to database** (SQL Server): texts for `date`, `datetime`, `datetime2`, `smalldatetime`,
   `time` and `datetimeoffset` columns are read by Tafl, the same way in every mode. Tafl reads them
   as **Change type / format** does without a format (`31.12.2025`, `2025-12-31`, with or without a
@@ -158,8 +149,14 @@ with a message that says what to change.
   Server converts a time, and keeps its fraction of a second: 08:30:15.5 is
   `1900-01-01 08:30:15.500` in a `datetime` column. Before, the driver gave it the date of the run
   and only whole seconds (`2026-11-12 08:30:15`): the result changed from day to day, and such keys
-  found no row the next day. A `datetimeoffset` column still gets the date of the run and whole
-  seconds.
+  found no row the next day.
+- **Export to database** (SQL Server): a time value for a `datetimeoffset` or `date` column stops
+  the export in every mode, as a time alone in a text does there: a time has no date. The message
+  names the column: "The column V of dbo.T holds dates and times with their offset from UTC
+  (datetimeoffset(0)), but V has times, which have no date (e.g. 08:30:15.500). Change them to
+  date-times with their date first." Empty values are written. Before, a `datetimeoffset` column
+  got the date of the run, the offset of this PC and whole seconds (`2026-11-12 08:30:15 +01:00`),
+  and a `date` column stopped with the driver's words, which named no column.
 - **Export to database** (SQL Server): date-times, times and texts with more digits of a second
   than their `datetime2`, `time` or `datetimeoffset` column holds are cut to the column's digits in
   every mode. The step warns once how many values were cut, with an example: "V: 1 value was cut to
@@ -192,6 +189,16 @@ with a message that says what to change.
   ends the step's transaction or leaves one open, **Fill empty values** with `NaN` or `inf` in a
   column of exact decimals, and **Change type** to *Decimal number* with *stop with an error* on a
   text such as `1e400`. Their bullets are below.
+
+### A new setting
+
+- **Import from database** (SQL Server): **SQL Server datetimeoffset columns**. *Date-times in
+  UTC*, the choice of a new step, reads the moments that a `datetimeoffset` column holds:
+  `2026-10-01 08:30:00 +02:00` is 2026-10-01 06:30:00 UTC. Written back into a `datetimeoffset`
+  column, the same moment is stored with the offset `+00:00`. *Text with the offset* reads the
+  text of 0.6.4, in ISO form with up to 6 digits of a second (`2026-10-01T08:30:00+02:00`,
+  `2026-10-01T08:30:00.123456+02:00`). A step saved by an earlier version gets *Text with the
+  offset*, so it gives the same results.
 
 ### Wrong results that are now right
 

@@ -2177,7 +2177,9 @@ WHERE City <> 'Wien'
 ```
 
 Filter big tables in the query: only the rows you need are read. Numbers keep all their digits.
-SQL Server `datetimeoffset` columns become date-times in UTC (08:30 +02:00 is 06:30 UTC). SQL
+SQL Server `datetimeoffset` columns become date-times in UTC (08:30 +02:00 is 06:30 UTC), or
+text with their offset (`2026-10-01T08:30:00+02:00`) when you choose *Text with the offset* in
+**SQL Server datetimeoffset columns**. Steps saved before version 0.6.5 read text. SQL
 Server's driver reads date-times to the microsecond: for a column with 7 digits of a second
 (`datetime2(7)`, `time(7)`, `datetimeoffset(7)`) whose values have parts of a second, the step
 warns that a 7th digit, if any, is cut; **Export to database** still finds such rows by key.
@@ -2229,7 +2231,8 @@ without a format (`31.12.2025 08:30`, `2025-12-31`), or in a form of ISO 8601
 (`2025-12-31T08:30:00`, `20251231`, with `Z` or an offset up to ±14:00 such as `+02:00`), the same
 way in every mode. A `time` column takes the time of a date and time in either form. A time alone
 (`08:30`) for a `datetime`, `smalldatetime` or `datetime2` column is on 1 January 1900, as SQL
-Server stores it. A text whose meaning depends on the language, such as `12/31/2025` or
+Server stores it. For a `date` or `datetimeoffset` column, a time alone, in a text or as a time
+value, stops the export: it has no date. A text whose meaning depends on the language, such as `12/31/2025` or
 `08:30 PM`, or that Tafl can't read, stops the export and is named. Values with more digits of a
 second than a `datetime2`, `time` or `datetimeoffset` column holds are cut, with one warning for
 all such columns (`08:00:00.5` is `08:00:00` in a `time(0)` column); a text keeps up to 7 digits.

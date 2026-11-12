@@ -489,8 +489,9 @@ always in one transaction: if anything fails, the database stays as it was.
   text or binary value longer than its column (e.g. `nvarchar(50)`; in a UTF-8 `varchar`, longer
   in bytes), a decimal for a whole-number column (also exact decimals with decimal places), exact
   decimals beyond a `decimal`, `money` or `smallmoney` column, an infinite number (e.g. from a
-  division by zero), and a text for a date or time column that Tafl can't read or whose meaning
-  depends on the language (`12/31/2025`, `08:30 PM`).
+  division by zero), a text for a date or time column that Tafl can't read or whose meaning
+  depends on the language (`12/31/2025`, `08:30 PM`), and a time value (without a date) for a
+  `datetimeoffset` or `date` column.
 - Key columns: SQLite takes up to 1,999 of them. In SQL Server, more than 32 work without the
   index of the temporary table (slower for big tables).
 - 100,000 rows take a second or two with a local SQL Server, less with SQLite.
@@ -510,7 +511,9 @@ are.
 
 Database imports: numbers keep all their digits. SQL Server `decimal`, `numeric` and `money`
 columns become whole numbers or decimal numbers when that keeps every value, else exact
-decimals. `datetimeoffset` columns become date-times in UTC. For a column with 7 digits of a
+decimals. `datetimeoffset` columns become date-times in UTC, or text with their offset
+(`2026-10-01T08:30:00+02:00`) with the step's choice **SQL Server datetimeoffset columns**; steps
+saved before version 0.6.5 read text. For a column with 7 digits of a
 second (`datetime2(7)`, `time(7)`, `datetimeoffset(7)`) whose values have parts of a second, the
 step warns that the driver reads only 6, so that a 7th digit, if any, is cut. A whole SQL Server
 table reads `sql_variant`, `geography`, `geometry` and `hierarchyid` columns as text; a query
