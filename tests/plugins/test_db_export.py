@@ -2516,6 +2516,7 @@ def test_sqlserver_keys_of_seven_digits_are_checked_in_a_time_that_grows_with_th
             with ctx.database("server") as db:
                 assert db.read(f"SELECT COUNT(*) AS n FROM {name}")["n"][0] == left, mode
     finally:
+        ctx._cancel.clear()  # after a Stop, the context would stop the cleanup too
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
 
