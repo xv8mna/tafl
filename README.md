@@ -100,7 +100,8 @@ In the download's folder, write `tafl.exe` instead of `.venv\Scripts\tafl` (in P
   parameters it lists the values the run used. It exits with 0 when everything worked (tables
   that are turned off or skip their rest count as working), 1 when a step failed, 2 when the
   project can't be opened or has no such table or parameter, 3 when the run stopped before its
-  end, usually because the computer ran out of memory, and 130 when Ctrl+C stopped it.
+  end, usually because the computer ran out of memory, and 130 when Ctrl+C stopped it (also
+  right after the start).
   It prints each table as soon as it is calculated, so after Ctrl+C the output shows what ran
   (e.g. which exports were written).
 - `show` prints the steps of a table and the data after one step (also with `--set`).
@@ -172,16 +173,17 @@ guide** in the app). In short:
 - **Run project** (F5) calculates all tables and executes the exports and commands; **Run this
   table** (Shift+F5) does the same for the selected table and the tables it uses. While you edit,
   exports and commands never run. **Run results** list every table and step, with how long the
-  run took. **Stop** stops a formula that is running at once, and an import from a database
-  within a moment (SQL Server can stop a query only when rows arrive); another step that is
-  running finishes first (an export can take a while). The run results then list the tables
-  calculated before the stop (their exports and commands are done) and, for the stopped table,
-  the steps that ran, the step where it stopped (a file command says how many files it had
-  copied, moved, renamed or deleted) and the steps that did not run. Closing the window
-  during a run asks whether to wait or to stop. **Reload data** (Ctrl+R) reads files and
-  databases again and brings the status of every table up to date. A changed file is also read
-  again by itself when the table is calculated again: when you select the table again, change a
-  step, or run. Selecting a step only shows what was calculated.
+  run took. **Stop** stops a formula that is running at once, and a database step within a moment
+  (on SQL Server also a query that gives no row yet, a long command or an export that waits for a
+  lock, whose changes are rolled back); another step that is running finishes first (an export to
+  a file can take a while). The run results then list the tables calculated before the stop
+  (their exports and commands are done) and, for the stopped table, the steps that ran, the step
+  where it stopped (a file command says how many files it had copied, moved, renamed or deleted)
+  and the steps that did not run. Closing the window during a run asks whether to wait or to
+  stop. **Reload data** (Ctrl+R) reads files and databases again and brings the status of every
+  table up to date. A changed file is also read again by itself when the table is calculated
+  again: when you select the table again, change a step, or run. Selecting a step only shows what
+  was calculated.
 - **Map** (Ctrl+2): the project map, a full workspace: the selected table's steps and settings
   are on the right, its data below the map. **Tables** (Ctrl+1) switches back.
   - Every table is a box; arrows run from a table to the step that uses it (merge, append, start
@@ -245,10 +247,11 @@ guide** in the app). In short:
   - Colors: selected values blue, values that are possible with the other filters white,
     excluded ones grey. The counts are rows that pass the *other* filters.
   - **Modes** (the button next to the column name): *Values*; *Time periods* for dates (group by
-    year, quarter, month, ISO week or day); *Number ranges* (type thresholds like `500; 1000`,
-    choose where a value equal to a threshold goes); *Text length*; *Pattern* (a regular
-    expression: matches / doesn't match). A column can have several filters, e.g. by month and
-    by value: **+ Filter** offers it again.
+    year, quarter, month, ISO week or day); *Number ranges* (type thresholds like `500; 1000`, read
+    as a number typed into a step's settings, so `1.000` is a thousand; choose where a value equal
+    to a threshold goes); *Text length*; *Pattern* (a regular expression: matches / doesn't
+    match). A column can have several filters, e.g. by month and by value: **+ Filter** offers it
+    again.
   - Several values of one filter: any of them (OR); several filters: all of them (AND).
   - Filters stay while you click through the steps, so you can follow rows through a table; at
     a step that doesn't have the column, the filter is skipped. Each table has its own filters;
@@ -291,14 +294,18 @@ folder** ("Read: All files in a folder"), with all subfolder levels if you like:
   empty there, and a column whose type differs between files (or sheets) gets a type that holds
   all its values, as in *Append* (whole and decimal numbers become decimal numbers, dates and
   date-times date-times), else text, with a warning; lists and records beside other values stop
-  the import. CSV: delimiter and encoding are detected per file (a file whose first line has
-  no delimiter has one column); numbers, dates and the decimal separator once for all files,
-  the decimal separator also per column (`0.500` shows a decimal point, `2,5` a comma). A value
-  like `1.000` can be one thousand or one: it follows the other numbers of its column, else
-  those of the files, and without any it is one thousand in files with semicolons. Amounts
-  (`1.234,50 €`, `123,45-`) and percentages (`12,5%` is 0.125) are numbers when every value of
-  the column is one; spaces between digits count only there, as thousands separators
-  (`1 234,50 €`), so phone numbers, card numbers or `2025 01 31` stay text.
+  the import. CSV: each file is read with its own delimiter, encoding, decimal separator and date
+  format (a file whose first line has no delimiter has one column), so `1,50` in one file and
+  `1.50` in another are both 1.5; files whose separators agree are detected together, as one
+  file. The decimal separator is also found per column (`0.500` shows a decimal point, `2,5` a
+  comma). A value like `1.000` can be one thousand or one: it follows the other numbers of its
+  column (in its file, else in the other files), else those of its file, else those of all
+  files, and without any it is one thousand in files with semicolons. The log names the
+  separator of each file when they differ. A CSV column that is text in one file (`n/a`) stays
+  text without a warning, with the text of the files, and a column with only blanks in a file is
+  empty there. Amounts (`1.234,50 €`, `123,45-`, `-$3.00`) and percentages (`12,5%` is 0.125) are
+  numbers when every value of the column is one; spaces between digits count only there, as
+  thousands separators (`1 234,50 €`), so phone numbers, card numbers or `2025 01 31` stay text.
 - Optional columns **File** (file name) and **Path** (below the folder, e.g.
   `2025\01\orders_2025-01-02.csv`) show where each row came from. Calculated columns take
   what you need from them:
@@ -441,22 +448,36 @@ always in one transaction: if anything fails, the database stays as it was.
   when the export ends.
 - Values are stored as their columns hold them, the same way in every mode, and key values
   compare as the columns do (with their collation). SQLite keeps fractions of a second
-  (`08:30:00.500000`, nanoseconds with nine digits). SQL Server's ODBC driver passes fractions of
-  a second to the microsecond: finer digits are cut, with a warning when the column could hold
-  them (`datetime2(7)`, `time(7)`). SQL Server cuts fractions of a second to the digits of the
-  column (`datetime2(0)` holds whole seconds), a `date` column keeps only the date, decimals are
-  rounded to the column's decimal places as SQL Server rounds them (1.005 is 1.01 in a
-  `decimal(10,2)`), a `varchar` or `char` column gets the characters its collation's code page
-  holds (Łódź becomes Lódz in a `Latin1_General` column and stays Łódź in a Polish or UTF-8 one),
-  and spaces at the end of a text that don't fit are left out. Binary values for a SQL Server
-  column of text (`varchar`, `nvarchar`, `text`, …) are hex text, `0x0102FF`, as in the CSV
-  export. Existing `text` and `ntext` columns take texts and other values too, in every mode.
+  (`08:30:00.500000`, nanoseconds with nine digits). SQL Server's ODBC driver passes the
+  fractions of a second of date-times and times to the microsecond: finer digits are cut, with a
+  warning when the column could hold them (`datetime2(7)`, `time(7)`); a text keeps up to 7
+  digits. Fractions of a second are cut to the digits of the column (`datetime2(0)` holds whole
+  seconds), and the step warns once how many values were cut; `datetime` and `smalldatetime`
+  columns round to their own steps (1/300 s, whole minutes) without a warning. A `date` column
+  keeps only the date, decimals are rounded to the column's decimal places as SQL Server rounds
+  them (1.005 is 1.01 in a `decimal(10,2)`), a `varchar` or `char` column gets the characters its
+  collation's code page holds (Łódź becomes Lódz in a `Latin1_General` column and stays Łódź in a
+  Polish or UTF-8 one), and spaces at the end of a text that don't fit are left out. Binary
+  values for a SQL Server column of text (`varchar`, `nvarchar`, `text`, …) are hex text,
+  `0x0102FF`, as in the CSV export, and exact decimals get all their decimal places (`2.00`), as
+  SQL Server's `CAST` writes them. Existing `text` and `ntext` columns take texts and other values
+  too, in every mode.
+- SQL Server: a text for a date or time column is read by Tafl, the same way in every mode, as
+  *Change type* reads it without a format (`31.12.2025 08:30`) or in a form of ISO 8601
+  (`2025-12-31T08:30`, `20251231`, with `Z` or an offset). A time alone (`08:30`) or a value of a
+  time column for a `datetime`, `smalldatetime` or `datetime2` column is on 1 January 1900, as SQL
+  Server converts it.
 - Date-times with a time zone are written in that zone's local time, without the zone (08:30 in
   Berlin stays 08:30), as in the Excel export. A SQL Server `datetimeoffset` column gets the
   zone's offset with it (08:30 +02:00 in Berlin in summer); a date-time without a zone gets the
   offset of this PC's time zone on its day.
 - Updating needs one row per key value, as the key column holds it (08:00:01.2 and 08:00:01.7
-  are one value in a `datetime2(0)`); duplicates stop the export with an example.
+  are one value in a `datetime2(0)`) and as it compares them (`abc` and `ABC` are one value in a
+  case-insensitive column); duplicates stop the export with an example. Keys of 7 digits of a
+  second (`datetime2(7)`, `time(7)`, `datetimeoffset(7)`) are compared to the microsecond, as the
+  driver reads them.
+- A synonym is written as the table it stands for. One for a table of another server stops the
+  modes that find rows by key: they need the types of its columns.
 - Values that the database can't store stop the export with a message that names the column:
   time spans, lists, records and values of a plugin's own type; in SQLite, whole numbers beyond
   9,223,372,036,854,775,807 and a table of more than 2,000 columns. In SQL Server also: a whole
@@ -464,16 +485,21 @@ always in one transaction: if anything fails, the database stays as it was.
   `bigint` for a `float`, `real`, `money` or narrower `decimal` column (a text column takes such
   numbers as their digits); whole numbers of more than 38 digits (change them to text first); a
   text or binary value longer than its column (e.g. `nvarchar(50)`; in a UTF-8 `varchar`, longer
-  in bytes), a decimal for a whole-number column, an infinite number (e.g. from a division by
-  zero).
+  in bytes), a decimal for a whole-number column (also exact decimals with decimal places), exact
+  decimals beyond a `decimal`, `money` or `smallmoney` column, an infinite number (e.g. from a
+  division by zero), and a text for a date or time column that Tafl can't read or whose meaning
+  depends on the language (`12/31/2025`, `08:30 PM`).
 - Key columns: SQLite takes up to 1,999 of them. In SQL Server, more than 32 work without the
   index of the temporary table (slower for big tables).
 - 100,000 rows take a second or two with a local SQL Server, less with SQLite.
 
 **Run SQL command** runs any SQL when the project runs, e.g. `EXEC dbo.RefreshReport` after an
-export, or a `DELETE` / `UPDATE`. It runs in one transaction, so leave out `BEGIN` and `COMMIT`
-(SQLite refuses them). For SQL Server, separate batches with `GO` lines as in SQL Server
-Management Studio: `GO 3` runs the batch before it three times, and a `-- comment` may follow.
+export, or a `DELETE` / `UPDATE`. It runs in one transaction: SQLite refuses `BEGIN` and `COMMIT`;
+on SQL Server, the command's own `BEGIN TRAN … COMMIT` works inside it, and a command that ends
+the step's transaction (a `COMMIT` without `BEGIN TRAN`, a `ROLLBACK`) or leaves one open stops
+with a message. For SQL Server, separate batches with `GO` lines as in SQL Server Management
+Studio: `GO 3` runs the batch before it three times, and a `-- comment` may follow. **Stop** ends a
+running SQL Server command or export at once and rolls it back.
 
 SQL Server connections need ODBC Driver 18 or 17 ([Install](#install)): without one, a
 connection says what to install. Windows' own driver "SQL Server" is used only when you enter it
@@ -482,16 +508,20 @@ are.
 
 Database imports: numbers keep all their digits. SQL Server `decimal`, `numeric` and `money`
 columns become whole numbers or decimal numbers when that keeps every value, else exact
-decimals. A whole SQL Server table reads `sql_variant`, `geography`, `geometry` and
-`hierarchyid` columns as text; a query needs a `CAST` for them (the message shows it). A SQLite
-file is opened for reading only: a query that changes data stops with a message, and so do
-`ATTACH` and a PRAGMA that does more than read, also in a run. A file that a program left
-unfinished stays as it is, and the message says how to repair it.
+decimals. `datetimeoffset` columns become date-times in UTC. For a column with 7 digits of a
+second (`datetime2(7)`, `time(7)`, `datetimeoffset(7)`), the step warns that the driver reads
+only 6, so that a 7th digit, if any, is cut. A whole SQL Server table reads `sql_variant`,
+`geography`, `geometry` and `hierarchyid` columns as text; a query needs a `CAST` for them (the
+message shows it). A SQLite file is opened for reading only: a query that changes data stops with
+a message, and so do `ATTACH` and a PRAGMA that does more than read, also in a run. A file that a
+program left unfinished stays as it is, and the message says how to repair it.
 
 **Detect numbers and dates in text columns** has a **Decimal separator**: *Detect automatically*
-(for new steps) finds each column's own, also in amounts and percentages, as the CSV import does;
-*Point* or *Comma* reads only numbers and dates with that separator. Steps of projects saved by an
-earlier version have *Point* and read as before. Date-times with nanoseconds keep them.
+(for new steps) reads numbers as the CSV import does, with each column's own separator, also
+amounts, percentages and exact decimals; *Point* or *Comma* reads only numbers and dates with that
+separator, and keeps a column text, with a warning, when a decimal number would round one of its
+numbers (`12345678901234.5678`). Steps of projects saved by an earlier version have *Point* and
+read as before, except for such numbers. Date-times with nanoseconds keep them.
 
 ## Exporting to Excel
 
@@ -555,8 +585,10 @@ functions, with what they do and an example, are in **Help → Formula functions
 
 A mistake shows a plain message that names the column of the step, e.g. *Formula error in [Gross]:
 column [Amont] not found (did you mean [Amount]?)*. SQL Server functions that DuckDB doesn't have
-(DATEADD, EOMONTH, CONVERT, …) get a hint about what to write instead. A formula can only use
-the data of its step: no files, network or database access.
+(DATEADD, EOMONTH, CONVERT, …) and spreadsheet names (STDEV.S, …) get a hint about what to write
+instead. A result with decimal places is a decimal number (about 15 digits): when exact decimals
+lose digits that way, *Calculate columns* warns. A formula can only use the data of its step: no
+files, network or database access.
 
 ## Parameters
 

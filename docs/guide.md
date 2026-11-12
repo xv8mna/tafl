@@ -542,7 +542,8 @@ a short note ("first step of a table", "runs when the project is run").
 The box at the top of the settings shows what the step reported when it was calculated: what an
 import detected ("Encoding utf-8, delimiter semicolon, decimal comma"), how many rows a merge
 matched ([chapter 4](#combine-merge-and-append-tables)), or for an export or a command that it
-runs only when you run the project. Warnings and errors have boxes of their own, orange and red.
+runs only when you run the project. Warnings and errors have boxes of their own, orange and red. A
+box grows with its text up to 8 lines; a longer text scrolls, and you can select and copy it.
 
 After a change, the table is calculated again in the background: "Calculating…" shows in the
 title line of the data. You can go on working meanwhile.
@@ -560,8 +561,10 @@ false*. More types come only from imports: *duration*, a length of time, for exa
 cell with the format `[h]:mm:ss`, *empty*, a database column without a value in any row, and
 *list* and *record*, columns of lists and records from Parquet files or plugins (a plugin's own
 values show as *object*).
-Dates appear in your Windows date format and decimals with your decimal separator. An empty cell
-stays empty (its tooltip says "(empty)").
+Dates appear in your Windows date format and decimals with your decimal separator, with up to 10
+decimal places. A smaller number that needs more, such as 0.000000000001, shows with an exponent
+and at most 15 digits, as in Excel: `1E-12`. An empty cell stays empty (its tooltip says
+"(empty)").
 
 - Select cells and press Ctrl+C to copy them, for pasting into Excel (at most 2,000,000 cells;
   for more, export the table). Ctrl+A selects all cells.
@@ -577,8 +580,9 @@ so you can follow a few rows through a table.
 
 1. Click **Filters** above the grid. The pane opens at its left.
 2. Click **+ Filter** and choose a column (or right-click a cell or a column header).
-3. The card of the column lists its values, with how many rows have each. Click a value, or
-    select several with Ctrl+click and Shift+click.
+3. The card of the column lists its values, with how many rows have each (with many rows, the
+    card shows "…" for a moment first). Click a value, or select several with Ctrl+click and
+    Shift+click.
 4. Click **Apply** (or press Enter). A double-click on a value filters by that value alone.
 
 ![The filter pane: only the rows of Hamburg and Köln in March and April, without changing the table](guide/filter-pane.png)
@@ -600,7 +604,8 @@ blue), and the button says **Filters (2)**.
 - The button next to the column name switches the mode: **Values**, **Time periods** (dates by
   Year, Year-Quarter, Year-Month, Year-Week (ISO) or Date), **Number ranges** (thresholds such as
   `500; 1000`), **Text length** and **Pattern (regex)**.
-- With **Number ranges**, the list next to the thresholds says where a value equal to a threshold
+- With **Number ranges**, type the thresholds as in a step's settings: `1.000` is a thousand,
+  `1,5` one and a half. The list next to the thresholds says where a value equal to a threshold
   goes. With `< x | ≥ x` (the default), 500 is in the range that starts at 500; with `≤ x | > x`,
   in the range that ends at 500.
 - A column can have more than one filter, for example a date by month and by value: **+ Filter**
@@ -717,11 +722,11 @@ search field.
 - **Run this table** (Shift+F5, in the **Project** menu or a table's right-click menu) does the
   same for the selected table and the tables it uses. Their exports run too. During a run,
   both are off.
-- **Stop** stops a running formula at once, and an import from a database within a moment. SQL
-  Server can stop a query only when rows arrive: a query that gives no row for a long time runs on
-  until the first one comes. Another step that is running finishes first: an export can take a
-  while. The Run results then list what ran before the stop (exports included) and the steps that
-  did not run.
+- **Stop** stops a running formula at once, and a database step within a moment, also a SQL
+  Server query that gives no row yet, a long **Run SQL command** or an export that waits for a
+  lock: the step's changes are rolled back. Another step that is running finishes first: an export
+  to a file can take a while. The Run results then list what ran before the stop (exports
+  included) and the steps that did not run.
 - **Reload data** (Ctrl+R) reads all files and databases again and updates the status of every
   table.
 
@@ -880,17 +885,23 @@ table.
 - **Delimiter**: *Detect automatically*, *Semicolon ;*, *Comma ,*, *Tab* or *Pipe |*.
 - **Encoding**: *Detect automatically*, *UTF-8*, *Windows (ANSI)*, *Latin-1 (ISO-8859-1)* or
   *UTF-16*.
-- **Decimal separator**: *Detect automatically*, or the one the file uses.
+- **Decimal separator**: *Detect automatically* (in a folder, for each file), or the one the files
+  use.
 - **First row has the column names** (on); off, the columns are *Column 1*, *Column 2*, …
 - **Skip lines at the top**: for a title line above the column names.
 - **Detect numbers and dates** (on): a column becomes an integer, number, date or date-time
   column when every value fits. Off: every column stays text.
 
-Values with leading zeros, such as customer numbers (`00017`) and postal codes, stay text
-([Import the orders](#import-the-orders) shows an example). Amounts like `1.234,50 €` and
-percentages like `12,5%` (0.125) become numbers. The box at the top of the step's settings says
-what was detected, and so do Run results under the step: "Encoding utf-8, delimiter semicolon,
-decimal comma".
+Values with leading zeros, such as customer numbers (`00017`), postal codes and `00,5`, stay text
+([Import the orders](#import-the-orders) shows an example). Amounts like `1.234,50 €` or `-$3.00`,
+percentages like `12,5%` (0.125) and numbers like `,5` become numbers. Every value of a column
+counts, not only the first rows. Numbers keep all their digits: whole numbers up to
+9,223,372,036,854,775,807 are integers; longer ones, and a column with a number that a decimal
+number would round (`12345678901234,5678`, `1.234.567.890.123.456 €`), become exact decimals of up
+to 38 digits, as in [Read a table or a query](#read-a-table-or-a-query). A column with a longer
+number stays text, with a warning. Decimal numbers as programs write them (`0.30000000000000004`)
+stay decimal numbers. The box at the top of the step's settings says what was detected, and so do
+Run results under the step: "Encoding utf-8, delimiter semicolon, decimal comma".
 
 Tip: if the columns look wrong, for example with a warning that rows have more values than the first
 row, the first line is probably a title, not the column names. Set **Skip lines at the top** to
@@ -919,7 +930,9 @@ OpenDocument spreadsheet (ods), or the workbooks of a folder.
 Excel stores a type with each cell, and the import keeps it: nothing else is detected. Text
 cells stay text, also when they look like numbers or dates (`123`, `00017`, `2025-01-31`), and
 a column with both numbers and text cells becomes a text column (5 becomes `5`). **Change type**
-turns such a column into numbers or dates.
+turns such a column into numbers or dates. A cell with only spaces is an empty cell; in a CSV
+file, a value of only spaces keeps its spaces in a text column (in a column of numbers or dates it
+is empty).
 
 Example: `customers.xlsx` has a title in row 1 and the column names in row 3: see
 [Bring in the customer names](#bring-in-the-customer-names).
@@ -958,12 +971,15 @@ add up by region. A fixed value must fit the column: `none` in a number column s
 with "'none' is not a number (column 'Net')". A value that would round long whole numbers (with
 more than 15 digits) stops the step too, and the message names a number that would change. So
 does a value with decimal places in a whole-number column when a decimal number can't keep it:
-`1234567890123456.78` would become `1234567890123456.8`. A date-time with more digits than the
-column holds, such as `2025-01-01 08:30:00.0005` in a column of milliseconds (Parquet files can
-have them), makes the column finer, so that every value keeps its digits; when a value of the
-column doesn't fit (nanoseconds reach only from 1677 to 2262), the step stops with a message. A
-column without empty cells stays as it is. A column of lists or records can only be filled down or
-up.
+`1234567890123456.78` would become `1234567890123456.8`. A column of exact decimals (from a
+database or a Parquet file) keeps its type; a value with more decimal places or digits, such as
+`0,005` in a column of 2 decimal places, gives the column as many as the value needs. An exact
+decimal holds no NaN and no infinity: filling it with `NaN` or `inf` stops the step. A date-time
+with more digits than the column holds, such as `2025-01-01 08:30:00.0005` in a column of
+milliseconds (Parquet files can have them), makes the column finer, so that every value keeps its
+digits; when a value of the column doesn't fit (nanoseconds reach only from 1677 to 2262), the step
+stops with a message. A column without empty cells stays as it is. A column of lists or records can
+only be filled down or up. A typed number is read as in **Filter rows**.
 
 **Filter rows** keeps or removes the rows that match conditions.
 
@@ -976,7 +992,12 @@ up.
 - **Upper/lower case matters** (off).
 
 Values are compared with the column's type: `1.000,00` and `1000` are numbers in a number column;
-`31.12.2025`, `2025-12-31` and `today` are dates in a date column. With the 200 demo orders:
+`31.12.2025`, `2025-12-31` and `today` are dates in a date column. In a typed number with both
+separators, the last one is the decimal one (`1.234,5` and `1,234.5`); a comma alone is a decimal
+comma (`1,5`), and a point alone a decimal point (`1.5`), unless groups of three digits follow it:
+`1.000` is one thousand. Currency signs and spaces are left out, and a minus can also be at the
+end: `€1.000`, `-$3.00` and `1.000-` are numbers too. **Fill empty values** and **Replace** read
+typed numbers the same way. With the 200 demo orders:
 Status *does not equal* `storniert` keeps 156 rows, Net *is greater than* `1.000,00` keeps 116,
 Date *is greater than or equal to* `01.09.2026` keeps 20. In a date-time column with a time zone
 (a Parquet file can have one, for example UTC), a typed date-time, `today` and `now` are the local
@@ -1148,6 +1169,13 @@ A warning names what failed, for example "Day: 1 value(s) could not be converted
 -0.5 becomes -1, the text `1.000,5` becomes 1001), and says how many: "Amount: 2 value(s) were
 rounded, e.g. '2.5', '-0.5': a whole number has no decimal places (Decimal number and Text keep
 them)".
+
+*Decimal number* keeps about 15 significant digits, and says how many values it rounded: "Amount:
+2 value(s) were rounded, e.g. '12345678901234,5678', '12345678901234,5677': a decimal number keeps
+about 15 digits (Text keeps them all)". All the digits count, also the decimal places. A number of
+up to 15 digits, and one of 16 or 17 that a decimal number keeps, gives no warning. A number with an
+exponent, such as `1,5e3`, is read with it; one beyond the decimal numbers, such as `1e400`, can't
+be converted.
 
 **Keep, remove or reorder columns**: **Mode** *Keep only these columns, in this order*, *Remove
 these columns* or *Move these columns to the front*, for the ticked **Columns** `*`. Before an
@@ -1334,7 +1362,8 @@ unlike in **Filter rows**.
   that group 1 is written `$1`.
 
 A column that is not text becomes text, as **Pivot** and **Split column** write values (`17`, not
-`17.0`), unless *Whole cell value* finds and writes values of its type.
+`17.0`), unless *Whole cell value* finds and writes values of its type. A typed number is read as
+in **Filter rows**: `1.000` is one thousand, `1,5` and `1.5` are one and a half.
 
 ![Replace: empty names become (unknown customer)](guide/replace-settings.png)
 
@@ -1607,6 +1636,14 @@ Watch out:
   empty; `CONCAT([First], ' ', [Last])` treats empty parts as empty text.
 - `/` always gives a decimal number (`7 / 2` is 3.5; `7 // 2` is 3). Dividing by zero gives ∞:
   `[Net] / NULLIF([Quantity], 0)` gives an empty value instead.
+- Names of days and months are English: `DAYNAME([Date])` gives `Monday`, `MONTHNAME([Date])`
+  `November`, and `STRFTIME([Date], '%A, %d. %B %Y')` `Monday, 09. November 2026`. For German
+  names, take them from a list by the number of the day or the month:
+  `LIST_EXTRACT(LIST_VALUE('Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag',
+  'Sonntag'), ISODOW([Date]))` (`ISODOW` is 1 for Monday) and `LIST_EXTRACT(LIST_VALUE('Januar',
+  'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November',
+  'Dezember'), MONTH([Date]))`. An empty date gives an empty name. Write `LIST_VALUE(…)`, not
+  `['Montag', …]`: square brackets name a column.
 
 ### Common formulas
 
@@ -1627,8 +1664,10 @@ Watch out:
 | `CAST([OrderNo] AS VARCHAR)` | the value as text; `TRY_CAST` gives empty where it doesn't fit |
 | `[Net] / SUM([Net]) OVER ()` | the row's share of the total |
 | `SUM([Net]) OVER (PARTITION BY [CustomerNo])` | the customer's total in each of its rows |
+| `AVG([Net]) OVER (ORDER BY [Date] ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)` | the average of the row and the 2 rows before it (SUM: the moving sum) |
+| `100.0 * ([Net] - LAG([Net]) OVER (ORDER BY [Date])) / NULLIF(LAG([Net]) OVER (ORDER BY [Date]), 0)` | the change from the row before in percent: 25 for 80 after 64; empty in the first row and after a 0 |
 
-The last two are window functions: they look at all rows of the step. A total without `OVER`,
+The last four are window functions: they look at all rows of the step. A total without `OVER`,
 such as `SUM([Net])`, doesn't work in a column formula; for one row per group, use **Aggregate**.
 From SQL Server, `IIF`, `ISNULL`, `LEN`, `GETDATE()` and `CHARINDEX` work as there.
 
@@ -1708,6 +1747,9 @@ you mean [Net]?)".
 - `TODAY`: "TODAY is a function: write TODAY()".
 - `DATEADD(day, 3, [Date])`: "There is no function DATEADD: add an interval instead: [Date] +
   INTERVAL 3 DAY (or MONTH, YEAR)". `EOMONTH` and `CONVERT` get such hints too.
+- `STDEV.S([Amount])`: "there is no function STDEV.S: use STDDEV_SAMP([Value])". Spreadsheet names
+  with a point don't exist in formulas: STDDEV_SAMP, STDDEV_POP, VAR_SAMP and VAR_POP are their
+  names.
 - `SUM([Net])`: "The formula must give one value per row. For totals use the Aggregate action, or
   a window function such as SUM([Amount]) OVER ()."
 - `[Net] * 2` as a condition: "The condition must be true or false for every row, e.g. [Amount] >
@@ -1724,6 +1766,13 @@ you mean [Net]?)".
   added with the decimal places their values use (then `CAST([Rate] AS VARCHAR)` shows only those
   decimal places too); only when these need more than 38 digits together does the formula stop
   with this message.
+- A formula on exact decimals with decimal places (amounts from a database or a Parquet file)
+  gives a decimal number, which keeps about 15 digits. When values lose digits that way,
+  **Calculate columns** warns: "[Net]: 2 value(s) were rounded, e.g. 12345678901234.5678 to
+  12345678901234.568: …". `CAST([Amount] AS VARCHAR)` keeps all the digits, as text;
+  `CAST(… AS DECIMAL(38, 4))` doesn't: its result is a decimal number too. A division or a
+  function such as ROUND on exact decimals calculates with decimal numbers too; when values lose
+  digits that way, the warning names the column: "[R]: 1 value(s) of [A] were rounded, e.g. …".
 
 ## 6. The project map and groups
 
@@ -2112,9 +2161,11 @@ customers", "customers: added 6 rows"), and the command adds the empty table `lo
   text, as SQLite can. **Decimal separator**: *Detect automatically* (for a new step) reads
   numbers as the CSV import does: a column whose values show a decimal comma (`123,40`) has one,
   and amounts (`1.234,50 €`) and percentages (`12,5%`) become numbers; the step says which
-  columns have a decimal comma. *Point* or *Comma*: only numbers and dates, with that separator.
-  A step from a project of an earlier version has *Point*, which reads as that version did.
-  Date-times keep their nanoseconds (`08:30:00.000000001`) when they are between 1677 and 2262.
+  columns have a decimal comma. *Point* or *Comma*: only numbers and dates, with that separator;
+  a decimal that a decimal number would round, such as `12345678901234.5678`, keeps its column
+  text, with a warning. A step from a project of an earlier version has *Point*, which reads as
+  that version did, except for such decimals. Date-times keep their nanoseconds
+  (`08:30:00.000000001`) when they are between 1677 and 2262.
 
 The example's table **Customers** reads 5 of the 6 customers:
 
@@ -2125,6 +2176,10 @@ WHERE City <> 'Wien'
 ```
 
 Filter big tables in the query: only the rows you need are read. Numbers keep all their digits.
+SQL Server `datetimeoffset` columns become date-times in UTC (08:30 +02:00 is 06:30 UTC). SQL
+Server's driver reads date-times to the microsecond: for a column with 7 digits of a second
+(`datetime2(7)`, `time(7)`, `datetimeoffset(7)`), the step warns that a 7th digit, if any, is cut;
+**Export to database** still finds such rows by key.
 
 Imports run while you edit, so they must change nothing. A SQLite file is opened for reading only:
 a query that changes data stops with a message, and so do `ATTACH` and a PRAGMA that does more than
@@ -2168,6 +2223,20 @@ records can't be stored: the export stops and names such a column, and so it doe
 numbers beyond 9,223,372,036,854,775,807 in SQLite (change them to text first) and for a SQLite
 table of more than 2,000 columns.
 
+On SQL Server, a text for a date or time column is read as **Change type / format** reads it
+without a format (`31.12.2025 08:30`, `2025-12-31`), or in a form of ISO 8601
+(`2025-12-31T08:30:00`, `20251231`, with `Z` or an offset up to ±14:00 such as `+02:00`), the same
+way in every mode. A `time` column takes the time of a date and time in either form. A time alone
+(`08:30`) for a `datetime`, `smalldatetime` or `datetime2` column is on 1 January 1900, as SQL
+Server stores it. A text whose meaning depends on the language, such as `12/31/2025` or
+`08:30 PM`, or that Tafl can't read, stops the export and is named. Values with more digits of a
+second than a `datetime2`, `time` or `datetimeoffset` column holds are cut, with one warning for
+all such columns (`08:00:00.5` is `08:00:00` in a `time(0)` column); a text keeps up to 7 digits.
+`datetime` and `smalldatetime` columns round values to their own steps (1/300 s, whole minutes),
+as their types say, without a warning. Exact decimals go into a text column with all their
+decimal places (`2.00`, as SQL Server's `CAST` writes them). Updating needs one row per key value,
+as the table's column compares them: `abc` and `ABC` are one value in a case-insensitive column.
+
 The example's table **Revenue by month** adds up the orders per month and exports them to the
 table `revenue`, replacing the rows with the same Month. The first run says "Created table
 revenue" and "revenue: added 9 rows"; every later run "revenue: deleted 9 rows, added 9 rows".
@@ -2187,7 +2256,14 @@ INSERT INTO load_log (Loaded, Rows)
 SELECT datetime('now', 'localtime'), COUNT(*) FROM revenue
 ```
 
-- It runs in one transaction: leave out `BEGIN` and `COMMIT`.
+- It runs in one transaction. On SQLite, leave out `BEGIN` and `COMMIT`: the step refuses them.
+  On SQL Server, the command's own `BEGIN TRAN … COMMIT` (also across `GO` batches) and a `CATCH`
+  with `ROLLBACK` and `THROW` work as in SQL Server Management Studio. A `COMMIT` that ends the
+  step's transaction, or a `BEGIN TRAN` without `COMMIT`, stops the step with a message that says
+  what may already be stored; so does a procedure that does it. A `ROLLBACK` ends every open
+  transaction, also the step's, even after a `BEGIN TRAN` of the command: it undoes what the
+  command changed, and the step stops. To undo only a part of the command, use `SAVE TRAN name`
+  and `ROLLBACK TRAN name`.
 - On SQL Server, separate batches with `GO` lines as in SQL Server Management Studio; `GO 3`
   runs a batch three times.
 - Put it after the export it belongs to. When a step fails, the steps after it don't run.
@@ -2209,10 +2285,11 @@ header row, filter buttons and fitting column widths (each can be turned off), a
 *Medium orange*. The table is named after the sheet.
 
 Formats use Excel's codes. **Date format**, **Date-time format**, **Whole number format** and
-**Decimal number format** apply to all columns of a type; **Formats for single columns** to one
-column, for example Net as `#,##0.00 €` or a share as `0.0%`. The cells keep real numbers and dates,
-and Excel shows them with the separators of your Windows settings. The demo exports its orders this
-way:
+**Decimal number format** apply to all columns of a type (exact decimals without decimal places,
+such as IDs from a database, get the **Whole number format**); **Formats for single columns** to
+one column, for example Net as `#,##0.00 €` or a share as `0.0%`. The cells keep real numbers and
+dates, and Excel shows them with the separators of your Windows settings. The demo exports its
+orders this way:
 
 ![Export to Excel file: file, sheet, what to do when the file exists, table style and formats](guide/excel-export-settings.png)
 
@@ -2288,10 +2365,16 @@ file, and copy `examples\data\orders.csv` into them as `orders_2026-01.csv` and
 
 - Files are read in name order, with numbers in natural order (`day2` before `day10`). Names
   starting with `~$` are left out: Excel's lock files and files an export is still writing.
+- Each CSV file is read with its own delimiter, encoding, decimal separator and date format:
+  `1,50` in one file and `1.50` in another are both 1.5, and `31.01.2026` in one file and
+  `2026-02-01` in another are both dates. Run results name the decimal separator of each file
+  when they differ. A column with only blanks in a file is empty there.
 - Columns are matched by name; a column a file doesn't have stays empty in its rows. A column
   with different types in the files gets a type that holds every value, as in **Append**, or
   becomes text with a warning, for example "“Nr” is text: it has different types in the files
-  (number, text)". The same holds for several sheets of a workbook ("… in the sheets").
+  (date, integer)". The same holds for several sheets of a workbook ("… in the sheets"). Of CSV
+  files, such a column has the text of the files (`31.01.2026`), and a column that is text in one
+  file (`n/a`) stays text without a warning, as in one file.
 - New, changed or deleted files are noticed: the table is read again.
 - For Excel files, the column **Sheet** names the sheet when several are read.
 
@@ -2771,7 +2854,7 @@ In PowerShell, write `.\tafl.exe`, and put `&` before a program path in quotes:
 | 1 | A step failed; the output shows which. Tables without errors still ran, with their exports. |
 | 2 | Nothing ran: the project file doesn't exist ("Error: There is no project file …"), `--table` or `--set` names no table or parameter of the project, or an option is wrong. |
 | 3 | The run stopped before its end, usually because the computer ran out of memory. The output and the file `%LOCALAPPDATA%\Tafl\tafl.log` say at which step. What ran before it stays done; the steps after it did not run. |
-| 130 | Stopped with Ctrl+C. The output shows what ran before the stop. |
+| 130 | Stopped with Ctrl+C, also right after the start. The output shows what ran before the stop. |
 
 `tafl.exe show` has the same codes without 3: 0 also for a table that is turned off, 1 when the
 table has an error.

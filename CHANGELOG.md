@@ -1,5 +1,458 @@
 # Changes
 
+## 0.6.5 – unreleased
+
+This version keeps the digits of long numbers, or says which values lost some: the imports detect
+exact decimals, and **Change type**, **Fill empty values** and formulas keep them or warn. Each
+file of a folder is read with its own decimal separator and date format. Exports to SQL Server read
+date texts the same way in every mode and compare keys as the table's columns do; **Run SQL
+command** stops when a command ends the step's transaction, and **Stop** ends a running SQL Server
+statement at once. The window shows tiny numbers and long messages in full and stays quick with
+filters on big tables. Some results of stored projects change: **Results that change** lists them
+first.
+
+### Results that change
+
+Where a project of 0.6.4 meets one of these changes, it gives other results now, or a step stops
+with a message that says what to change.
+
+- **Import CSV / text files** and **Import from database** (*Detect automatically*): a column with
+  a decimal that a decimal number would give back with other digits becomes exact decimals, with
+  the decimal places that its values show, up to 38 digits. So `12345678901234,5678` and
+  `12345678901234,5677` stay two numbers, and an export writes them as they are. Before, both
+  became 12345678901234.568 without a message, and a CSV export wrote `12345678901234,6` twice. The
+  rule is that of **Change type** (see below).
+- **Import CSV / text files** and **Import from database**, the same rule for amounts
+  (`12.345.678.901.234.567,89 €`), percentages (`12,345678901234567%` is 0.12345678901234567) and
+  whole numbers beside decimals (`9007199254740993` beside `1,5`): they become exact decimals.
+  Before, such amounts and whole numbers stayed text with the warning "… stays text: its numbers
+  are too long to be kept exactly", and such percentages became decimal numbers without a message.
+  A decimal number as a program writes it, with up to 17 digits (`0.30000000000000004`,
+  `0.3333333333333333`), comes back the same and stays a decimal number, as before. A number that a
+  decimal number can't hold at all keeps the column text with the warning: `0,000…0001` with 400
+  zeros became 0 before.
+- **Import CSV / text files** and **Import from database** (*Detect automatically*): a whole part
+  with more than 15 significant digits keeps its digits as an exact decimal, also in an amount or a
+  percentage, with `,0`, with a minus at the end, beside decimals, and in a number that a program
+  wrote (`1.234.567.890.123.456 €`, `1234567890123456,0`, `9007199254740994-`, `18014398509481984`
+  beside `1,5`, `12345678901234568.0`). Before, these became decimal numbers, and an export wrote
+  `1234567890123460`. A plain whole number up to 9,223,372,036,854,775,807 (`1234567890123456`)
+  is a whole number, as before.
+- **Import CSV / text files** and **Import from database** (*Detect automatically*): whole numbers
+  beyond 9,223,372,036,854,775,807 become exact decimals of up to 38 digits, with or without
+  thousands separators: `9.223.372.036.854.775.808` is 9223372036854775808. Before, such a column
+  became decimal numbers without a message (a CSV export wrote `9223372036854780000`), or it stayed
+  text with the warning "… stays text: its numbers are too long to be kept exactly"
+  (`12345678901234567890`). A number of more than 38 digits keeps the column text with that
+  warning, as before.
+- **Import from database** with *Point* or *Comma*, also a step saved before 0.6.4 (which has
+  *Point*): a decimal that a decimal number would change, such as `12345678901234.5678`, stays
+  text with the warning "… stays text: its numbers are too long to be kept exactly". Before, it
+  became 12345678901234.568 without a message. Other values are read as before, also 2^63 and
+  10^19, which a decimal number holds.
+- **Import CSV / text files** and **Import from database** (*Detect automatically*): a decimal with
+  a zero before another digit, such as `00,5` or `-01,5`, is a code and stays text, as `00017`
+  does. Before, they became 0.5 and -1.5. `0,5` is a number, as before.
+- **Import CSV / text files** and **Import from database** (*Detect automatically*): amounts with
+  the sign before the currency sign (`-$3.00`, `-€3,00`) and numbers without a digit before the
+  decimal separator (`,5`, `.5`, `-,25`, `,5%`) are numbers. Before, such a column stayed text.
+- **Import CSV / text files** and **Import from database** (*Detect automatically*): every value of
+  a column decides, not only the first 1,000. A column of numbers like `1,50` with a `5,00 €` or a
+  `5,00-` further down becomes numbers, and so does a column whose first 1,000 values are only
+  spaces. Before, such a column stayed text, without a message.
+- **Import CSV / text files**: amounts such as `-€73,85` and numbers such as `,25` count for the
+  file's decimal separator, as `1.234,50` does. In a file with a few of them and a column of values
+  like `716.009`, which fit both separators, that column is 716009 now: the file has a decimal
+  comma. Before, they didn't count, the file had a decimal point, and `716.009` was 716.009.
+- **Import CSV / text files**, *All files in a folder*: each file is read with its own decimal
+  separator and date format. `1,50` in north.csv and `1.50` in south.csv are both 1.5, and
+  `31.01.2026` in one file and `2026-02-01` in another are both dates (date-times too). Before,
+  such a column was text, without a message. Files whose separators agree are still read together,
+  as one file. A column with only blanks in a file (spaces, `""`) is empty there when another file
+  gives it a type, as before.
+- **Import CSV / text files**, *All files in a folder*: a column with different types in the files
+  gets the type that **Append** gives it. A date beside a date-time becomes a date-time, a
+  percentage (`12,5%`) beside a number (`0,125`) a number, and numbers exact decimals when a
+  decimal number would change one of them (`12345678901234,5678` in one file, `1.5` in another).
+  Types that don't fit together, such as dates in one file and whole numbers in another, make the
+  column text with Append's warning, "“When” is text: it has different types in the files (date,
+  integer)"; before, without a message. Such a column has the text of the files (`1,50`,
+  `31.01.2026`), and a column that is text in one file (`n/a`) stays text without a message, as
+  before.
+- **Import CSV / text files**, *All files in a folder*: a value like `1.000` follows the other
+  numbers of its column, else those of its own file. In a column of only such values, it is 1000
+  in a file with decimal commas and 1 in a file with decimal points. Before, it was 1000 in both, as
+  in the first file. A file whose values show no separator takes the one that the other files show:
+  with a.csv of 2,500 values like `2.000` and b.csv with `2.5` in another column, `2.000` is 2.0.
+  Before, the folder looked at the first 2,000 rows of all files together, and `2.000` was 2000.
+  One file alone still gives 2000.
+- **Replace**, *Whole cell value*: a typed number is read as **Filter rows** and **Fill empty
+  values** read it. With both separators the last one is the decimal one (`1.234,5`, `1,234.5`); a
+  comma alone is a decimal comma (`1,5`); a point alone is a decimal point (`1.5`), unless groups
+  of three digits follow it, as in `1.000` or `1.234.567`: then it splits thousands. So `1.000` →
+  `7` in a number column changes 1000 now. Before, it changed 1, and `1,000.50` was no number, so
+  the column became text ("'F' was converted to text because '1,000.50' isn't a number").
+- **Filter rows**, **Fill empty values** and **Replace**: a typed number with a currency sign,
+  spaces or a minus at the end is read as the number alone: `€1.000`, `1.000 €` and `1.000-` are
+  1000 and -1000, as `1.000` is 1000. Before, they were 1 and -1.
+- **Filter rows**, **Fill empty values**, **Replace** and **Change type** (to *Decimal number* or
+  *Whole number*): a number with its sign before the currency sign, such as `-$3.00`, `+$3.00`,
+  `-€1.000` or `- € 3,00`, is a number, as the imports now read it. Before, **Filter rows** and
+  **Fill empty values** stopped with "'-$3.00' is not a number (column 'N')", **Replace** made the
+  column text ("'N' was converted to text because '-$3.00' isn't a number"), and **Change type**
+  left such values empty ("… could not be converted to Decimal number …").
+- **Change type** to *Text* without a format: a decimal number below 0.0001 keeps its digits,
+  written without an exponent: 1e-12 becomes `0,000000000001`, and 1.2345678901234566e-07
+  `0,00000012345678901234566`. Before, they became `0` and `0,0000001235` (10 decimal places). A
+  32-bit decimal number (only a plugin makes them) is written with its own digits: 0.1 becomes
+  `0,1`. Before, it was `0,1000000015`, and 1e-12 was `0`.
+- **Fill empty values** with a fixed value: a column of exact decimals (from a database or a
+  Parquet file) keeps its type, or gets only the decimal places and digits that the value needs. A
+  decimal(10, 2) filled with `0` stays a decimal(10, 2); with `0,005` it becomes a decimal(11, 3).
+  Before, every filled column became one of 38 digits (decimal(38, 2), decimal(38, 3); an ID of
+  decimal(30, 0) a decimal(38, 0)). So an export to SQLite wrote the column as text instead of
+  numbers, and a new SQL Server table got decimal(38, 2).
+- **Export to Excel file**: exact decimals without decimal places, such as IDs from a database, get
+  the **Whole number format**, also when only one sheet is replaced. Before, they got the **Decimal
+  number format**: the ID 5 showed as `5.00`, and 12345678901234567890123 as
+  `12,345,678,901,234,600,000,000.00`. A format for the single column still comes first.
+- **Import from database** (SQL Server): a `datetimeoffset` column becomes date-times in UTC, the
+  moments it holds: `2026-10-01 08:30:00 +02:00` is 2026-10-01 06:30:00 UTC. Before, it was text
+  with 6 digits of a second (`2026-10-01T08:30:00.123456+02:00`). Steps that use the column as
+  text, and exports of it, get the date-time now. Written back into a `datetimeoffset` column, the
+  same moment is stored with the offset `+00:00`.
+- **Export to database** (SQL Server): texts for `date`, `datetime`, `datetime2`, `smalldatetime`,
+  `time` and `datetimeoffset` columns are read by Tafl, the same way in every mode. Tafl reads them
+  as **Change type / format** does without a format (`31.12.2025`, `2025-12-31`, with or without a
+  time; `08:30:15.250`), and in every form of ISO 8601 (`2025-12-31T08:30`, with or without
+  seconds, up to 7 digits of a second, with `Z` or an offset, and `20251231`). A column without an
+  offset gets the local time that such a text names (`2025-12-31T08:30+02:00` is 08:30); a
+  `datetimeoffset` column keeps the offset. An empty text is an empty value.
+- **Export to database** (SQL Server), more of these texts: a `time` column takes the time of a
+  date and time in both forms (`01.10.2026 08:30`, `2026-10-01T08:30`), as 0.6.4's **Update** and
+  **Upsert** did; a date alone is 00:00. A time alone (`08:30`, `08:30:15.5`) for a `datetime`,
+  `smalldatetime` or `datetime2` column is on 1 January 1900, as SQL Server converts it. Texts whose
+  meaning depends on the language or the date format (`12/31/2025`, `2025-12-31 08:30 PM`), a time
+  alone for a `date` or `datetimeoffset` column, an offset beyond ±14:00 (`+14:30`) and other texts
+  that Tafl can't read stop the export with a message that names the column and the text.
+- **Export to database** (SQL Server), these texts in 0.6.4: **Add the rows** refused most of
+  them, such as `01.10.2026 08:00` and `2025-12-31T08:30` ("A value doesn't fit its column in the
+  database: a value can't be turned into the column's type"). **Update** and **Upsert** gave them
+  to the server, which read them with its session's language: `01.10.2026` was 10 January 2026,
+  `12/31/2025 08:30 PM` was 2025-12-31 20:30, and an empty text was 1900-01-01. A time alone was on
+  the day of the run or on 1 January 1900, by the mode, and `2025-12-31 08:00 +02:00` for a
+  `datetime2(7)` column was 06:00 in **Add the rows** and 08:00 in **Upsert**.
+- **Export to database** (SQL Server): a time value (a column of times, not of texts) for a
+  `datetime`, `smalldatetime` or `datetime2` column is on 1 January 1900 in every mode, as SQL
+  Server converts a time, and keeps its fraction of a second: 08:30:15.5 is
+  `1900-01-01 08:30:15.500` in a `datetime` column. Before, the driver gave it the date of the run
+  and only whole seconds (`2026-11-12 08:30:15`): the result changed from day to day, and such keys
+  found no row the next day. A `datetimeoffset` column still gets the date of the run and whole
+  seconds.
+- **Export to database** (SQL Server): date-times, times and texts with more digits of a second
+  than their `datetime2`, `time` or `datetimeoffset` column holds are cut to the column's digits in
+  every mode. The step warns once how many values were cut, with an example: "V: 1 value was cut to
+  whole seconds (e.g. '08:00:00.5' is 08:00:00): the column V of dbo.T holds no parts of a second
+  (time(0))". With several such columns, the warning lists the first 3, each with its count and an
+  example, then "and 2 more columns". A text keeps up to 7 digits of a second, as before;
+  date-times and times keep 6, as the driver passes no more.
+- **Export to database** (SQL Server), these digits in 0.6.4: **Add the rows** refused a text with
+  more digits than the column holds ("a text is too long for its column"), **Update** and
+  **Upsert** rounded it (08:00:00.5 was 08:00:01), and date-times were cut without a word.
+  `datetime` and `smalldatetime` columns still round values to their own steps (1/300 s, whole
+  minutes), as their types say, without a warning.
+- **Export to database** (SQL Server): exact decimals (from Parquet files, SQL Server imports or
+  plugins) go into a text column with all their decimal places, also whole ones: `2.00` stays
+  `2.00`, as SQL Server's own `CAST` writes it. (**Change type** to *Text* writes `2` and `1,5`,
+  with the step's decimal separator.) 0.6.4 wrote whole ones into a `char`, `varchar`, `nchar` or
+  `nvarchar` column of a given length without decimal places (`2`).
+- **Export to database** (SQL Server), keys in such a text column of a table that 0.6.4 filled:
+  they no longer match. **Upsert** adds the rows again, and **Update** and **Delete** find nothing,
+  without a message. To keep the keys, change the column to whole numbers before the export
+  (**Change type**), or update the key column of the table once to the new form.
+- Some stored steps now stop with a plain message where 0.6.4 gave a result. These are **Export to
+  database** (SQL Server) with a date text that Tafl can't read (see above), **Update** and
+  **Upsert** with keys that the table's column sees as one, the modes by key with keys that differ
+  only in the 7th digit of a second or with a synonym for a table of another server, **Run SQL
+  command** with a command that ends the step's transaction or leaves one open, and **Fill empty
+  values** with `NaN` or `inf` in a column of exact decimals. Their bullets are below.
+
+### Wrong results that are now right
+
+- **Change type** to *Decimal number* warns about every value that a decimal number rounds, also
+  about values with decimal places: "Amount: 2 value(s) were rounded, e.g. '12345678901234,5678',
+  '12345678901234,5677': a decimal number keeps about 15 digits (Text keeps them all)". A value of
+  16 or 17 digits that a decimal number keeps, such as `0,1234567890123456`, gives no warning.
+  Before, only the whole part of a text counted: `12345678901234,5678` and `12345678901234,5677`
+  both became 12345678901234.568 without a warning.
+- **Change type** to *Decimal number*: an exact decimal with many decimal places, such as 1.1 of a
+  decimal(38, 18), counts as rounded only when its decimal number has other digits. Before, 1.1
+  gave "R: 1 value(s) were rounded, e.g. '1.100000000000000000' …".
+- **Change type** to *Decimal number*: a number with an exponent is checked as the same number
+  without one. `4503599627370497e1` (45035996273704968 as a decimal number) and `1e-400` (0) get
+  the warning about rounded values, and a number beyond the decimal numbers, such as `1e400`, can't
+  be converted: "T: 1 value(s) could not be converted to Decimal number, e.g. '1e400' (now empty)"
+  (or the step stops, as **Values that can't be converted** says). The text `inf` stays infinity,
+  and *Whole number* says that `1e-400` was rounded to 0. Before, `1e400` became infinity, and the
+  others were rounded without a warning.
+- **Calculate columns**: a formula whose result has decimal places is a decimal number, as before,
+  which keeps about 15 digits. When values of exact decimals lose digits that way, the step now
+  warns, for each new column: "[Net]: 2 value(s) were rounded, e.g. 12345678901234.5678 to
+  12345678901234.568: a formula's result with decimal places is a decimal number, which keeps
+  about 15 digits (CAST(... AS VARCHAR) keeps them all, as text)". `CAST(… AS DECIMAL(38, 4))`
+  doesn't keep them: its result is a decimal number too. Before, `[Amount] + 0` of a
+  decimal(18, 4) made 12345678901234.5678 and 12345678901234.5677 both 12345678901234.568, without
+  a message.
+- **Calculate columns**: a formula that calculates with exact decimals as decimal numbers, such as
+  `[A] / [B]` or `ROUND([A] / 3, 2)`, warns too when values of the column lose digits that way,
+  and names the column: "[R]: 1 value(s) of [A] were rounded, e.g. 12345678901234.5678 to
+  12345678901234.568: the formula calculates with them as decimal numbers, which keep about 15
+  digits". The warning comes also when such values are only compared or counted, as in
+  `IIF([A] > 0, [F], 0)`. Before, there was no warning.
+- **Fill empty values** with `NaN`, `inf` or `-Infinity` in a column of exact decimals stops:
+  "'NaN' doesn't fit column 'd': an exact decimal holds no NaN or infinity (a decimal number
+  does)". Before, the column became decimal numbers without a word.
+- **Export to database** (SQL Server), **Update** and **Upsert**: the check that the key columns
+  identify the rows compares the keys as the table's columns do. `abc` and `ABC` in a column of a
+  case-insensitive collation, `e` and `é` in an accent-insensitive one, `a` and `a ` (spaces at the
+  end), `08:00:00.001` and `08:00:00` in a `datetime`, `08:00:10` and `08:00:20` in a
+  `smalldatetime`, 1.001 and 1.004 in a `decimal(10,2)`, and a GUID in upper and lower case are one
+  key each. The step stops with "The key columns don't identify the rows: 1 key value occurs more
+  than once (e.g. K = abc)". Before, **Upsert** added both rows ("added 2 rows"), and the next
+  **Update** gave both rows the values of one of them ("updated 2 rows").
+- **Export to database** (SQL Server): a synonym as the table is written as the table or view it
+  stands for, also in another database of the server, and also when it is written `db..table`.
+  Keys find their rows and compare with the table's collation. Before, by a `datetime2(0)` key
+  **Update** said "nothing changed", **Upsert** added a duplicate ("added 1 row"), **Delete** said
+  "nothing changed", and a key of a case-sensitive column stopped with "Cannot resolve the
+  collation conflict".
+- **Export to database** (SQL Server): a synonym for a table of another server stops the modes that
+  find rows by key (**Replace the rows with the same key values**, **Update**, **Upsert**, **Delete
+  the rows with the same key values**) with a plain message: they need the types of its columns,
+  which Tafl can read only on the connection's server. **Add the rows**, **Replace all rows** and
+  **Delete the rows where a condition is true, then add** write into it as before.
+- **Import from database** and **Export to database** (SQL Server): keys from a `datetime2(7)`,
+  `time(7)` or `datetimeoffset(7)` column find their rows. The driver reads such values to the
+  microsecond, and the modes by key now compare these keys to the microsecond. Before, 200 rows
+  imported and written back by key gave "updated 20 rows, added 180 rows": 380 rows. The import
+  warns once for the columns whose values have parts of a second: "K: the column holds 7 digits of
+  a second, but SQL Server's driver reads only 6 (to the microsecond), so a 7th digit, if any, is
+  cut (e.g. in …)" (several: "K, L and M: the columns hold …").
+- **Export to database** (SQL Server), such keys: all modes by key stop when one key meets rows
+  that differ only in the 7th digit ("The key columns don't identify the rows of T: 1 key value
+  finds rows that differ only in the 7th digit of a second of K …"). There, **Update** and
+  **Upsert** would give both rows the values of one, and **Delete the rows with the same key
+  values** and **Replace the rows with the same key values** would delete both. Before, these
+  modes compared exactly and found only the row whose 7th digit is 0.
+- **Run SQL command** (SQL Server): the command runs in the step's transaction, and a command that
+  ends that transaction, or leaves one of its own open, stops the step with a plain message. The
+  command's own `BEGIN TRAN … COMMIT` (also across `GO` batches) and a `CATCH` with `ROLLBACK` and
+  `THROW` work as in SQL Server Management Studio, as before. A `COMMIT` without a `BEGIN TRAN` of
+  the command stops the step: "The command ended the transaction of the step with a COMMIT that has
+  no BEGIN TRAN of its own (in the batch that ends in line 3), so the step stopped. What the
+  command changed before the COMMIT is stored, and the statements after it in that batch ran
+  without a transaction. …".
+- **Run SQL command** (SQL Server): a `ROLLBACK` stops the step too, also one of a transaction that
+  the command began itself (`BEGIN TRAN; INSERT …; ROLLBACK`, `IF … ROLLBACK ELSE COMMIT`, a `CATCH`
+  with `ROLLBACK` but without `THROW`). A ROLLBACK ends every open transaction, also the step's, and
+  undoes what the command changed in it; the message says so, and that `SAVE TRAN name` …
+  `ROLLBACK TRAN name` undoes only a part. A `BEGIN TRAN` without `COMMIT` stops the step and
+  undoes its changes. A procedure or an `EXEC` that ends the transaction or begins one of its own
+  gets a plain message too.
+- **Run SQL command** in 0.6.4: `BEGIN TRAN; INSERT …` said "Done: 1 row changed" and stored
+  nothing. `INSERT 6` / `GO` / `COMMIT` / `GO` / `INSERT 7` said "Done: 2 rows changed", although
+  the statements after the `COMMIT` no longer ran in the step's transaction. `INSERT 5; ROLLBACK`,
+  and a `CATCH` with `ROLLBACK` but without `THROW`, said "1 row changed" and stored nothing. Not
+  changed: when a statement fails after such a `COMMIT` in the same batch, the step stops with SQL
+  Server's message only, and what ran before it stays (`INSERT 2; COMMIT; INSERT 3; SELECT 1/0`
+  keeps 2 and 3).
+
+### Steps that work now
+
+- **Change type** to *Whole number*: an exact decimal whose rounding needs more than 38 digits is
+  rounded, or can't be converted when it is beyond the whole numbers (empty with the warning, or a
+  plain message, as **Values that can't be converted** says). So the value -0.5 of a
+  decimal(38, 38) becomes -1, and 999999999999999999.5 of a decimal(38, 20) becomes
+  1000000000000000000; the value -9999999999999999999999999999.9999999999 of a decimal(38, 10)
+  can't be converted. Before, the step stopped with "ComputeError: overflow in decimal rounding:
+  result doesn't fit Decimal(38, 10)", with both choices.
+- **Formulas** on exact decimals whose result needs more digits than their type has are calculated
+  again with 38 digits and the decimal places that their values use. `[Amount] * 1000` with
+  123456789012.3456 of a decimal(18, 4) gives 123456789012345.6, and `[Price] * [Quantity]` of two
+  columns with 18 decimal places (12.5 and 10, as Parquet files of other programs have them) gives
+  the number 125. Only a result that needs more than 38 digits stops, as before. Before, the first
+  formula stopped with "Overflow in multiplication of DECIMAL(18) (1234567890123456 * 1000). You
+  might want to add an explicit cast to a bigger decimal.", and the second with "the result needs
+  more than 38 digits, decimal places included, …".
+- **Export to database** (SQL Server), **Update** and **Upsert**: a table with an `xml`,
+  `geography` or `hierarchyid` column named `s` or `x`. Before, they stopped with "Ambiguous column
+  name 's'." (**Delete** and the replace modes worked.)
+- **Export to database** (SQL Server): exact decimals with decimal places go into a text column as
+  the same text on every PC (`1.50`), with the usual length check, and into `varchar(max)`,
+  `nvarchar(max)`, `text` and `ntext` columns all exact decimals do. Before, they stopped with a
+  message of the driver: "Converting decimal loses precision", and for those four types "Invalid
+  string or buffer length".
+- **Stop** (and Ctrl+C in `tafl run`) ends a running SQL Server statement at once: a query that
+  gives no row yet, a **Run SQL command** that runs long, an export that waits for a lock. The step
+  ends as stopped, and an export's or a command's transaction is rolled back. Before, the statement
+  ran on until it was done (a 5-second `WAITFOR` stopped after 5 s), and a command or an export
+  that ended after the Stop kept its changes.
+
+### Plain messages
+
+- **Export to database** (SQL Server): exact decimals get the checks of whole numbers, with
+  messages that name the column and its type. These are `1.50` for an `int` or `bigint` column
+  ("holds whole numbers (int), but V has decimals (e.g. 1.50): they would be cut off. Round them
+  first …"), `12345678901` for an `int` ("holds whole numbers from -2,147,483,648 to
+  2,147,483,647 (int) … e.g. to bigint"), `12345.67` for a `decimal(5,2)` ("holds numbers of up to
+  3 digits before the decimal point (decimal(5,2)) … e.g. decimal(38, 2)"), and values beyond
+  `money` and `smallmoney`. Values are first rounded as SQL Server rounds them, so 999.995 doesn't
+  fit a `decimal(5,2)` either.
+- **Export to database** (SQL Server), these values in 0.6.4: the messages were "Converting decimal
+  loses precision", "A value doesn't fit its column in the database: a number is too large …" and
+  a long text about the TDS protocol ("The incoming tabular data stream (TDS) remote procedure call
+  (RPC) protocol stream is incorrect …").
+- **Formulas**: `STDEV.S`, `STDEV.P`, `VAR.S` and `VAR.P` (as spreadsheets name them) say which
+  function to use: "there is no function STDEV.S: use STDDEV_SAMP([Value])". `STDEVP` and `VARP`
+  (as SQL Server names them) name STDDEV_POP and VAR_POP. Before, the message was "there is no
+  function S", and STDEVP gave "(did you mean STDDEV?)", the standard deviation of a sample.
+- **Change type** to *Decimal number*: the warning about rounded values names *Whole number* only
+  for values that it holds. Exact decimals get "(exact decimals and Text keep them all)", whole
+  numbers beyond 9,223,372,036,854,775,807 "(Text keeps them all)". Before, all of them got
+  "(Whole number and Text keep them all)", also an amount such as 12345678901234.5678.
+- **Import CSV / text files** and **Import from database**: the warning "… stays text: its numbers
+  are too long to be kept exactly, e.g. '…'" shows the first 39 characters of the value, then "…".
+  Before, it quoted the whole value, which can have thousands of digits.
+- **Import CSV / text files**, *All files in a folder*: the log names the decimal separator of each
+  file when the files read a column with different ones, such as "decimal comma in north.csv,
+  decimal point in south.csv". For many files it gives their number and up to three names:
+  "decimal comma in 297 files (d001.csv, d002.csv, d003.csv, …), decimal point in e.csv". Before,
+  it named one separator for the folder.
+- **Exports** and **file actions**: a file or folder name of more than 255 characters gets "A file
+  or folder name can have at most 255 characters (an emoji counts as 2): … has 266". Windows counts
+  an emoji as 2 characters, so a name of 131 emoji and `.csv` has 266. Before, the message didn't
+  say why.
+
+### Speed
+
+- **Change type** to *Decimal number* and the imports read numbers from texts in about half the
+  time of 0.6.4, now with the check for rounded digits. A million amounts like `1.234,50` take
+  0.19 s (0.6.4: 0.44 s), a million long numbers like `12345678901234,5678` 1.2 s (0.6.4: 2.4 s),
+  and a CSV column of a million decimals of 16 digits 0.8 s (0.6.4: 2.3 s). From 10,000 values on,
+  this takes about 50 to 150 MB more memory, once: 100,000 amounts in each of 20 columns take
+  230 MB instead of 140 MB.
+- **Change type** to *Decimal number* of texts with an exponent: a million `1,5e3` take 0.46 s
+  (0.6.4: 0.50 s). A million `1,2345E+25`, which are all rounded and now counted for the warning,
+  take 1.7 s and 320 MB (0.6.4: 0.49 s and 145 MB).
+- **Calculate columns** on exact decimals with decimal places checks the results for lost digits.
+  `[Amount] * 2` on a million amounts of a decimal(18, 4) with 14 whole digits takes 0.20 s with
+  its warning (0.6.4: 0.13 s; 245 MB instead of 200 MB), and `[c0] + 0` on a million values of a
+  decimal(38, 18) 0.32 s (0.6.4: 0.26 s). Formulas on whole numbers, and on exact decimals of 15
+  digits or fewer, take the same time as in 0.6.4.
+- **Replace** of whole values on 4,000 whole-number columns takes 0.17 s (0.6.4: 22.5 s), and on
+  300 columns 0.02 s (0.6.4: 1.7 s): **Find** and **Replace with** are read once for each type of
+  column, not for each column.
+- **Fill empty values** with a fixed value and **Change type** of exact decimals take about the
+  time of 0.6.4 on long columns (a million values: **Fill** 0.011 s, **Change type** to *Whole
+  number* 0.08 s, to *Decimal number* 0.19 s), and a little longer on many short ones: **Fill** of
+  4,000 columns of 100 rows 0.20 s (0.6.4: 0.13 s), **Change type** to *Decimal number* of 4,000
+  columns of 500 values of a decimal(38, 18) 8.3 s (0.6.4: 6.4 s).
+- **Filter pane**: a change of a filter makes the lists of only the cards that change. Lists of big
+  data are made in the background, while their cards show "…", and a closed pane, or the pane of
+  the view that isn't shown, makes no lists until it comes into sight. Before, every change made
+  every card's list twice, on the window's thread. **All** + **Apply** on one of 12 cards on
+  1,000,000 rows froze the window for 12.7 s; now it pauses for at most 0.11 s. Half of the 787,000
+  values of a column selected, then **Apply**: 29 s frozen before, now pauses of at most 0.4 s.
+- **Import CSV / text files**, *All files in a folder*: each file's decimal separator comes from
+  its own first 2,000 rows (0.6.4 looked at 2,000 rows of all files together). Folders of many
+  files take a little longer, and big ones less memory: 300 files of 2,000 rows and 40 columns take
+  11.1 s and 860 MB (0.6.4: 9.8 s and 1,020 MB), 300 small files 0.52 s (0.6.4: 0.53 s). One file of
+  50 rows and 5,000 columns of the new number forms takes 31 s (0.6.4: 21 s, when most of them
+  stayed text).
+- **Export to database** (SQL Server): the modes by key compare a key with 7 digits of a second
+  (`datetime2`, `time`, `datetimeoffset`) by hashing, so SQL Server reads the whole table once
+  instead of using its index. 1,000 rows into a table of 2 million rows take about 1.4 s with
+  **Update** and 2.0 s with **Upsert** (0.6.4: 0.2 s). Other keys take the same time as before.
+- **Export to database** (SQL Server): Tafl reads the texts for date and time columns before the
+  export. For a million rows with 10 such columns among 20, these checks take 1.6 s (0.6.4: 0.3 s,
+  when the texts went to the server unread); the write itself takes 30 to 60 s there.
+
+### The window
+
+- **Formula functions** (F1), *Groups and order*: three new entries, each with an example and a
+  template to insert. *Moving average*: `AVG([Amount]) OVER (ORDER BY [Date] ROWS BETWEEN 2
+  PRECEDING AND CURRENT ROW)` (with SUM: the moving sum). *STDDEV_SAMP … OVER*: the standard
+  deviation of the column or of the last rows (found also as STDEV and STDEV.S). *Change in %*:
+  the change from the row before, in percent, with what the first row, empty values and a 0 give.
+- **Grid** and **filter pane**: a number below 0.0001 that 10 decimal places would show as 0, or
+  without some of its digits, shows with an exponent and at most 15 digits, as Excel's General
+  format does: `1E-12`, `-1E-12`, `4E-11`, `1.23456789012E-05` (with your decimal separator). A
+  digit that only comes from computing in binary is left out, as for other numbers
+  (3.0000000000000004e-13 shows as `3E-13`). Ctrl+C copies what the grid shows. Before, 1e-12,
+  -1e-12 and 4e-11 showed and copied as `0`, a filter card listed them as several values `0`, and
+  1.23456789012e-5 showed and copied as `0.0000123457`.
+- **Filter pane**: the thresholds of **Number ranges** are read as the steps read a number typed
+  into a setting (**Filter rows**, **Fill empty values**, **Replace**): `1.000` is a thousand,
+  `1,000` and `1,5` are one and one and a half, `1.000.000` is a million, and `2,000,000` is no
+  number (left out, as text that is no number always was). Before, the pane had a rule of its own:
+  with a point as the PC's decimal separator, `1.000` was one and `1,000` a thousand.
+- **Filter pane**: a threshold of **Number ranges** keeps its value when you press Enter in its
+  field, which shows it with all its digits (at most 15). On a PC with a point as decimal
+  separator, the field shows 1.234 as `1.2340`, so that Enter reads it back unchanged. Before, a
+  threshold of 1e-12 showed as `0` and became 0, and one with more than 10 decimal places lost the
+  others: 0.000674382292 became 0.0006743823.
+- **Settings panel**: the boxes with a step's error, warning or note grow with their text up to 8
+  lines; a longer text scrolls, and all of it can be selected and copied. A path too long for a
+  line wraps and shows whole. Before, an error of 70,000 characters made its box 663 pixels high
+  and left 68 pixels to the step's settings, and a long path was cut off at the box's right edge,
+  without "…" or a tooltip.
+- **Data panel**: the message over the data ends with "…" when it is longer than the room there,
+  and its tooltip has the start of it. A word too long for its line ends with "…" there and in the
+  run summary. Before, the message was cut off at the bottom.
+- **Narrow window**: at the window's smallest width, a step with an info or error box no longer
+  makes the window wider (before, by 13 and 27 pixels). The filter pane makes it about 70 pixels
+  wider (before, 220): its cards scroll sideways when they need more room, and their line **All ·
+  Possible · Excluded · None** wraps. When the pane closes, the window gets its width back (before,
+  it stayed wider). Without groups, the map's group bar ends its hint with "…" and shows no ◀ ▶
+  (before, it showed them around a cut hint, up to a window width of 800 pixels).
+- **Closing the window** during a long calculation of a table closes it at once: the calculation
+  stops, as **Stop** stops a formula or a database query. A step that can't stop in its middle,
+  such as the import of a big file, ends in the background, without the window, and the program
+  ends after it. Before, closing waited up to 5 seconds with the window still there, and the
+  calculation went on after the window had closed.
+- **Save** and **Save as**: a project file name of 244 to 255 characters can be saved. Before,
+  saving stopped with "[Errno 22] Invalid argument: '…tafl…tmp'" about a temporary file. A longer
+  name, which Windows doesn't allow, gets "A file name can have at most 255 characters (an emoji
+  counts as 2): pppp… has 256" (the start of the name, then its length), as exports and file
+  actions word the same rule. Before, it got the system's error too.
+
+### Command line
+
+- **Command line**: a Ctrl+C right after `tafl.exe`, `python -m tafl` or the `tafl` of a source
+  install starts stops the program with "Error: Stopped" and the exit code 130. Before, a Ctrl+C in
+  the first tenths of a second printed a traceback of 10 to 50 lines, and the program ended with
+  the exit code 1, 3 or 130, or as a program that Ctrl+C ends (0xC000013A). Only in the first
+  hundredths of a second, while Python itself starts (also in the second program that `tafl run`
+  starts), can a Ctrl+C still end with a traceback.
+
+### Tools and plugins
+
+- Plugin API, additions (it stays at version 1): `dtypes.decimal_separator(text)` gives the
+  decimal separator of a typed number, by the rule of Filter rows, Fill and Replace.
+  `dtypes.plain_numbers(s, decimal)` gives the numbers of texts as text without currency signs and
+  thousands separators, with all their digits (`-1234.50`). `expressions.evaluate` and
+  `expressions.add_columns` take a keyword `warn` for the warning about lost digits (without it: no
+  warning, as before).
+- Plugin API, `tafl.api.detection`: `guess_decimals(frames, defaults)` and
+  `detect_files(frames, guesses, warn)` find the decimal separators and the types of the files of a
+  folder, each file with its own formats, as the CSV import does. `tafl.api.files.combine` has a
+  new keyword, `prepare_each`, for work on each file before the files are put together.
+- Plugin API, `tafl.api.dtypes`: `float_loses_digits` counts all significant digits of a text and
+  of an exact decimal: a value with decimal places counts when its decimal number reads back with
+  other digits. Before, only the whole part of a text counted, and an exact decimal with many
+  decimal places, such as 1.1, counted. `rounded_to_whole` works for exact decimals near their 38
+  digits (before: "overflow in decimal rounding").
+
 ## 0.6.4 – 2026-11-08
 
 This version fixes wrong results without a message. Steps that treat numbers, dates and times as
