@@ -257,14 +257,28 @@ def test_a_message_with_a_very_long_word_shows_at_once(qtbot):
     assert len(ends) > 1 and all(end == len(ordinary) or ordinary[end - 1] == " " for end in ends)
 
 
-def test_looking_for_a_very_long_word_takes_linear_time():
-    """A million characters in words of 1,000 (none too long): the look for a long word starts at
-    each word, not at each character (that took 2 s)."""
-    many = ("8" * 1000 + " ") * 1000
-    started = time.perf_counter()
-    assert _wrap_mode(many) == QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
-    assert time.perf_counter() - started < 0.4
-    assert _wrap_mode(many + "9" * 1001) == QTextOption.WrapMode.WrapAnywhere
+def test_a_long_value_with_no_break_spaces_shows_at_once(qtbot):
+    """200,000 digits in groups joined by no-break spaces: Qt doesn't break a line there, so for it
+    that is one long word (its box took 4.8 s, the window 38 s). A text of more than 20,000
+    characters wraps anywhere, a shorter one at spaces."""
+    host = QWidget()
+    qtbot.addWidget(host)
+    layout = QVBoxLayout(host)
+    box = MessageBox("ErrorBox", host)
+    layout.addWidget(box)
+    layout.addStretch(1)
+    host.resize(400, 800)
+    host.show()
+    QApplication.processEvents()
+    for joiner in (" ", " ", " "):
+        text = "e.g. '" + ("123" + joiner) * 50_000 + "'"
+        started = time.perf_counter()
+        box.setText(text)
+        QApplication.processEvents()
+        assert time.perf_counter() - started < 1.5
+        assert box.view.wordWrapMode() == QTextOption.WrapMode.WrapAnywhere
+    assert _wrap_mode("x" * 20_000) == QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
+    assert _wrap_mode("x " * 10_001) == QTextOption.WrapMode.WrapAnywhere
 
 
 def test_a_wrapped_label_ends_what_doesnt_fit_with_dots(qtbot):

@@ -9,7 +9,6 @@ So a label or a box that takes such text is PlainText, and a tooltip, which can'
 from __future__ import annotations
 
 import html
-import re
 import textwrap
 from typing import Any
 
@@ -275,13 +274,14 @@ class MessageBox(QFrame):
 
 def _wrap_mode(text: str) -> QTextOption.WrapMode:
     """How a MessageBox wraps ``text``: at spaces, and anywhere in a word that is too long for a
-    line. A text with a word of more than 1,000 characters (a long value or path) wraps anywhere:
-    for such a word, Qt's other way takes time that grows with the square of its length (a word
-    of a million characters took minutes)."""
-    return QTextOption.WrapMode.WrapAnywhere if _LONG_WORD.search(text) else QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
+    line. A text of more than 20,000 characters wraps anywhere: Qt breaks a long word into lines
+    in a time that grows with the square of its length (a word of a million characters took
+    minutes), and a word can be longer than it looks: Qt doesn't break at a no-break space. In a
+    shorter text no word takes long."""
+    return QTextOption.WrapMode.WrapAnywhere if len(text) > _LONG_TEXT else QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
 
 
-_LONG_WORD = re.compile(r"(?<!\S)\S{1001}")  # (from the start of a word only: linear time for many long words)
+_LONG_TEXT = 20_000  # characters
 
 
 def _line_count(text: str, widget: QPlainTextEdit, width: int, most: int) -> int:
