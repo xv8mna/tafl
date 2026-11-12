@@ -404,6 +404,26 @@ def test_helpful_messages(people):
     assert "Candidate" not in str(error.value) and len(str(error.value)) < 300
 
 
+@pytest.mark.parametrize(
+    ("formula", "message"),
+    [
+        ("STDEV.S([Age])", "STDEV.S: use STDDEV_SAMP([Value])"),
+        ("stdev.p ( [Age] )", "stdev.p: use STDDEV_POP([Value])"),
+        ("VAR.S([Age])", "VAR.S: use VAR_SAMP([Value])"),
+        ("Var.P([Age])", "Var.P: use VAR_POP([Value])"),
+        ("STDEVP([Age])", "STDEVP: use STDDEV_POP([Value])"),  # not STDDEV: that one is of a sample
+        ("VARP([Age])", "VARP: use VAR_POP([Value])"),
+    ],
+)
+def test_spreadsheet_names_of_the_standard_deviation_say_which_function_to_use(people, formula, message):
+    """DuckDB reads STDEV.S( as the function S of a schema STDEV: the message was "there is no
+    function S"."""
+    with pytest.raises(ActionError, match=rf"^Formula error: there is no function {re.escape(message)}\n"):
+        expressions.evaluate(people, formula)
+    with pytest.raises(ActionError, match=r"^Formula error: there is no function S\n"):  # S alone has no hint
+        expressions.evaluate(people, "'STDEV.S(' || S([Age])")
+
+
 def test_a_condition_must_be_true_or_false(people):
     with pytest.raises(ActionError, match="this formula gives an integer"):
         expressions.filter_rows(people, "[Age] + 1")

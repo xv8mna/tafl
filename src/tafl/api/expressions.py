@@ -49,8 +49,14 @@ _MACROS = (
 )
 # Reserved words in DuckDB that cannot be macros; rewritten when called as functions.
 _REWRITES = {"isnull": "coalesce"}
-# SQL Server functions that DuckDB doesn't have, and what to write instead.
+# SQL Server and spreadsheet functions that DuckDB doesn't have, and what to write instead.
 _TSQL_HINTS = {
+    "stdev.s": "use STDDEV_SAMP([Value])",
+    "stdev.p": "use STDDEV_POP([Value])",
+    "stdevp": "use STDDEV_POP([Value])",
+    "var.s": "use VAR_SAMP([Value])",
+    "var.p": "use VAR_POP([Value])",
+    "varp": "use VAR_POP([Value])",
     "dateadd": "add an interval instead: [Date] + INTERVAL 3 DAY (or MONTH, YEAR)",
     "eomonth": "use LAST_DAY([Date])",
     "convert": "use CAST([Value] AS VARCHAR) (or BIGINT, DOUBLE, DATE, ...)",
@@ -1450,6 +1456,8 @@ def _date_function(formula: str, tokens: list[Token], index: int) -> str | None:
 
 
 def _missing_function(name: str, suggestion: str | None, formula: str) -> str:
+    if (qualified := _qualified_call(name, formula)) and qualified.lower() in _TSQL_HINTS:
+        return f"there is no function {qualified}: {_TSQL_HINTS[qualified.lower()]}"
     typed = next(
         (formula[t.start : t.end] for t in tokenize(formula) if t.kind == "word" and formula[t.start : t.end].lower() == name.lower()),
         name.upper(),
@@ -1460,3 +1468,20 @@ def _missing_function(name: str, suggestion: str | None, formula: str) -> str:
     if suggestion and difflib.SequenceMatcher(None, name.lower(), suggestion.lower()).ratio() >= needed:
         return f"there is no function {typed} (did you mean {suggestion.upper()}?)"
     return f"there is no function {typed}"
+
+
+def _qualified_call(name: str, formula: str) -> str | None:
+    """A call of the function ``name`` after a name and a point, as typed: STDEV.S for S in
+    STDEV.S([x]), where DuckDB looks for the function S of a schema STDEV. None without one."""
+    tokens = [t for t in tokenize(formula) if t.kind not in ("space", "comment")]
+    texts = [formula[t.start : t.end] for t in tokens]
+    for index in range(2, len(tokens) - 1):
+        if (
+            tokens[index].kind == "word"
+            and texts[index].lower() == name.lower()
+            and texts[index - 1] == "."
+            and tokens[index - 2].kind == "word"
+            and tokens[index + 1].kind == "open"
+        ):
+            return f"{texts[index - 2]}.{texts[index]}"
+    return None
