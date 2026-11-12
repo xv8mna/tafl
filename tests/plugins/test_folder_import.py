@@ -11,7 +11,7 @@ import polars as pl
 import pytest
 import xlsxwriter
 
-from tafl.api import ActionError, Mode, SkipRest, detection, find_files, sources_fingerprint
+from tafl.api import ActionError, Mode, SkipRest, detection, dtypes, find_files, sources_fingerprint
 from tafl.api.files import in_folder
 from tafl.api.params import resolve
 from tafl.api.testing import StubContext
@@ -265,6 +265,57 @@ def test_files_of_one_format_with_columns_of_their_own_are_looked_at_at_once(act
     out = act("csv.import", None, folder(tmp_path, file_column=False))
     assert heights == [30]
     assert out.schema["Price"] == pl.Float64 and out["c29"].to_list() == [None] * 29 + [29.5]
+
+
+def test_the_decimal_separators_of_many_small_files_are_looked_at_in_parts(monkeypatch):
+    """The values of small files that show a decimal separator are counted for some millions of
+    values at a time (here about one million), as for each file on its own: all at once, 300 files
+    of 2,000 rows and 40 columns took 600 MB more. Files with columns of their own are looked at as
+    one column of their values: as one table, mostly empty, they took much memory."""
+    stacked, unpivoted = [], []
+    concat, unpivot = pl.concat, pl.DataFrame.unpivot
+    monkeypatch.setattr(detection, "_SHOWN_VALUES", 1 << 20)
+    monkeypatch.setattr(pl, "concat", lambda items, *args, **kwargs: stacked.append(len(items)) or concat(items, *args, **kwargs))
+    monkeypatch.setattr(pl.DataFrame, "unpivot", lambda frame, *args, **kwargs: unpivoted.append(frame.width) or unpivot(frame, *args, **kwargs))
+    dense = [pl.DataFrame({f"c{k}": [f"{n},5", "1.000", "x"][k % 3 : k % 3 + 1] * 2_000 for k in range(10)}) for n in range(60)]
+    assert detection._shown_files(dense) == [detection._shown(frame) for frame in dense]
+    assert stacked == [53, 7] and not unpivoted  # 20,000 values each
+    sparse = [pl.DataFrame({"Item": ["A", "B"], f"own{n}": [f"{n}.5", "1,000"], "Day": ["31.01.2026", ""]}) for n in range(100)]
+    assert detection._shown_files(sparse) == [detection._shown(frame) for frame in sparse]
+    assert unpivoted == [3] * 100
+
+
+def test_columns_of_blanks_and_of_numbers_change_each_file_once(act, tmp_path, monkeypatch):
+    """Columns with only blanks in one file and numbers in the other are emptied, and numbers of
+    other files set, with one change of each file: column by column, two files of 5,000 columns
+    took 16 s more."""
+    names = [f"c{i}" for i in range(300)]
+    (tmp_path / "a.csv").write_text(";".join(names) + "\n" + ";".join(["   ", "12345678901234,5678"] * 150) + "\n", encoding="utf-8")
+    (tmp_path / "b.csv").write_text(",".join(names) + "\n" + ",".join(["4.5", "2.5"] * 150) + "\n", encoding="utf-8")
+    changed, with_columns = [], pl.DataFrame.with_columns
+    monkeypatch.setattr(pl.DataFrame, "with_columns", lambda frame, *args, **kwargs: changed.append(frame.width) or with_columns(frame, *args, **kwargs))
+    out = act("csv.import", None, folder(tmp_path, file_column=False))
+    assert out.schema["c298"] == pl.Float64 and out["c298"].to_list() == [None, 4.5]
+    assert out.schema["c299"] == pl.Decimal(38, 4) and out["c299"].to_list() == [Decimal("12345678901234.5678"), Decimal("2.5")]
+    assert sum(width == 300 for width in changed) < 20  # a change of a whole file
+
+
+def test_files_with_dates_of_two_formats_are_looked_at_by_format(act, tmp_path, monkeypatch):
+    """A column with dates of two formats in the files of a folder is looked at once for the files
+    of each format (by the shape of their first value), not for each file on its own: 300 files
+    with 10 such columns took 4.4 s instead of 0.7 s. A file without rows or with only blanks there
+    has no type there."""
+    for i in range(40):
+        day = "31.01.2026" if i % 2 else "2026-01-31"
+        (tmp_path / f"d{i:02d}.csv").write_text(f"Item;A;B;C\nX;{day};{day};{day}\n", encoding="utf-8")
+    (tmp_path / "e0.csv").write_text("Item;A;B;C\n", encoding="utf-8")
+    (tmp_path / "e1.csv").write_text("Item;A;B;C\nY;   ;;\n", encoding="utf-8")
+    heights, infer = [], dtypes.infer_series
+    monkeypatch.setattr(dtypes, "infer_series", lambda s, *args: heights.append(s.len()) or infer(s, *args))
+    out = act("csv.import", None, folder(tmp_path, file_column=False))
+    assert heights == [41] * 4 + [20] * 6  # the columns of all files, then of the files of each format
+    assert out.schema == {"Item": pl.String, "A": pl.Date, "B": pl.Date, "C": pl.Date}
+    assert out["A"].to_list() == [dt.date(2026, 1, 31)] * 40 + [None]
 
 
 def test_many_small_files_take_no_long_time(act, tmp_path):

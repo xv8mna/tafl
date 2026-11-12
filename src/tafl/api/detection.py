@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping, Sequence
 import polars as pl
 
 from . import dtypes
-from .names import col, cols
+from .names import col, cols, selector
 
 # Numbers as text: 1.234,56 or 1234,56 or ,5 (decimal comma) and 1,234.56 or 1234.56 or .5 (decimal
 # point). Thousands separators come after 1 to 3 digits that don't start with 0: 0.500 is a decimal.
@@ -44,6 +44,8 @@ _FLOAT_DIGITS = 15  # a decimal number (Float64) keeps every number of up to 15 
 _MOST_DIGITS = 38  # of an exact decimal (Decimal)
 _SAMPLE = 1_000  # values that most columns are told apart by
 _SHOWN = 2_000  # rows whose values show the decimal separator of a file
+_SHOWN_VALUES = 1 << 22  # values of small files looked at together: those of 300 files of 2,000 rows and 40 columns took 600 MB more
+_NAME = "\x1fname"  # the name of a column among the values of several columns (see _shown_together)
 _PART = "\x1fpart"  # the number of a file among several: no column of a file has this name (see files.ONE_COLUMN)
 _ISO_T = r"^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}T[0-9]"  # a date-time like 2026-01-31T08:30:00, which has a letter
 
@@ -108,36 +110,66 @@ def _shown(df: pl.DataFrame) -> tuple[int, int, dict[str, str]]:
 
 def _shown_files(frames: Sequence[pl.DataFrame]) -> list[tuple[int, int, dict[str, str]]]:
     """``_shown`` of each of several frames. Those of up to 2,000 rows (all their values are the
-    sample) are looked at in one go, for up to 100 columns at a time: one by one, many small files
-    take long."""
+    sample) are looked at together, about a million values at a time: one by one, many small files
+    take long, and all at once much memory."""
     small = [i for i, frame in enumerate(frames) if 0 < frame.height <= _SHOWN] if len(frames) > 1 else []
     together = set(small)
     shown = [(0, 0, {}) if i in together else _shown(frame) for i, frame in enumerate(frames)]
-    parts = [frames[i].select(pl.col(pl.String)).with_columns(pl.lit(n, pl.UInt32).alias(_PART)) for n, i in enumerate(small)]
-    stacked = pl.concat(parts, how="diagonal") if parts else pl.DataFrame()
-    texts = [name for name in stacked.columns if name != _PART]
-    marked = stacked.select(pl.col(pl.String).str.contains("[.,]").any()).row(0) if texts else ()  # only these can show one
-    names = [name for name, separators in zip(texts, marked, strict=True) if separators]
-    for start in range(0, len(names), 100):
-        chunk = names[start : start + 100]
-        flags = [flag.alias(f"{kind}{k}") for k, name in enumerate(chunk) for kind, flag in zip("cp", _shows(col(name)), strict=True)]
-        # the values first, then only sums by file: patterns inside the groups take much memory
-        for n, *values in stacked.select(col(_PART), *flags).group_by(_PART).sum().iter_rows():
-            commas, points, own = shown[small[n]]
-            found = {name: "." if p else "," for name, c, p in zip(chunk, values[0::2], values[1::2], strict=True) if c or p}
-            shown[small[n]] = (commas + sum(values[0::2]), points + sum(values[1::2]), own | found)
+    batch, values = [], 0
+    for i in small:
+        batch.append(i)
+        values += frames[i].height * frames[i].width
+        if values >= _SHOWN_VALUES or i == small[-1]:
+            _shown_together(frames, batch, shown)
+            batch, values = [], 0
     return shown
+
+
+def _shown_together(frames: Sequence[pl.DataFrame], members: list[int], shown: list[tuple[int, int, dict[str, str]]]) -> None:
+    """For ``_shown_files``: ``_shown`` of these small frames (``members``: their numbers), into
+    ``shown``, for all of them at once: as one table of the frames one below the other, or, when
+    most of its values would be empty (many columns that only some frames have), as one column of
+    all values with a comma or a point (no other value shows a separator), with the number of the
+    frame and the name of the column of each. The patterns take much memory for empty values, and
+    one column of the values much time for the values of tables without empty ones."""
+    texts = [frames[i].select(pl.col(pl.String)) for i in members]
+    names = dict.fromkeys(name for frame in texts for name in frame.columns)
+    rows = sum(frame.height for frame in texts)
+    found: list[tuple[int, str, int, int]] = []  # (frame, column, values that show a comma, those that show a point)
+    if rows * len(names) > 2 * sum(frame.height * frame.width for frame in texts):
+        marked = pl.col("value").str.contains(".", literal=True) | pl.col("value").str.contains(",", literal=True)
+        parts = [
+            frame.unpivot(on=selector(frame.columns), variable_name=_NAME, value_name="value").filter(marked).with_columns(pl.lit(n, pl.UInt32).alias(_PART))
+            for n, frame in enumerate(texts)
+            if frame.width
+        ]
+        values = pl.concat(parts)
+        flags = [flag.alias(kind) for kind, flag in zip("cp", _shows(pl.col("value")), strict=True)]
+        # in a query, which works out the parts that both flags use once
+        found = values.lazy().select(col(_PART), col(_NAME), *flags).group_by(_PART, _NAME).sum().collect().rows()
+    elif names:
+        stacked = pl.concat([frame.with_columns(pl.lit(n, pl.UInt32).alias(_PART)) for n, frame in enumerate(texts)], how="diagonal")
+        marked = stacked.select(pl.col(pl.String).str.contains("[.,]").any()).row(0)  # only these can show one
+        names = [name for name, separators in zip(names, marked, strict=True) if separators]
+        for start in range(0, len(names), 100):
+            chunk = names[start : start + 100]
+            flags = [flag.alias(f"{kind}{k}") for k, name in enumerate(chunk) for kind, flag in zip("cp", _shows(col(name)), strict=True)]
+            # the values first, then only sums by file: patterns inside the groups take much memory
+            for n, *counts in stacked.lazy().select(col(_PART), *flags).group_by(_PART).sum().collect().iter_rows():
+                found += [(n, name, c, p) for name, c, p in zip(chunk, counts[0::2], counts[1::2], strict=True)]
+    for n, name, commas, points in found:
+        if commas or points:
+            before, after, own = shown[members[n]]
+            shown[members[n]] = (before + commas, after + points, own | {name: "." if points else ","})
 
 
 def _shows(text: pl.Expr) -> tuple[pl.Expr, pl.Expr]:
     """Whether a value shows only a decimal comma, and whether only a decimal point: the values
-    that ``_shown_decimals`` counts, as expressions."""
-    stripped = text.str.strip_chars()
-    bare = pl.when(stripped == "").then(None).otherwise(stripped).str.replace_all(_SPACES, "")
-    bare = bare.str.replace_all(f"[{_CURRENCY}]", "").str.strip_chars("%").str.strip_suffix("-")
-    number = ~bare.str.contains(r"^[+-]?[0-9]+$")
+    that ``_shown_decimals`` counts, as expressions, in few steps (each takes long for millions of
+    values): an empty text and a whole number like 1234 fit both patterns or neither."""
+    bare = text.str.strip_chars().str.replace_all(f"{_SPACES}|[{_CURRENCY}]", "").str.strip_chars("%").str.strip_suffix("-")
     comma, point = bare.str.contains(f"^[+-]?{_NUMBER[',']}$"), bare.str.contains(f"^[+-]?{_NUMBER['.']}$")
-    return comma & ~point & number, point & ~comma & number
+    return comma & ~point, point & ~comma
 
 
 def _shown_decimals(s: pl.Series) -> tuple[int, int]:
@@ -174,9 +206,9 @@ def detect_files(
             between()
         files = [frames[i] for i in members]
         together = files[0] if len(files) == 1 else pl.concat(files, how="diagonal")
-        result, found = _detect(together, decimals)
+        result, said = _detect(together, decimals)
         schema = result.schema  # once: each call builds the types of all columns again
-        notes += [(name, message, schema[name] != pl.String) for name, messages in found.items() for message in messages]
+        notes += [(name, message, schema[name] != pl.String) for name, messages in said.items() for message in messages]
         each = _each_file(result, together, files, decimals, notes) if len(files) > 1 else {}
         offset = 0
         for k, (i, frame) in enumerate(zip(members, files, strict=True)):
@@ -241,14 +273,18 @@ def _blank(s: pl.Series) -> bool:
 def _without_blanks(typed: list[pl.DataFrame]) -> None:
     """For ``detect_files``: a column that is text in a file only because all its values are blank
     (spaces, "") has no values there, when another file gives the column a type: as in one file,
-    where blanks beside numbers are empty. A column that is blank in every file stays text."""
+    where blanks beside numbers are empty. A column that is blank in every file stays text. Each
+    file is looked at and changed once: column by column, files of thousands of columns took long."""
     schemas = [frame.schema for frame in typed]
-    for name, kinds in _kinds(schemas).items():
-        if pl.String not in kinds or len(kinds) < 2:
+    mixed = {name for name, kinds in _kinds(schemas).items() if pl.String in kinds and len(kinds) > 1}
+    for i, schema in enumerate(schemas):
+        names = [name for name, dtype in schema.items() if dtype == pl.String and name in mixed] if mixed else []
+        if not names:
             continue
-        for i, schema in enumerate(schemas):
-            if schema.get(name) == pl.String and _blank(typed[i][name]):
-                typed[i] = typed[i].with_columns(pl.lit(None, pl.String).alias(name))
+        longest = typed[i].select(col(name).str.strip_chars().str.len_bytes().max().alias(f"b{k}") for k, name in enumerate(names)).row(0)
+        blank = [name for name, length in zip(names, longest, strict=True) if not length]
+        if blank:
+            typed[i] = typed[i].with_columns(pl.lit(None, pl.String).alias(name) for name in blank)
 
 
 def _numbers_of_files(typed: list[pl.DataFrame], texts: Sequence[pl.DataFrame], mappings: list[dict[str, str]], notes: list[tuple[str, str, bool]]) -> None:
@@ -258,6 +294,7 @@ def _numbers_of_files(typed: list[pl.DataFrame], texts: Sequence[pl.DataFrame], 
     that one file of all its values gives (see ``_numbers_together``), and a warning about it goes to
     ``notes``."""
     schemas = [frame.schema for frame in typed]
+    changes: list[list[pl.Series]] = [[] for _ in typed]  # for each file, at once: one by one took long for thousands of columns
     for name, kinds in _kinds(schemas).items():
         numbers = kinds - {pl.String}  # a column of a file can be text without values
         if len(numbers) < 2 or not all(kind.is_numeric() for kind in numbers):
@@ -269,7 +306,10 @@ def _numbers_of_files(typed: list[pl.DataFrame], texts: Sequence[pl.DataFrame], 
         warn = lambda message, name=name: notes.append((name, message, False))  # noqa: E731
         found = _numbers_together(name, columns, [texts[i][name] for i in where], [mappings[i][name] for i in where], warn)
         for i, column in zip(where, found or [], strict=found is not None):
-            typed[i] = typed[i].with_columns(column.alias(name))
+            changes[i].append(column.alias(name))
+    for i, change in enumerate(changes):
+        if change:
+            typed[i] = typed[i].with_columns(change)
 
 
 def _numbers_together(
@@ -315,12 +355,13 @@ def _each_file(
 ) -> dict[str, list[pl.Series]]:
     """For ``detect_files``: the columns that stayed text in ``result`` (the files together), as
     each file gives them, where every file gives a type or has only blanks there (and one gives a
-    type): column -> a column for each file. Each column is looked at in one file after the other,
-    up to the first that keeps it text. A column
-    with a word or a code like 0815 in its first values stays text at once: a file with one of
-    them gives no type (true and false and date-times like 2026-01-31T08:30 have letters, but they
-    can). The warnings about a column go to ``notes`` (see ``detect_files``) when it gets a type in
-    every file."""
+    type): column -> a column for each file. The files whose first value of the column has the
+    same shape (31.01.2026 and 2026-01-31 have two) are looked at together, as one file; those of
+    a shape that is text so, one after the other, up to the first that keeps the column text. A
+    column with a word or a code like 0815 in its first values stays text at once: a file with one
+    of them gives no type (true and false and date-times like 2026-01-31T08:30 have letters, but
+    they can). The warnings about a column go to ``notes`` (see ``detect_files``) when it gets a
+    type in every file."""
     before, after = together.schema, result.schema
     empty = dict(zip(together.columns, together.null_count().row(0), strict=True))  # a column without values has no type
     texts = {
@@ -332,26 +373,62 @@ def _each_file(
         return {}
     words = {name: text.str.contains("[A-Za-z]") & ~text.str.to_lowercase().is_in(["true", "false"]) & ~text.str.contains(_ISO_T) for name, text in texts.items()}
     seen = together.head(_SAMPLE).select([(words[name] | text.str.contains(r"^[+-]?0[0-9]+$")).any().alias(name) for name, text in texts.items()])
+    names = [name for name, stays in zip(texts, seen.row(0), strict=True) if not stays]
+    if not names:
+        return {}
+    # the shape of the first value of each column in each file: its digits as 9, without blanks (null: none)
+    part = pl.concat([pl.repeat(k, frame.height, dtype=pl.UInt32, eager=True) for k, frame in enumerate(files)]).alias(_PART)
+    shapes = [texts[name].str.replace_all("[0-9]", "9").alias(f"s{j}") for j, name in enumerate(names)]
+    firsts = together.select(shapes).with_columns(part).group_by(_PART).agg(pl.all().filter(pl.all() != "").first())
+    first = {k: found for k, *found in firsts.iter_rows()}  # a file without rows has none
+    nothing = [None] * len(names)
     each: dict[str, list[pl.Series]] = {}
-    for name, stays in zip(texts, seen.row(0), strict=True):
-        if stays:
-            continue
-        found, said = [], []
-        for frame in files:
-            if name not in frame.columns:
-                found.append(pl.Series(name, [], pl.String))  # not used: the file has no such column
-                continue
-            detected, messages = _detect(frame.select(col(name)), {name: decimals[name]})
-            column = detected[name]
-            if column.dtype == pl.String and not _blank(column):
-                break  # text in this file: text in all of them, as in one file
-            found.append(column)  # only blanks: no values (see _without_blanks)
-            said += [(name, message, column.dtype != pl.String) for message in messages.get(name, [])]
-        else:
-            if any(column.dtype != pl.String for column in found):
-                each[name] = found
-                notes += said
+    for j, name in enumerate(names):
+        found = _each_file_column(name, files, [first.get(k, nothing)[j] for k in range(len(files))], decimals[name], notes)
+        if found is not None:
+            each[name] = found
     return each
+
+
+def _each_file_column(
+    name: str, files: list[pl.DataFrame], shapes: list[str | None], decimal: str, notes: list[tuple[str, str, bool]]
+) -> list[pl.Series] | None:
+    """For ``_each_file``: one column as each file gives it (``shapes``: the shape of its first
+    value in each file), or None when a file keeps it text or no file gives it a type."""
+    groups: dict[str | None, list[int]] = {}
+    for k, frame in enumerate(files):
+        if name in frame.schema:
+            groups.setdefault(shapes[k], []).append(k)
+    found = [pl.Series(name, [], pl.String)] * len(files)  # not used for a file without such a column
+    said: list[tuple[str, str, bool]] = []
+    for shape, members in groups.items():
+        if shape is None:  # only blanks: no values (see _without_blanks)
+            for k in members:
+                found[k] = files[k][name]
+            continue
+        column = pl.concat([files[k][name] for k in members])
+        detected, messages = _detect(column.to_frame(), {name: decimal})
+        typed = detected[name]
+        if typed.dtype != pl.String or len(members) == 1:
+            if typed.dtype == pl.String and not _blank(typed):
+                return None  # text in this file: text in all of them, as in one file
+            offset = 0
+            for k in members:
+                found[k] = typed.slice(offset, files[k].height)
+                offset += files[k].height
+            said += [(name, message, typed.dtype != pl.String) for message in messages.get(name, [])]
+            continue
+        for k in members:  # text together: as each of these files gives it
+            detected, messages = _detect(files[k].select(col(name)), {name: decimal})
+            typed = detected[name]
+            if typed.dtype == pl.String and not _blank(typed):
+                return None
+            found[k] = typed
+            said += [(name, message, typed.dtype != pl.String) for message in messages.get(name, [])]
+    if not any(column.dtype != pl.String for column in found):
+        return None
+    notes += said
+    return found
 
 
 def detect_types(data: pl.DataFrame, decimals: Mapping[str, str], warn: Callable[[str], None]) -> pl.DataFrame:

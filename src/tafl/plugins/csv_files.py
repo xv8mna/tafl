@@ -130,8 +130,12 @@ def import_csv(df, p, ctx):
     typed = detection.detect_files(texts, guesses, warn_once, ctx.check_cancelled) if p.detect_types else texts
     out = combine(parts, p, folder, warn=ctx.warn, prepare_each=(lambda i, _text: typed[i]) if p.detect_types else None)
     used: list[dict[str, str]] = []  # of each file: the decimal separator of each of its columns of numbers with commas or points
+    differ = len({decimal for decimal, _own in guesses}) > 1  # else only the columns whose values show one count, as before
     for text, frame, (decimal, own) in zip(texts, typed, guesses, strict=True) if p.detect_types else ():
         numbers = [name for name, dtype in frame.schema.items() if dtype.is_numeric()]  # the others stayed text
+        if not differ:
+            used.append({name: own[name] for name in numbers if name in own})
+            continue
         marks = [(col(name).str.contains(".", literal=True) | col(name).str.contains(",", literal=True)).any() for name in numbers]
         marked = text.select(mark.alias(f"m{k}") for k, mark in enumerate(marks)).row(0) if numbers else ()
         used.append({name: own.get(name, decimal) for name, has in zip(numbers, marked, strict=True) if has})
