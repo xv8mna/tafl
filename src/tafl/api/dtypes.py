@@ -250,12 +250,15 @@ def float_loses_digits(s: pl.Series, decimal: str = ",") -> pl.Series:
     if s.dtype.is_integer() or (isinstance(s.dtype, pl.Decimal) and not s.dtype.scale):
         back = s.cast(pl.Float64).cast(s.dtype, strict=False)  # empty when rounded beyond the type: 2^127 for 2^127 - 1
         return ((back != s).fill_null(True) & s.is_not_null()).alias(name)
-    if isinstance(s.dtype, pl.Decimal) and s.len() <= _FEW_DECIMALS:  # Python is quicker than Polars' calls here
-        return pl.Series(name, [_decimal_lost(value) for value in s.to_list()], dtype=pl.Boolean)
     lost = pl.repeat(False, s.len(), eager=True).alias(name)
     if isinstance(s.dtype, pl.Decimal):  # below 10^15 units (its digits without the point) a value has at most 15 digits
-        if max((abs(value) for value in (s.min(), s.max()) if value is not None), default=0) < Decimal(10) ** (15 - s.dtype.scale):
+        top = max((abs(value) for value in (s.min(), s.max()) if value is not None), default=0)
+        if top < Decimal(10) ** (15 - s.dtype.scale):
             return lost
+        if s.len() > _FEW_DECIMALS and top < Decimal(10) ** (15 - _places_used(s)):  # so do amounts in a decimal(38, 18)
+            return lost
+        if s.len() <= _PYTHON_DECIMALS:  # Python is quicker than Polars' calls here
+            return pl.Series(name, [_decimal_lost(value) for value in s.to_list()], dtype=pl.Boolean)
         units, (ten, at_16, at_18) = _VALUE.to_physical(), (pl.lit(10**k, dtype=pl.Int128) for k in (1, 15, 17))
         found = s.to_frame().select(  # 18 digits or more without a zero at the end: a decimal number can't keep them (_digits_lost)
             many=((units.abs() >= at_18) & (units % ten != 0)).fill_null(False),
@@ -506,7 +509,22 @@ def _digits_lost(digits: pl.Series, numbers: pl.Series, tiny: pl.Series | None =
     return lost
 
 
-_FEW_DECIMALS = 500  # up to so many exact decimals, Python looks at them in less time than the calls of Polars take
+_PYTHON_DECIMALS = 500  # up to so many exact decimals, Python looks at them in less time than the calls of Polars take (2 ms)
+_FEW_DECIMALS = 100  # and up to so many in less time than the query of the decimal places they use (_places_used, 0.35 ms)
+
+
+def _places_used(s: pl.Series) -> int:
+    """The decimal places that the exact decimals ``s`` use: the fewest after which all their digits
+    are zeros (4 for amounts such as 1234.5678 in a decimal(38, 18)). By halving: about 5 queries."""
+    scale, units = s.dtype.scale, s.to_frame("value").select(_VALUE.to_physical())
+    low, high = 0, scale
+    while low < high:
+        middle = (low + high) // 2
+        if units.select((_VALUE % pl.lit(10 ** (scale - middle), dtype=pl.Int128) == 0).all()).item():
+            high = middle
+        else:
+            low = middle + 1
+    return low
 
 
 def _decimal_lost(value: Decimal | None) -> bool:

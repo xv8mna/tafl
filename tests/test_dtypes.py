@@ -432,7 +432,27 @@ def test_float_loses_digits_counts_all_significant_digits():
     exact = pl.Series([Decimal(v) for v in amounts], dtype=pl.Decimal(38, 4))
     assert dtypes.float_loses_digits(exact).to_list() == [True, False, True, False, True]
     sixteen = pl.Series([Decimal("9999999999999.999"), Decimal("1.5")] * 300, dtype=pl.Decimal(38, 3))  # 9999999999999.998
-    assert sixteen.len() > dtypes._FEW_DECIMALS and dtypes.float_loses_digits(sixteen).to_list() == [True, False] * 300
+    assert sixteen.len() > dtypes._PYTHON_DECIMALS and dtypes.float_loses_digits(sixteen).to_list() == [True, False] * 300
+
+
+def test_float_loses_digits_of_exact_decimals_takes_the_quick_ways_first(monkeypatch):
+    """A column of up to 500 exact decimals was looked at value by value, also when its smallest and
+    largest values tell that all keep their digits (amounts in a decimal(18, 4)), and amounts in a
+    decimal(38, 18) were compared digit by digit: 4,000 such columns of 500 rows took twice as long.
+    The decimal places that the values use tell that too."""
+    amounts = [Decimal(f"{k * 7919 % 100000}.{k * 37 % 10000:04d}") for k in range(300)]
+    long = pl.Series([*amounts, Decimal("1234567890123.4567")], dtype=pl.Decimal(38, 18))
+    assert dtypes.float_loses_digits(long).to_list() == [False] * 300 + [True]  # 17 digits: still looked at
+    sixteen = pl.Series([*amounts, Decimal("574120618637.9953")], dtype=pl.Decimal(38, 18))  # 574120618637.9952
+    assert dtypes.float_loses_digits(sixteen).to_list() == [False] * 300 + [True]
+
+    def looked_at(*_):
+        raise AssertionError("looked at value by value")
+
+    monkeypatch.setattr(dtypes, "_decimal_lost", looked_at)
+    monkeypatch.setattr(dtypes, "_decimal_digits_lost", looked_at)
+    for dtype in (pl.Decimal(18, 4), pl.Decimal(38, 18), pl.Decimal(20, 10)):
+        assert not dtypes.float_loses_digits(pl.Series(amounts, dtype=dtype)).any()
 
 
 def _changes_as_float(number: Decimal) -> bool:
@@ -464,7 +484,7 @@ def test_float_loses_digits_as_python_says_for_random_numbers(scale):
     texts = pl.Series([format(number, "f").replace(".", ",") for number in numbers])
     assert dtypes.float_loses_digits(texts, ",").to_list() == expected
     small = [number for number in numbers if abs(number) < Decimal(10) ** (15 - scale)] * 50  # all below 10^15 units
-    assert len(small) > dtypes._FEW_DECIMALS and not dtypes.float_loses_digits(pl.Series(small, dtype=pl.Decimal(38, scale))).any()
+    assert len(small) > dtypes._PYTHON_DECIMALS and not dtypes.float_loses_digits(pl.Series(small, dtype=pl.Decimal(38, scale))).any()
 
 
 @pytest.mark.parametrize(
