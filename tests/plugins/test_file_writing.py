@@ -314,7 +314,7 @@ def test_names_of_up_to_255_characters(act, tmp_path, name):
 
 def test_names_over_255_characters(act, tmp_path):
     for name in ("L" * 252 + ".csv", "\U0001f600" * 126 + ".csv"):  # an emoji counts twice in Windows
-        with pytest.raises(ActionError, match=r"^A file or folder name can have at most 255 characters: .{50}… has 256$"):
+        with pytest.raises(ActionError, match=r"^A file or folder name can have at most 255 characters \(an emoji counts as 2\): .{50}… has 256$"):
             act("csv.export", pl.DataFrame({"a": [1]}), {"file": str(tmp_path / name)})
     assert list(tmp_path.iterdir()) == []
 

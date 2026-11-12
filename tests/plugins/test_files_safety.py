@@ -214,7 +214,7 @@ def test_create_folder_gives_plain_messages(act, tmp_path):
         act("files.mkdir", None, {"folder": str(tmp_path / "what?")})
     with pytest.raises(ActionError, match=r"^CON is reserved for a device in Windows"):
         act("files.mkdir", None, {"folder": str(tmp_path / "con" / "x")})
-    with pytest.raises(ActionError, match=r"^A file or folder name can have at most 255 characters: F{50}… has 256$"):
+    with pytest.raises(ActionError, match=r"^A file or folder name can have at most 255 characters \(an emoji counts as 2\): F{50}… has 256$"):
         act("files.mkdir", None, {"folder": str(tmp_path / "new" / ("F" * 256))})
     assert sorted(os.listdir(tmp_path)) == ["file"]
 
@@ -225,7 +225,7 @@ def test_a_numbered_name_that_would_be_too_long_stops_before_any_file_is_copied(
     (tmp_path / "out").mkdir()
     (tmp_path / "out" / long.name).write_text("there", encoding="utf-8")
     table = pl.DataFrame({"File": [str(inbox / "a.csv"), str(long)]})
-    with pytest.raises(ActionError, match=r"^A file or folder name can have at most 255 characters: L{50}… has 259$"):
+    with pytest.raises(ActionError, match=r"^A file or folder name can have at most 255 characters \(an emoji counts as 2\): L{50}… has 259$"):
         act("files.copy", table, {"column": "File", "target": str(tmp_path / "out")})
     assert files_in(tmp_path / "out") == {long.name: "there"}
 
@@ -305,7 +305,7 @@ def test_a_listed_file_is_not_replaced_before_it_is_renamed(act, names):
         ("a.csv.", r"^A file or folder name can't end with a dot or a space: 'a\.csv\.'$"),
         ("nul.txt", r"^NUL is reserved for a device in Windows and can't be a file or folder name: nul\.txt$"),
         ("com1", r"^COM1 is reserved"),
-        ("N" * 300 + ".csv", r"^A file or folder name can have at most 255 characters: N{50}… has 304$"),
+        ("N" * 300 + ".csv", r"^A file or folder name can have at most 255 characters \(an emoji counts as 2\): N{50}… has 304$"),
     ],
 )
 def test_names_windows_does_not_allow_stop_before_any_file_is_renamed(act, names, new, message):

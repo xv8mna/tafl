@@ -320,8 +320,9 @@ class Project:
         if target is None:
             raise ProjectError("No file name given")
         target = target.resolve()
-        if (length := _units(target.name)) > _LONGEST_NAME:
-            raise ProjectError(f"The file name is too long ({length:,} characters): a file name can have {_LONGEST_NAME} at most")
+        if (length := _units(target.name)) > _LONGEST_NAME:  # (worded as the file actions word it)
+            start = target.name if len(target.name) <= 60 else f"{target.name[:50]}…"
+            raise ProjectError(f"A file name can have at most {_LONGEST_NAME} characters (an emoji counts as 2): {start} has {length:,}")
         try:
             data = (json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         except (TypeError, ValueError, ArithmeticError) as e:

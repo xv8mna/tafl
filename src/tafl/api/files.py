@@ -417,7 +417,7 @@ def _name_problem(name: str, text: str, ends: bool = True) -> str | None:
         return f"{device} is reserved for a device in Windows and can't be a file or folder name: {text}"
     if (length := _units(name)) > _LONGEST:
         start = name if len(name) <= 60 else f"{name[:50]}…"
-        return f"A file or folder name can have at most {_LONGEST} characters: {start} has {length:,}"
+        return f"A file or folder name can have at most {_LONGEST} characters (an emoji counts as 2): {start} has {length:,}"
     return None
 
 

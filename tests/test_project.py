@@ -76,9 +76,14 @@ def test_a_file_name_of_up_to_255_characters_can_be_saved(tmp_path, length, lett
 
 
 def test_a_file_name_longer_than_windows_allows_gets_a_plain_message(tmp_path):
-    with pytest.raises(ProjectError, match=r"^The file name is too long \(256 characters\): a file name can have 255 at most$"):
+    """Worded as the file actions word it. Before: "The file name is too long (267 characters)" for
+    136 characters, 131 of them emoji."""
+    rule = r"^A file name can have at most 255 characters \(an emoji counts as 2\): "
+    with pytest.raises(ProjectError, match=rule + r"p{50}… has 256$"):
         sample_project().save(tmp_path / ("p" * 251 + ".tafl"))
-    with pytest.raises(ProjectError, match=r"\(257 characters\)"):
+    with pytest.raises(ProjectError, match=rule + r"😀{50}… has 267$"):
+        sample_project().save(tmp_path / ("😀" * 131 + ".tafl"))
+    with pytest.raises(ProjectError, match=rule + r"😀{50}… has 257$"):
         sample_project().save(tmp_path / ("😀" * 126 + ".tafl"))
     assert list(tmp_path.iterdir()) == []
 
