@@ -16,12 +16,12 @@ first.
 Where a project of 0.6.4 meets one of these changes, it gives other results now, or a step stops
 with a message that says what to change.
 
-- **Import CSV / text files** and **Import from database** (*Detect automatically*): a column with
-  a decimal that a decimal number would give back with other digits becomes exact decimals, with
-  the decimal places that its values show, up to 38 digits. So `12345678901234,5678` and
-  `12345678901234,5677` stay two numbers, and an export writes them as they are. Before, both
-  became 12345678901234.568 without a message, and a CSV export wrote `12345678901234,6` twice. The
-  rule is that of **Change type** (see below).
+- **Import CSV / text files** (any decimal separator) and **Import from database** (*Detect
+  automatically*): a column with a decimal that a decimal number would give back with other digits
+  becomes exact decimals, with the decimal places that its values show, up to 38 digits. So
+  `12345678901234,5678` and `12345678901234,5677` stay two numbers, and an export writes them as
+  they are. Before, both became 12345678901234.568 without a message, and a CSV export wrote
+  `12345678901234,6` twice. The rule is that of **Change type** (see below).
 - **Import CSV / text files** and **Import from database**, the same rule for amounts
   (`12.345.678.901.234.567,89 €`), percentages (`12,345678901234567%` is 0.12345678901234567) and
   whole numbers beside decimals (`9007199254740993` beside `1,5`): they become exact decimals.
@@ -31,45 +31,52 @@ with a message that says what to change.
   `0.3333333333333333`), comes back the same and stays a decimal number, as before. A number that a
   decimal number can't hold at all keeps the column text with the warning: `0,000…0001` with 400
   zeros became 0 before.
-- **Import CSV / text files** and **Import from database** (*Detect automatically*): a whole part
-  with more than 15 significant digits keeps its digits as an exact decimal, also in an amount or a
-  percentage, with `,0`, with a minus at the end, beside decimals, and in a number that a program
-  wrote (`1.234.567.890.123.456 €`, `1234567890123456,0`, `9007199254740994-`, `18014398509481984`
-  beside `1,5`, `12345678901234568.0`). Before, these became decimal numbers, and an export wrote
-  `1234567890123460`. A plain whole number up to 9,223,372,036,854,775,807 (`1234567890123456`)
-  is a whole number, as before.
-- **Import CSV / text files** and **Import from database** (*Detect automatically*): whole numbers
-  beyond 9,223,372,036,854,775,807 become exact decimals of up to 38 digits, with or without
-  thousands separators: `9.223.372.036.854.775.808` is 9223372036854775808. Before, such a column
-  became decimal numbers without a message (a CSV export wrote `9223372036854780000`), or it stayed
-  text with the warning "… stays text: its numbers are too long to be kept exactly"
-  (`12345678901234567890`). A number of more than 38 digits keeps the column text with that
-  warning, as before.
+- **Import CSV / text files** (any decimal separator) and **Import from database** (*Detect
+  automatically*): a whole part with more than 15 significant digits keeps its digits as an exact
+  decimal, also in an amount or a percentage, with `,0`, with a minus at the end, beside decimals,
+  and in a number that a program wrote (`1.234.567.890.123.456 €`, `1234567890123456,0`,
+  `9007199254740994-`, `18014398509481984` beside `1,5`, `12345678901234568.0`). Before, these
+  became decimal numbers, and an export wrote `1234567890123460` (such a percentage, as
+  `123456789012345678%`, stayed text with the warning "… stays text: its numbers are too long to be
+  kept exactly"). A plain whole number up to 9,223,372,036,854,775,807 (`1234567890123456`) is a
+  whole number, as before.
+- **Import CSV / text files** (any decimal separator) and **Import from database** (*Detect
+  automatically*): whole numbers beyond 9,223,372,036,854,775,807 become exact decimals of up to 38
+  digits, with or without thousands separators: `9.223.372.036.854.775.808` is
+  9223372036854775808. Before, such a column became decimal numbers without a message (a CSV
+  export wrote `9223372036854780000`), or it stayed text with the warning "… stays text: its
+  numbers are too long to be kept exactly" (`12345678901234567890`). A number of more than 38
+  digits keeps the column text with that warning, as before.
 - **Import from database** with *Point* or *Comma*, also a step saved before 0.6.4 (which has
   *Point*): a decimal that a decimal number would change, such as `12345678901234.5678`, stays
   text with the warning "… stays text: its numbers are too long to be kept exactly". Before, it
   became 12345678901234.568 without a message. Other values are read as before, also 2^63 and
   10^19, which a decimal number holds.
-- **Import CSV / text files** and **Import from database** (*Detect automatically*): a decimal with
-  a zero before another digit, such as `00,5` or `-01,5`, is a code and stays text, as `00017`
-  does. Before, they became 0.5 and -1.5. `0,5` is a number, as before.
-- **Import CSV / text files** and **Import from database** (*Detect automatically*): amounts with
-  the sign before the currency sign (`-$3.00`, `-€3,00`) and numbers without a digit before the
-  decimal separator (`,5`, `.5`, `-,25`, `,5%`) are numbers. Before, such a column stayed text.
-- **Import CSV / text files** and **Import from database** (*Detect automatically*): every value of
-  a column decides, not only the first 1,000. A column of numbers like `1,50` with a `5,00 €` or a
-  `5,00-` further down becomes numbers, and so does a column whose first 1,000 values are only
-  spaces. Before, such a column stayed text, without a message.
+- **Import CSV / text files** (any decimal separator) and **Import from database** (*Detect
+  automatically*): a decimal with a zero before another digit, such as `00,5` or `-01,5`, is a code
+  and stays text, as `00017` does. Before, they became 0.5 and -1.5. `0,5` is a number, as before.
+- **Import CSV / text files** (any decimal separator) and **Import from database** (*Detect
+  automatically*): amounts with the sign before the currency sign (`-$3.00`, `-€3,00`) and numbers
+  without a digit before the decimal separator (`,5`, `.5`, `-,25`, `,5%`) are numbers. Before,
+  such a column stayed text.
+- **Import CSV / text files** (any decimal separator) and **Import from database** (*Detect
+  automatically*): every value of a column decides, not only the first 1,000. A column of numbers
+  like `1,50` with a `5,00 €` or a `5,00-` further down becomes numbers, and so does a column of
+  such amounts whose first 1,000 values are only spaces. Before, such a column stayed text, without
+  a message.
 - **Import CSV / text files**: amounts such as `-€73,85` and numbers such as `,25` count for the
-  file's decimal separator, as `1.234,50` does. In a file with a few of them and a column of values
-  like `716.009`, which fit both separators, that column is 716009 now: the file has a decimal
-  comma. Before, they didn't count, the file had a decimal point, and `716.009` was 716.009.
+  file's decimal separator, as `1.234,50` does. Take a file with a few of them, a column with a
+  decimal point (`7.83`) and a column of values like `716.009`, which fit both separators: that
+  column is 716009 now, as the file has a decimal comma ("decimal comma (decimal point in Rate)").
+  Before, the amounts didn't count, the file had a decimal point, and `716.009` was 716.009. The
+  same happens in a comma-delimited file without the column with a decimal point.
 - **Import CSV / text files**, *All files in a folder*: each file is read with its own decimal
   separator and date format. `1,50` in north.csv and `1.50` in south.csv are both 1.5, and
   `31.01.2026` in one file and `2026-02-01` in another are both dates (date-times too). Before,
   such a column was text, without a message. Files whose separators agree are still read together,
-  as one file. A column with only blanks in a file (spaces, `""`) is empty there when another file
-  gives it a type, as before.
+  as one file; a column that this leaves text gets the type of **Append** (next bullet), so
+  `12,5%` in one file and `0,125` in another become 0.125 (before: text). A column with only blanks
+  in a file (spaces, `""`) is empty there when another file gives it a type, as before.
 - **Import CSV / text files**, *All files in a folder*: a column with different types in the files
   gets the type that **Append** gives it. A date beside a date-time becomes a date-time, a
   percentage (`12,5%`) beside a number (`0,125`) a number, and numbers exact decimals when a
@@ -117,20 +124,24 @@ with a message that says what to change.
   number format**: the ID 5 showed as `5.00`, and 12345678901234567890123 as
   `12,345,678,901,234,600,000,000.00`. A format for the single column still comes first.
 - **Import from database** (SQL Server): a `datetimeoffset` column becomes date-times in UTC, the
-  moments it holds: `2026-10-01 08:30:00 +02:00` is 2026-10-01 06:30:00 UTC. Before, it was text
-  with 6 digits of a second (`2026-10-01T08:30:00.123456+02:00`). Steps that use the column as
-  text, and exports of it, get the date-time now. Written back into a `datetimeoffset` column, the
-  same moment is stored with the offset `+00:00`.
+  moments it holds: `2026-10-01 08:30:00 +02:00` is 2026-10-01 06:30:00 UTC. Before, it was text in
+  ISO form, with up to 6 digits of a second (`2026-10-01T08:30:00+02:00`,
+  `2026-10-01T08:30:00.123456+02:00`). Steps that use the column as text, and exports of it, get
+  the date-time now. Written back into a `datetimeoffset` column, the same moment is stored with the
+  offset `+00:00`. A value whose moment in UTC is before the year 1 or after 9999, such as
+  `0001-01-01 08:00 +14:00`, stops the import with a message that shows how to read the column as
+  text in the query (`CONVERT(nvarchar(34), …)`); in 0.6.4, it was text as every value of such a
+  column.
 - **Export to database** (SQL Server): texts for `date`, `datetime`, `datetime2`, `smalldatetime`,
   `time` and `datetimeoffset` columns are read by Tafl, the same way in every mode. Tafl reads them
   as **Change type / format** does without a format (`31.12.2025`, `2025-12-31`, with or without a
-  time; `08:30:15.250`), and in every form of ISO 8601 (`2025-12-31T08:30`, with or without
+  time; `08:30:15.250`), and in the usual forms of ISO 8601 (`2025-12-31T08:30`, with or without
   seconds, up to 7 digits of a second, with `Z` or an offset, and `20251231`). A column without an
   offset gets the local time that such a text names (`2025-12-31T08:30+02:00` is 08:30); a
   `datetimeoffset` column keeps the offset. An empty text is an empty value.
 - **Export to database** (SQL Server), more of these texts: a `time` column takes the time of a
-  date and time in both forms (`01.10.2026 08:30`, `2026-10-01T08:30`), as 0.6.4's **Update** and
-  **Upsert** did; a date alone is 00:00. A time alone (`08:30`, `08:30:15.5`) for a `datetime`,
+  date and time in both forms (`01.10.2026 08:30`, `2026-10-01T08:30:00`), as 0.6.4's **Update**
+  and **Upsert** did; a date alone is 00:00. A time alone (`08:30`, `08:30:15.5`) for a `datetime`,
   `smalldatetime` or `datetime2` column is on 1 January 1900, as SQL Server converts it. Texts whose
   meaning depends on the language or the date format (`12/31/2025`, `2025-12-31 08:30 PM`), a time
   alone for a `date` or `datetimeoffset` column, an offset beyond ±14:00 (`+14:30`) and other texts
@@ -165,17 +176,22 @@ with a message that says what to change.
   plugins) go into a text column with all their decimal places, also whole ones: `2.00` stays
   `2.00`, as SQL Server's own `CAST` writes it. (**Change type** to *Text* writes `2` and `1,5`,
   with the step's decimal separator.) 0.6.4 wrote whole ones into a `char`, `varchar`, `nchar` or
-  `nvarchar` column of a given length without decimal places (`2`).
+  `nvarchar` column of a given length without decimal places (`2`). A text column too short for
+  them (`2.00` and `100.00` in a `varchar(3)`) now stops the export: "The column V of … holds texts
+  of up to 3 characters (varchar(3)), but V has longer ones (e.g. “2.00”, 4 characters) …"; 0.6.4
+  wrote `2` and `100`.
 - **Export to database** (SQL Server), keys in such a text column of a table that 0.6.4 filled:
   they no longer match. **Upsert** adds the rows again, and **Update** and **Delete** find nothing,
   without a message. To keep the keys, change the column to whole numbers before the export
   (**Change type**), or update the key column of the table once to the new form.
 - Some stored steps now stop with a plain message where 0.6.4 gave a result. These are **Export to
-  database** (SQL Server) with a date text that Tafl can't read (see above), **Update** and
-  **Upsert** with keys that the table's column sees as one, the modes by key with keys that differ
-  only in the 7th digit of a second or with a synonym for a table of another server, **Run SQL
-  command** with a command that ends the step's transaction or leaves one open, and **Fill empty
-  values** with `NaN` or `inf` in a column of exact decimals. Their bullets are below.
+  database** (SQL Server) with a date text that Tafl can't read, or with exact decimals for a text
+  column too short for their decimal places (see above), **Update** and **Upsert** with keys that
+  the table's column sees as one, the modes by key with keys that differ only in the 7th digit of a
+  second or with a synonym for a table of another server, **Run SQL command** with a command that
+  ends the step's transaction or leaves one open, **Fill empty values** with `NaN` or `inf` in a
+  column of exact decimals, and **Change type** to *Decimal number* with *stop with an error* on a
+  text such as `1e400`. Their bullets are below.
 
 ### Wrong results that are now right
 
@@ -330,17 +346,17 @@ with a message that says what to change.
   it named one separator for the folder.
 - **Exports** and **file actions**: a file or folder name of more than 255 characters gets "A file
   or folder name can have at most 255 characters (an emoji counts as 2): … has 266". Windows counts
-  an emoji as 2 characters, so a name of 131 emoji and `.csv` has 266. Before, the message didn't
-  say why.
+  an emoji as 2 characters, so a name of 131 emoji and `.csv` has 266. Before, the message had no
+  "(an emoji counts as 2)".
 
 ### Speed
 
-- **Change type** to *Decimal number* and the imports read numbers from texts in about half the
-  time of 0.6.4, now with the check for rounded digits. A million amounts like `1.234,50` take
-  0.19 s (0.6.4: 0.44 s), a million long numbers like `12345678901234,5678` 1.2 s (0.6.4: 2.4 s),
-  and a CSV column of a million decimals of 16 digits 0.8 s (0.6.4: 2.3 s). From 10,000 values on,
-  this takes about 50 to 150 MB more memory, once: 100,000 amounts in each of 20 columns take
-  230 MB instead of 140 MB.
+- **Change type** to *Decimal number* reads numbers from texts in less time than 0.6.4, now with
+  the check for rounded digits: a million amounts like `1.234,50` take 0.18 s (0.6.4: 0.41 s), and
+  a million long numbers like `12345678901234,5678` 0.5 s (0.6.4: 2.2 s). **Import CSV / text
+  files**: a column of a million decimals of 16 digits takes 1.4 s (0.6.4: 2.0 s); other CSV files
+  take the time of 0.6.4. From 10,000 values on, reading numbers takes about 50 to 150 MB more
+  memory, once (a million amounts: 220 MB instead of 155 MB).
 - **Change type** to *Decimal number* of texts with an exponent: a million `1,5e3` take 0.46 s
   (0.6.4: 0.50 s). A million `1,2345E+25`, which are all rounded and now counted for the warning,
   take 1.7 s and 320 MB (0.6.4: 0.49 s and 145 MB).
@@ -365,16 +381,16 @@ with a message that says what to change.
   values of a column selected, then **Apply**: 29 s frozen before, now pauses of at most 0.4 s.
 - **Import CSV / text files**, *All files in a folder*: each file's decimal separator comes from
   its own first 2,000 rows (0.6.4 looked at 2,000 rows of all files together). Folders of many
-  files take a little longer, and big ones less memory: 300 files of 2,000 rows and 40 columns take
-  11.1 s and 860 MB (0.6.4: 9.8 s and 1,020 MB), 300 small files 0.52 s (0.6.4: 0.53 s). One file of
-  50 rows and 5,000 columns of the new number forms takes 31 s (0.6.4: 21 s, when most of them
-  stayed text).
+  files take a little longer; big ones take less memory, small ones a little more: 300 files of
+  2,000 rows and 40 columns take 10.3 s and 849 MB (0.6.4: 9.5 s and 1,022 MB), 300 small files
+  0.56 s and 211 MB (0.6.4: 0.45 s and 156 MB). One file of 50 rows and 5,000 columns of the new
+  number forms takes 31 s (0.6.4: 21 s, when most of them stayed text).
 - **Export to database** (SQL Server): the modes by key compare a key with 7 digits of a second
   (`datetime2`, `time`, `datetimeoffset`) by hashing, so SQL Server reads the whole table once
   instead of using its index. 1,000 rows into a table of 2 million rows take about 1.4 s with
   **Update** and 2.0 s with **Upsert** (0.6.4: 0.2 s). Other keys take the same time as before.
 - **Export to database** (SQL Server): Tafl reads the texts for date and time columns before the
-  export. For a million rows with 10 such columns among 20, these checks take 1.6 s (0.6.4: 0.3 s,
+  export. For a million rows with 10 such columns among 20, these checks take 1.9 s (0.6.4: 0.34 s,
   when the texts went to the server unread); the write itself takes 30 to 60 s there.
 
 ### The window

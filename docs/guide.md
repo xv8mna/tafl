@@ -897,9 +897,10 @@ Values with leading zeros, such as customer numbers (`00017`), postal codes and 
 percentages like `12,5%` (0.125) and numbers like `,5` become numbers. Every value of a column
 counts, not only the first rows. Numbers keep all their digits: whole numbers up to
 9,223,372,036,854,775,807 are integers; longer ones, and a column with a number that a decimal
-number would round (`12345678901234,5678`, `1.234.567.890.123.456 €`), become exact decimals of up
-to 38 digits, as in [Read a table or a query](#read-a-table-or-a-query). A column with a longer
-number stays text, with a warning. Decimal numbers as programs write them (`0.30000000000000004`)
+number would round (`12345678901234,5678`) or with an amount or a decimal whose whole part has more
+than 15 digits (`1.234.567.890.123.456 €`), become exact decimals of up to 38 digits, as in
+[Read a table or a query](#read-a-table-or-a-query). A column with a longer number stays text, with
+a warning. Decimal numbers as programs write them (`0.30000000000000004`)
 stay decimal numbers. The box at the top of the step's settings says what was detected, and so do
 Run results under the step: "Encoding utf-8, delimiter semicolon, decimal comma".
 
@@ -2178,8 +2179,8 @@ WHERE City <> 'Wien'
 Filter big tables in the query: only the rows you need are read. Numbers keep all their digits.
 SQL Server `datetimeoffset` columns become date-times in UTC (08:30 +02:00 is 06:30 UTC). SQL
 Server's driver reads date-times to the microsecond: for a column with 7 digits of a second
-(`datetime2(7)`, `time(7)`, `datetimeoffset(7)`), the step warns that a 7th digit, if any, is cut;
-**Export to database** still finds such rows by key.
+(`datetime2(7)`, `time(7)`, `datetimeoffset(7)`) whose values have parts of a second, the step
+warns that a 7th digit, if any, is cut; **Export to database** still finds such rows by key.
 
 Imports run while you edit, so they must change nothing. A SQLite file is opened for reading only:
 a query that changes data stops with a message, and so do `ATTACH` and a PRAGMA that does more than

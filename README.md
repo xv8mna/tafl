@@ -297,15 +297,17 @@ folder** ("Read: All files in a folder"), with all subfolder levels if you like:
   the import. CSV: each file is read with its own delimiter, encoding, decimal separator and date
   format (a file whose first line has no delimiter has one column), so `1,50` in one file and
   `1.50` in another are both 1.5; files whose separators agree are detected together, as one
-  file. The decimal separator is also found per column (`0.500` shows a decimal point, `2,5` a
-  comma). A value like `1.000` can be one thousand or one: it follows the other numbers of its
-  column (in its file, else in the other files), else those of its file, else those of all
-  files, and without any it is one thousand in files with semicolons. The log names the
-  separator of each file when they differ. A CSV column that is text in one file (`n/a`) stays
-  text without a warning, with the text of the files, and a column with only blanks in a file is
-  empty there. Amounts (`1.234,50 €`, `123,45-`, `-$3.00`) and percentages (`12,5%` is 0.125) are
-  numbers when every value of the column is one; spaces between digits count only there, as
-  thousands separators (`1 234,50 €`), so phone numbers, card numbers or `2025 01 31` stay text.
+  file, and a column that this leaves text gets the type of *Append* (`12,5%` in one file and
+  `0,125` in another are 0.125). The decimal separator is also found per column (`0.500` shows a
+  decimal point, `2,5` a comma). A value like `1.000` can be one thousand or one: it follows the
+  other numbers of its column (in its file, else in the other files), else those of its file,
+  else those of all files, and without any it is one thousand in files with semicolons. The log
+  names the separator of each file when they differ. A CSV column that is text in one file
+  (`n/a`) stays text without a warning, with the text of the files, and a column with only blanks
+  in a file is empty there. Amounts (`1.234,50 €`, `123,45-`, `-$3.00`) and percentages (`12,5%`
+  is 0.125) are numbers when every value of the column is one; spaces between digits count only
+  there, as thousands separators (`1 234,50 €`), so phone numbers, card numbers or `2025 01 31`
+  stay text.
 - Optional columns **File** (file name) and **Path** (below the folder, e.g.
   `2025\01\orders_2025-01-02.csv`) show where each row came from. Calculated columns take
   what you need from them:
@@ -509,12 +511,13 @@ are.
 Database imports: numbers keep all their digits. SQL Server `decimal`, `numeric` and `money`
 columns become whole numbers or decimal numbers when that keeps every value, else exact
 decimals. `datetimeoffset` columns become date-times in UTC. For a column with 7 digits of a
-second (`datetime2(7)`, `time(7)`, `datetimeoffset(7)`), the step warns that the driver reads
-only 6, so that a 7th digit, if any, is cut. A whole SQL Server table reads `sql_variant`,
-`geography`, `geometry` and `hierarchyid` columns as text; a query needs a `CAST` for them (the
-message shows it). A SQLite file is opened for reading only: a query that changes data stops with
-a message, and so do `ATTACH` and a PRAGMA that does more than read, also in a run. A file that a
-program left unfinished stays as it is, and the message says how to repair it.
+second (`datetime2(7)`, `time(7)`, `datetimeoffset(7)`) whose values have parts of a second, the
+step warns that the driver reads only 6, so that a 7th digit, if any, is cut. A whole SQL Server
+table reads `sql_variant`, `geography`, `geometry` and `hierarchyid` columns as text; a query
+needs a `CAST` for them (the message shows it). A SQLite file is opened for reading only: a query
+that changes data stops with a message, and so do `ATTACH` and a PRAGMA that does more than read,
+also in a run. A file that a program left unfinished stays as it is, and the message says how to
+repair it.
 
 **Detect numbers and dates in text columns** has a **Decimal separator**: *Detect automatically*
 (for new steps) reads numbers as the CSV import does, with each column's own separator, also
