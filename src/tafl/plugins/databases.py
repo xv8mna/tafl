@@ -171,12 +171,12 @@ class SqlServer(Connector):
             if scale == 0 and (precision or 0) <= 18:
                 return pl.Int64
             return pl.Decimal(min(precision or 38, 38), scale or 0)
-        # datetimeoffset, which pyodbc takes for text: date-times in UTC (_datetimeoffset). With
-        # digits of a second only it has a scale; without, it is described as a text of 26
-        # characters: the values tell (for an empty column, import_database asks the server).
-        if type_code is str and scale:
-            return pl.Datetime("us", "UTC")
-        if type_code is str and precision == _DATETIMEOFFSET_SIZE:
+        # datetimeoffset, which pyodbc takes for text: the values tell, date-times in UTC
+        # (_datetimeoffset) or the texts of an import that reads them as text
+        # (_datetimeoffset_text). With digits of a second only it has a scale; without, it is
+        # described as a text of 26 characters (for an empty column, import_database asks the
+        # server).
+        if type_code is str and (scale or precision == _DATETIMEOFFSET_SIZE):
             return None
         return _PYTHON_TYPES.get(type_code)
 
@@ -1549,9 +1549,12 @@ def _read_only_uri(path: Path) -> str:
 def _migrate_import(params: dict, from_version: int) -> dict:
     """Version 1 detected numbers with a decimal point only, and no amounts or percentages: a step
     saved by it keeps that (Point), so that it gives the same results as before, also to steps
-    after it that changed such texts themselves."""
+    after it that changed such texts themselves. Versions 1 and 2 read SQL Server datetimeoffset
+    columns as text with the offset: such a step keeps that; a new step gets date-times in UTC."""
     if from_version < 2:
         params.setdefault("decimal", ".")
+    if from_version < 3:
+        params.setdefault("datetimeoffset", "text")
     return params
 
 
@@ -1582,8 +1585,17 @@ def _import_endpoints(p) -> list[Endpoint]:
             help="Detect automatically: each column's own, as the CSV import detects it, also in amounts (1.234,50 €) "
             "and percentages (12,5%). Point or Comma: numbers and dates with that separator, no amounts or percentages.",
         ),
+        P.Choice(
+            "datetimeoffset",
+            "SQL Server datetimeoffset columns",
+            [("utc", "Date-times in UTC"), ("text", "Text with the offset")],
+            default="utc",
+            help="Only for SQL Server. Date-times in UTC: the moments the column holds (2026-10-01 08:30 +02:00 is "
+            "06:30). Text with the offset: as written, 2026-10-01T08:30:00+02:00; steps saved before this choice "
+            "read them so.",
+        ),
     ],
-    version=2,
+    version=3,
     migrate=_migrate_import,
     summary=lambda p: f"Import {p.table if p.mode == 'table' else 'SQL query'} from {p.connection}",
     endpoints=_import_endpoints,
@@ -1596,9 +1608,10 @@ def import_database(df, p, ctx):
     Numbers keep all their digits: a column with numbers of more digits than a decimal number
     keeps (about 15), or with whole numbers too big for a whole-number column, stays a column of
     exact decimals. A SQL Server datetimeoffset column becomes date-times in UTC, the moments it
-    holds; SQL Server's driver reads date-times to the microsecond, and for a column with 7
-    digits of a second the step says that a 7th digit is cut. "Detect numbers and dates in text
-    columns" finds them in text, with the
+    holds, or (as steps saved before this choice read it) text with its offset,
+    2026-10-01T08:30:00+02:00; SQL Server's driver reads date-times to the microsecond, and for
+    a column with 7 digits of a second the step says that a 7th digit, if any, is cut. "Detect
+    numbers and dates in text columns" finds them in text, with the
     decimal separator of each column as the CSV import does (also in amounts and percentages),
     or only numbers and dates with a chosen one; steps saved before it could be chosen use the
     point, as they did."""
@@ -1607,16 +1620,19 @@ def import_database(df, p, ctx):
         ctx.check_cancelled()
         ctx.check_memory()
 
+    utc = p.datetimeoffset != "text"
     with ctx.database(p.connection, read_only=True) as db:
+        if not utc and db.connector.id == "sqlserver":  # this step's own connection: the connector is shared
+            db.raw.add_output_converter(_SQL_SS_TIMESTAMPOFFSET, _datetimeoffset_text)
         try:
             out = db.read_table(p.table, between) if p.mode == "table" else db.read(p.query, between=between)
         finally:
             with contextlib.suppress(Exception):  # e.g. a driver in autocommit mode: nothing to roll back
                 db.rollback()
         described = getattr(db.raw, "described", None)  # SQL Server (_Stoppable): the columns of what was read
-        offsets = _empty_offsets(db, out, described, p) if described else frozenset()
+        offsets = _empty_offsets(db, out, described, p) if described and utc else frozenset()
     if described:
-        out, warnings = _as_described(out, described, offsets)
+        out, warnings = _as_described(out, described, offsets, utc)
         for warning in warnings:
             ctx.warn(warning)
     if not p.detect_types:
@@ -1652,13 +1668,16 @@ def _empty_offsets(db, df: pl.DataFrame, description, p) -> frozenset[int]:
     return frozenset(i for i in unknown if types[i].startswith("datetimeoffset"))
 
 
-def _as_described(df: pl.DataFrame, description, offsets: frozenset[int] = frozenset()) -> tuple[pl.DataFrame, list[str]]:
+def _as_described(
+    df: pl.DataFrame, description, offsets: frozenset[int] = frozenset(), utc: bool = True
+) -> tuple[pl.DataFrame, list[str]]:
     """A SQL Server import with what ``cursor.description`` tells about its columns: a column of
-    texts that has no value is text, as before, and a datetimeoffset column without values
-    (``offsets``, by position: one of 0 digits of a second is described as a text of 26
-    characters, so ``dtype_for`` lets the values decide) is date-times in UTC, as one with values
-    is; a column of 7 digits of a second (datetime2(7), time(7), datetimeoffset(7)) gets a
-    warning when its values have parts of a second: the driver reads them only to the
+    texts that has no value is text, as before, and so is a datetimeoffset column without values
+    that is read as text (not ``utc``); read as date-times in UTC, it is date-times, as one with
+    values is (``dtype_for`` lets the values decide): one of 1 to 7 digits of a second has a
+    scale, one of 0 is described as a text of 26 characters (``offsets``, by position, as the
+    server tells). A column of 7 digits of a second (datetime2(7), time(7), datetimeoffset(7))
+    gets a warning when its values have parts of a second: the driver reads them only to the
     microsecond, so a 7th digit, if any, is cut."""
     names, schema = _described_names(description), df.schema  # once: each call builds the types of all columns again
     changes, seven = [], []  # the columns of 7 digits of a second
@@ -1667,7 +1686,8 @@ def _as_described(df: pl.DataFrame, description, offsets: frozenset[int] = froze
             continue
         dtype, type_code, scale = schema[name], described[1], described[5]
         if dtype == pl.Null and type_code is str:
-            changes.append(col(name).cast(pl.Datetime("us", "UTC") if index in offsets else pl.String))
+            moment = utc and (bool(scale) or index in offsets)  # a datetimeoffset column, read as date-times in UTC
+            changes.append(col(name).cast(pl.Datetime("us", "UTC") if moment else pl.String))
         elif scale == 7 and (isinstance(dtype, pl.Datetime) or dtype == pl.Time):
             seven.append(name)
     listed = []
@@ -2655,6 +2675,17 @@ def _datetimeoffset(value: bytes) -> dt.datetime | ActionError:
         written = f"{stamp:%Y-%m-%d %H:%M:%S} {sign}{abs(tz_hour):02}:{abs(tz_minute):02}"
         return ActionError(
             f"The column {{column}} has a date and time ({written}) whose moment in UTC is before the year 1 or after "
-            f"9999, which {APP_NAME} can't hold as a date-time. Read the column as text in a query, e.g. "
+            f"9999, which {APP_NAME} can't hold as a date-time. Choose “Text with the offset” for SQL Server "
+            "datetimeoffset columns in this step, or read the column as text in a query, e.g. "
             "CONVERT(nvarchar(34), [{column}]) AS [{column}]."
         )
+
+
+def _datetimeoffset_text(value: bytes) -> str:
+    """A datetimeoffset value (the driver's struct) as text with its own offset, to the
+    microsecond, as steps saved before the choice of ``import_database`` read it
+    (2026-10-01T08:30:00.123456+02:00, 2026-10-01T08:30:00-05:30): every value has a text, also a
+    moment before the year 1 or after 9999 in UTC."""
+    year, month, day, hour, minute, second, nanos, tz_hour, tz_minute = struct.unpack("<6hI2h", value)
+    stamp = dt.datetime(year, month, day, hour, minute, second, nanos // 1000)
+    return stamp.replace(tzinfo=dt.timezone(dt.timedelta(hours=tz_hour, minutes=tz_minute))).isoformat()

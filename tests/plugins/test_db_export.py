@@ -2555,3 +2555,55 @@ def test_sqlserver_a_time_value_is_on_1_january_1900_in_a_date_time_column(regis
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+# The 0.6.4 copy's import of this table, values and types (the step's "Text with the offset" must
+# give exactly these; a step saved before that choice gets it)
+_OFFSET_TEXTS = [
+    (1, "2026-10-01T08:30:00+02:00", "2026-10-01T08:30:00.123000-05:30", "2026-10-01T08:30:00.123456+14:00", None),
+    (2, None, None, None, None),
+    (3, "0001-01-01T15:00:00+14:00", "9999-12-31T09:00:00.500000-14:00", "2026-03-29T01:30:00+00:00", None),
+    (4, "2026-10-01T08:30:00-00:30", "2026-10-01T08:30:00+00:00", "2026-10-01T23:59:59.999999-12:00", None),
+    (5, "0001-01-01T00:00:00-14:00", "9999-12-31T23:59:59.999000+14:00", "0001-01-01T00:00:00+00:00", None),
+]
+
+
+@_SQLSERVER
+def test_sqlserver_datetimeoffset_as_text_is_read_as_before(registry):
+    """Import from database has a choice for SQL Server datetimeoffset columns: date-times in UTC
+    (new steps) or text with the offset, exactly as 0.6.4 read them (types and values, also of an
+    empty column and of the moments next to the year 1 and 9999 in UTC). A step saved before the
+    choice reads text, so that its results stay as they were."""
+    ctx, name = _sqlserver()
+    text = {"datetimeoffset": "text"}
+    try:
+        with ctx.database("server") as db:
+            db.execute(f"CREATE TABLE {name} (K int, A datetimeoffset(0), B datetimeoffset(3), C datetimeoffset(7), E datetimeoffset(7))")
+            db.execute(
+                f"INSERT INTO {name} VALUES (1, '2026-10-01 08:30:00 +02:00', '2026-10-01 08:30:00.123 -05:30', "
+                "'2026-10-01 08:30:00.1234567 +14:00', NULL), (2, NULL, NULL, NULL, NULL), (3, '0001-01-01 15:00:00 +14:00', "
+                "'9999-12-31 09:00:00.5 -14:00', '2026-03-29 01:30:00.0000001 +00:00', NULL), (4, '2026-10-01 08:30:00 -00:30', "
+                "'2026-10-01 08:30:00.000 +00:00', '2026-10-01 23:59:59.9999999 -12:00', NULL), (5, '0001-01-01 00:00:00 -14:00', "
+                "'9999-12-31 23:59:59.999 +14:00', '0001-01-01 00:00:00.0000001 +00:00', NULL)"
+            )
+        texts = dict.fromkeys(["A", "B", "C", "E"], pl.String)
+        for params in ({"table": name}, {"mode": "query", "query": f"SELECT * FROM {name} ORDER BY K"}):
+            out = registry.actions["db.import"](None, {"connection": "server", **params, **text}, ctx)
+            assert out.schema == {"K": pl.Int64, **texts} and out.rows() == _OFFSET_TEXTS, params
+        for where, rows in (("1 = 0", []), ("K = 2", [(None,) * 4])):  # no rows, only empty values
+            out = registry.actions["db.import"](None, {"connection": "server", "mode": "query", "query": f"SELECT A, B, C, E FROM {name} WHERE {where}", **text}, ctx)
+            assert out.schema == texts and out.rows() == rows, where
+        assert not ctx.warnings  # no warning about a 7th digit of texts
+        utc = registry.actions["db.import"](None, {"connection": "server", "table": name}, ctx)  # a new step: date-times in UTC
+        assert utc.schema == {"K": pl.Int64, **dict.fromkeys(["A", "B", "C", "E"], pl.Datetime("us", "UTC"))}
+        assert utc["A"][0] == dt.datetime(2026, 10, 1, 6, 30, tzinfo=dt.UTC)
+        project = Project(name="Saved before")  # a step saved before the choice
+        project.add_connection("server", "sqlserver", server=os.environ["TAFL_TEST_SQLSERVER"], database="tempdb")
+        table = project.add_table("Moments")
+        project.add_step(table, "db.import", {"connection": "server", "mode": "table", "table": name}, version=2)
+        result = Engine(project, registry).evaluate(table.id)
+        assert result.ok, result.first_error
+        assert result.df.schema == {"K": pl.Int64, **texts} and result.df.rows() == _OFFSET_TEXTS
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

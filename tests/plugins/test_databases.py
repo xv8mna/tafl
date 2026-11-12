@@ -623,7 +623,7 @@ def test_a_step_saved_before_the_decimal_separator_detects_as_before(project, re
     that turn such texts into numbers themselves (Replace, Change type) give the same results."""
     _prices(tmp_path / "data.db")
     action = registry.actions["db.import"]
-    assert action.version == 2 and action.upgrade({"detect_types": True}, 1) == {"detect_types": True, "decimal": "."}
+    assert action.version == 3 and action.upgrade({"detect_types": True}, 1) == {"detect_types": True, "decimal": ".", "datetimeoffset": "text"}
     before = {name: values for name, (_text, values) in _PRICES.items()}
     types = {"comma": pl.String, "point": pl.Float64, "thousands": pl.Float64, "either": pl.Float64}  # 1,000: not Int64
     old = import_table(project, registry, table="prices", detect_types=True).df
@@ -731,6 +731,17 @@ def test_a_step_saved_before_0_6_4_reads_numbers_as_before_and_keeps_long_ones_a
     assert [message for message in result.steps[0].messages if message[0] == "warning"] == [
         ("warning", "point stays text: its numbers are too long to be kept exactly, e.g. '12345678901234.5678'")
     ]
+
+
+def test_import_steps_saved_before_the_choice_read_datetimeoffset_as_text(registry):
+    """Steps saved by versions 1 and 2 read SQL Server datetimeoffset columns as text with the
+    offset, as 0.6.4 did: they keep their results. A new step reads date-times in UTC."""
+    action = registry.actions["db.import"]
+    assert action.version == 3
+    assert action.upgrade({"connection": "x"}, 2) == {"connection": "x", "datetimeoffset": "text"}
+    assert action.upgrade({"connection": "x"}, 1) == {"connection": "x", "decimal": ".", "datetimeoffset": "text"}
+    assert action.upgrade({"connection": "x", "datetimeoffset": "utc"}, 3) == {"connection": "x", "datetimeoffset": "utc"}
+    assert next(p for p in action.params if p.key == "datetimeoffset").default == "utc"
 
 
 def test_tafl_run_of_an_old_project_is_unchanged(registry, tmp_path, capsys):
@@ -1968,27 +1979,36 @@ def test_sqlserver_warns_once_of_digits_of_a_second_cut_in_several_columns():
 
 
 def test_sqlserver_datetimeoffset_is_read_as_a_moment_in_utc(registry):
-    """It was text with 6 digits of a second (2026-10-01T08:00:01.123456+02:00); now a date-time
-    in UTC. pyodbc describes it as text: with digits of a second it has a scale, without them it
-    looks like a text of 26 characters, and its values decide."""
+    """It was text with 6 digits of a second (2026-10-01T08:00:01.123456+02:00); a new step reads
+    a date-time in UTC (a step can still choose the text). pyodbc describes it as text: with
+    digits of a second it has a scale, without them it looks like a text of 26 characters; its
+    values decide, as the step's converter gives them, and the step decides for an empty column."""
     import struct
 
     dtype_for = registry.connectors["sqlserver"].dtype_for
-    assert dtype_for(("a", str, None, 34, 34, 7, True)) == pl.Datetime("us", "UTC")  # datetimeoffset(7)
+    assert dtype_for(("a", str, None, 34, 34, 7, True)) is None  # datetimeoffset(7)
     assert dtype_for(("a", str, None, 26, 26, 0, True)) is None  # datetimeoffset(0), or nvarchar(26)
     assert dtype_for(("a", str, None, 30, 30, 0, True)) == pl.String
     value = struct.pack("<6hI2h", 2026, 10, 1, 8, 0, 1, 123456789, 2, 0)  # 2026-10-01 08:00:01.1234567 +02:00
     assert databases._datetimeoffset(value) == dt.datetime(2026, 10, 1, 6, 0, 1, 123456, tzinfo=dt.UTC)
+    assert databases._datetimeoffset_text(value) == "2026-10-01T08:00:01.123456+02:00"  # as 0.6.4 read it
     negative = struct.pack("<6hI2h", 2026, 1, 1, 0, 30, 0, 0, -5, -30)
     assert databases._datetimeoffset(negative) == dt.datetime(2026, 1, 1, 6, 0, tzinfo=dt.UTC)
-    beyond = databases._datetimeoffset(struct.pack("<6hI2h", 1, 1, 1, 8, 0, 0, 0, 14, 0))  # SQL Server itself holds none
+    assert databases._datetimeoffset_text(negative) == "2026-01-01T00:30:00-05:30"
+    edge = struct.pack("<6hI2h", 1, 1, 1, 8, 0, 0, 0, 14, 0)  # SQL Server itself holds none: only the driver's bytes
+    beyond = databases._datetimeoffset(edge)
     assert isinstance(beyond, ActionError) and str(beyond).startswith(
         "The column {column} has a date and time (0001-01-01 08:00:00 +14:00) whose moment in UTC is before the year 1"
     )
+    assert "Choose “Text with the offset” for SQL Server datetimeoffset columns in this step" in str(beyond)
+    assert databases._datetimeoffset_text(edge) == "0001-01-01T08:00:00+14:00"  # text: no stop
     empty = pl.DataFrame({"Text": pl.Series([None, None], dtype=pl.Null), "At": [dt.datetime(2026, 10, 1, 8, 0, 1, 5)] * 2})
     described = [("Text", str, None, 26, 26, 0, True), ("At", dt.datetime, None, 27, 27, 7, True)]
     fitted, warnings = databases._as_described(empty, described)
     assert fitted.schema == {"Text": pl.String, "At": pl.Datetime("us")}  # an empty column of texts stays text
+    offset7 = pl.DataFrame({"D": pl.Series([None], dtype=pl.Null)})
+    for utc, dtype in ((True, pl.Datetime("us", "UTC")), (False, pl.String)):  # an empty datetimeoffset(7), as the step reads them
+        assert databases._as_described(offset7, [("D", str, None, 34, 34, 7, True)], utc=utc)[0].schema == {"D": dtype}
     assert warnings == [
         "At: the column holds 7 digits of a second, but SQL Server's driver reads only 6 (to the microsecond), so a 7th digit, if any, is "
         "cut (e.g. in 2026-10-01 08:00:01.000005). Export to database finds such rows by these keys: it compares them to the "
