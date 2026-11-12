@@ -2481,3 +2481,40 @@ def test_sqlserver_datetimeoffset_0_imports_as_date_times_also_without_values(re
     finally:
         with ctx.database("server") as db:
             db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+
+
+@_SQLSERVER
+def test_sqlserver_keys_of_seven_digits_are_checked_in_a_time_that_grows_with_the_rows(registry):
+    """Delete and Replace by keys check that no key of 7 digits of a second meets rows that differ
+    only in the 7th digit. Without an order, SQL Server ran that check row by row: 3,000 keys took
+    5 s and 30,000 keys 8 minutes, where the delete itself takes half a second. A Stop after 60 s
+    ends a slow check here."""
+    ctx, name = _sqlserver()
+    ctx._cancel = threading.Event()  # as Stop does: a slow check ends with Cancelled
+    rows, start = 30_000, dt.datetime(2026, 1, 1)
+    keys = pl.datetime_range(start, start + dt.timedelta(microseconds=7 * (rows - 1)), "7us", eager=True).alias("K")
+    filled = (
+        f"WITH a AS (SELECT TOP ({rows}) ROW_NUMBER() OVER (ORDER BY (SELECT 1)) - 1 AS n FROM sys.all_objects x CROSS JOIN "
+        f"sys.all_objects y) INSERT INTO {name} SELECT DATEADD(MICROSECOND, n * 7 % 1000000, DATEADD(SECOND, n * 7 / 1000000, "
+        "CAST('2026-01-01' AS datetime2(7)))), n FROM a"
+    )
+    try:
+        for mode, left in (("delete", 0), ("replace_keys", rows)):
+            with ctx.database("server") as db:
+                db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")
+                db.execute(f"CREATE TABLE {name} (K datetime2(7), V int)")
+                db.execute(filled)
+            data = keys.to_frame() if mode == "delete" else pl.DataFrame([keys, pl.Series("V", range(rows))])
+            stop = threading.Timer(60, ctx._cancel.set)
+            stop.start()
+            began = time.perf_counter()
+            try:
+                registry.actions["db.export"](data, {"connection": "server", "table": name, "mode": mode, "key_columns": ["K"]}, ctx)
+            finally:
+                stop.cancel()
+            assert time.perf_counter() - began < 60, mode
+            with ctx.database("server") as db:
+                assert db.read(f"SELECT COUNT(*) AS n FROM {name}")["n"][0] == left, mode
+    finally:
+        with ctx.database("server") as db:
+            db.execute(f"IF OBJECT_ID('{name}') IS NOT NULL DROP TABLE {name}")

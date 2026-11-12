@@ -2481,11 +2481,11 @@ def _check_unique_as_compared(db, stage: str, row: str | None, data: pl.DataFram
     a and "a " (spaces at the end don't count), 08:00:00.001 and 08:00:00 in a datetime (steps of
     1/300 s), 1.001 and 1.004 in a decimal(10,2), a GUID in upper and lower case. The example is
     the data's first row of a key value that occurs more than once, as ``_check_unique`` gives it;
-    without ``row`` (a stage of the most columns a table can have), such a key value as the stage
-    holds it."""
+    without ``row`` (a stage of the most columns a table can have), the least such key value, as
+    the stage holds it."""
     grouped = ", ".join(db.quote(c) for c in columns)
     if row is None:
-        found = db.read(f"SELECT TOP 1 COUNT(*) OVER (), {grouped} FROM {stage} GROUP BY {grouped} HAVING COUNT(*) > 1")
+        found = db.read(f"SELECT TOP 1 COUNT(*) OVER (), {grouped} FROM {stage} GROUP BY {grouped} HAVING COUNT(*) > 1 ORDER BY {grouped}")
         if found.height:
             values = found.row(0)
             _not_unique(int(values[0]), list(zip(keys, values[1:])))
@@ -2506,8 +2506,8 @@ def _check_seventh_digits(
     updating needs one row of the table per key there too. Two rows that differ only in the 7th
     digit (08:00:01.1234567 and 08:00:01.1234568) would both get the values of one row of the data:
     refuse, with the data's first such key as the example; without ``row`` (a stage of the most
-    columns a table can have, or of the distinct keys of Delete and Replace by keys), such a key as
-    the stage holds it. ``table``: quoted; ``name``: as given."""
+    columns a table can have, or of the distinct keys of Delete and Replace by keys), the least such
+    key, as the stage holds it. ``table``: quoted; ``name``: as given."""
     kinds = {column.lower(): kind for column, kind in types.items()}
     seven = [names[k] for k in keys if _seven_digits(kinds.get(names[k].lower(), ""))]
     if not seven:
@@ -2517,7 +2517,8 @@ def _check_seventh_digits(
     joined = f"FROM {stage} AS {s} INNER JOIN {table} AS {x} ON {db.connector.matching([names[k] for k in keys], x, s, types)}"
     if row is None:
         grouped = ", ".join(f"{s}.{db.quote(names[k])}" for k in keys)
-        found = db.read(f"SELECT TOP 1 COUNT(*) OVER (), {grouped} {joined} GROUP BY {grouped} HAVING {differ}")
+        # The ORDER BY matters: without it, TOP 1 lets SQL Server join row by row (30,000 keys: 8 minutes)
+        found = db.read(f"SELECT TOP 1 COUNT(*) OVER (), {grouped} {joined} GROUP BY {grouped} HAVING {differ} ORDER BY {grouped}")
         if not found.height:
             return
         count, *example = found.row(0)
