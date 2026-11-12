@@ -398,6 +398,21 @@ def test_float_loses_digits():
     assert dtypes.float_loses_digits(top).to_list() == [True, False, True, False]
 
 
+def test_float_loses_digits_of_numbers_with_an_exponent():
+    """A text of up to 15 characters wasn't looked at: an exponent can move its digits beyond 2^53,
+    below the smallest decimal numbers or beyond the largest. Whole numbers count as in
+    test_float_loses_digits (10^22 is a decimal number, 10^23 isn't)."""
+    texts = ["1e23", "1e22", "1,5e3", "9007199254740993e0", "1,234567890123e-315", "1e-310", "1e-400", "1e400", "0e-400", "0e400"]
+    lost = [True, False, False, True, True, False, True, True, False, False]
+    assert dtypes.float_loses_digits(pl.Series(texts), ",").to_list() == lost
+    texts = ["0,0045035996273704970e19", "45035996273704970000e-3", "1,2345678901234567e-5", "1,2345678901234567e5"]
+    assert dtypes.float_loses_digits(pl.Series(texts), ",").to_list() == [True, True, True, False]
+    # zeros before the first digit: 0,000000001e25 is 10^16, a decimal number (10^25 isn't)
+    assert dtypes.float_loses_digits(pl.Series(["0,000000001e25", "0,000000001e34"]), ",").to_list() == [False, True]
+    words = pl.Series(["Peter", "e", "1e", "E5", "Donaudampfschiffahrtsgesellschaft", None])  # no numbers: nothing lost
+    assert not dtypes.float_loses_digits(words, ",").any()
+
+
 def test_float_loses_digits_counts_all_significant_digits():
     """Of a text, only the whole part counted: 12345678901234,5678 and …5677 both became
     12345678901234.568 with no value counted. A value with decimal places loses digits when its

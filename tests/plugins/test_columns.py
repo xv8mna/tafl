@@ -1,4 +1,5 @@
 import datetime as dt
+import math
 import subprocess
 import sys
 from decimal import Decimal as D
@@ -327,6 +328,35 @@ def test_the_rounding_warning_names_whole_number_only_for_values_it_holds(act, v
     ctx = StubContext()
     holds = change(act, df, "v", "integer", ctx=ctx).null_count() == 0  # what Whole number does with them
     assert holds == keep.startswith("Whole number"), ctx.warnings
+
+
+def test_numbers_with_an_exponent_keep_their_digits_or_say_so(act):
+    """An exponent moves the digits: 4503599627370497e1 became 45035996273704968 and 1e-400 0
+    without a warning (a text of up to 15 characters wasn't looked at), and 1e400 became ∞. Now the
+    rounded ones say so, and one beyond decimal numbers can't be converted. The text inf stays ∞."""
+    tiny = "1e-" + "9" * 20  # an exponent beyond those of exact decimals too
+    df = pl.DataFrame({"T": ["4503599627370497e1", "1,5e3", "1e400", "-1e400", "1e-400", tiny, "inf", None]})
+    ctx = StubContext()
+    assert change(act, df, "T", "number", ctx=ctx).to_list() == [45035996273704968.0, 1500.0, None, None, 0.0, 0.0, math.inf, None]
+    assert ctx.warnings == [
+        "T: 2 value(s) could not be converted to Decimal number, e.g. '1e400', '-1e400' (now empty)",
+        f"T: 3 value(s) were rounded, e.g. '4503599627370497e1', '1e-400', '{tiny}': a decimal number keeps about 15 "
+        "digits (Text keeps them all)",
+    ]
+    with pytest.raises(ActionError, match=r"^T: 2 value\(s\) could not be converted to Decimal number, e\.g\. '1e400', '-1e400'$"):
+        change(act, df, "T", "number", on_error="fail")
+    ctx = StubContext()  # Whole number reads a text with an exponent only up to 2^53: it can't keep this one
+    change(act, pl.DataFrame({"T": ["4503599627370497e1", "1e15"]}), "T", "number", ctx=ctx)
+    assert ctx.warnings == [
+        "T: 1 value(s) were rounded, e.g. '4503599627370497e1': a decimal number keeps about 15 digits (Text keeps them all)"
+    ]
+    ctx = StubContext()  # a whole number of 1e-400 is 0: it was rounded
+    whole = pl.DataFrame({"T": ["1e-400", "1,5e3", "1,2345e2", tiny, "-1,5e-1", "0,0e-5", "4500e-2", "0,05e1", "1,50e1"]})
+    assert change(act, whole, "T", "integer", ctx=ctx).to_list() == [0, 1500, 123, 0, 0, 0, 45, 1, 15]
+    assert ctx.warnings == [
+        f"T: 5 value(s) were rounded, e.g. '1e-400', '1,2345e2', '{tiny}': a whole number has no decimal places "
+        "(Decimal number and Text keep them)"
+    ]
 
 
 def test_decimals_with_more_than_15_digits_to_decimal_numbers_warn(act):

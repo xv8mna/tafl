@@ -164,9 +164,10 @@ def _warn_rounded(name: str, source: pl.Series, converted: pl.Series, decimal: s
 
 def _whole_numbers_hold(values: pl.Series, numbers: pl.Series, decimal: str) -> bool:
     """Whether Whole number holds all these whole values (``numbers``: their decimal numbers): it
-    goes up to 9,223,372,036,854,775,807, and makes a longer one empty. A value whose decimal number
-    is below 9.2 × 10^18 fits; the others are converted, as Change type to Whole number does."""
-    near = (numbers.abs() >= 9.2e18).fill_null(False)
+    goes up to 9,223,372,036,854,775,807, and makes a longer one empty (and one of text with an
+    exponent beyond 2^53). A value whose decimal number is below 2^53 fits; the others are
+    converted, as Change type to Whole number does."""
+    near = (numbers.abs() >= 2**53).fill_null(False)
     return not near.any() or not _convert(values.filter(near), "integer", "", decimal).is_null().any()
 
 
@@ -215,7 +216,10 @@ def _convert(s: pl.Series, target: str, fmt: str, decimal: str) -> pl.Series:
         if source == pl.String:
             if target == "integer":
                 return dtypes.parse_integers(s, decimal)  # exact, also beyond 15 digits
-            return dtypes.parse_numbers(s, decimal)
+            numbers = dtypes.parse_numbers(s, decimal).alias("value")  # a fixed name, as in change_type
+            # beyond decimal numbers (1e400) a value can't be converted; the text inf stays ∞
+            beyond = (numbers.is_infinite() & s.alias("value").str.contains("[0-9]")).fill_null(False)
+            return (numbers.scatter(beyond.arg_true(), None) if beyond.any() else numbers).alias(s.name)
         if not (source.is_numeric() or source == pl.Boolean):
             raise ActionError(f"{s.name}: {_kind(source)} can't become a number")
         if target == "number":

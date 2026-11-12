@@ -180,10 +180,48 @@ def parse_whole_numbers(s: pl.Series, decimal: str = ",") -> tuple[pl.Series, pl
 
 
 def _has_fraction(text: pl.Expr) -> pl.Expr:
-    """For text from ``_number_text``: whether the number has decimal places other than zeros."""
+    """For text from ``_number_text``: whether the number has decimal places other than zeros. With
+    an exponent, by its decimal number (1.5e3 has none), below 1 by its digits: 1e-400 has decimal
+    places, although its decimal number is 0."""
     number = text.cast(pl.Float64, strict=False)  # e.g. 1.5e0
-    plain = text.str.contains(_PLAIN_NUMBER)
-    return pl.when(plain).then(text.str.contains(r"\.[0-9]*[1-9]")).otherwise(number.round(0) != number).fill_null(False)
+    return (
+        pl.when(text.str.contains(_PLAIN_NUMBER))
+        .then(text.str.contains(r"\.[0-9]*[1-9]"))
+        .when(number.abs() < 1)
+        .then(text.str.contains("^[^eE]*[1-9]"))
+        .otherwise(number.round(0) != number)
+        .fill_null(False)
+    )
+
+
+def _exponent_parts(texts: pl.Series) -> pl.DataFrame:
+    """For numbers with an exponent from ``_number_text`` (-1.25e2): the digits of the whole part
+    and of the decimal places, the point moved by the exponent ("125" and "", "12" and "5" for
+    1.25e1, "" and "1" for 1e-400: without the zeros before the first digit), as the columns
+    "whole" and "places". A whole part is cut after 40 digits: from 39 on it is beyond whole
+    numbers anyway (Int128). In steps, each part worked out once; eager selects: a lazy query took
+    a third less time, but 140 MB more for a million values (the working memory of its threads)."""
+    big = pl.when(pl.col("power").str.starts_with("-")).then(pl.lit(-(2**62))).otherwise(pl.lit(2**62))  # 1e-99999999999999999999
+    parts = texts.to_frame("value").select(
+        halves=_VALUE.str.extract(r"^[+-]?([0-9]*\.?[0-9]*)[eE][+-]?[0-9]+$", 1).str.split_exact(".", 1),
+        power=_VALUE.str.extract(r"[eE]([+-]?[0-9]+)$", 1),
+    )
+    parts = parts.unnest("halves").select(
+        pl.col("power"),
+        before=pl.col("field_0").str.len_chars().cast(pl.Int64),
+        written=pl.col("field_0") + pl.col("field_1").fill_null(""),
+    )
+    parts = parts.with_columns(digits=pl.col("written").str.strip_chars_start("0"))
+    parts = parts.select(
+        pl.col("digits"),
+        point=pl.col("before") + pl.col("power").cast(pl.Int64, strict=False).fill_null(big)
+        - (pl.col("written").str.len_chars() - pl.col("digits").str.len_chars()).cast(pl.Int64),
+    )
+    parts = parts.with_columns(width=pl.when(pl.col("digits") != "").then(pl.col("point").clip(0, 40)).otherwise(0))  # 0e400 has none
+    return parts.select(
+        whole=pl.col("digits").str.slice(0, pl.col("width")).str.pad_end(pl.col("width"), "0"),
+        places=pl.col("digits").str.slice(pl.col("point").clip(0, 2**62)),
+    )
 
 
 def _integer(text: pl.Expr) -> pl.Expr:
@@ -229,7 +267,14 @@ def float_loses_digits(s: pl.Series, decimal: str = ",") -> pl.Series:
         return lost
     if s.dtype != pl.String:
         return lost
-    rows = (s.str.len_bytes() > 15).fill_null(False).arg_true()  # shorter texts have at most 15 digits
+    long = (s.str.len_bytes() > 15).fill_null(False)  # shorter texts have at most 15 digits, ...
+    short = (s.str.contains_any(["e", "E"]).fill_null(False) & ~long).arg_true()
+    if short.len():  # ... which an exponent can move beyond 2^53 or near 0: 1e23, 1e-400
+        texts = s.gather(short)
+        power = texts.str.extract(r"[eE]([+-]?[0-9]+)[^0-9]*$", 1).cast(pl.Int64, strict=False)
+        far = ((power + texts.str.count_matches("[0-9]") >= 16) | (power <= -277)).fill_null(False)
+        long = long.scatter(short.filter(far), True)
+    rows = long.arg_true()
     if rows.len():
         lost = lost.scatter(rows, _in_parts(s.gather(rows), lambda part: _text_digits_lost(part, decimal)))
     return lost
@@ -404,7 +449,27 @@ def _text_digits_lost(texts: pl.Series, decimal: str) -> pl.Series:
         digits=_significant_digits(pl.col("mantissa")),
     )
     places = parts["places"] & _digits_lost(parts["digits"], parts["number"])
-    return (parts["whole"] | places) & parts["number"].is_not_null()
+    lost = (parts["whole"] | places) & parts["number"].is_not_null()
+    power = plain.str.contains_any(["e", "E"]).fill_null(False).arg_true()
+    if power.len():  # an exponent moves the point: the same, with the parts it gives
+        numbers = parts["number"].gather(power)
+        lost = lost.scatter(power, _exponent_digits_lost(plain.gather(power), numbers, parts["digits"].gather(power)))
+    return lost
+
+
+def _exponent_digits_lost(texts: pl.Series, numbers: pl.Series, digits: pl.Series) -> pl.Series:
+    """``_text_digits_lost`` for numbers with an exponent (``numbers``: their decimal numbers,
+    ``digits``: their significant digits), by the parts that the exponent gives
+    (``_exponent_parts``): the whole part of 4503599627370497e1 is 45035996273704970, whose decimal
+    number is 45035996273704968, and that of 1e400 has more than 38 digits. Below 10^-300 a decimal
+    number keeps fewer digits: there they are compared however few (1e-400 is 0, and
+    1.234567890123e-315 is 1.23456789e-315)."""
+    parts = _exponent_parts(texts)
+    exact = parts["whole"].cast(pl.Int128, strict=False)
+    whole = ((parts["whole"].str.len_chars() > 38) | (exact.cast(pl.Float64).cast(pl.Int128, strict=False) != exact)).fill_null(False)
+    tiny = (numbers.abs() < 1e-300).fill_null(False)
+    lost = whole | (parts["places"].str.contains("[1-9]").fill_null(False) & _digits_lost(digits, numbers, tiny))
+    return lost & numbers.is_not_null()
 
 
 def _decimal_digits_lost(values: pl.Series) -> pl.Series:
@@ -423,17 +488,18 @@ def _decimal_digits_lost(values: pl.Series) -> pl.Series:
     return pl.select(pl.when(parts["whole"]).then(parts["changed"]).otherwise(_digits_lost(parts["digits"], parts["number"]))).to_series()
 
 
-def _digits_lost(digits: pl.Series, numbers: pl.Series) -> pl.Series:
+def _digits_lost(digits: pl.Series, numbers: pl.Series, tiny: pl.Series | None = None) -> pl.Series:
     """Whether the decimal numbers ``numbers`` read back with other significant digits than
     ``digits``, those of the numbers they were made from. Up to 15 digits they don't: Polars makes
     the nearest decimal number of a text or an exact decimal, which keeps them. From 18 on they do:
     the shortest text that reads back as a decimal number has at most 17. Only 16 and 17 digits
     need that text, which Polars writes (with an exponent for some, 1.2345678901234568e+17, which
     doesn't change its digits). Being that close, the two can't have the same digits at another
-    place."""
+    place. ``tiny``: the numbers that need that text with fewer digits too (near 0)."""
     count = digits.str.len_bytes()
     lost = (count > 17).fill_null(False)
-    close = count.is_between(16, 17).fill_null(False).arg_true()
+    close = count.is_between(16, 17).fill_null(False)
+    close = (close | tiny if tiny is not None else close).arg_true()
     if close.len():
         shown = numbers.gather(close).cast(pl.String).str.split_exact("e", 1).struct.field("field_0")
         lost = lost.scatter(close, _apply(shown, _significant_digits(_VALUE)) != digits.gather(close))
