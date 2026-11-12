@@ -14,7 +14,7 @@ types of each file's columns.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 
 import polars as pl
 
@@ -46,6 +46,7 @@ _SAMPLE = 1_000  # values that most columns are told apart by
 _SHOWN = 2_000  # rows whose values show the decimal separator of a file
 _SHOWN_VALUES = 1 << 22  # values of small files looked at together: those of 300 files of 2,000 rows and 40 columns took 600 MB more
 _NAME = "\x1fname"  # the name of a column among the values of several columns (see _shown_together)
+_VALUE = "\x1fvalue"  # those values
 _PART = "\x1fpart"  # the number of a file among several: no column of a file has this name (see files.ONE_COLUMN)
 _ISO_T = r"^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}T[0-9]"  # a date-time like 2026-01-31T08:30:00, which has a letter
 
@@ -131,36 +132,45 @@ def _shown_together(frames: Sequence[pl.DataFrame], members: list[int], shown: l
     most of its values would be empty (many columns that only some frames have), as one column of
     all values with a comma or a point (no other value shows a separator), with the number of the
     frame and the name of the column of each. The patterns take much memory for empty values, and
-    one column of the values much time for the values of tables without empty ones."""
+    one column of the values much time for the values of tables without empty ones. The columns
+    of the frame number, column name and value get names that no column of the frames has."""
     texts = [frames[i].select(pl.col(pl.String)) for i in members]
     names = dict.fromkeys(name for frame in texts for name in frame.columns)
+    part, column, value = (_free(name, names) for name in (_PART, _NAME, _VALUE))
     rows = sum(frame.height for frame in texts)
     found: list[tuple[int, str, int, int]] = []  # (frame, column, values that show a comma, those that show a point)
     if rows * len(names) > 2 * sum(frame.height * frame.width for frame in texts):
-        marked = pl.col("value").str.contains(".", literal=True) | pl.col("value").str.contains(",", literal=True)
+        marked = col(value).str.contains(".", literal=True) | col(value).str.contains(",", literal=True)
         parts = [
-            frame.unpivot(on=selector(frame.columns), variable_name=_NAME, value_name="value").filter(marked).with_columns(pl.lit(n, pl.UInt32).alias(_PART))
+            frame.unpivot(on=selector(frame.columns), variable_name=column, value_name=value).filter(marked).with_columns(pl.lit(n, pl.UInt32).alias(part))
             for n, frame in enumerate(texts)
             if frame.width
         ]
         values = pl.concat(parts)
-        flags = [flag.alias(kind) for kind, flag in zip("cp", _shows(pl.col("value")), strict=True)]
+        flags = [flag.alias(kind) for kind, flag in zip("cp", _shows(col(value)), strict=True)]
         # in a query, which works out the parts that both flags use once
-        found = values.lazy().select(col(_PART), col(_NAME), *flags).group_by(_PART, _NAME).sum().collect().rows()
+        found = values.lazy().select(col(part), col(column), *flags).group_by(col(part), col(column)).sum().collect().rows()
     elif names:
-        stacked = pl.concat([frame.with_columns(pl.lit(n, pl.UInt32).alias(_PART)) for n, frame in enumerate(texts)], how="diagonal")
+        stacked = pl.concat([frame.with_columns(pl.lit(n, pl.UInt32).alias(part)) for n, frame in enumerate(texts)], how="diagonal")
         marked = stacked.select(pl.col(pl.String).str.contains("[.,]").any()).row(0)  # only these can show one
         names = [name for name, separators in zip(names, marked, strict=True) if separators]
         for start in range(0, len(names), 100):
             chunk = names[start : start + 100]
             flags = [flag.alias(f"{kind}{k}") for k, name in enumerate(chunk) for kind, flag in zip("cp", _shows(col(name)), strict=True)]
             # the values first, then only sums by file: patterns inside the groups take much memory
-            for n, *counts in stacked.lazy().select(col(_PART), *flags).group_by(_PART).sum().collect().iter_rows():
+            for n, *counts in stacked.lazy().select(col(part), *flags).group_by(col(part)).sum().collect().iter_rows():
                 found += [(n, name, c, p) for name, c, p in zip(chunk, counts[0::2], counts[1::2], strict=True)]
     for n, name, commas, points in found:
         if commas or points:
             before, after, own = shown[members[n]]
             shown[members[n]] = (before + commas, after + points, own | {name: "." if points else ","})
+
+
+def _free(name: str, taken: Container[str]) -> str:
+    """``name``, with more of its first character in front while a column has it (``taken``)."""
+    while name in taken:
+        name = name[0] + name
+    return name
 
 
 def _shows(text: pl.Expr) -> tuple[pl.Expr, pl.Expr]:

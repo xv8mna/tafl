@@ -152,6 +152,37 @@ def test_no_warning_about_cut_digits_of_a_column_that_ends_as_text(act, tmp_path
         assert out["T"].to_list() == [a.split("\n")[1][2:], "17"]
 
 
+_HELPER_NAMES = ["value", "variable", "index", "c", "p", "c0", "p0", "s0", "b0", "m0"]
+
+
+@pytest.mark.parametrize("name", _HELPER_NAMES)
+def test_columns_named_as_the_columns_that_the_import_uses_for_a_while(act, tmp_path, name):
+    """A column named value, variable or index, or as a column that the import makes for a while,
+    is read as any other: in one file, in a folder of files with the same columns and in one of
+    files with columns of their own. In such a folder, a column named value stopped the step with
+    "duplicate column name 'value'"."""
+    (tmp_path / "own").mkdir()
+    (tmp_path / "same").mkdir()
+    for i in range(4):
+        (tmp_path / "own" / f"m{i}.csv").write_text(f"Date;{name};A{i};B{i}\n31.01.2026;1,5;x;2,5\n", encoding="utf-8")
+        (tmp_path / "same" / f"m{i}.csv").write_text(f"Date;{name};A;B\n31.01.2026;1,5;x;2,5\n", encoding="utf-8")
+    for params in (folder(tmp_path / "own", file_column=False), folder(tmp_path / "same", file_column=False), {"file": str(tmp_path / "same" / "m0.csv")}):
+        out = act("csv.import", None, params)
+        assert out.schema["Date"] == pl.Date and out.schema[name] == pl.Float64 and out[name].to_list() == [1.5] * out.height
+
+
+@pytest.mark.parametrize("own", [True, False], ids=["columns-of-their-own", "same-columns"])
+def test_the_separators_of_frames_with_columns_named_as_the_helper_columns(own):
+    """detection.guess_decimals takes any frames, also with columns named as those it adds for a
+    while (a CSV file has no such names: a header loses the control character at its ends). Such a
+    column was overwritten or stopped the guess with a duplicate name."""
+    names = ["\x1fpart", "\x1fname", "\x1fvalue"]
+    frames = [pl.DataFrame({**dict.fromkeys(names, ["1,5"]), **{(f"x{i}_{k}" if own else f"x{k}"): ["2.5"] for k in range(3)}}) for i in range(4)]
+    overall, guesses = detection.guess_decimals(frames, [","] * 4)
+    assert overall == "," and guesses == [detection.guess_decimal(frame, ",") for frame in frames]
+    assert all(guess[1][name] == "," for guess in guesses for name in names)
+
+
 @pytest.mark.parametrize("name", ["*", "^a.*$", "c12*"])
 def test_names_like_patterns_in_the_files_of_a_folder(act, tmp_path, name):
     """A column named *, ^a.*$ or c12* with a date in one file and a whole number in the other gets
