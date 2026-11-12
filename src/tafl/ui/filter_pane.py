@@ -608,11 +608,14 @@ class FilterCard(QFrame):
         self._selection_changed()
 
     def show_current(self) -> None:
-        """The list shown is the right one after all (its update was not needed any more)."""
+        """The list shown is the right one after all (its update was not needed any more): with
+        its applied values selected, as when it is made (not what was selected for the change
+        that came before: a double-click and then Clear left the value selected)."""
         if self.updating:
             self.updating = False
             self.status.setText(self._status)
             self.view.setEnabled(self.view.isVisibleTo(self))
+            self._select_applied()
             self._selection_changed()
 
     def show_list(self, plan: _Plan, listing: _Listing | str) -> None:

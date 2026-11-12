@@ -683,6 +683,98 @@ def test_a_search_doesnt_change_how_many_values_are_selected(session, qtbot):
     assert card.status.text() == "5 values · 3 selected" and [row[2] for row in card.model.rows] == ["y1", "y2", "y3"]
 
 
+def quick_action(card, kind, rng):
+    """One user action on a card, as the user does it (one on a list that can't be used is not
+    done): how it changes the filter (values, all except them), True for no change, None when not
+    done."""
+    rows = card.model.rows
+    if kind == "clear":
+        if not card.clear_button.isEnabled():
+            return None
+        card.clear_button.click()
+        return [], False
+    if kind == "revert":
+        if not card.revert_button.isEnabled():
+            return None
+        card.revert_button.click()
+        return True
+    if kind == "search":
+        card.search.setText(rng.choice(["", "1", "a", "20"]))
+        return True
+    if not card.view.isEnabled() or not rows:
+        return None
+    if kind == "double-click":  # the first click selects the value
+        row = rng.randrange(min(len(rows), 30))
+        card._select_rows([row])
+        card.apply_only(card.model.index(row, 0))
+        return [rows[row][2]], False
+    if kind == "select":
+        first = rng.randrange(len(rows))
+        card._select_rows(range(first, min(len(rows), first + rng.choice([1, 3, 50, len(rows) // 2]))))
+    else:
+        card.quick_select(kind)
+    if not card.apply_button.isEnabled():
+        return True
+    everything = len(rows) == len(card.model.all) and card._merged_selection() == [(0, len(rows) - 1)]
+    change = ([], True) if everything else card._stored(card.pending())
+    card.apply_button.click()
+    return change
+
+
+def test_quick_changes_end_as_the_actions_say(window, settle, session, registry, tmp_path, qtbot):
+    """Changes one after the other, each before the lists of the one before are made (big data:
+    they are made in the background). When the lists are made, the cards are as the actions say,
+    as in 0.6.4: their applied values selected, Apply and Revert off (unless a search hides
+    applied values). Before, a double-click and then Clear on the same card left the value
+    selected, with Apply on: Enter applied it again."""
+    i = pl.int_range(0, 30_000, eager=True)
+    df = pl.select(
+        Price=(i * 7919 % 10_007) / 100,
+        City=pl.Series(["Köln", "Zürich", "zebra", "", None, "Äpfel", "Straße", "oel"] * 3750),
+        Day=pl.date(2020, 1, 1) + pl.duration(days=i % 3000),
+    )
+    panel = saved_project_of(window, settle, session, registry, tmp_path, df)
+    table_id = session.table.id
+    session.set_filters(table_id, [{"column": column, "values": []} for column in df.columns])
+    panel.filter_button.setChecked(True)
+    pane = panel.filter_pane
+    qtbot.waitUntil(lambda: not pane.updating, timeout=30_000)
+    rng = random.Random(4)
+    expected = [Filter.from_dict(f) for f in session.filters(table_id)]
+    changes = 0
+    for _ in range(30):
+        first = rng.randrange(3)
+        pending = set()  # cards with a selection that is not applied (it stays)
+        for step in range(rng.choice([2, 3])):
+            index = first if step and rng.random() < 0.7 else rng.randrange(3)
+            if step == 0:
+                kind = rng.choice(["double-click", "double-click", "select", "all", "excluded", "clear"])
+            else:
+                kind = rng.choice(["clear", "clear", "double-click", "select", "revert", "search"])
+            change = quick_action(pane.cards[index], kind, rng)
+            if isinstance(change, tuple):
+                expected[index].values, expected[index].excluded = list(change[0]), change[1]
+                pending.discard(index)
+                changes += 1
+            elif change and kind in ("select", "all", "excluded"):
+                pending.add(index)
+        qtbot.waitUntil(lambda: not pane.updating, timeout=30_000)
+        filters = [Filter.from_dict(f) for f in session.filters(table_id)]
+        assert [(f.values, f.excluded) for f in filters] == [(f.values, f.excluded) for f in expected]
+        assert panel.model.rowCount() == apply(df, filters).height
+        for index, card in enumerate(pane.cards):
+            applies = filters[index].picker()
+            assert all(bool(item[5]) == applies(item[2]) for item in card.model.all)
+            if index in pending:
+                continue
+            listing = card.model.listing
+            selected = sorted({ix.row() for ix in card.view.selectionModel().selectedIndexes()})
+            assert selected == list(range(listing.shown)), (index, card.column)
+            assert card.apply_button.isEnabled() == card.revert_button.isEnabled() == (listing.applied != listing.shown)
+    assert changes > 30  # (of 75 actions; the others: on a list being made, a search, a Revert, or nothing to apply)
+    panel.filter_button.setChecked(False)
+
+
 def test_a_closed_pane_and_the_view_not_shown_make_no_lists(window, settle, session, demo, made):
     """Up to 0.6.4 the filter pane of the map and that of the tables made the lists of every card
     at every change, also when closed."""
