@@ -84,6 +84,29 @@ def test_each_file_of_a_folder_is_read_with_its_own_formats(act, tmp_path):
     assert out.rows() == [(row[0], *row[3:]) for row in rows]
 
 
+def test_the_log_names_the_decimal_separator_of_each_file(act, tmp_path):
+    """When the files have different decimal separators, the log names the one of each file, as the
+    files are read (1.000 is 1000 in a.csv, with semicolons, and 1 in b.csv); for many files their
+    number and up to three names. When all files have the same one, it names that one and the
+    columns with the other one. It named one separator for such files, and "decimal comma in 2
+    files" for files that all have a decimal comma."""
+
+    def log(name, files):
+        (tmp_path / name).mkdir()
+        for file, text in files.items():
+            (tmp_path / name / file).write_text(text, encoding="utf-8")
+        ctx = StubContext()
+        out = act("csv.import", None, folder(tmp_path / name, file_column=False), ctx)
+        return out, ctx.messages[-1][1].split("; ")[-1]
+
+    out, decimal = log("two", {"a.csv": "Item;W\nA;1.000\n", "b.csv": "Item,W\nB,1.000\n"})
+    assert out["W"].to_list() == [1000.0, 1.0] and decimal == "decimal comma in a.csv, decimal point in b.csv"
+    files = {f"d{i}.csv": "Item;W\nA;1,5\n" for i in range(5)} | {"e.csv": "Item,W\nB,2.5\n"}
+    assert log("many", files)[1] == "decimal comma in 5 files (d0.csv, d1.csv, d2.csv, …), decimal point in e.csv"
+    out, decimal = log("same", {"a.csv": "Nr;Betrag;P\n1;2,5;0.500\n", "b.csv": "Nr;Betrag;P\n2;3,75;1,5\n"})
+    assert out["P"].to_list() == [0.5, 1.5] and decimal == "decimal comma (decimal point in P)"
+
+
 def test_a_column_of_other_types_in_the_files_of_a_folder(act, tmp_path):
     """A column of a date in one file and a number in another becomes text, with Append's warning;
     one that is text in a file (a code with a leading zero, n/a) stays text without a message, as

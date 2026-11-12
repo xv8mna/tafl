@@ -129,10 +129,12 @@ def import_csv(df, p, ctx):
 
     typed = detection.detect_files(texts, guesses, warn_once, ctx.check_cancelled) if p.detect_types else texts
     out = combine(parts, p, folder, warn=ctx.warn, prepare_each=(lambda i, _text: typed[i]) if p.detect_types else None)
-    used: list[dict[str, str]] = []  # of each file: its numbers' columns whose values show a decimal separator, with it
-    for frame, (_decimal, own) in zip(typed, guesses, strict=True) if p.detect_types else ():
-        schema = frame.schema  # once: each call builds the types of all columns again
-        used.append({name: own[name] for name in own if schema[name].is_numeric()})  # the others stayed text
+    used: list[dict[str, str]] = []  # of each file: the decimal separator of each of its columns of numbers with commas or points
+    for text, frame, (decimal, own) in zip(texts, typed, guesses, strict=True) if p.detect_types else ():
+        numbers = [name for name, dtype in frame.schema.items() if dtype.is_numeric()]  # the others stayed text
+        marks = [(col(name).str.contains(".", literal=True) | col(name).str.contains(",", literal=True)).any() for name in numbers]
+        marked = text.select(mark.alias(f"m{k}") for k, mark in enumerate(marks)).row(0) if numbers else ()
+        used.append({name: own.get(name, decimal) for name, has in zip(numbers, marked, strict=True) if has})
     decimal = [_describe_decimals(overall, guesses, used, paths)] if used else []
     if len(paths) == 1:
         ctx.log(", ".join([f"Encoding {encodings[0]}", f"delimiter {_describe_separator(separators[0])}", *decimal]))
@@ -479,28 +481,36 @@ def _describe_separator(separator: str) -> str:
 
 
 def _describe_decimals(overall: str, guesses: list[tuple[str, dict[str, str]]], used: list[dict[str, str]], paths: list[Path]) -> str:
-    """For the log: the decimal separator of the files, and the columns that have the other one.
-    When files have another one in the same column, the separator of each file instead."""
+    """For the log: the decimal separator of the files, and the columns of numbers that have the
+    other one (``used``: for each file, the separator that each of its columns of numbers was read
+    with). When the files have different ones and a column was read with one in some files and
+    with the other in others, the separator of each file instead, with up to three names of the
+    files that have it."""
+    decimals = [decimal for decimal, _own in guesses]
     by_column: dict[str, set[str]] = {}
     for columns in used:
         for name, decimal in columns.items():
             by_column.setdefault(name, set()).add(decimal)
-    if len(used) == 1:
-        overall = guesses[0][0]
-    elif any(len(decimals) > 1 for decimals in by_column.values()):
+    if len(set(decimals)) > 1 and any(len(found) > 1 for found in by_column.values()):
         files: dict[str, list[str]] = {}
-        for path, (decimal, _own) in zip(paths, guesses, strict=True):
+        for path, decimal in zip(paths, decimals, strict=True):
             files.setdefault(decimal, []).append(path.name)
-        return ", ".join(
-            f"decimal {_DECIMAL_WORDS[decimal]} in {names[0] if len(names) == 1 else f'{len(names):,} files'}"
-            for decimal, names in sorted(files.items())
-        )
-    others = [name for name, decimals in by_column.items() if decimals != {overall}]
+        return ", ".join(f"decimal {_DECIMAL_WORDS[decimal]} in {_some_files(names)}" for decimal, names in sorted(files.items()))
+    if len(set(decimals)) == 1:
+        overall = decimals[0]
+    others = [name for name, found in by_column.items() if found != {overall}]
     text = f"decimal {_DECIMAL_WORDS[overall]}"
     if not others:
         return text
     named = ", ".join(others[:5]) + (f" and {len(others) - 5} more" if len(others) > 5 else "")
     return f"{text} (decimal {_DECIMAL_WORDS['.' if overall == ',' else ',']} in {named})"
+
+
+def _some_files(names: list[str]) -> str:
+    """Files for the log: one by its name, more by their number and up to three names."""
+    if len(names) == 1:
+        return names[0]
+    return f"{len(names):,} files ({', '.join(names[:3])}{', …' if len(names) > 3 else ''})"
 
 
 _DECIMAL_WORDS = {",": "comma", ".": "point"}
