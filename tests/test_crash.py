@@ -398,6 +398,9 @@ else:  # the program that pip installs: tafl.crash:main
         ("module", "tafl.cli", "run"),  # in the run's child, which is this program again
         ("program", "tafl.cli", "run"),
         ("program", "tafl.cli", "plugins"),
+        ("program", "json", "plugins"),  # while the module of crash.main loads its modules
+        ("program", "tafl", "run"),  # ... its last one
+        ("module", "json", "plugins"),  # (there the handler of __main__.py keeps it)
     ],
 )
 def test_a_ctrl_c_while_the_program_loads_stops_it_without_a_traceback(how, module, command, folder, tmp_path):
@@ -416,6 +419,23 @@ def test_a_ctrl_c_while_the_program_loads_stops_it_without_a_traceback(how, modu
     )
     assert (stopped.returncode, stopped.stderr) == (130, "Error: Stopped\n")
     assert "Import orders.csv" not in stopped.stdout
+
+
+def test_loading_the_module_leaves_ctrl_c_as_it_was():
+    """The module keeps a Ctrl+C for main only while it loads its own modules, and only in place
+    of Python's handler: a program that uses it for other things keeps its Ctrl+C."""
+    code = (
+        "import signal, sys\n"
+        "if sys.argv[1] == 'own':\n"
+        "    signal.signal(signal.SIGINT, own := lambda signum, frame: None)\n"
+        "else:\n"
+        "    own = signal.default_int_handler\n"
+        "import tafl.crash\n"
+        "print(signal.getsignal(signal.SIGINT) is own)\n"
+    )
+    for handler in ("python", "own"):
+        loaded = subprocess.run([sys.executable, "-c", code, handler], capture_output=True, encoding="utf-8", timeout=60)
+        assert (loaded.stdout, loaded.stderr) == ("True\n", "")
 
 
 @pytest.mark.parametrize(

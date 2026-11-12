@@ -18,6 +18,26 @@ and it must start fast.
 
 from __future__ import annotations
 
+# ruff: noqa: E402 (the modules after the Ctrl+C handler)
+import _signal  # (the module signal loads enum first, which takes a while)
+
+# The program `tafl` that pip installs starts with this module (see main): a Ctrl+C while it loads
+# the modules below is kept for main, not a KeyboardInterrupt with a long traceback. Only in place
+# of Python's own handler, and only until they are loaded.
+_kept_while_loading: list[int] = []
+
+
+def _keep_while_loading(signum: int, frame: object) -> None:
+    _kept_while_loading.append(signum)
+
+
+_handler_before = _signal.getsignal(_signal.SIGINT)
+if _handler_before is _signal.default_int_handler:
+    try:
+        _signal.signal(_signal.SIGINT, _keep_while_loading)
+    except ValueError:  # not the main thread: it can't take signals
+        pass
+
 import contextlib
 import json
 import os
@@ -34,6 +54,9 @@ from pathlib import Path
 from typing import IO, Any
 
 from tafl import APP_FOLDER, COMMAND
+
+if signal.getsignal(signal.SIGINT) is _keep_while_loading:
+    signal.signal(signal.SIGINT, _handler_before)  # main keeps a Ctrl+C from here on
 
 MIN_FREE = 512 * 1024**2  # a step doesn't start with less memory left
 CRASHED = 3  # exit code of a run that ended without an error message
@@ -261,11 +284,14 @@ def main(argv: list[str] | None = None, *, ctrl_c: threading.Event | None = None
     reach a child, and no job ends the child with its parent. ``ctrl_c`` is set by a Ctrl+C that
     came while the program started (see __main__.py and packaging/tafl_cli.py). Without it, the
     program (no ``argv``) keeps a Ctrl+C from here on, before it loads the modules of the
-    command line, as ``_keep_ctrl_c`` does."""
+    command line, as ``_keep_ctrl_c`` does, and one kept while this module loaded."""
     if argv is not None or ctrl_c is not None or threading.current_thread() is not threading.main_thread():
         return _main(argv, ctrl_c)
     before = signal.getsignal(signal.SIGINT)
     ctrl_c, kept = _keep_ctrl_c()
+    if _kept_while_loading:
+        _kept_while_loading.clear()
+        ctrl_c.set()
     try:
         return _main(argv, ctrl_c)
     finally:
