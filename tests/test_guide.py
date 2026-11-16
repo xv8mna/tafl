@@ -1,6 +1,7 @@
 """The user guide: docs/guide.md with its pictures in docs/guide, and Guide.html of the download,
 which tools/build.py makes from it."""
 
+import ast
 import base64
 import importlib.util
 import re
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from tafl.api import source_columns
 from tafl.ui.main_window import _PROTECTED_BAR
 from tafl.ui.session import PROTECTED
 
@@ -75,6 +77,15 @@ def test_only_sqlite_imports_are_said_to_only_read(name):
     # a SQL Server query that commits by itself keeps its changes, also in a preview
     text = " ".join((ROOT / name).read_text(encoding="utf-8").split())
     assert not re.search(r"(?<!SQLite )\bimports only read\b", text, re.I)
+
+
+@pytest.mark.parametrize("name", ["README.md", "docs/guide.md"])
+def test_the_when_of_the_file_column_is_shown_as_the_imports_declare_it(name):
+    """The example of a plugin's added column shows the settings that really switch the File
+    column of the imports on: a folder, and the switch for the column."""
+    text = " ".join((ROOT / name).read_text(encoding="utf-8").split())
+    shown = re.findall(r'when=(\{"source": [^}]*\})', text)
+    assert shown and all(ast.literal_eval(when) == source_columns()[0].when for when in shown), shown
 
 
 def test_anchors_are_those_of_github():

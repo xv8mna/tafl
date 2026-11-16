@@ -806,9 +806,10 @@ The settings form is built from `params`. Rules for plugins:
 - An action whose steps add columns with fixed names declares them with `adds_columns=`, a list
   of `AddedColumn(name, type, when=None)` from `tafl.api`, in the order of the table: `type` is
   a type name of Change type (`text`, `integer`, `number`, `date`, `datetime`, `boolean`), and
-  `when` names the settings that switch the column on, as `visible_if` does (None: always). An
-  import built with `source_params` declares its File and Path columns with
-  `adds_columns=source_columns()`. `tafl catalog --json` lists them for programs that write
+  `when` names the settings that switch the column on, as `visible_if` does (None: always): the
+  File column of the imports has `when={"source": "folder", "file_column": True}`, so it is there
+  only for a folder, and only when its switch is on. An import built with `source_params`
+  declares its File and Path columns with `adds_columns=source_columns()`. `tafl catalog --json` lists them for programs that write
   projects. A `when` that names no setting of the action, or a value that the setting can't have
   (no option of a choice, not true or false for a Bool), is refused when the action is declared.
 - Test actions with `tafl.api.testing.StubContext` (see `tests/plugins`).

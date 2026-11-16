@@ -3035,10 +3035,13 @@ category that Tafl doesn't have gets a submenu of its own.
   `raise SkipRest("No new orders")` ends the table at this step without an error, as in
   [chapter 11](#11-days-without-data-and-a-daily-inbox). Both come from `tafl.api`:
   `from tafl.api import ActionError, SkipRest`.
-- An action whose steps add columns with fixed names, as the imports add *File* and *Path*,
-  declares them with `adds_columns=[AddedColumn("File", "text", when={"source": "folder"})]`
-  (`AddedColumn` from `tafl.api`): programs read them from `tafl.exe catalog --json`
-  ([chapter 12](#the-command-line-program)).
+- An action whose steps add columns with fixed names declares them with `adds_columns=`, for
+  programs that read `tafl.exe catalog --json` ([chapter 12](#the-command-line-program)). An
+  import built with `source_params` uses `adds_columns=source_columns()`, which declares *File*
+  and *Path*. A column of your own is an `AddedColumn` from `tafl.api`, for example
+  `AddedColumn("File", "text", when={"source": "folder", "file_column": True})`: the column is
+  there only when each setting in `when` has its value, here when **Read** is **All files in a
+  folder** and **Add a column with the file name** is on.
 
 The README's section [Writing a plugin](../README.md#writing-a-plugin) has more,
 for example how exports write files safely and how to test an action.
