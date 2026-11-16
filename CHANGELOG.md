@@ -12,8 +12,9 @@ so now.
   settings (kind, label, default, whether it is required and when it is shown, the options of a
   choice), the columns with fixed names that a step adds, a JSON Schema of a step's settings, the
   connection types and the functions of formulas, with the plugins that are loaded. The JSON has
-  only ASCII characters, so that no console or pipe changes one; messages go to stderr. It exits
-  with 1 when a plugin failed to load, and the catalog is complete all the same.
+  only ASCII characters, so that no console or pipe changes one; messages go to stderr, also what
+  a plugin prints while it loads. It exits with 1 when a plugin failed to load, or when an action
+  of a plugin can't be described (it is left out), and the catalog is complete all the same.
   [docs/catalog.md](https://github.com/xv8mna/tafl/blob/main/docs/catalog.md) describes the
   format and its version rules.
 - **A setting that the action doesn't have** gets a warning on its step: "Setting 'delimeter' is

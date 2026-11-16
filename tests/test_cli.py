@@ -704,6 +704,38 @@ def test_stdout_is_as_before_once_the_catalog_is_written(plugins, capfd):
     assert all(text in output.err for text in WRITTEN), output.err
 
 
+MALFORMED = {  # they load, but their declarations break a description
+    "visible_list": (
+        "from tafl.api import P, action\n\n\n"
+        '@action("demo.vis", "Vis", params=[P.Choice("mode", "Mode", ["a", "b"]), P.Text("x", "X", visible_if=[("mode", "a")])])\n'
+        "def vis(df, p, ctx):\n    return df\n\n\n"
+        '@action("demo.fine", "Fine")\n'
+        "def fine(df, p, ctx):\n    return df\n"
+    ),
+    "no_description": (
+        "from tafl.api import Action\n\n\n"
+        "def run(df, p, ctx):\n    return df\n\n\n"
+        'made = Action("demo.made", "Made", run, description=None)\n'
+    ),
+}
+
+
+def test_an_action_that_cant_be_described_gives_exit_code_1(no_plugins, registry, tmp_path, capsysbinary):
+    """The JSON is complete and valid without it; the warning names the plugin and the action."""
+    for name, code in MALFORMED.items():
+        (tmp_path / f"{name}.py").write_text(code, encoding="utf-8")
+    assert main(["--plugins", str(tmp_path), "catalog", "--json"]) == 1
+    output = capsysbinary.readouterr()
+    data = json.loads(output.out)
+    assert output.out.isascii() and len(data["actions"]) == len(registry.actions) + 1  # demo.fine
+    assert output.err.decode().splitlines() == [
+        "Warning: Plugin 'no_description': Action 'demo.made' can't be described: AttributeError: 'NoneType' object has no attribute 'splitlines'",
+        "Warning: Plugin 'visible_list': Action 'demo.vis' can't be described: AttributeError: 'list' object has no attribute 'items'",
+    ]
+    assert main(["--plugins", str(tmp_path), "catalog"]) == 1  # the readable list too
+    assert b"demo.fine  Fine" in capsysbinary.readouterr().out
+
+
 def test_run_says_which_setting_isnt_known(no_plugins, tmp_path, capsys):
     """A key that no setting has: the run goes on as before (exit code 0), with the warning."""
     path = _one_table(tmp_path)

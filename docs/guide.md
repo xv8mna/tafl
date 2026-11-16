@@ -2869,7 +2869,7 @@ describes the format.
 
 `tafl.exe show` has the same codes without 3: 0 also for a table that is turned off, 1 when the
 table has an error. `tafl.exe plugins` and `tafl.exe catalog` end with 1 when a plugin failed to
-load.
+load; `catalog` also when an action of a plugin can't be described.
 
 The exit code of the last command: `echo %ERRORLEVEL%` in a command prompt, `$LASTEXITCODE` in
 PowerShell.

@@ -110,7 +110,8 @@ In the download's folder, write `tafl.exe` instead of `.venv\Scripts\tafl` (in P
   programs that write or check project files: every action and setting with its default, the
   columns a step adds and a JSON Schema of its settings, the connection types and the formula
   functions, in ASCII only. [docs/catalog.md](docs/catalog.md) describes the format. Like
-  `plugins`, it exits with 1 when a plugin failed to load.
+  `plugins`, it exits with 1 when a plugin failed to load, and also when an action of a plugin
+  can't be described (that action is left out).
 - `--help` lists the commands; `run --help` (and `show`, `plugins`, `catalog`) shows the options
   and exit codes of one. `--version` prints the version.
 - The command line keeps no log of a run: what it prints is all there is. To keep it, send it to a

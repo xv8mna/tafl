@@ -747,6 +747,63 @@ def test_the_default_is_the_value_of_a_step_that_doesnt_store_the_setting(regist
         assert _initial_params(action) == defaults, found["id"]
 
 
+MALFORMED = {  # they load, but their declarations break a description
+    "visible_list": '''
+from tafl.api import Connector, P, action, connector
+
+
+@action("demo.vis", "Vis", params=[P.Choice("mode", "Mode", ["a", "b"]), P.Text("x", "X", visible_if=[("mode", "a")])])
+def vis(df, p, ctx):
+    return df
+
+
+@action("demo.fine", "Fine")
+def fine(df, p, ctx):
+    return df
+
+
+@connector("demo.db", "Demo database", params=[P.Text("server", "Server", visible_if=["mode"])])
+class DemoDatabase(Connector):
+    pass
+''',
+    "no_description": '''
+from tafl.api import Action
+
+
+def run(df, p, ctx):
+    return df
+
+
+made = Action("demo.made", "Made", run, description=None)
+''',
+}
+
+
+def test_an_action_or_connection_type_that_cant_be_described_is_left_out(tmp_path):
+    """One plugin can't break the catalog of all the others: the entry is left out, also of its
+    plugin's lists, and the plugin's errors say why."""
+    for name, code in MALFORMED.items():
+        (tmp_path / f"{name}.py").write_text(code, encoding="utf-8")
+    registry = Registry()
+    registry.load_builtin()
+    registry.load_folder(tmp_path)
+    assert not registry.errors  # they loaded
+    data, failures = catalog.describe(registry, [])
+    assert failures == [
+        ("no_description", "Action 'demo.made' can't be described: AttributeError: 'NoneType' object has no attribute 'splitlines'"),
+        ("visible_list", "Action 'demo.vis' can't be described: AttributeError: 'list' object has no attribute 'items'"),
+        ("visible_list", "Connection type 'demo.db' can't be described: AttributeError: 'list' object has no attribute 'items'"),
+    ]
+    assert [a["id"] for a in data["actions"]] == sorted(set(registry.actions) - {"demo.made", "demo.vis"})
+    assert [c["id"] for c in data["connection_types"]] == ["sqlite", "sqlserver"]
+    plugins = {plugin["name"]: plugin for plugin in data["plugins"]}
+    assert (plugins["visible_list"]["actions"], plugins["visible_list"]["connection_types"]) == (["demo.fine"], [])
+    assert plugins["visible_list"]["errors"] == [failures[1][1], failures[2][1]]
+    assert (plugins["no_description"]["actions"], plugins["no_description"]["errors"]) == ([], [failures[0][1]])
+    assert json.loads(catalog.to_json(data)) == data and catalog.build(registry, []) == data
+    assert registry.plugins[-1].errors == []  # the registry stays as it was
+
+
 def test_the_readable_list(built):
     text = "\n".join(catalog.lines(built))
     assert text.startswith(f"{len(built['actions'])} actions\n\nCalculate\n  calc.aggregate  Aggregate  (transform, version 1, plugin calculate)\n")

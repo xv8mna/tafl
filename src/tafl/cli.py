@@ -67,7 +67,7 @@ _SHOW_CODES = _codes((0, "done (also for a table that is turned off)"), (1, "the
 _PLUGIN_CODES = _codes((0, "all plugins loaded"), (1, "a plugin failed to load"))
 _CATALOG_CODES = _codes(
     (0, "done"),
-    (1, "a plugin failed to load (the catalog is printed all the same; with --json, the plugin's entry has the error)"),
+    (1, "a plugin failed to load, or an action of a plugin can't be described (the catalog is printed all the same)"),
     (2, "the command line can't be used"),
 )
 _CODES = (
@@ -403,20 +403,23 @@ def _plugins(registry: Registry, console: Console) -> int:
 
 
 def _catalog(args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
-    """The catalog on stdout: readable, or as JSON for programs. A plugin that failed to load is
-    named on stderr; in the JSON its entry has the error. With --json, stdout gets the JSON and
-    nothing else: what plugins write to stdout while they load goes to stderr."""
+    """The catalog on stdout: readable, or as JSON for programs. A plugin that failed to load, and
+    an action or connection type that can't be described, are named on stderr; in the JSON the
+    plugin's entry has the error. With --json, stdout gets the JSON and nothing else: what
+    plugins write to stdout while they load goes to stderr."""
     with _stdout_to_stderr() if args.json else contextlib.nullcontext():
         registry = _registry(args, console, stop)
         for name, error in registry.errors:
             console.warn(f"Plugin '{name}' failed to load: {error.splitlines()[-1]}")
-        data = catalog.build(registry)
+        data, failures = catalog.describe(registry)
+        for name, text in failures:
+            console.warn(f"Plugin '{name}': {text}")
     if args.json:
         _write_bytes(catalog.to_json(data))
     else:
         for line in catalog.lines(data):
             console.print(line)
-    return 1 if registry.errors else 0
+    return 1 if registry.errors or failures else 0
 
 
 @contextlib.contextmanager

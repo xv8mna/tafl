@@ -12,7 +12,7 @@ from __future__ import annotations
 import itertools
 import json
 import math
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
 from tafl import APP_NAME, COMMAND, __version__
@@ -69,19 +69,48 @@ def help_text(description: str) -> str:
 def build(registry: Registry, function_list: Iterable[Function] | None = None) -> dict[str, Any]:
     """The catalog of the actions and connection types of ``registry`` and of the formula
     functions (default: ``functions.all_functions()``), as plain JSON values."""
+    return describe(registry, function_list)[0]
+
+
+def describe(registry: Registry, function_list: Iterable[Function] | None = None) -> tuple[dict[str, Any], list[tuple[str, str]]]:
+    """``build``, and what couldn't be described: (plugin, text) for each action or connection
+    type whose declaration breaks the catalog (e.g. a ``visible_if`` that is no mapping). Such an
+    entry is left out, also of its plugin's lists, and the plugin's ``errors`` have the text: one
+    plugin can't break the catalog of all the others."""
     curated = set(formula_functions.CURATED)
     listed = formula_functions.all_functions() if function_list is None else function_list
+    failures: list[tuple[str, str]] = []
+
+    def entries(items: Mapping[str, Any], describe_one: Callable[[Any], dict[str, Any]], what: str) -> list[dict[str, Any]]:
+        found = []
+        for item_id in sorted(items):
+            try:
+                found.append(_plain(describe_one(items[item_id])))
+            except (Exception, SystemExit) as e:  # a plugin's own code may run here (a default, ...)
+                failures.append((items[item_id].plugin, f"{what} '{item_id}' can't be described: {type(e).__name__}: {e}"))
+        return found
+
+    actions = entries(registry.actions, _action, "Action")
+    connection_types = entries(registry.connectors, _connection_type, "Connection type")
+    action_ids, type_ids = {entry["id"] for entry in actions}, {entry["id"] for entry in connection_types}
+    plugins = []
+    for info in registry.plugins:
+        plugin = _plugin(info)
+        plugin["actions"] = [action_id for action_id in plugin["actions"] if action_id in action_ids]
+        plugin["connection_types"] = [type_id for type_id in plugin["connection_types"] if type_id in type_ids]
+        plugin["errors"] += [text for name, text in failures if name == info.name]
+        plugins.append(plugin)
     catalog = {
         "format": FORMAT,
         "format_version": FORMAT_VERSION,
         "app": {"name": APP_NAME, "version": __version__, "plugin_api": API_VERSION},
         "project_file": {"format": project.FORMAT, "format_version": project.FORMAT_VERSION},
-        "plugins": [_plugin(info) for info in registry.plugins],
-        "actions": [_action(registry.actions[action_id]) for action_id in sorted(registry.actions)],
-        "connection_types": [_connection_type(registry.connectors[type_id]) for type_id in sorted(registry.connectors)],
+        "plugins": plugins,
+        "actions": actions,
+        "connection_types": connection_types,
         "functions": [_function(function, function in curated) for function in listed],
     }
-    return _plain(catalog)
+    return _plain(catalog), failures
 
 
 def to_json(catalog: Mapping[str, Any]) -> bytes:

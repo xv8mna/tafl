@@ -23,8 +23,9 @@ The JSON has only ASCII characters: other characters are written as `\uXXXX` esc
 example `→` for an arrow). Every JSON reader turns them back. Without them, a Windows pipe
 could change such characters into `?` without a message.
 
-Exit codes: 0 done; 1 a plugin failed to load (the catalog is printed all the same, and the
-plugin's entry has the error); 2 the command line can't be used.
+Exit codes: 0 done; 1 a plugin failed to load, or an action or connection type of a plugin can't
+be described (the catalog is printed all the same, without that action, and the plugin's entry
+has the error); 2 the command line can't be used.
 
 ## Versions
 
@@ -51,7 +52,7 @@ The format of the project files has its own version (`project_file` in the catal
 | `format_version` | `"1.0"` |
 | `app` | `name`, `version` (of Tafl), `plugin_api` (the version of the plugin API) |
 | `project_file` | `format` and `format_version` of the project files this Tafl writes: `"tafl-project"`, `1` |
-| `plugins` | one entry per plugin: `name`, `builtin`, `path` (`null` for a built-in one), `actions`, `connection_types` (their ids), `errors` (texts; empty when it loaded) |
+| `plugins` | one entry per plugin: `name`, `builtin`, `path` (`null` for a built-in one), `actions`, `connection_types` (their ids), `errors` (texts: why it failed to load, or why one of its actions or connection types can't be described, which is then left out; empty when all is well) |
 | `actions` | one entry per action, sorted by id |
 | `connection_types` | one entry per database type, sorted by id |
 | `functions` | the functions and operators of formulas, in the order of the app's function list |
