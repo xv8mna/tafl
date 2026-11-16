@@ -18,6 +18,7 @@ from tafl.api import (
     AddedColumn,
     Endpoint,
     P,
+    SkipRest,
     action,
     col,
     combine,
@@ -138,7 +139,12 @@ def import_excel(df, p, ctx):
     others. Formulas give the results Excel saved with the file; a file written by another
     program may have none (the column stays empty): open it in Excel and save it.
     """
-    paths, folder = source_files(p, ctx)
+    try:
+        paths, folder = source_files(p, ctx)
+    except SkipRest as skipped:  # no files: the empty table has the Sheet column too, as with "Continue with an empty table"
+        if p.sheets in _SEVERAL_SHEETS and p.sheet_column and ctx.imported_folder is not None:
+            raise SkipRest(skipped.message, combine([], p, ctx.imported_folder, sheet_column=True)) from None
+        raise
 
     def convert(data: pl.DataFrame) -> pl.DataFrame:  # each sheet on its own, as the setting says
         if p.whole_numbers:

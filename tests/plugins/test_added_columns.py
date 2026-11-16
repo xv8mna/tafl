@@ -9,7 +9,7 @@ import polars as pl
 import pytest
 import xlsxwriter
 
-from tafl.api import AddedColumn
+from tafl.api import AddedColumn, SkipRest
 
 DATA = ["Id", "Name"]  # the columns of every file and sheet below
 
@@ -112,6 +112,30 @@ def test_the_columns_of_an_excel_import_are_those_declared(registry, act, excel_
         }
         seen.add(tuple(check_added(registry, act, "excel.import", settings)))
     assert ("File", "Path", "Sheet") in seen and ("Sheet",) in seen and () in seen and len(seen) == 8
+
+
+@pytest.mark.parametrize("action_id", ["csv.import", "parquet.import", "excel.import"])
+def test_an_empty_folder_gives_the_declared_columns(registry, act, tmp_path, action_id):
+    """With "Continue with an empty table" and with "Skip the rest of the table" (the table the
+    step ends with): the columns are the declared ones whose when fits, and nothing else."""
+    sheets = [("one", True), ("all", True), ("all", False), ("matching", True)] if action_id == "excel.import" else [("one", True)]
+    seen = set()
+    for (file_column, path_column), (choice, sheet_column), no_files in itertools.product(
+        itertools.product([True, False], repeat=2), sheets, ["empty", "skip"]
+    ):
+        settings = {"source": "folder", "folder": str(tmp_path), "file_column": file_column, "path_column": path_column, "no_files": no_files}
+        if action_id == "excel.import":
+            settings |= {"sheets": choice, "sheet_pattern": "J*", "sheet_column": sheet_column}
+        try:
+            out = act(action_id, None, settings)
+        except SkipRest as skipped:
+            out = skipped.df
+        action = registry.actions[action_id]
+        expected = [column for column in action.adds_columns if switched_on(column, action.resolve(settings))]
+        assert [(name, type_name(dtype)) for name, dtype in out.schema.items()] == [(c.name, c.type) for c in expected], settings
+        assert out.height == 0
+        seen.add(tuple(out.columns))
+    assert ("File", "Path", "Sheet") in seen if action_id == "excel.import" else ("File", "Path") in seen
 
 
 def test_a_column_named_like_an_added_one_gets_another_name(registry, act, tmp_path):

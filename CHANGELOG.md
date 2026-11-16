@@ -33,6 +33,9 @@ so now.
   type name of Change type, or a `when` that names no setting of the action or a value that the
   setting can't have (no option of a choice, not true or false for a Bool), is refused when the
   action is declared. The plugin API stays at version 1.
+- **Import Excel files** of a folder without files, with *Skip the rest of the table* and all or
+  matching sheets: the empty table has the Sheet column too, as with *Continue with an empty
+  table*. Before, it had only the columns with the file name and the path.
 
 ## 0.6.5 – 2026-11-12
 
