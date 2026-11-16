@@ -12,7 +12,7 @@ import polars as pl
 
 from .endpoints import Endpoint, default_endpoints
 from .errors import ActionError
-from .params import List, Param, Params, ValidationContext, check, resolve, table_refs
+from .params import Bool, Choice, List, Param, Params, ValidationContext, check, resolve, table_refs
 
 if TYPE_CHECKING:
     from .context import Context
@@ -37,7 +37,8 @@ class AddedColumn:
     """A column with a fixed name that a step adds to its table (an import: makes), for programs
     that write or check project files (``tafl catalog``). ``type`` is one of ``TYPES``, the type
     names of Change type. ``when`` names the settings that switch the column on, in the form of a
-    parameter's ``visible_if`` (e.g. ``{"source": "folder", "file_column": True}``); None: always.
+    parameter's ``visible_if`` (e.g. ``{"source": "folder", "file_column": True}``), with values
+    that the settings can have (an option of a choice; true or false for a Bool); None: always.
     Columns whose names come from settings or from the data are not declared."""
 
     name: str
@@ -222,8 +223,9 @@ def _check_param_names(action_id: str, params: tuple[Param, ...]) -> None:
 
 def _check_added_columns(action_id: str, params: tuple[Param, ...], columns: tuple[AddedColumn, ...]) -> None:
     """Refuses a declaration that would describe the table wrongly: a type that is no type name,
-    and a ``when`` that names no setting of the action (e.g. one that was renamed)."""
-    keys = {param.key for param in params}
+    and a ``when`` that names no setting of the action (e.g. one that was renamed), or a value
+    that the setting can't have: no option of a choice, or not true or false for a Bool."""
+    settings = {param.key: param for param in params}
     for column in columns:
         if not isinstance(column, AddedColumn):
             raise ValueError(f"Action '{action_id}': adds_columns takes AddedColumn entries, not {column!r}")
@@ -234,9 +236,21 @@ def _check_added_columns(action_id: str, params: tuple[Param, ...], columns: tup
             raise ValueError(f"{named} has the type {column.type!r}; types: {', '.join(AddedColumn.TYPES)}")
         if column.when is not None and not isinstance(column.when, Mapping):
             raise ValueError(f"{named}: 'when' must be settings and values")
-        for key in column.when or {}:
-            if key not in keys:
+        for key, expected in (column.when or {}).items():
+            setting = settings.get(key)
+            if setting is None:
                 raise ValueError(f"{named} is switched on by '{key}', which is not a setting of the action")
+            for value in expected if isinstance(expected, (tuple, list, set, frozenset)) else (expected,):
+                if isinstance(setting, Choice) and not _is_option(value, setting.values):
+                    options = ", ".join(map(repr, setting.values))
+                    raise ValueError(f"{named} is switched on by {key} = {value!r}, which is not an option of it ({options})")
+                if isinstance(setting, Bool) and not isinstance(value, bool):
+                    raise ValueError(f"{named} is switched on by {key} = {value!r}, which is not true or false")
+
+
+def _is_option(value: Any, options: Iterable[Any]) -> bool:
+    """Whether ``value`` is one of the option values, as JSON compares them: true is not 1."""
+    return any(value == option and isinstance(value, bool) == isinstance(option, bool) for option in options)
 
 
 class _Lenient(dict):

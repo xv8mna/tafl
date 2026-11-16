@@ -809,7 +809,8 @@ The settings form is built from `params`. Rules for plugins:
   `when` names the settings that switch the column on, as `visible_if` does (None: always). An
   import built with `source_params` declares its File and Path columns with
   `adds_columns=source_columns()`. `tafl catalog --json` lists them for programs that write
-  projects; a `when` that names no setting of the action is refused when it is declared.
+  projects. A `when` that names no setting of the action, or a value that the setting can't have
+  (no option of a choice, not true or false for a Bool), is refused when the action is declared.
 - Test actions with `tafl.api.testing.StubContext` (see `tests/plugins`).
 
 Plugins are ordinary Python code that runs with your rights when Tafl starts: only add plugins

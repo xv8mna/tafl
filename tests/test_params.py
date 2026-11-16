@@ -162,11 +162,57 @@ def test_added_columns_are_declared_with_the_action():
         (AddedColumn("", "text"), "needs a name"),
         (AddedColumn("File", "text", when=["source"]), "added column 'File': 'when' must be settings and values"),
         (("File", "text"), "adds_columns takes AddedColumn entries"),
+        (AddedColumn("File", "text", when={"source": "folders"}), "source = 'folders', which is not an option of it ('file', 'folder')"),
+        (AddedColumn("File", "text", when={"source": ("file", "Folder")}), "source = 'Folder', which is not an option of it"),
+        (AddedColumn("File", "text", when={"file_column": "yes"}), "added column 'File' is switched on by file_column = 'yes', which is not true or false"),
+        (AddedColumn("File", "text", when={"file_column": 1}), "file_column = 1, which is not true or false"),
+        (AddedColumn("File", "text", when={"level": True}), "level = True, which is not an option of it (1, 2)"),  # as JSON: true isn't 1
     ],
 )
 def test_added_columns_that_would_describe_the_table_wrongly_are_refused(column, message):
-    """As for parameter names: when the action is declared. A setting that is renamed can't leave
-    a declaration that names it behind."""
-    params = [*SOURCE, P.List("rows", "Rows", fields=[P.Column("column", "Column")])]
+    """As for parameter names: when the action is declared. A setting that is renamed, or an
+    option that is renamed, can't leave a declaration that names it behind."""
+    params = [*SOURCE, P.Choice("level", "Level", [(1, "one"), (2, "two")]), P.List("rows", "Rows", fields=[P.Column("column", "Column")])]
     with pytest.raises(ValueError, match=re.escape(message)):
         action("x.y", "X", params=params, adds_columns=[column])
+
+
+def test_the_values_that_switch_an_added_column_on():
+    """Options of a choice, true or false for a Bool; the values of other kinds stay as they are."""
+    params = [*SOURCE, P.Choice("level", "Level", [(1, "one"), (2, "two")]), P.Text("pattern", "File names")]
+    when = {"source": ("file", "folder"), "file_column": False, "level": 2, "pattern": 5}
+    declared = action("x.y", "X", params=params, adds_columns=[AddedColumn("File", "text", when=when)])(lambda df, p, ctx: df)
+    assert declared.adds_columns[0].when == when
+
+
+def test_every_visible_if_and_when_of_the_built_in_plugins_can_be_met(registry):
+    """Each names a setting (in a list: a field of the same row) and values that it can have: an
+    option of its choice, or true or false for a Bool. Else it would hide a setting, or switch an
+    added column off, for good."""
+    checked = []
+
+    def can_be_met(settings, conditions, where):
+        found = {setting.key: setting for setting in settings}
+        for key, expected in conditions.items():
+            assert key in found, (where, key)
+            for value in expected if isinstance(expected, (tuple, list, set, frozenset)) else (expected,):
+                if isinstance(found[key], P.Choice):
+                    options = found[key].values
+                    assert any(value == o and isinstance(value, bool) == isinstance(o, bool) for o in options), (where, key, value)
+                if isinstance(found[key], P.Bool):
+                    assert isinstance(value, bool), (where, key, value)
+        checked.append(where)
+
+    owners = [(a.id, a.params, a.adds_columns) for a in registry.actions.values()]
+    owners += [(c.id, c.params, ()) for c in registry.connectors.values()]
+    for owner, params, added in owners:
+        for param in params:
+            if param.visible_if:
+                can_be_met(params, param.visible_if, f"{owner}.{param.key}")
+            for field in param.fields if isinstance(param, P.List) else ():
+                if field.visible_if:
+                    can_be_met(param.fields, field.visible_if, f"{owner}.{param.key}.{field.key}")
+        for column in added:
+            if column.when:
+                can_be_met(params, column.when, f"{owner} adds {column.name}")
+    assert len(checked) > 40 and "rows.filter.conditions.value" in checked and "excel.import adds Sheet" in checked

@@ -26,7 +26,8 @@ so now.
   `adds_columns=[AddedColumn(name, type, when=...)]` (from `tafl.api`); an import built with
   `source_params` uses `adds_columns=source_columns()`. The imports of CSV, Excel and Parquet
   files declare File, Path and Sheet, and Files in a folder its seven columns. A type that is no
-  type name of Change type, or a `when` that names no setting of the action, is refused when the
+  type name of Change type, or a `when` that names no setting of the action or a value that the
+  setting can't have (no option of a choice, not true or false for a Bool), is refused when the
   action is declared. The plugin API stays at version 1.
 
 ## 0.6.5 – 2026-11-12
