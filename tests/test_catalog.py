@@ -734,6 +734,15 @@ def test_the_docs_name_the_version_the_kinds_and_the_keywords(built):
     assert links and links <= anchors, links - anchors
 
 
+def test_the_docs_name_every_action_with_a_check_of_its_own(registry):
+    """docs/catalog.md names the built-in actions whose own check of their settings the schema
+    can't express, in bold: the list can't fall behind the code."""
+    text = DOCS.read_text(encoding="utf-8")
+    differ = text[text.index("Where the schema and Tafl's own check of a step differ:") : text.index("The schemas use only these keywords")]
+    named = set(re.findall(r"\*\*(.+?)\*\*", differ))
+    assert named == {action.name for action in registry.actions.values() if action.checks is not None}
+
+
 def test_the_default_is_the_value_of_a_step_that_doesnt_store_the_setting(registry, built):
     """As docs/catalog.md says. The app starts a new step with the defaults, and a list without
     rows with min_items rows of its fields' defaults."""

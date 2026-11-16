@@ -182,11 +182,19 @@ Where the schema and Tafl's own check of a step differ:
   Tafl converts some such values (`null` gives the default) and reports the others.
 - The value of a setting that the step doesn't show: the schema checks it as any other, Tafl
   doesn't check it.
+- Names that only the project and the data can confirm: a column (kinds `column` and `columns`)
+  must be in the step's input table, or in the table chosen in the setting that `column_source`
+  names; a table (`table`, `tables`) must be in the project; a connection must be defined in the
+  project (in any case of letters). The schema takes any name, Tafl reports one that is not
+  there.
 - Some actions also check combinations of settings that the catalog can't express, and Tafl's
-  own check reports them: Check data needs at least one check (and in a "between" row, the first
-  number must not be bigger than the second), Pivot's row keys can't include the column of the
-  names or of the values, and the two new columns of Unpivot need names that are not only spaces,
-  and different ones.
+  own check reports them:
+  - **Check data**: at least one check; in a "between" row, the first number must not be bigger
+    than the second.
+  - **Copy files**, **Move files** and **Delete files**: "All files this table's import read"
+    needs a table whose first step is an import of all files in a folder.
+  - **Pivot**: the row keys can't include the column of the names or of the values.
+  - **Unpivot**: the two new columns need names that are not only spaces, and different ones.
 
 The schemas use only these keywords: `$schema`, `type`, `properties`, `patternProperties`,
 `additionalProperties`, `required`, `enum`, `items`, `minItems`, `minLength`, `minimum` and
