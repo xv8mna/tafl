@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import ctypes
+import errno
 import os
 import signal
 import socket
@@ -414,12 +415,32 @@ def _catalog(args: argparse.Namespace, console: Console, stop: threading.Event) 
         data, failures = catalog.describe(registry)
         for name, text in failures:
             console.warn(f"Plugin '{name}': {text}")
-    if args.json:
-        _write_bytes(catalog.to_json(data))
-    else:
-        for line in catalog.lines(data):
-            console.print(line)
+    try:
+        if args.json:
+            _write_bytes(catalog.to_json(data))
+        else:
+            for line in catalog.lines(data):
+                console.print(line)
+    except OSError as e:  # the reader closed the pipe, e.g. it needed only the start: no traceback
+        if not _pipe_closed(e):
+            raise
+        _discard_stdout()
     return 1 if registry.errors or failures else 0
+
+
+def _pipe_closed(error: OSError) -> bool:
+    """Whether writing to stdout failed because its reader closed the pipe: EPIPE, or on Windows
+    EINVAL, which the text layer gets there."""
+    return isinstance(error, BrokenPipeError) or error.errno == errno.EINVAL
+
+
+def _discard_stdout() -> None:
+    """What Python still holds for stdout goes nowhere: its flush at the end would fail again (the
+    advice of the Python docs for a BrokenPipeError)."""
+    with contextlib.suppress(OSError, ValueError):
+        nowhere = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(nowhere, sys.stdout.fileno())
+        os.close(nowhere)
 
 
 @contextlib.contextmanager

@@ -736,6 +736,28 @@ def test_an_action_that_cant_be_described_gives_exit_code_1(no_plugins, registry
     assert b"demo.fine  Fine" in capsysbinary.readouterr().out
 
 
+@pytest.mark.parametrize("failing_plugin", [False, True])
+def test_a_reader_that_closes_the_pipe_early(tmp_path, failing_plugin):
+    """E.g. a program that needs only the start: no traceback, and the exit code that the command
+    has anyway (1 for a plugin that failed to load). The JSON is far bigger than the pipe holds."""
+    folder = tmp_path / "plugins"
+    folder.mkdir()
+    if failing_plugin:
+        (folder / "quits.py").write_text("raise RuntimeError('broken plugin')\n", encoding="utf-8")
+    environment = {**os.environ, "APPDATA": str(tmp_path / "appdata")}
+    environment.pop("TAFL_PLUGINS", None)
+    for arguments in (["catalog", "--json"], ["catalog"]):
+        child = subprocess.Popen(
+            [sys.executable, "-m", "tafl", "--plugins", str(folder), *arguments], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment
+        )
+        assert len(child.stdout.read(100)) == 100
+        child.stdout.close()
+        errors = child.stderr.read().decode("utf-8", "replace").replace("\r\n", "\n")
+        assert child.wait(timeout=120) == (1 if failing_plugin else 0), (arguments, errors)
+        assert "Traceback" not in errors and "Exception ignored" not in errors, (arguments, errors)
+        assert errors == ("Warning: Plugin 'quits' failed to load: RuntimeError: broken plugin\n" if failing_plugin else ""), errors
+
+
 def test_run_says_which_setting_isnt_known(no_plugins, tmp_path, capsys):
     """A key that no setting has: the run goes on as before (exit code 0), with the warning."""
     path = _one_table(tmp_path)

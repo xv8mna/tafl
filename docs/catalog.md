@@ -25,7 +25,9 @@ could change such characters into `?` without a message.
 
 Exit codes: 0 done; 1 a plugin failed to load, or an action or connection type of a plugin can't
 be described (the catalog is printed all the same, without that action, and the plugin's entry
-has the error); 2 the command line can't be used.
+has the error); 2 the command line can't be used. A reader may close the pipe before the end,
+e.g. when it needs only the start: the command then ends without a message, with the same exit
+code.
 
 ## Versions
 
