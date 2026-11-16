@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import json
 import math
+import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
@@ -28,26 +29,16 @@ FORMAT = "tafl-catalog"
 FORMAT_VERSION = "1.0"
 SCHEMA = "https://json-schema.org/draft/2020-12/schema"
 
-# The kinds of settings that the catalog describes with the fields of their kind. A setting of
-# another kind (a plugin's own class of setting) has only the common fields, and any value.
-_KINDS: dict[str, type[Param]] = {
-    "text": P.Text,
-    "code": P.Code,
-    "expression": P.Expression,
-    "int": P.Int,
-    "float": P.Float,
-    "bool": P.Bool,
-    "choice": P.Choice,
-    "column": P.Column,
-    "columns": P.Columns,
-    "file": P.File,
-    "folder": P.Folder,
-    "table": P.TableRef,
-    "tables": P.TableRefs,
-    "connection": P.ConnectionRef,
-    "list": P.List,
-}
+# The kinds of settings that the catalog describes with the fields of their kind (the kind of a
+# class of tafl.api.params). A setting of another kind (a plugin's own class of setting) has only
+# the common fields, and any value.
+_KINDS = tuple(
+    cls.kind
+    for cls in (P.Text, P.Code, P.Expression, P.Int, P.Float, P.Bool, P.Choice, P.Column, P.Columns, P.File, P.Folder)
+    + (P.TableRef, P.TableRefs, P.ConnectionRef, P.List)
+)
 _TEXTS = ("text", "code", "expression", "column", "file", "folder", "table", "connection")
+_SURROGATE = re.compile(r"[\ud800-\udfff]")  # half of a character; a Python text holds only lone ones
 
 
 def help_text(description: str) -> str:
@@ -215,15 +206,15 @@ def _added(column: AddedColumn) -> dict[str, Any]:
 
 
 def _kind(param: Param) -> str | None:
-    """The kind of the setting if the catalog knows it (its class is the one of that kind, or
-    derived from it), else None."""
+    """The kind of the setting if the catalog knows it, else None. A plugin's own class that
+    names a known kind gets the fields of that kind too (the app shows the field of that kind)."""
     kind = getattr(param, "kind", None)
-    cls = _KINDS.get(kind) if isinstance(kind, str) else None
-    return kind if cls is not None and isinstance(param, cls) else None
+    return kind if isinstance(kind, str) and kind in _KINDS else None
 
 
 def _setting(param: Param) -> dict[str, Any]:
-    """The fields of every setting, then those of its kind."""
+    """The fields of every setting, then those of its kind: from the attributes of the setting's
+    class, or, where a plugin's own class doesn't have one, the empty value of that field."""
     setting = {
         "key": param.key,
         "kind": getattr(param, "kind", ""),
@@ -235,29 +226,48 @@ def _setting(param: Param) -> dict[str, Any]:
     }
     kind = _kind(param)
     if kind == "choice":
-        setting["options"] = [{"value": value, "label": label} for value, label in param.options]
+        setting["options"] = [{"value": value, "label": label} for value, label in _options(param)]
     if kind in ("text", "code", "expression"):
-        setting["multiline"] = param.multiline
-        setting["placeholder"] = param.placeholder
+        setting["multiline"] = getattr(param, "multiline", False)
+        setting["placeholder"] = getattr(param, "placeholder", "")
     if kind == "code":
-        setting["language"] = param.language
+        setting["language"] = getattr(param, "language", "")
     if kind == "expression":
-        setting["condition"] = param.condition
-        setting["creates"] = param.creates or None
+        setting["condition"] = getattr(param, "condition", False)
+        setting["creates"] = getattr(param, "creates", None) or None
     if kind in ("column", "columns"):
-        setting["column_source"] = param.source
+        setting["column_source"] = getattr(param, "source", "input")
     if kind in ("int", "float"):
-        setting["min"] = param.min
-        setting["max"] = param.max
+        setting["min"] = _limit(getattr(param, "min", None))
+        setting["max"] = _limit(getattr(param, "max", None))
     if kind == "file":
-        setting["file_mode"] = param.mode
-        setting["file_filter"] = param.filter
+        setting["file_mode"] = getattr(param, "mode", "open")
+        setting["file_filter"] = getattr(param, "filter", "")
     if kind == "connection":
-        setting["connection_types"] = list(param.types)
+        setting["connection_types"] = list(getattr(param, "types", ()))
     if kind == "list":
-        setting["fields"] = [_setting(field) for field in param.fields]
-        setting["min_items"] = param.min_items
+        setting["fields"] = [_setting(field) for field in _fields(param)]
+        setting["min_items"] = getattr(param, "min_items", 0)
     return setting
+
+
+def _options(param: Param) -> list[tuple[Any, Any]]:
+    """(value, label) of each option; a plugin's option without a label is its own label."""
+    pairs = []
+    for option in getattr(param, "options", None) or ():
+        pairs.append((option[0], option[1]) if isinstance(option, (tuple, list)) and len(option) == 2 else (option, option))
+    return pairs
+
+
+def _fields(param: Param) -> tuple[Param, ...]:
+    return tuple(getattr(param, "fields", None) or ())
+
+
+def _limit(value: Any) -> int | float | None:
+    """``min`` or ``max`` as the catalog writes it: a finite number, else None (no limit)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return value
+    return None
 
 
 def _schema(param: Param) -> dict[str, Any]:
@@ -266,26 +276,28 @@ def _schema(param: Param) -> dict[str, Any]:
     if kind == "list":
         row: dict[str, Any] = {
             "type": "object",
-            "properties": {field.key: _schema(field) for field in param.fields},
+            "properties": {field.key: _schema(field) for field in _fields(param)},
             "patternProperties": {"^_": {}},  # Tafl's own marks, as at the top level
             "additionalProperties": False,
         }
-        if required := [field.key for field in param.fields if _must_store(field)]:
+        if required := [field.key for field in _fields(param) if _must_store(field)]:
             row["required"] = required
         schema: dict[str, Any] = {"type": "array", "items": row}
-        if param.min_items:
+        if getattr(param, "min_items", 0):
             schema["minItems"] = param.min_items
         return schema
-    if kind == "choice":
-        return {"enum": [value for value, _ in param.options]}
+    if kind == "choice":  # a plugin's choice without options: any value, not none
+        values = [value for value, _ in _options(param)]
+        return {"enum": values} if values else {}
     if kind == "bool":
         return {"type": "boolean"}
     if kind in ("int", "float"):
         schema = {"type": "integer" if kind == "int" else "number"}
-        if param.min is not None:
-            schema["minimum"] = param.min
-        if param.max is not None:
-            schema["maximum"] = param.max
+        low, high = _limit(getattr(param, "min", None)), _limit(getattr(param, "max", None))
+        if low is not None:
+            schema["minimum"] = low
+        if high is not None:
+            schema["maximum"] = high
         return schema
     # Tafl's check says "required" for an empty value of a setting that is required and shown:
     # always for one without visible_if (after a choice, the settings say when)
@@ -308,7 +320,7 @@ def _must_store(param: Param) -> bool:
         return False
     try:
         default = param.initial()
-        if _kind(param) == "list" and len(default) < param.min_items:
+        if _kind(param) == "list" and len(default) < getattr(param, "min_items", 0):
             return True
         return bool(param.required) and bool(param.is_empty(default))
     except Exception:  # a plugin's own class of setting: its default is in the catalog as it is
@@ -340,22 +352,25 @@ def _values(spec: Mapping[str, Any] | None) -> dict[str, list[Any]] | None:
 
 
 def _plain(value: Any) -> Any:
-    """``value`` as plain JSON: tuples as lists, mappings with text keys, texts and numbers as
-    they are. A number that JSON can't hold (NaN, infinity) and any other value become their
-    text, so that a plugin's default can't break the catalog."""
+    """``value`` as plain JSON, so that a plugin's values can't break the catalog: tuples as
+    lists, mappings with text keys, numbers as they are, but one that JSON can't hold (NaN,
+    infinity) as None; texts with U+FFFD for each lone surrogate (half of a character, which
+    UTF-8 can't hold), as Project.load reads them; any other value as its text."""
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
         return int(value)
     if isinstance(value, float):
-        return float(value) if math.isfinite(value) else str(value)
-    if isinstance(value, str):
-        return str(value)
+        return float(value) if math.isfinite(value) else None
     if isinstance(value, Mapping):
-        return {str(key): _plain(item) for key, item in value.items()}
+        return {_text(key): _plain(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_plain(item) for item in value]
-    return str(value)
+    return _text(value)
+
+
+def _text(value: Any) -> str:
+    return _SURROGATE.sub("\N{REPLACEMENT CHARACTER}", str(value))
 
 
 def _setting_lines(settings: Sequence[Mapping[str, Any]], indent: str) -> Iterator[str]:

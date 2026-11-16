@@ -645,7 +645,7 @@ def paint(df, p, ctx):
 
 def test_a_plugin_with_its_own_kind_of_setting(tmp_path, monkeypatch):
     """Its setting has the common fields only, and any value; values that are not plain JSON
-    don't break the catalog (tuples become lists, anything else its text)."""
+    don't break the catalog (tuples become lists, NaN and infinity null, anything else its text)."""
     (tmp_path / "paint.py").write_text(textwrap.dedent(OWN_KIND), encoding="utf-8")
     registry = Registry()
     registry.load_builtin()
@@ -657,12 +657,12 @@ def test_a_plugin_with_its_own_kind_of_setting(tmp_path, monkeypatch):
     settings = {setting["key"]: setting for setting in paint["settings"]}
     assert settings["color"] == {"key": "color", "kind": "color", "label": "Color", "required": True, "default": "", "help": "", "visible_if": None}
     assert settings["shade"] == {"key": "shade", "kind": "shade", "label": "Shade", "required": False, "default": ["light", "dark"], "help": "", "visible_if": None}
-    assert settings["size"]["options"] == [{"value": 1, "label": "small"}, {"value": 2.5, "label": "medium"}, {"value": "inf", "label": "endless"}]
-    assert settings["size"]["default"] == "nan" and settings["count"]["default"] == "3" and settings["count"]["min"] == 1
+    assert settings["size"]["options"] == [{"value": 1, "label": "small"}, {"value": 2.5, "label": "medium"}, {"value": None, "label": "endless"}]
+    assert settings["size"]["default"] is None and settings["count"]["default"] == "3" and settings["count"]["min"] == 1
     assert settings["tags"]["default"] == {"a": [1, 2], "3": "{4}"}
     schema = paint["settings_schema"]
     assert schema["properties"]["color"] == {} and schema["properties"]["shade"] == {}
-    assert schema["properties"]["size"] == {"enum": [1, 2.5, "inf"]} and schema["required"] == ["color"]
+    assert schema["properties"]["size"] == {"enum": [1, 2.5, None]} and schema["required"] == ["color"]
     assert paint["adds_columns"] == [{"name": "Painted", "type": "boolean", "when": {"size": [1, 2.5]}}]
     plugin = next(p for p in data["plugins"] if p["name"] == "paint")
     assert plugin == {"name": "paint", "builtin": False, "path": str(tmp_path / "paint.py"), "actions": ["demo.paint"], "connection_types": [], "errors": []}
@@ -747,6 +747,78 @@ def test_the_default_is_the_value_of_a_step_that_doesnt_store_the_setting(regist
             if setting["kind"] == "list" and not setting["default"]:
                 defaults[setting["key"]] = [{f["key"]: f["default"] for f in setting["fields"]}] * setting["min_items"]
         assert _initial_params(action) == defaults, found["id"]
+
+
+ODD_VALUES = '''
+from dataclasses import dataclass
+from typing import ClassVar
+
+from tafl.api import P, action
+
+
+@dataclass(frozen=True, kw_only=True)
+class FakeChoice(P.Param):
+    """A class of its own that calls its kind "choice": the app shows a choice for it."""
+
+    options: tuple = (("a", "A"), "b")
+    kind: ClassVar[str] = "choice"
+
+
+@dataclass(frozen=True, kw_only=True)
+class Bare(P.Param):
+    kind: ClassVar[str] = "int"  # without min and max
+
+
+@dataclass(frozen=True, kw_only=True)
+class Hollow(P.Param):
+    kind: ClassVar[str] = "choice"  # without options
+
+
+@dataclass(frozen=True, kw_only=True)
+class Rows(P.Param):
+    kind: ClassVar[str] = "list"  # without fields
+
+
+@action("demo.odd", "Odd \\udc80", params=[
+    FakeChoice("pick", "Pick"),
+    Bare("count", "Count"),
+    Hollow("hollow", "Hollow"),
+    Rows("rows", "Rows"),
+    P.Float("ratio", "Ratio", default=float("nan"), min=float("-inf"), max=float("inf")),
+    P.Int("level", "Level", min=0, max=float("nan")),
+    P.Text("label", "L\\u00e4bel \\udc80", help="half \\ud800 of a character", default="x\\udfff"),
+    P.Choice("half\\udc81", "Half", [("v\\udc82", "w\\udc83")]),
+])
+def odd(df, p, ctx):
+    return df
+'''
+
+
+def test_values_of_plugins_that_json_cant_hold_and_known_kinds_of_their_own_classes(tmp_path):
+    """A limit that is not finite is null (no limit) and not in the schema, a default that JSON
+    can't hold is null, a lone surrogate (half of a character) is U+FFFD; a plugin's own class
+    with a known kind has the fields of that kind, empty where the class has none."""
+    (tmp_path / "odd.py").write_text(ODD_VALUES, encoding="utf-8")
+    registry = Registry()
+    registry.load_folder(tmp_path)
+    data, failures = catalog.describe(registry, [])
+    assert failures == [] and catalog.to_json(data).isascii()
+    odd = entry(data, "demo.odd")
+    assert odd["name"] == "Odd �"
+    settings = {setting["key"]: setting for setting in odd["settings"]}
+    assert settings["pick"]["options"] == [{"value": "a", "label": "A"}, {"value": "b", "label": "b"}]
+    assert (settings["count"]["min"], settings["count"]["max"]) == (None, None)
+    assert settings["hollow"]["options"] == [] and (settings["rows"]["fields"], settings["rows"]["min_items"]) == ([], 0)
+    assert (settings["ratio"]["default"], settings["ratio"]["min"], settings["ratio"]["max"]) == (None, None, None)
+    assert (settings["level"]["min"], settings["level"]["max"]) == (0, None)
+    assert (settings["label"]["label"], settings["label"]["help"], settings["label"]["default"]) == ("Läbel �", "half � of a character", "x�")
+    assert settings["half�"]["options"] == [{"value": "v�", "label": "w�"}]
+    properties = odd["settings_schema"]["properties"]
+    assert properties["pick"] == {"enum": ["a", "b"]} and properties["count"] == {"type": "integer"}
+    assert properties["hollow"] == {} and properties["rows"]["items"]["properties"] == {}
+    assert properties["ratio"] == {"type": "number"} and properties["level"] == {"type": "integer", "minimum": 0}
+    assert properties["half�"] == {"enum": ["v�"]}
+    assert "\\ud" not in catalog.to_json(data).decode("ascii").lower()  # no escape of a lone surrogate
 
 
 MALFORMED = {  # they load, but their declarations break a description

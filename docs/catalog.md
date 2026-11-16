@@ -114,6 +114,14 @@ Kinds, the value a step stores, and the fields that only this kind has:
   key of the `table` setting whose table the column belongs to (e.g. the other table of a
   merge).
 
+Plugins may declare values that JSON can't hold; the catalog writes them so that every reader
+can read them. A number that is not finite (NaN, infinity) is `null`: a `min` or `max` that is
+not finite is `null` (no limit) and not in the schema. A text with half of a character (a lone
+surrogate) has U+FFFD in its place. A tuple is a list, and any other value is its text. A
+plugin's own class of setting whose `kind` is one of the kinds above has the fields of that
+kind; a field that its class doesn't have is empty (e.g. `options: []`), and a choice without
+options takes any value in the schema.
+
 **`visible_if`** is an object: setting key → list of values. The setting is shown, and checked,
 only when each of these settings has one of the listed values. Compare with the value the step
 stores, or with the default when it stores none. In a list, the keys are fields of the same
