@@ -22,7 +22,10 @@ so now.
   ("Conditions, row 2: setting 'colum' is not known …", once for a name in several rows). Before,
   such a name, e.g. misspelled in a project file written by hand or by a program, was kept and
   its setting had the default, without a message. The step runs as before, and the exit codes
-  don't change. Names that start with `_` are Tafl's own marks and get no warning.
+  don't change. Names that start with `_` are Tafl's own marks and get no warning. A row of a
+  list that is no set of settings, e.g. the text "at most 2 rows" in the checks of Check data,
+  gets a warning too: "Checks, row 1: "at most 2 rows" is not a row of settings: a row with the
+  defaults is used". Before, the row had the defaults without a message.
 - Plugins: an action declares the columns with fixed names that its steps add with
   `adds_columns=[AddedColumn(name, type, when=...)]` (from `tafl.api`); an import built with
   `source_params` uses `adds_columns=source_columns()`. The imports of CSV, Excel and Parquet

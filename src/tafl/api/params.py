@@ -460,7 +460,8 @@ def unknown_settings(spec: Sequence[Param], values: Mapping[str, Any]) -> list[s
     with the closest known key: such a key has no effect, and its setting keeps its default
     (e.g. "delimeter" in a project file written by hand). The key of a hidden setting is known;
     keys that start with ``_`` are Tafl's own marks (e.g. ``_sheet``). A key that is in several
-    rows of a list gets one message, which names the rows."""
+    rows of a list gets one message, which names the rows. So do the rows of a list that are no
+    object of settings (e.g. a text): the step gets a row with the defaults for each."""
     known = [param.key for param in spec]
     keys = set(known)
     found = [
@@ -479,9 +480,11 @@ def _unknown_in_rows(param: List, rows: list, where: str) -> list[str]:
     fields = [field.key for field in param.fields]
     known = set(fields)
     numbers: dict[Any, list[int]] = {}  # unknown key -> the rows that have it
+    no_rows: list[int] = []  # rows that are no object of settings: List.normalize gives them the defaults
     found: list[str] = []
     for number, row in enumerate(rows, start=1):
         if not isinstance(row, Mapping):
+            no_rows.append(number)
             continue
         for key in row:
             if key not in known and not _own_mark(key):
@@ -493,6 +496,11 @@ def _unknown_in_rows(param: List, rows: list, where: str) -> list[str]:
         f"{where}, {_rows(rows_with)}: setting '{key}' is not known{_suggest(str(key), fields)}: it has no effect"
         for key, rows_with in numbers.items()
     ]
+    if len(no_rows) == 1:
+        unknown.insert(0, f"{where}, row {no_rows[0]}: {_show(rows[no_rows[0] - 1])} is not a row of settings: a row with the defaults is used")
+    elif no_rows:
+        first = _show(rows[no_rows[0] - 1])
+        unknown.insert(0, f"{where}, {_rows(no_rows)}: not rows of settings (the first is {first}): rows with the defaults are used")
     return unknown + found
 
 

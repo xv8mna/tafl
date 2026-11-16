@@ -207,7 +207,8 @@ functions of DuckDB depend on the DuckDB version that the Tafl program includes.
 - `action`: the action's `id`; `version`: its `version`. A step without `"version"` counts as
   version 1, and Tafl converts its settings from version 1.
 - `params`: the settings that differ from the defaults (or all of them). A key that no setting
-  has gets a warning on the step and has no effect.
+  has gets a warning on the step and has no effect. So does a row of a list that is not an
+  object: the step gets a row with the defaults there.
 - Optional: `"enabled": false` turns a step off; `"note"` is a text.
 - A step's `id` can be left out: Tafl gives the step one when it opens the file. A table has an
   `id` and a `name`; settings of the kinds table and tables store the id. Ids are unique in

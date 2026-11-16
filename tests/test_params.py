@@ -116,6 +116,7 @@ def test_stored_keys_that_no_setting_has():
 def test_stored_keys_that_no_field_has_in_the_rows_of_a_list():
     rows = [{"left": "a", "right": "b"}, {"left": "a", "rigth": "b", "_mark": 1}, "not a row", {"lft": "c"}]
     assert unknown_settings(SPEC, {"match": rows}) == [
+        'Match, row 3: "not a row" is not a row of settings: a row with the defaults is used',
         "Match, row 2: setting 'rigth' is not known (did you mean 'right'?): it has no effect",
         "Match, row 4: setting 'lft' is not known (did you mean 'left'?): it has no effect",
     ]
@@ -128,6 +129,23 @@ def test_stored_keys_that_no_field_has_in_the_rows_of_a_list():
     assert unknown_settings(nested, {"groups": [{"name": "a"}, {"parts": [{"part": "x"}, {"prt": "y"}]}]}) == [
         "Groups, row 2, Parts, row 2: setting 'prt' is not known (did you mean 'part'?): it has no effect"
     ]
+
+
+def test_rows_that_are_no_object_of_settings():
+    """A text, a number, null or a list where a row belongs: Tafl uses a row with the defaults
+    there (as before), and says so, once for the list."""
+    assert unknown_settings(SPEC, {"match": [None]}) == ["Match, row 1: null is not a row of settings: a row with the defaults is used"]
+    odd = [["ab", "x"], {"left": "a"}, 5, "a" * 60]
+    assert unknown_settings(SPEC, {"match": odd}) == [
+        'Match, rows 1, 3 and 4: not rows of settings (the first is ["ab", "x"]): rows with the defaults are used'
+    ]
+    many = unknown_settings(SPEC, {"match": ["x"] * 4000})
+    assert many == ['Match, rows 1, 2, 3 and 3,997 more: not rows of settings (the first is "x"): rows with the defaults are used']
+    nested = [P.List("groups", "Groups", fields=[P.List("parts", "Parts", fields=[P.Text("part")])])]
+    assert unknown_settings(nested, {"groups": [{"parts": [{"part": "x"}, "y"]}]}) == [
+        'Groups, row 1, Parts, row 2: "y" is not a row of settings: a row with the defaults is used'
+    ]
+    assert resolve(SPEC, {"match": ["x"]}).match == [{"left": "", "right": ""}]  # as before
 
 
 def test_a_key_in_4000_rows_is_said_once_and_fast():

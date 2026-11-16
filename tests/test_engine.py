@@ -200,6 +200,16 @@ def test_the_warning_on_an_export_that_doesnt_run_and_on_a_step_with_an_error(pr
     assert export.messages == [("warning", MISSPELLED), ("info", "Runs only when the project is run")]
 
 
+def test_a_row_that_is_no_object_of_settings_gets_a_warning(project, registry):
+    """E.g. a check written as a text in a project file: the step runs as before, with a row of
+    the defaults there ("at least 1 row"), and now says so."""
+    project.add_step("Orders", "check.data", {"checks": ["at most 2 rows"]}, index=1)
+    step = Engine(project, registry).evaluate("Orders").steps[1]
+    assert step.status == Status.OK and step.df.height == 3
+    assert step.messages[0] == ("warning", 'Checks, row 1: "at most 2 rows" is not a row of settings: a row with the defaults is used')
+    assert step.messages[1][0] == "info" and len(step.messages) == 2
+
+
 def test_the_warnings_of_a_step_stay_with_an_error_from_a_table_it_uses(project, registry):
     """A table that doesn't exist, a circular reference and a used table with an error stop the
     step before it runs: its warnings (a setting that isn't known, a {Name} that is no parameter)
