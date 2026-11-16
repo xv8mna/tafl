@@ -750,12 +750,17 @@ def test_run_says_which_setting_isnt_known(no_plugins, tmp_path, capsys):
     assert (tmp_path / "out.csv").read_text(encoding="utf-8-sig") == "Id\n1\n" and "Done in" in output
 
 
-def test_the_build_checks_the_catalog_of_the_download(registry):
-    """tools/build.py runs tafl.exe catalog --json and checks what it wrote."""
+def _build_tool():
     spec = importlib.util.spec_from_file_location("tafl_build", Path(__file__).resolve().parents[1] / "tools" / "build.py")
     build = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(build)
-    written = catalog.to_json(catalog.build(registry, [])).decode("ascii")
+    return build
+
+
+def test_the_build_checks_the_catalog_of_the_download(registry):
+    """tools/build.py runs tafl.exe catalog --json and checks what it wrote."""
+    build = _build_tool()
+    written = catalog.to_json(catalog.build(registry)).decode("ascii")
     assert build._check_catalog(written) == len(registry.actions)
     with pytest.raises(SystemExit, match="not the catalog in ASCII"):
         build._check_catalog(written.replace("\\u2192", "→"))
@@ -766,6 +771,65 @@ def test_the_build_checks_the_catalog_of_the_download(registry):
     with pytest.raises(SystemExit, match="didn't write JSON"):
         build._check_catalog(written[:-5])
     assert build._without({"A": "1", "PYTHONIOENCODING": "utf-8"}, "PYTHONIOENCODING") == {"A": "1"}
+
+
+FAKE_PROGRAM = r'''
+import json
+import sys
+
+how, source = sys.argv[1], sys.argv[2]
+data = json.loads(open(source, encoding="utf-8").read())
+if how == "right":
+    sys.stdout.buffer.write((json.dumps(data, indent=1, ensure_ascii=True) + "\n").encode())
+elif how == "question-marks":  # each character that the pipe's code page lacks became "?": all ASCII
+    sys.stdout.buffer.write(json.dumps(data, ensure_ascii=False).encode("ascii", "replace"))
+elif how == "text-layer":
+    sys.stdout.reconfigure(encoding="cp1252", errors="replace")
+    print(json.dumps(data, ensure_ascii=False))
+elif how in ("list", "null", "text"):
+    print({"list": "[]", "null": "null", "text": '"tafl-catalog"'}[how])
+elif how == "missing-action":
+    data["actions"].pop()
+    print(json.dumps(data))
+elif how == "other-help":
+    data["actions"][0]["help"] += " More."
+    print(json.dumps(data))
+elif how == "noise":
+    print("Warning: something")
+    print(json.dumps(data))
+elif how == "exit1":
+    print(json.dumps(data))
+    sys.exit(1)
+'''
+
+
+def test_the_build_check_with_programs_that_write_something_else(registry, tmp_path):
+    """Programs in place of tafl.exe, run as _check runs it: only the right catalog passes. Also
+    an output in ASCII with ? in place of characters (a pipe in another code page), and JSON that
+    is no object, get the check's own message."""
+    build = _build_tool()
+    source = tmp_path / "catalog.json"
+    source.write_text(json.dumps(catalog.build(registry)), encoding="utf-8")
+    (tmp_path / "fake.py").write_text(FAKE_PROGRAM, encoding="utf-8")
+    environment = {key: value for key, value in os.environ.items() if key != "PYTHONIOENCODING"}
+
+    def check(how: str) -> int:
+        return build._check_catalog(build._run(Path(sys.executable), tmp_path / "fake.py", how, source, env=environment))
+
+    assert check("right") == len(registry.actions)
+    for how, message in [
+        ("question-marks", "not the catalog of this build: .actions["),
+        ("other-help", "not the catalog of this build: .actions[0].help: "),
+        ("text-layer", "not the catalog in ASCII"),
+        ("list", "not the catalog in ASCII"),
+        ("null", "not the catalog in ASCII"),
+        ("text", "not the catalog in ASCII"),
+        ("missing-action", "actions, the built-in plugins have"),
+        ("noise", "didn't write JSON"),
+        ("exit1", "ended with exit code 1"),
+    ]:
+        with pytest.raises(SystemExit, match=re.escape(message)):
+            check(how)
 
 
 @pytest.mark.parametrize("rows", ["0", "-1", "x"])

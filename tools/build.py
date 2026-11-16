@@ -474,9 +474,10 @@ def _check(version: str) -> None:
 
 
 def _check_catalog(written: str) -> int:
-    """``tafl.exe catalog --json`` wrote JSON in ASCII only, with every built-in action. Returns
-    the number of actions."""
-    from tafl.core import Registry
+    """``tafl.exe catalog --json`` wrote JSON in ASCII only, and it is the catalog that this build
+    makes of its built-in plugins: also a character that the pipe changed (into ?) is found.
+    Returns the number of actions."""
+    from tafl.core import Registry, catalog
 
     registry = Registry()
     registry.load_builtin()
@@ -485,11 +486,30 @@ def _check_catalog(written: str) -> int:
     except ValueError as e:
         raise SystemExit(f"tafl.exe catalog --json didn't write JSON: {e}\n{written[:2000]}") from None
     actions = data.get("actions") if isinstance(data, dict) else None
-    if not written.isascii() or data.get("format") != "tafl-catalog" or not isinstance(actions, list):
+    if not written.isascii() or not isinstance(data, dict) or data.get("format") != "tafl-catalog" or not isinstance(actions, list):
         raise SystemExit(f"tafl.exe catalog --json: not the catalog in ASCII:\n{written[:2000]}")
     if len(actions) != len(registry.actions):
         raise SystemExit(f"tafl.exe catalog --json: {len(actions)} actions, the built-in plugins have {len(registry.actions)}")
+    if (difference := _first_difference(catalog.build(registry), data)) is not None:
+        raise SystemExit(f"tafl.exe catalog --json: not the catalog of this build: {difference}")
     return len(actions)
+
+
+def _first_difference(expected: object, written: object, where: str = "") -> str | None:
+    """Where ``written`` differs from ``expected`` first, with both values; None if nowhere."""
+    if isinstance(expected, dict) and isinstance(written, dict):
+        if list(expected) != list(written):
+            return f"{where or 'the top'}: the keys {list(expected)} were written as {list(written)}"
+        found = (_first_difference(expected[key], written[key], f"{where}.{key}") for key in expected)
+        return next((difference for difference in found if difference is not None), None)
+    if isinstance(expected, list) and isinstance(written, list):
+        if len(expected) != len(written):
+            return f"{where}: {len(expected)} entries were written as {len(written)}"
+        found = (_first_difference(a, b, f"{where}[{number}]") for number, (a, b) in enumerate(zip(expected, written)))
+        return next((difference for difference in found if difference is not None), None)
+    if type(expected) is not type(written) or expected != written:
+        return f"{where}: {expected!r} was written as {written!r}"[:500]
+    return None
 
 
 def _without(environment: dict[str, str], name: str) -> dict[str, str]:
