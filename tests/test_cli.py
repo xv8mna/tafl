@@ -17,7 +17,7 @@ import pytest
 from tafl import cli
 from tafl.api import expressions
 from tafl.cli import Console, main
-from tafl.core import Parameter, Project
+from tafl.core import Parameter, Project, catalog
 from tafl.core.cancel import CancelEvent
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "make_examples.py"
@@ -549,6 +549,115 @@ def test_plugin_folders_that_dont_exist_get_a_warning(tmp_path, monkeypatch, cap
     assert f"Warning: The plugin folder {tmp_path / 'missing'} does not exist" in capsys.readouterr().err
 
 
+@pytest.fixture
+def no_plugins(tmp_path, monkeypatch):
+    """No plugins of this computer: none from %APPDATA%\\Tafl\\plugins or TAFL_PLUGINS."""
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.delenv("TAFL_PLUGINS", raising=False)
+
+
+def test_the_catalog_as_json(no_plugins, registry, capsysbinary):
+    """Nothing but the JSON on stdout, in ASCII: an arrow of a help text is an escape."""
+    assert main(["catalog", "--json"]) == 0
+    output = capsysbinary.readouterr()
+    assert output.err == b"" and output.out.isascii() and output.out.endswith(b"}\n")
+    data = json.loads(output.out)
+    assert (data["format"], data["format_version"]) == ("tafl-catalog", "1.0")
+    assert [action["id"] for action in data["actions"]] == sorted(registry.actions)
+    assert all(plugin["builtin"] and plugin["path"] is None and not plugin["errors"] for plugin in data["plugins"])
+    assert "\\u2192" in output.out.decode("ascii") and "→" in json.dumps(data, ensure_ascii=False)
+
+
+def test_the_catalog_as_a_readable_list(no_plugins, registry, capsys):
+    assert main(["catalog"]) == 0
+    output = capsys.readouterr()
+    assert output.out.startswith(f"{len(registry.actions)} actions\n\nCalculate\n") and output.err == ""
+    assert '\n    file: file, "File", required, default "", shown when source is "file"\n' in output.out
+    assert output.out.endswith(" formula functions: 'tafl catalog --json' describes them, with all of the above\n")
+
+
+def test_the_catalog_with_a_command_line_that_cant_be_used(no_plugins, capsys):
+    with pytest.raises(SystemExit) as stopped:
+        main(["catalog", "--jsn"])
+    assert stopped.value.code == 2 and "unrecognized arguments: --jsn" in capsys.readouterr().err
+
+
+OWN_KIND = '''
+from dataclasses import dataclass
+from typing import ClassVar
+
+from tafl.api import AddedColumn, P, action
+
+
+@dataclass(frozen=True, kw_only=True)
+class Color(P.Param):
+    kind: ClassVar[str] = "color"
+
+
+@action("demo.paint", "Paint", kind="source", params=[Color("color", "Color", default=(255, 0, 0))],
+        adds_columns=[AddedColumn("Painted", "boolean")])
+def paint(df, p, ctx):
+    """Paints → red."""
+'''
+
+
+def test_the_catalog_with_plugins_and_one_that_fails_to_load(plugins, capsysbinary):
+    """A plugin with its own kind of setting is in the catalog with the common fields; a plugin
+    that fails to load is in it with its error, and the exit code is 1. The JSON is complete."""
+    (plugins / "paint.py").write_text(OWN_KIND, encoding="utf-8")
+    assert main(["--plugins", str(plugins), "catalog", "--json"]) == 1
+    output = capsysbinary.readouterr()
+    assert output.err.decode() == "Warning: Plugin 'quits' failed to load: SystemExit: plugin says bye\n"
+    assert output.out.isascii()
+    data = json.loads(output.out)
+    entries = {plugin["name"]: plugin for plugin in data["plugins"]}
+    assert list(entries)[-3:] == ["failing", "paint", "quits"]  # after the built-in ones
+    assert entries["quits"]["errors"][0].splitlines()[-1] == "SystemExit: plugin says bye"
+    assert (entries["quits"]["builtin"], entries["quits"]["path"], entries["quits"]["actions"]) == (False, str(plugins / "quits.py"), [])
+    assert entries["failing"]["actions"][0] == "demo.interrupt" and entries["failing"]["errors"] == []
+    paint = next(action for action in data["actions"] if action["id"] == "demo.paint")
+    assert paint["settings"] == [{"key": "color", "kind": "color", "label": "Color", "required": False, "default": [255, 0, 0], "help": "", "visible_if": None}]
+    assert paint["settings_schema"]["properties"] == {"color": {}} and paint["plugin"] == "paint"
+    assert paint["adds_columns"] == [{"name": "Painted", "type": "boolean", "when": None}]
+    assert paint["help"] == "Paints → red."
+    assert len(data["functions"]) > 400 and len(data["connection_types"]) == 2 and len(data["actions"]) > 40
+
+    assert main(["--plugins", str(plugins), "catalog"]) == 1  # readable: the same exit code and warning
+    output = capsysbinary.readouterr()
+    assert b"\n  demo.paint  Paint  (source, version 1, plugin paint)\n    color: color, \"Color\", default [255, 0, 0]\n" in output.out
+    assert output.err.decode() == "Warning: Plugin 'quits' failed to load: SystemExit: plugin says bye\n"
+
+
+def test_the_json_reaches_a_pipe_as_it_is(registry, tmp_path):
+    """The bytes go past the text layer: a pipe in the Windows code page would write ? for a
+    character such as → without a message. The escapes come back as the characters."""
+    environment = {**os.environ, "APPDATA": str(tmp_path / "appdata"), "PYTHONIOENCODING": "cp1252"}
+    for name in ("TAFL_PLUGINS", "PYTHONUTF8"):
+        environment.pop(name, None)
+    done = subprocess.run([sys.executable, "-m", "tafl", "catalog", "--json"], capture_output=True, env=environment, timeout=120)
+    assert (done.returncode, done.stderr) == (0, b"")
+    assert done.stdout.isascii() and b"\r" not in done.stdout
+    assert json.loads(done.stdout) == catalog.build(registry)  # every character as it is
+
+
+def test_the_build_checks_the_catalog_of_the_download(registry):
+    """tools/build.py runs tafl.exe catalog --json and checks what it wrote."""
+    spec = importlib.util.spec_from_file_location("tafl_build", Path(__file__).resolve().parents[1] / "tools" / "build.py")
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    written = catalog.to_json(catalog.build(registry, [])).decode("ascii")
+    assert build._check_catalog(written) == len(registry.actions)
+    with pytest.raises(SystemExit, match="not the catalog in ASCII"):
+        build._check_catalog(written.replace("\\u2192", "→"))
+    data = json.loads(written)
+    data["actions"].pop()
+    with pytest.raises(SystemExit, match=f"{len(registry.actions) - 1} actions, the built-in plugins have {len(registry.actions)}"):
+        build._check_catalog(json.dumps(data))
+    with pytest.raises(SystemExit, match="didn't write JSON"):
+        build._check_catalog(written[:-5])
+    assert build._without({"A": "1", "PYTHONIOENCODING": "utf-8"}, "PYTHONIOENCODING") == {"A": "1"}
+
+
 @pytest.mark.parametrize("rows", ["0", "-1", "x"])
 def test_rows_needs_at_least_one(demo, rows, capsys):
     with pytest.raises(SystemExit) as stopped:
@@ -558,7 +667,7 @@ def test_rows_needs_at_least_one(demo, rows, capsys):
 
 
 def test_the_help_names_the_exit_codes(capsys):
-    for command in ([], ["run"], ["show"], ["plugins"]):
+    for command in ([], ["run"], ["show"], ["plugins"], ["catalog"]):
         with pytest.raises(SystemExit):
             main([*command, "--help"])
         output = capsys.readouterr().out

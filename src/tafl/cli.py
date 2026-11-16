@@ -1,11 +1,13 @@
-"""Command line: run projects, look at tables, list plugins.
+"""Command line: run projects, look at tables, list plugins, describe what Tafl can run.
 
     tafl run PROJECT [--table NAME ...] [--preview] [--set NAME=VALUE ...]
     tafl show PROJECT --table NAME [--step N] [--rows 20] [--set NAME=VALUE ...]
     tafl plugins
+    tafl catalog [--json]
 
-Exit codes: 0 done, 1 a table has an error (plugins: a plugin failed to load), 2 the project or
-the command line can't be used, 3 a run ended without an error message (see crash.py), 130 stopped with Ctrl+C.
+Exit codes: 0 done, 1 a table has an error (plugins, catalog: a plugin failed to load), 2 the
+project or the command line can't be used, 3 a run ended without an error message (see crash.py),
+130 stopped with Ctrl+C.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from tafl.core import (
     StepResult,
     Table,
     TableResult,
+    catalog,
     parameters,
 )
 from tafl.core.cancel import CancelEvent, stopping_queries
@@ -60,8 +63,19 @@ _RUN_CODES = _codes(
 )
 _SHOW_CODES = _codes((0, "done (also for a table that is turned off)"), (1, "the table has an error"), *_USAGE)
 _PLUGIN_CODES = _codes((0, "all plugins loaded"), (1, "a plugin failed to load"))
+_CATALOG_CODES = _codes(
+    (0, "done"),
+    (1, "a plugin failed to load (the catalog is printed all the same; with --json, the plugin's entry has the error)"),
+    (2, "the command line can't be used"),
+)
 _CODES = (
-    _codes((0, "done"), (1, "a table has an error (plugins: a plugin failed to load)"), _USAGE[0], _STOPPED_EARLY, _USAGE[1])
+    _codes(
+        (0, "done"),
+        (1, "a table has an error (plugins, catalog: a plugin failed to load)"),
+        _USAGE[0],
+        _STOPPED_EARLY,
+        _USAGE[1],
+    )
     + f"\n\n'{COMMAND} COMMAND --help' tells more about a command."
 )
 
@@ -115,6 +129,19 @@ def _parser() -> argparse.ArgumentParser:
 
     commands.add_parser(
         "plugins", help="list plugins, their actions and load errors", epilog=_PLUGIN_CODES, formatter_class=lines
+    )
+
+    described = commands.add_parser(
+        "catalog",
+        help="describe every action, setting, connection type and formula function",
+        description="Describes every action with its settings, the connection types and the formula functions, "
+        "with the plugins that are loaded: as a readable list, or with --json for programs that write or check "
+        "project files.",
+        epilog=_CATALOG_CODES,
+        formatter_class=lines,
+    )
+    described.add_argument(
+        "--json", action="store_true", help="the catalog as JSON on stdout, in ASCII only (messages go to stderr)"
     )
     return parser
 
@@ -218,6 +245,8 @@ def _main(args: argparse.Namespace, console: Console, stop: threading.Event) -> 
         console.warn(warning)
     if args.command == "plugins":
         return _plugins(registry, console)
+    if args.command == "catalog":
+        return _catalog(registry, console, as_json=args.json)
     try:
         engine = Engine(_load(args.project), registry)
         engine.cancel = stop  # with it set, a KeyboardInterrupt is Ctrl+C, not a plugin's error
@@ -361,6 +390,33 @@ def _plugins(registry: Registry, console: Console) -> int:
         for error in info.errors:
             console.print("    ERROR: " + error.replace("\n", "\n           "))
     return 1 if registry.errors else 0
+
+
+def _catalog(registry: Registry, console: Console, *, as_json: bool) -> int:
+    """The catalog on stdout: readable, or as JSON for programs. A plugin that failed to load is
+    named on stderr; in the JSON its entry has the error."""
+    for name, error in registry.errors:
+        console.warn(f"Plugin '{name}' failed to load: {error.splitlines()[-1]}")
+    data = catalog.build(registry)
+    if as_json:
+        _write_bytes(catalog.to_json(data))
+    else:
+        for line in catalog.lines(data):
+            console.print(line)
+    return 1 if registry.errors else 0
+
+
+def _write_bytes(data: bytes) -> None:
+    """Writes ``data`` to stdout as it is, past the text layer, which could change characters that
+    the console's or the pipe's encoding doesn't have."""
+    sys.stdout.flush()
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:  # a stdout without bytes (e.g. replaced by a program that runs this one)
+        sys.stdout.write(data.decode("utf-8"))
+        sys.stdout.flush()
+        return
+    buffer.write(data)
+    buffer.flush()
 
 
 def _size(rows: int, columns: int) -> str:

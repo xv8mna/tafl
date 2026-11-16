@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+import json
 import os
 import platform
 import re
@@ -420,8 +421,8 @@ def _check_guide() -> None:
 
 def _check(version: str) -> None:
     """Both programs start and load the plugins and a plugin that imports what plugins may use. The
-    command line runs the examples; the window opens the demo and calculates all its tables. All in
-    a temporary folder, without the settings and plugins of the build machine."""
+    command line writes the catalog and runs the examples; the window opens the demo and calculates
+    all its tables. All in a temporary folder, without the settings and plugins of the build machine."""
     cli, window = APP / "tafl.exe", APP / "tafl-app.exe"
     started = time.perf_counter()
     with tempfile.TemporaryDirectory() as folder:
@@ -448,6 +449,8 @@ def _check(version: str) -> None:
         listed = _run(cli, "plugins", env=with_plugin)
         if "ERROR" in listed or not all(name in listed for name in ("excel.export", "calc.columns", "check_imports")):
             raise SystemExit(f"tafl.exe plugins:\n{listed}")
+        # into a pipe in the Windows code page, which would change characters that it doesn't have
+        actions = _check_catalog(_run(cli, "catalog", "--json", env=_without(environment, "PYTHONIOENCODING")))
         _run(cli, "run", examples / "demo.tafl", "--preview", env=environment)
         if (examples / "output").exists():
             raise SystemExit("tafl.exe run --preview wrote files")
@@ -465,9 +468,32 @@ def _check(version: str) -> None:
         _run(window, examples / "demo.tafl", env=check, timeout=120, log=log)
         print(
             f"checked in {checked - started:.1f} s: tafl.exe --version, plugins (with a plugin that imports the standard "
-            f"library), run --preview, run of both examples, show in UTF-8; tafl-app.exe opened the demo with that "
-            f"plugin and calculated its tables in {time.perf_counter() - checked:.1f} s"
+            f"library), catalog --json ({actions} actions, ASCII), run --preview, run of both examples, show in UTF-8; "
+            f"tafl-app.exe opened the demo with that plugin and calculated its tables in {time.perf_counter() - checked:.1f} s"
         )
+
+
+def _check_catalog(written: str) -> int:
+    """``tafl.exe catalog --json`` wrote JSON in ASCII only, with every built-in action. Returns
+    the number of actions."""
+    from tafl.core import Registry
+
+    registry = Registry()
+    registry.load_builtin()
+    try:
+        data = json.loads(written)
+    except ValueError as e:
+        raise SystemExit(f"tafl.exe catalog --json didn't write JSON: {e}\n{written[:2000]}") from None
+    actions = data.get("actions") if isinstance(data, dict) else None
+    if not written.isascii() or data.get("format") != "tafl-catalog" or not isinstance(actions, list):
+        raise SystemExit(f"tafl.exe catalog --json: not the catalog in ASCII:\n{written[:2000]}")
+    if len(actions) != len(registry.actions):
+        raise SystemExit(f"tafl.exe catalog --json: {len(actions)} actions, the built-in plugins have {len(registry.actions)}")
+    return len(actions)
+
+
+def _without(environment: dict[str, str], name: str) -> dict[str, str]:
+    return {key: value for key, value in environment.items() if key != name}
 
 
 def _run(program: Path, *arguments: str | Path, env: dict[str, str], timeout: int = 300, log: Path | None = None) -> str:
