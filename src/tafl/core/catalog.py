@@ -1,9 +1,10 @@
 """The catalog: every action, setting, connection type and formula function of this Tafl, with the
 plugins it loaded, for programs that write or check project files (``tafl catalog --json``).
 
-It is made from the same declarations that the app builds its settings forms from, so it says
-what Tafl runs. docs/catalog.md describes the format: ``FORMAT_VERSION`` gets a new minor version
-for additions only, a new major version for a change or removal that a reader may use.
+It is made from the same declarations that the app builds its settings forms from; Tafl's own
+check of a step has the last word. docs/catalog.md describes the format: ``FORMAT_VERSION`` gets a
+new minor version for additions only, a new major version for a change or removal that a reader
+may use.
 """
 
 from __future__ import annotations

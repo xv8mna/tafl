@@ -724,6 +724,27 @@ def test_the_docs_name_the_version_the_kinds_and_the_keywords(built):
     assert set(re.findall(r"^\| `(\w+)` \|", kinds, re.M)) - {"kind"} == set(catalog._KINDS)  # without the heading
     listed = text[text.index("The schemas use only these keywords") :].split("\n\n")[0]
     assert set(re.findall(r"`([$\w]+)`", listed)) == KEYWORDS
+    spec = importlib.util.spec_from_file_location("tafl_build", ROOT / "tools" / "build.py")
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    anchors = {build.anchor(heading) for heading in re.findall(r"^#{1,6} (.+)$", text, re.M)}
+    links = set(re.findall(r"\]\(#([^)]+)\)", text))
+    assert links and links <= anchors, links - anchors
+
+
+def test_the_default_is_the_value_of_a_step_that_doesnt_store_the_setting(registry, built):
+    """As docs/catalog.md says. The app starts a new step with the defaults, and a list without
+    rows with min_items rows of its fields' defaults."""
+    from tafl.ui.session import _initial_params
+
+    for found in built["actions"]:
+        action = registry.actions[found["id"]]
+        defaults = {setting["key"]: setting["default"] for setting in found["settings"]}
+        assert json.loads(json.dumps(action.resolve({}))) == defaults, found["id"]
+        for setting in found["settings"]:
+            if setting["kind"] == "list" and not setting["default"]:
+                defaults[setting["key"]] = [{f["key"]: f["default"] for f in setting["fields"]}] * setting["min_items"]
+        assert _initial_params(action) == defaults, found["id"]
 
 
 def test_the_readable_list(built):

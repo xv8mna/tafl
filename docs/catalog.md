@@ -3,8 +3,9 @@
 `tafl catalog --json` describes every action, setting, connection type and formula function of
 this Tafl, with the plugins it loads. Programs that write or check project files read it, for
 example an editor or a script that makes projects. The catalog is made from the same
-declarations that the app builds its settings forms from, so it cannot differ from what Tafl
-runs.
+declarations that the app builds its settings forms from. Tafl's own check of a step has the
+last word: some of what it checks, the catalog can't express (see
+[the schema of the settings](#the-schema-of-the-settings-settings_schema)).
 
 ## The command
 
@@ -81,7 +82,7 @@ Fields of every setting:
 | `kind` | what the value is (table below) |
 | `label` | the label in the app |
 | `required` | `true`: the setting needs a value when it is shown |
-| `default` | the value of a new step; a setting that a step doesn't store has this value |
+| `default` | the value that a step has when it doesn't store the setting (the app starts a new step with these values; a list without rows gets `min_items` rows of its fields' defaults there) |
 | `help` | an explanation, or `""` |
 | `visible_if` | `null` (always shown), or when it is shown (see below) |
 
@@ -164,6 +165,11 @@ Where the schema and Tafl's own check of a step differ:
   Tafl converts some such values (`null` gives the default) and reports the others.
 - The value of a setting that the step doesn't show: the schema checks it as any other, Tafl
   doesn't check it.
+- Some actions also check combinations of settings that the catalog can't express, and Tafl's
+  own check reports them: Check data needs at least one check (and in a "between" row, the first
+  number must not be bigger than the second), Pivot's row keys can't include the column of the
+  names or of the values, and the two new columns of Unpivot need names that are not only spaces,
+  and different ones.
 
 The schemas use only these keywords: `$schema`, `type`, `properties`, `patternProperties`,
 `additionalProperties`, `required`, `enum`, `items`, `minItems`, `minLength`, `minimum` and
