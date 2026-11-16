@@ -692,6 +692,120 @@ def test_the_json_is_all_that_stdout_gets(registry, tmp_path):
     assert readable.returncode == 0 and b"print while loading" in readable.stdout and b"demo.loud  Loud" in readable.stdout
 
 
+DETACH = 'import io\nimport sys\n\nsys.stdout = io.TextIOWrapper(sys.stdout.detach(), encoding="utf-8")\n'
+FAILS = 'raise RuntimeError("Fehler → ü")\n'
+FAILED = b"Warning: Plugin 'b_fails' failed to load: RuntimeError: Fehler \\u2192 \xfc"  # stderr in cp1252, escapes
+
+
+def _catalog_in_a_pipe(tmp_path, plugins: dict[str, str], *before: str) -> subprocess.CompletedProcess:
+    """tafl ... catalog --json with these plugins, in a pipe in the Windows code page."""
+    folder = tmp_path / "plugins"
+    folder.mkdir(parents=True)
+    for name, code in plugins.items():
+        (folder / name).write_text(code, encoding="utf-8")
+    environment = {**os.environ, "APPDATA": str(tmp_path / "appdata"), "PYTHONIOENCODING": "cp1252"}
+    for name in ("TAFL_PLUGINS", "PYTHONUTF8"):
+        environment.pop(name, None)
+    command = [sys.executable, "-m", "tafl", *before, "--plugins", str(folder), "catalog", "--json"]
+    done = subprocess.run(command, capture_output=True, env=environment, timeout=120)
+    assert done.stdout.isascii() and json.loads(done.stdout)["format"] == "tafl-catalog", (done.returncode, done.stderr[-500:])
+    return done
+
+
+@pytest.mark.parametrize(
+    ("with_it", "code", "said"),
+    [
+        ({}, 0, b""),
+        ({"b_fails.py": FAILS}, 1, FAILED),
+        ({"b_vague.py": 'from tafl.api import Action\n\nmade = Action("demo.made", "Made", print, description=None)\n'}, 1, b"Action 'demo.made' can't be described"),
+    ],
+)
+def test_a_plugin_that_wraps_its_stdout_anew(tmp_path, with_it, code, said):
+    """The common line of a plugin that wants UTF-8: it detaches "its" stdout. That is a stream
+    of its own while the plugins load, not Tafl's stderr: the JSON, the messages and the exit
+    code stay as they are."""
+    done = _catalog_in_a_pipe(tmp_path, {"a_detach.py": DETACH, **with_it})
+    assert done.returncode == code and said in done.stderr, done.stderr[-500:]
+    assert b"detached" not in done.stderr and b"lost sys.stderr" not in done.stderr
+
+
+def test_a_plugin_that_detaches_sys_dunder_stdout(tmp_path):
+    """sys.__stdout__ is a stream of its own too while the plugins load: the real stdout, which
+    the JSON goes to, stays whole."""
+    done = _catalog_in_a_pipe(tmp_path, {"a_dunder.py": "import sys\n\nsys.__stdout__.detach()\n"})
+    assert done.returncode == 0 and done.stderr == b""
+
+
+def test_a_plugin_that_wraps_its_stdout_anew_with_a_folder_that_isnt_there(tmp_path):
+    done = _catalog_in_a_pipe(tmp_path, {"a_detach.py": DETACH}, "--plugins", str(tmp_path / "missing"))
+    assert done.returncode == 0 and b"Warning: The plugin folder " in done.stderr and b"does not exist" in done.stderr
+
+
+def test_a_plugin_that_reconfigures_or_closes_its_stdout(tmp_path):
+    """Tafl's stderr keeps its encoding (here the Windows code page, with escapes), and its messages."""
+    reconfigures = _catalog_in_a_pipe(tmp_path / "a", {"a_utf8.py": 'import sys\nsys.stdout.reconfigure(encoding="utf-8")\n', "b_fails.py": FAILS})
+    assert reconfigures.returncode == 1 and FAILED in reconfigures.stderr
+    closes = _catalog_in_a_pipe(tmp_path / "b", {"a_closes.py": "import sys\nsys.stdout.close()\n", "b_fails.py": FAILS})
+    assert closes.returncode == 1 and FAILED in closes.stderr
+    descriptor = _catalog_in_a_pipe(tmp_path / "c", {"a_closes.py": "import os, sys\nos.close(sys.stdout.fileno())\n", "b_fails.py": FAILS})
+    assert descriptor.returncode == 1 and FAILED in descriptor.stderr  # Tafl's own descriptor 2 is still there
+
+
+def test_without_descriptors_stdout_goes_to_stderr_all_the_same(plugins, monkeypatch, capsys):
+    """A program started without descriptors 1 and 2 (here: they can't be copied): what plugins
+    print goes to sys.stderr, and a plugin that closes its stdout doesn't close sys.stderr."""
+    (plugins / "quits.py").unlink()
+    (plugins / "a_prints.py").write_text('import sys\n\nprint("printed while loading")\nsys.stdout.close()\n', encoding="utf-8")
+    (plugins / "b_fails.py").write_text(FAILS, encoding="utf-8")
+
+    def no_copy(descriptor):
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr(cli.os, "dup", no_copy)
+    assert main(["--plugins", str(plugins), "catalog", "--json"]) == 1
+    output = capsys.readouterr()
+    assert json.loads(output.out)["format"] == "tafl-catalog"
+    assert "printed while loading" in output.err and "Plugin 'b_fails' failed to load: RuntimeError: Fehler" in output.err
+
+
+IN_A_CONSOLE = r'''
+import io, json, os, sys
+
+errors = open(sys.argv[1], "wb", buffering=0)  # stderr a file (2> errors.txt), stdout the console
+os.dup2(errors.fileno(), 2)
+sys.stderr = io.TextIOWrapper(open(2, "wb", closefd=False), encoding="utf-8", errors="backslashreplace", line_buffering=True)
+console = type(getattr(sys.stdout, "buffer", sys.stdout).raw).__name__ == "_WindowsConsoleIO"
+from tafl.cli import main
+
+code = main(["--plugins", sys.argv[2], "catalog", "--json"])
+with open(sys.argv[3], "w", encoding="utf-8") as report:
+    json.dump({"console": console, "exit": code}, report)
+'''
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a console of Windows")
+def test_a_plugin_that_writes_to_its_console_while_stderr_is_a_file(tmp_path):
+    """stdout a console, stderr a file: a plugin that writes to sys.__stdout__ while it loads
+    loads, and its text goes to the file. (The console's own stream can't write to a file.)"""
+    folder = tmp_path / "plugins"
+    folder.mkdir()
+    (folder / "writes.py").write_text('import sys\n\nprint("P print")\nsys.__stdout__.write("Q dunder\\n")\nsys.__stdout__.flush()\n', encoding="utf-8")
+    (tmp_path / "child.py").write_text(IN_A_CONSOLE, encoding="utf-8")
+    environment = {**os.environ, "APPDATA": str(tmp_path / "appdata")}
+    environment.pop("TAFL_PLUGINS", None)
+    hidden = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW, wShowWindow=0)
+    errors, report = tmp_path / "errors.txt", tmp_path / "report.json"
+    subprocess.run(
+        [sys.executable, str(tmp_path / "child.py"), str(errors), str(folder), str(report)],
+        env=environment, creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=hidden, timeout=120,
+    )
+    found = json.loads(report.read_text(encoding="utf-8"))
+    if not found["console"]:
+        pytest.skip("no console for stdout here")
+    written = errors.read_text(encoding="utf-8")
+    assert found["exit"] == 0 and "P print" in written and "Q dunder" in written and "failed to load" not in written, written
+
+
 def test_stdout_is_as_before_once_the_catalog_is_written(plugins, capfd):
     """In the same process: afterwards descriptor 1 and sys.stdout are stdout again."""
     (plugins / "quits.py").unlink()

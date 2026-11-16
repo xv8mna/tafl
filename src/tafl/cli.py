@@ -16,6 +16,7 @@ import argparse
 import contextlib
 import ctypes
 import errno
+import io
 import os
 import signal
 import socket
@@ -24,6 +25,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
+from typing import TextIO
 
 import polars as pl
 
@@ -447,8 +449,10 @@ def _discard_stdout() -> None:
 def _stdout_to_stderr() -> Iterator[None]:
     """While the block runs, what is written to stdout goes to stderr: print() and sys.stdout,
     sys.__stdout__, and file descriptor 1, also from C code (on Windows the standard output
-    handle follows descriptor 1). Afterwards stdout is as before. Without the descriptors (a
-    program started without them), only sys.stdout goes to stderr."""
+    handle follows descriptor 1). sys.stdout and sys.__stdout__ get a stream of their own: what a
+    plugin does to "its stdout" (detach, reconfigure, close) must not happen to sys.stderr, which
+    Tafl's messages need. Afterwards stdout is as before. Without the descriptors (a program
+    started without them), only sys.stdout and sys.__stdout__ go to stderr."""
     streams = [stream for stream in (sys.stdout, sys.__stdout__) if stream is not None]
     _flush(streams)
     try:
@@ -461,15 +465,60 @@ def _stdout_to_stderr() -> Iterator[None]:
         except OSError:
             os.close(saved)
             saved = None
+    # On descriptor 1, which is stderr now: a plugin that closes "its" descriptor doesn't close 2
+    own = _own_stream(1 if saved is not None else _descriptor(sys.stderr))
+    target = own if own is not None else _ToStderr()
+    dunder = sys.__stdout__
     try:
-        with contextlib.redirect_stdout(sys.stderr):
-            yield
+        with contextlib.redirect_stdout(target):
+            sys.__stdout__ = target  # also a console's own stream can't write where stderr goes
+            try:
+                yield
+            finally:
+                streams.append(sys.stdout)  # e.g. a plugin's own stream on the buffer of target
     finally:
-        _flush([*streams, sys.stdout, sys.stderr])  # what is still held in them goes to stderr too
+        _flush([*streams, target, sys.stderr])  # what is still held in them goes to stderr too
         _flush_c_streams()
+        sys.__stdout__ = dunder
+        with contextlib.suppress(OSError, ValueError):
+            target.close()  # not the descriptor (closefd=False)
         if saved is not None:
             os.dup2(saved, 1)
             os.close(saved)
+
+
+def _descriptor(stream: object) -> int | None:
+    try:
+        return stream.fileno()  # type: ignore[attr-defined]
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _own_stream(descriptor: int | None) -> TextIO | None:
+    """A text stream of its own on ``descriptor`` that doesn't close it, in the encoding of
+    stderr; what it can't encode is written as a backslash escape. None without a descriptor."""
+    if descriptor is None:
+        return None
+    encoding = getattr(sys.stderr, "encoding", None) or "utf-8"
+    try:
+        return open(descriptor, "w", encoding=encoding, errors="backslashreplace", closefd=False, buffering=1)
+    except (OSError, ValueError, LookupError):
+        return None
+
+
+class _ToStderr(io.TextIOBase):
+    """Where stdout goes without descriptors: to sys.stderr, but closing it closes nothing else."""
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        if sys.stderr is not None:
+            sys.stderr.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        _flush([sys.stderr])
 
 
 def _flush(streams: Iterable[object]) -> None:
