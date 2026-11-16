@@ -131,6 +131,21 @@ def test_stored_keys_that_no_field_has_in_the_rows_of_a_list():
     ]
 
 
+def test_unknown_settings_of_something_else_than_a_step(registry):
+    """E.g. of a connection: the message says whose settings they are (as the changelog and the
+    guide show it)."""
+    where = "Connection 'Sales'"
+    assert unknown_settings(registry.connectors["sqlserver"].params, {"sever": ".", "database": "x"}, where=where) == [
+        "Connection 'Sales': setting 'sever' is not known (did you mean 'server'?): it has no effect"
+    ]
+    assert unknown_settings(SPEC, {"colum": "B", "_note": 1}, where=where) == [
+        "Connection 'Sales': setting 'colum' is not known (did you mean 'column'?): it has no effect"
+    ]
+    assert unknown_settings(SPEC, {"match": [{"lft": "a"}]}, where=where) == [
+        "Connection 'Sales', Match, row 1: setting 'lft' is not known (did you mean 'left'?): it has no effect"
+    ]
+
+
 def test_rows_that_are_no_object_of_settings():
     """A text, a number, null or a list where a row belongs: Tafl uses a row with the defaults
     there (as before), and says so, once for the list."""

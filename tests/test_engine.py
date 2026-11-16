@@ -1,6 +1,8 @@
+import contextlib
 import importlib.util
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -14,7 +16,7 @@ import pytest
 
 from tafl.api import ActionError, Cancelled, Mode, P, action, expressions
 from tafl.api.parameters import Failed
-from tafl.core import Engine, Parameter, Project, Registry, ResultCache, Status
+from tafl.core import Connection, Engine, Parameter, Project, Registry, ResultCache, Status
 from tafl.core import parameters as core_parameters
 from tafl.core.cancel import CancelEvent
 from tafl.core.engine import Imported, _Evaluation
@@ -225,6 +227,26 @@ def test_the_warnings_stay_when_the_settings_cant_be_read(project, registry, mon
     step = Engine(project, registry).evaluate("Orders").steps[0]
     assert step.error == "Could not read the step settings: a plugin's own way of filling in failed"
     assert step.messages == [("warning", MISSPELLED)]
+
+
+def test_a_connection_with_a_setting_that_isnt_known(project, registry, tmp_path):
+    """Each step that uses the connection says so, also with the name in other case; the step
+    runs as before. Tafl's own marks (_) and the steps that don't use it get no warning."""
+    with contextlib.closing(sqlite3.connect(tmp_path / "shop.db")) as connection:
+        connection.execute("CREATE TABLE Orders (Id INTEGER)")
+        connection.execute("INSERT INTO Orders VALUES (7)")
+        connection.commit()
+    project.connections = [Connection("Sales", "sqlite", {"file": "shop.db", "fiel": "other.db", "_note": "mine"})]
+    first, second = project.add_table("First"), project.add_table("Second")
+    project.add_step(first, "db.import", {"connection": "Sales", "table": "Orders"})
+    project.add_step(second, "db.import", {"connection": "sales", "mode": "query", "query": "SELECT Id + 1 AS Id FROM Orders"})
+    engine = Engine(project, registry)
+    warned = ("warning", "Connection 'Sales': setting 'fiel' is not known (did you mean 'file'?): it has no effect")
+    for table, value in ((first, 7), (second, 8)):
+        step = engine.evaluate(table.id).steps[0]
+        assert step.status == Status.OK and step.df["Id"].to_list() == [value]
+        assert [message for message in step.messages if message[0] == "warning"] == [warned]
+    assert all(level == "info" for step in engine.evaluate("Orders").steps for level, _ in step.messages)
 
 
 def test_a_row_that_is_no_object_of_settings_gets_a_warning(project, registry):

@@ -455,24 +455,26 @@ def check(spec: Sequence[Param], params: Mapping[str, Any], vc: ValidationContex
     return problems
 
 
-def unknown_settings(spec: Sequence[Param], values: Mapping[str, Any]) -> list[str]:
+def unknown_settings(spec: Sequence[Param], values: Mapping[str, Any], *, where: str = "") -> list[str]:
     """Messages about the stored keys that no setting has, also in the rows of list settings,
     with the closest known key: such a key has no effect, and its setting keeps its default
     (e.g. "delimeter" in a project file written by hand). The key of a hidden setting is known;
     keys that start with ``_`` are Tafl's own marks (e.g. ``_sheet``). A key that is in several
     rows of a list gets one message, which names the rows. So do the rows of a list that are no
-    object of settings (e.g. a text): the step gets a row with the defaults for each."""
+    object of settings (e.g. a text): the step gets a row with the defaults for each. ``where``
+    names whose settings they are, e.g. "Connection 'Sales'"."""
     known = [param.key for param in spec]
     keys = set(known)
+    setting = f"{where}: setting" if where else "Setting"
     found = [
-        f"Setting '{key}' is not known{_suggest(str(key), known)}: it has no effect"
+        f"{setting} '{key}' is not known{_suggest(str(key), known)}: it has no effect"
         for key in values
         if key not in keys and not _own_mark(key)
     ]
     for param in spec:
         rows = values.get(param.key)
         if isinstance(param, List) and isinstance(rows, list):
-            found += _unknown_in_rows(param, rows, param.label)
+            found += _unknown_in_rows(param, rows, f"{where}, {param.label}" if where else param.label)
     return found
 
 

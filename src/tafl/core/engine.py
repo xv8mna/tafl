@@ -822,6 +822,7 @@ class _Evaluation:
         try:
             raw = action.upgrade(step.params, step.version)
             unknown_keys = P.unknown_settings(action.params, raw)  # e.g. a misspelled key: no effect, but said
+            unknown_keys += self._unknown_connection_settings(action, raw)
             connector = self._connector(action, raw)
             if self.parameters:
                 spans = connector.sql_spans if connector is not None else None
@@ -965,6 +966,18 @@ class _Evaluation:
         if self.cancel is not None and self.cancel.is_set():
             self.stopped_messages = list(ctx.messages)
             raise Cancelled() from None
+
+    def _unknown_connection_settings(self, action: Action, raw: Mapping[str, Any]) -> list[str]:
+        """The keys in the settings of the connections the step uses that no setting of their
+        type has, as warnings of the step: "Connection 'Sales': setting 'sever' is not known"."""
+        found, seen = [], set()
+        for param in action.params:
+            definition = self.project.connection(str(raw.get(param.key) or "")) if isinstance(param, P.ConnectionRef) else None
+            connector = self.registry.connectors.get(definition.type) if definition is not None else None
+            if connector is not None and definition.name not in seen:
+                seen.add(definition.name)
+                found += P.unknown_settings(connector.params, definition.settings, where=f"Connection '{definition.name}'")
+        return found
 
     def _connector(self, action: Action, raw: Mapping[str, Any]) -> Connector | None:
         """The database type of the step's connection: it fills the parameters into the SQL."""

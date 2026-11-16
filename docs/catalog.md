@@ -189,7 +189,9 @@ The schemas use only these keywords: `$schema`, `type`, `properties`, `patternPr
 ## Connection types
 
 `id` (what a connection stores in `"type"`), `name`, `plugin`, and `settings` in the form of an
-action's settings.
+action's settings. A key in a connection's `"settings"` that no setting of its type has gets a
+warning on each step that uses the connection, and has no effect; keys that start with `_` are
+Tafl's own.
 
 ## Functions
 

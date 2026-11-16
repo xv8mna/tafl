@@ -19,7 +19,9 @@ so now.
   format and its version rules.
 - **A setting that the action doesn't have** gets a warning on its step: "Setting 'delimeter' is
   not known (did you mean 'delimiter'?): it has no effect", also in the rows of a list
-  ("Conditions, row 2: setting 'colum' is not known …", once for a name in several rows). Before,
+  ("Conditions, row 2: setting 'colum' is not known …", once for a name in several rows), and in
+  the settings of a connection, on each step that uses it ("Connection 'Sales': setting 'sever'
+  is not known (did you mean 'server'?): it has no effect"). Before,
   such a name, e.g. misspelled in a project file written by hand or by a program, was kept and
   its setting had the default, without a message. The step runs as before, and the exit codes
   don't change. Names that start with `_` are Tafl's own marks and get no warning. A row of a
