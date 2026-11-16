@@ -23,7 +23,10 @@ With `--json`, what plugins write to stdout goes to stderr, from the moment they
 until the program ends (a thread of a plugin can still write after the JSON): with `print`,
 `sys.stdout`, `sys.__stdout__`, file descriptor 1, the standard output handle of Windows, C code
 that uses the C runtime of Python, and programs that a plugin starts. C code with a C runtime of
-its own is not covered.
+its own is not covered. A program that reads stdout must also read stderr at the same time (as
+`subprocess.run` of Python does with `capture_output=True`), or send stderr to a file or to
+`NUL`: otherwise a plugin that writes much while it loads can make both programs wait for each
+other.
 
 The JSON has only ASCII characters: other characters are written as `\uXXXX` escapes (for
 example `\u2192` for →). Every JSON reader turns them back. Without them, a Windows pipe
