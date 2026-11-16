@@ -1,9 +1,10 @@
 import re
+import time
 
 import pytest
 
 from tafl.api import AddedColumn, P, ValidationContext, action
-from tafl.api.params import check, is_visible, resolve, table_refs
+from tafl.api.params import check, is_visible, resolve, table_refs, unknown_settings
 
 SPEC = [
     P.Choice("mode", "Mode", [("table", "Table"), ("query", "Query")]),
@@ -99,6 +100,46 @@ def test_reserved_and_duplicate_parameter_names_are_rejected():
 
 def test_labels_default_from_keys():
     assert P.Text("new_name").label == "New name"
+
+
+def test_stored_keys_that_no_setting_has():
+    """They have no effect: the setting keeps its default. The closest known key is suggested."""
+    assert unknown_settings(SPEC, {"column": "A", "colum": "B", "Mode": "query", "xyz": 1}) == [
+        "Setting 'colum' is not known (did you mean 'column'?): it has no effect",
+        "Setting 'Mode' is not known (did you mean 'mode'?): it has no effect",
+        "Setting 'xyz' is not known: it has no effect",
+    ]
+    assert unknown_settings(SPEC, {"query": "SELECT 1", "_sheet": {"file": "a.csv"}, "_other": 1}) == []  # hidden; marks
+    assert unknown_settings(SPEC, {}) == []
+
+
+def test_stored_keys_that_no_field_has_in_the_rows_of_a_list():
+    rows = [{"left": "a", "right": "b"}, {"left": "a", "rigth": "b", "_mark": 1}, "not a row", {"lft": "c"}]
+    assert unknown_settings(SPEC, {"match": rows}) == [
+        "Match, row 2: setting 'rigth' is not known (did you mean 'right'?): it has no effect",
+        "Match, row 4: setting 'lft' is not known (did you mean 'left'?): it has no effect",
+    ]
+    assert unknown_settings(SPEC, {"match": "left"}) == []  # not a list: the check says so
+    same = [{"lefft": "a"}] * 2 + [{"left": "a"}] + [{"lefft": "a"}]
+    assert unknown_settings(SPEC, {"match": same}) == [
+        "Match, rows 1, 2 and 4: setting 'lefft' is not known (did you mean 'left'?): it has no effect"
+    ]
+    nested = [P.List("groups", "Groups", fields=[P.Text("name"), P.List("parts", "Parts", fields=[P.Text("part")])])]
+    assert unknown_settings(nested, {"groups": [{"name": "a"}, {"parts": [{"part": "x"}, {"prt": "y"}]}]}) == [
+        "Groups, row 2, Parts, row 2: setting 'prt' is not known (did you mean 'part'?): it has no effect"
+    ]
+
+
+def test_a_key_in_4000_rows_is_said_once_and_fast():
+    rows = [{"lefft": "a", "right": str(n)} for n in range(4000)]
+    started = time.perf_counter()
+    found = unknown_settings(SPEC, {"match": rows})
+    assert time.perf_counter() - started < 0.2
+    assert found == ["Match, rows 1, 2, 3 and 3,997 more: setting 'lefft' is not known (did you mean 'left'?): it has no effect"]
+    rows = [{f"key{n}": n} for n in range(4000)]  # each row its own key: one message each
+    started = time.perf_counter()
+    found = unknown_settings(SPEC, {"match": rows, **{f"top{n}": n for n in range(4000)}})
+    assert time.perf_counter() - started < 1 and len(found) == 8000
 
 
 SOURCE = [P.Choice("source", "Read", ["file", "folder"]), P.Bool("file_column", "Add a column with the file name")]

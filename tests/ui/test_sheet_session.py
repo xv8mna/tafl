@@ -511,8 +511,9 @@ def test_the_settings_panel_works_without_a_main_window(session, add):
 def test_the_sheet_shows_the_file_not_a_later_step(session, settle, add, edit, registry, suffix):
     add(f"orders{suffix}")
     step = session.table.steps[0]
-    session.add_step(registry.actions["rows.filter"], params={"condition": "[Order] = '00123'"})
+    session.add_step(registry.actions["rows.filter_formula"], params={"condition": "[Order] = '00123'"})
     settle(session)
+    assert session.result.ok and session.result.df.height == 1  # the later step keeps one row
     opened = edit(step)
     assert not opened.is_draft and opened.sheet.names == ["Order", "Amount", "Name"]
     assert rows_of(opened) == [["00123", "1,50", "Müller"], ["00124", "1E5", ""], ["00125", "27.02.2026", " a b "]]

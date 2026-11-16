@@ -640,6 +640,20 @@ def test_the_json_reaches_a_pipe_as_it_is(registry, tmp_path):
     assert json.loads(done.stdout) == catalog.build(registry)  # every character as it is
 
 
+def test_run_says_which_setting_isnt_known(no_plugins, tmp_path, capsys):
+    """A key that no setting has: the run goes on as before (exit code 0), with the warning."""
+    path = _one_table(tmp_path)
+    project = Project.load(path)
+    project.tables[0].steps[0].params["delimeter"] = ","
+    project.tables[0].steps[1].params["encodng"] = "utf-8"
+    project.save(path)
+    assert main(["run", str(path)]) == 0
+    output = capsys.readouterr().out
+    assert "          ! Setting 'delimeter' is not known (did you mean 'delimiter'?): it has no effect\n" in output
+    assert "          ! Setting 'encodng' is not known (did you mean 'encoding'?): it has no effect\n" in output
+    assert (tmp_path / "out.csv").read_text(encoding="utf-8-sig") == "Id\n1\n" and "Done in" in output
+
+
 def test_the_build_checks_the_catalog_of_the_download(registry):
     """tools/build.py runs tafl.exe catalog --json and checks what it wrote."""
     spec = importlib.util.spec_from_file_location("tafl_build", Path(__file__).resolve().parents[1] / "tools" / "build.py")

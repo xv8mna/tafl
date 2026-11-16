@@ -455,6 +455,60 @@ def check(spec: Sequence[Param], params: Mapping[str, Any], vc: ValidationContex
     return problems
 
 
+def unknown_settings(spec: Sequence[Param], values: Mapping[str, Any]) -> list[str]:
+    """Messages about the stored keys that no setting has, also in the rows of list settings,
+    with the closest known key: such a key has no effect, and its setting keeps its default
+    (e.g. "delimeter" in a project file written by hand). The key of a hidden setting is known;
+    keys that start with ``_`` are Tafl's own marks (e.g. ``_sheet``). A key that is in several
+    rows of a list gets one message, which names the rows."""
+    known = [param.key for param in spec]
+    keys = set(known)
+    found = [
+        f"Setting '{key}' is not known{_suggest(str(key), known)}: it has no effect"
+        for key in values
+        if key not in keys and not _own_mark(key)
+    ]
+    for param in spec:
+        rows = values.get(param.key)
+        if isinstance(param, List) and isinstance(rows, list):
+            found += _unknown_in_rows(param, rows, param.label)
+    return found
+
+
+def _unknown_in_rows(param: List, rows: list, where: str) -> list[str]:
+    fields = [field.key for field in param.fields]
+    known = set(fields)
+    numbers: dict[Any, list[int]] = {}  # unknown key -> the rows that have it
+    found: list[str] = []
+    for number, row in enumerate(rows, start=1):
+        if not isinstance(row, Mapping):
+            continue
+        for key in row:
+            if key not in known and not _own_mark(key):
+                numbers.setdefault(key, []).append(number)
+        for field in param.fields:  # a list in the rows of a list
+            if isinstance(field, List) and isinstance(row.get(field.key), list):
+                found += _unknown_in_rows(field, row[field.key], f"{where}, row {number}, {field.label}")
+    unknown = [
+        f"{where}, {_rows(rows_with)}: setting '{key}' is not known{_suggest(str(key), fields)}: it has no effect"
+        for key, rows_with in numbers.items()
+    ]
+    return unknown + found
+
+
+def _own_mark(key: Any) -> bool:
+    return isinstance(key, str) and key.startswith("_")
+
+
+def _rows(numbers: list[int]) -> str:
+    """"row 2", "rows 2 and 5", "rows 1, 2, 3 and 3,997 more"."""
+    if len(numbers) == 1:
+        return f"row {numbers[0]}"
+    if len(numbers) <= 3:
+        return f"rows {', '.join(map(str, numbers[:-1]))} and {numbers[-1]}"
+    return f"rows {', '.join(map(str, numbers[:3]))} and {len(numbers) - 3:,} more"
+
+
 def table_refs(spec: Sequence[Param], params: Mapping[str, Any]) -> list[str]:
     refs: list[str] = []
     for param in spec:

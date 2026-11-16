@@ -138,7 +138,8 @@ def test_the_problem_shows_while_the_project_is_edited(registry, daily, tmp_path
     table = project.add_table("One")
     project.add_step(table, registry.actions["csv.import"], {"file": "inbox/a.csv"})
     for command in ("files.move", "files.copy", "files.delete"):
-        project.add_step(table, registry.actions[command], {"which": "imported", "target": "archive"})
+        target = {} if command == "files.delete" else {"target": "archive"}  # a delete has no target folder
+        project.add_step(table, registry.actions[command], {"which": "imported", **target})
     project.add_step(table, registry.actions["files.move"], {"which": "column", "column": "Nr", "target": "archive"})
     preview = Engine(project, registry).evaluate("One")
     assert preview.ok and [s.status for s in preview.steps] == [Status.OK, *[Status.SKIPPED] * 4]

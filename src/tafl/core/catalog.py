@@ -84,8 +84,9 @@ def to_json(catalog: Mapping[str, Any]) -> bytes:
 def settings_schema(params: Sequence[Param]) -> dict[str, Any]:
     """A JSON Schema of a step's ``"params"``: the type of each value, the values of a choice,
     the limits of a number, the rows of a list, and the settings that a step must always store.
-    Unknown keys are not allowed (a misspelled key would else keep its setting at the default
-    without a message), except Tafl's own marks, which start with ``_``. Without ``visible_if``."""
+    Unknown keys are not allowed (Tafl runs a step with a misspelled key with a warning, and the
+    setting keeps its default), except Tafl's own marks, which start with ``_``. Without
+    ``visible_if``."""
     schema: dict[str, Any] = {
         "$schema": SCHEMA,
         "type": "object",

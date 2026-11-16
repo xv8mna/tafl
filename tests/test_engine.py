@@ -1,15 +1,18 @@
+import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import types
+from pathlib import Path
 
 import duckdb
 import polars as pl
 import pytest
 
-from tafl.api import ActionError, Cancelled, P, action, expressions
+from tafl.api import ActionError, Cancelled, Mode, P, action, expressions
 from tafl.api.parameters import Failed
 from tafl.core import Engine, Parameter, Project, Registry, ResultCache, Status
 from tafl.core.cancel import CancelEvent
@@ -158,6 +161,74 @@ def test_settings_of_the_wrong_kind_are_step_errors(project, registry):
     step.params["table"] = "t1"
     errors = engine.evaluate("Derived").steps[1].error.splitlines()
     assert errors == ['Other table: ["t1"] is not a table', "Columns to add (empty = all): 3 is not a list of columns"]
+
+
+MISSPELLED = "Setting 'delimeter' is not known (did you mean 'delimiter'?): it has no effect"
+
+
+def test_a_setting_that_isnt_known_has_no_effect_and_a_warning(project, registry):
+    """E.g. a key misspelled in a project file written by hand: the step runs as before (the
+    setting keeps its default), now with a warning, also from the cache and in a run."""
+    before = Engine(project, registry).evaluate("Orders").steps[0]
+    project.tables[0].steps[0].params["delimeter"] = ","
+    engine = Engine(project, registry)
+    for cached in (False, True):
+        step = engine.evaluate("Orders").steps[0]
+        assert step.cached is cached and step.status == Status.OK
+        assert step.messages == [("warning", MISSPELLED), *before.messages] and step.df.equals(before.df)
+    run = engine.run()["t1"].steps
+    assert run[0].messages[0] == ("warning", MISSPELLED) and not run[0].cached
+    assert [level for level, _ in run[3].messages] == ["info"]  # the export, without one
+
+
+def test_a_setting_that_isnt_known_in_a_row_of_a_list(project, registry):
+    project.tables[0].steps[2].params["columns"].append({"name": "Net", "formula": "[Amount]", "formul": "[Amount] / 2"})
+    step = Engine(project, registry).evaluate("Orders").steps[2]
+    assert step.status == Status.OK and step.df["Net"].to_list() == [10.5, 20.0]
+    assert step.messages == [("warning", "New columns, row 2: setting 'formul' is not known (did you mean 'formula'?): it has no effect")]
+
+
+def test_the_warning_on_an_export_that_doesnt_run_and_on_a_step_with_an_error(project, registry):
+    project.tables[0].steps[3].params["delimeter"] = ","
+    project.tables[0].steps[1].params = {"conditon": "[Amount] > 6"}  # misspelled: the condition is missing
+    result = Engine(project, registry).evaluate("Orders")
+    assert result.steps[1].status == Status.ERROR and result.steps[1].error == "Condition: required"
+    assert result.steps[1].messages == [("warning", "Setting 'conditon' is not known (did you mean 'condition'?): it has no effect")]
+    project.tables[0].steps[1].params = {"condition": "[Amount] > 6"}
+    export = Engine(project, registry).evaluate("Orders").steps[3]
+    assert export.status == Status.SKIPPED
+    assert export.messages == [("warning", MISSPELLED), ("info", "Runs only when the project is run")]
+
+
+def test_hidden_settings_and_tafls_own_marks_are_known(project, registry):
+    """The import reads one file: Folder and File names are hidden, and _sheet is the mark of a
+    data sheet (here of another file: it counts for nothing)."""
+    project.tables[0].steps[0].params |= {"folder": "daily", "pattern": "*.txt", "_sheet": {"file": "other.csv", "stamp": 1}}
+    result = Engine(project, registry).evaluate("Orders")
+    assert result.ok and all(level == "info" for step in result.steps for level, _ in step.messages)
+
+
+def test_the_stored_projects_have_no_setting_that_isnt_known(registry, tmp_path):
+    """The examples and the big test project: also after the steps of an older version are
+    brought up to date."""
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("make_big_project", root / "tools" / "make_big_project.py")
+    big = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(big)
+    paths = [root / "examples" / "demo.tafl", root / "examples" / "excel-check.tafl", big.build_project().save(tmp_path / "big.tafl")]
+    steps = 0
+    for path in paths:
+        for table in Project.load(path).tables:
+            for step in table.steps:
+                action = registry.actions[step.action]
+                assert P.unknown_settings(action.params, action.upgrade(step.params, step.version)) == [], (path.name, step)
+                steps += 1
+    assert steps >= 480
+    shutil.copytree(root / "examples" / "data", tmp_path / "data")
+    demo = Project.load(shutil.copy(root / "examples" / "demo.tafl", tmp_path / "demo.tafl"))
+    results = Engine(demo, registry).run(mode=Mode.PREVIEW)
+    assert all(result.ok for result in results.values()) and len(results) == 3
+    assert all("is not known" not in text for result in results.values() for step in result.steps for _, text in step.messages)
 
 
 def test_unknown_action_shows_error_and_survives_saving(project, registry, tmp_path):

@@ -819,6 +819,7 @@ class _Evaluation:
             return _error(step, f"'{action.name}' can only be the first step of a table")
         try:
             raw = action.upgrade(step.params, step.version)
+            unknown_keys = P.unknown_settings(action.params, raw)  # e.g. a misspelled key: no effect, but said
             connector = self._connector(action, raw)
             unknown = []
             if self.parameters:
@@ -834,7 +835,8 @@ class _Evaluation:
             ended = not isinstance(e, Exception)  # sys.exit() or KeyboardInterrupt
             problem = f"{_owner(action)} tried to end the program ({_friendly(e)})" if ended else str(e)
             return _error(step, f"Could not read the step settings: {problem}", traceback.format_exc())
-        warnings = [
+        warnings = [("warning", text) for text in unknown_keys]
+        warnings += [
             ("warning", f"{{{name}}} is not a parameter of the project: it was left as it is") for name in unknown
         ]
 
