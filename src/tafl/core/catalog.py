@@ -50,11 +50,19 @@ _TEXTS = ("text", "code", "expression", "column", "file", "folder", "table", "co
 
 
 def help_text(description: str) -> str:
-    """An action's help as the app shows it: the docstring with the lines of each paragraph
-    joined (docstrings wrap at ~100 characters; the label wraps by itself), paragraphs separated
-    by an empty line."""
-    paragraphs = [" ".join(line.strip() for line in p.splitlines()) for p in description.split("\n\n")]
-    return "\n\n".join(p for p in paragraphs if p)
+    """An action's help as the app shows it: the docstring in paragraphs, separated by one empty
+    line. Blank lines end a paragraph, also lines with only spaces and several of them; the lines
+    of a paragraph are joined with a space (docstrings wrap at ~100 characters; the label wraps by
+    itself), without spaces at the start or the end."""
+    paragraphs: list[str] = []
+    lines: list[str] = []
+    for line in [*description.splitlines(), ""]:  # the empty line at the end ends the last paragraph
+        if line.strip():
+            lines.append(line.strip())
+        elif lines:
+            paragraphs.append(" ".join(lines))
+            lines = []
+    return "\n\n".join(paragraphs)
 
 
 def build(registry: Registry, function_list: Iterable[Function] | None = None) -> dict[str, Any]:

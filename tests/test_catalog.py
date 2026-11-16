@@ -7,12 +7,14 @@ import json
 import os
 import re
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
 
 from tafl import __version__
 from tafl.api import P, ValidationContext
+from tafl.api import action as declare
 from tafl.core import Registry, catalog
 from tafl.core.functions import CURATED, all_functions
 
@@ -177,6 +179,31 @@ def test_the_help_is_that_of_the_settings_panel(registry, built):
     assert "\n" in description.split("\n\n")[0] and "\n" not in import_help.split("\n\n")[0]
     assert import_help.startswith("Reads a delimited text file (CSV, TXT, TSV), or all such files of a folder (and its subfolders) into one table: daily exports, for example.\n\n")
     assert catalog.help_text("One\n  line.\n\nTwo\nlines.\n") == "One line.\n\nTwo lines."
+
+
+ODD = "Paints.\n\n\nOne\n  line.  \n   \nTwo\n\t\n\n \n\tlines.\n   "  # 3 line ends, lines with only spaces or a tab
+
+
+def test_the_help_of_a_docstring_with_blank_lines_of_any_kind():
+    """Blank lines end a paragraph, also lines with only spaces and several of them in a row;
+    no paragraph starts or ends with a space."""
+    assert catalog.help_text(ODD) == "Paints.\n\nOne line.\n\nTwo\n\nlines."
+    assert catalog.help_text("\n \n  Alone  \n\n") == "Alone" and catalog.help_text(" \n\t\n") == "" and catalog.help_text("") == ""
+
+    def paint(df, p, ctx):
+        return df
+
+    paint.__doc__ = "Paints.\n\n\n    Twice\n    here.\n      \n    Thrice."  # as written in a source file
+    registry = Registry()
+    registry.add_module(_module(declare("demo.paint", "Paint")(paint)))
+    assert catalog.build(registry, [])["actions"][0]["help"] == "Paints.\n\nTwice here.\n\nThrice."
+
+
+def _module(*actions):
+    module = types.ModuleType("painting")
+    for number, found in enumerate(actions):
+        setattr(module, f"action{number}", found)
+    return module
 
 
 def test_top_level_and_functions(built):

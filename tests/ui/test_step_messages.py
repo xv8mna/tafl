@@ -1,6 +1,8 @@
 """What a step reported (its info messages) shows in the settings panel while editing, e.g. how
 many rows a merge matched; the texts about the step's status come first."""
 
+import dataclasses
+
 from tafl.core import Status, StepResult, catalog
 
 
@@ -28,6 +30,15 @@ def test_the_help_below_the_settings_is_that_of_the_catalog(window, session, set
     assert panel.description.text() == described["csv.import"]
     assert "\n" in session.registry.actions["csv.import"].description.split("\n\n")[0]
     assert "\n" not in panel.description.text().split("\n\n")[0]
+
+
+def test_blank_lines_of_any_kind_end_a_paragraph_in_the_panel_as_in_the_catalog(window, session, settle, demo, monkeypatch):
+    """Several empty lines, and lines with only spaces: no paragraph starts or ends with a space."""
+    odd = dataclasses.replace(session.registry.actions["csv.import"], description="Reads.\n\n\nOne\n  line.  \n   \nTwo.")
+    monkeypatch.setitem(session.registry.actions, "csv.import", odd)
+    panel = select(window, session, settle, demo, "Orders", 1)
+    described = {action["id"]: action["help"] for action in catalog.build(session.registry, [])["actions"]}
+    assert panel.description.text() == described["csv.import"] == "Reads.\n\nOne line.\n\nTwo."
 
 
 def test_a_merge_shows_how_many_rows_matched(window, session, settle, demo):
