@@ -643,6 +643,7 @@ def test_the_json_reaches_a_pipe_as_it_is(registry, tmp_path):
 NOISY = '''
 import ctypes
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 
@@ -652,8 +653,13 @@ print("print while loading → ü")
 sys.stdout.write("sys.stdout while loading\\n")
 sys.__stdout__.write("sys.__stdout__ while loading\\n")  # kept in its buffer for a while
 os.write(1, b"descriptor 1 while loading\\n")
+subprocess.run([sys.executable, "-c", "print('a program that a plugin starts while loading')"])
 if sys.platform == "win32":
     ctypes.CDLL("ucrtbase").puts(b"C code while loading")  # kept in the buffer of C
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.GetStdHandle.restype = ctypes.c_void_p
+    text = b"the standard output handle while loading\\n"
+    kernel32.WriteFile(ctypes.c_void_p(kernel32.GetStdHandle(-11)), text, len(text), ctypes.byref(ctypes.c_uint32()), None)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -667,13 +673,22 @@ class Loud(P.Text):
 def loud(df, p, ctx):
     return df
 '''
-WRITTEN = ["print while loading", "sys.stdout while loading", "sys.__stdout__ while loading", "descriptor 1 while loading", "print while the catalog is built"]
+WRITTEN = [
+    "print while loading",
+    "sys.stdout while loading",
+    "sys.__stdout__ while loading",
+    "descriptor 1 while loading",
+    "a program that a plugin starts while loading",
+    "print while the catalog is built",
+]
+ON_WINDOWS = ["C code while loading", "the standard output handle while loading"]
 
 
 def test_the_json_is_all_that_stdout_gets(registry, tmp_path):
     """What a plugin writes to stdout while it loads, and while the catalog is built, goes to
-    stderr, in every way: print, sys.__stdout__, descriptor 1, C code. A program that reads the
-    JSON gets the JSON and nothing else; the readable list stays as it was."""
+    stderr, in the ways docs/catalog.md names: print, sys.__stdout__, descriptor 1, a program it
+    starts, C code, the standard output handle. A program that reads the JSON gets the JSON and
+    nothing else; the readable list stays as it was."""
     folder = tmp_path / "plugins"
     folder.mkdir()
     (folder / "noisy.py").write_text(NOISY, encoding="utf-8")
@@ -687,7 +702,7 @@ def test_the_json_is_all_that_stdout_gets(registry, tmp_path):
     assert [action["id"] for action in data["actions"]] == sorted([*registry.actions, "demo.loud"])
     errors = done.stderr.decode("cp1252")
     assert all(text in errors for text in WRITTEN), errors
-    assert ("C code while loading" in errors) == (sys.platform == "win32")
+    assert all((text in errors) == (sys.platform == "win32") for text in ON_WINDOWS), errors
     readable = subprocess.run(command, capture_output=True, env=environment, timeout=120)
     assert readable.returncode == 0 and b"print while loading" in readable.stdout and b"demo.loud  Loud" in readable.stdout
 
@@ -729,6 +744,83 @@ def test_a_plugin_that_wraps_its_stdout_anew(tmp_path, with_it, code, said):
     assert b"detached" not in done.stderr and b"lost sys.stderr" not in done.stderr
 
 
+TALKS = """
+import os
+import threading
+import time
+
+
+def talk():
+    while threading.main_thread().is_alive():  # before, while and after the JSON is written
+        print("thread line")
+        os.write(1, b"thread line on descriptor 1\\n")
+        time.sleep(0.001)
+    for _ in range(10):  # and at the end of the program, which waits for this thread
+        print("thread line at the end")
+        os.write(1, b"thread line at the end on descriptor 1\\n")
+
+
+def keep_talking():
+    while True:  # also while Python ends
+        print("daemon thread line")
+        time.sleep(0.001)
+
+
+threading.Thread(target=talk).start()
+threading.Thread(target=keep_talking, daemon=True).start()
+"""
+
+
+def test_a_plugin_thread_that_prints_while_the_json_is_written(tmp_path):
+    """The program keeps stdout for the JSON alone up to its end: a plugin's thread that prints
+    in a loop, also to descriptor 1, before, while and after the JSON is written, reaches stderr."""
+    done = _catalog_in_a_pipe(tmp_path, {"talks.py": TALKS})
+    assert done.returncode == 0 and b"thread line" not in done.stdout and done.stdout.endswith(b"}\n")
+    end = os.linesep.encode()
+    assert b"thread line at the end" + end in done.stderr and b"thread line at the end on descriptor 1\n" in done.stderr
+    assert b"daemon thread line" + end in done.stderr
+
+
+WAITS = """
+import os
+import threading
+import time
+
+
+def wait():
+    end = time.perf_counter() + 20
+    while not os.path.exists(SIGNAL) and time.perf_counter() < end:
+        time.sleep(0.01)
+
+
+threading.Thread(target=wait).start()  # not a daemon: the program waits for it at its end
+"""
+
+
+def test_the_program_keeps_no_copy_of_stdout_after_the_json(tmp_path):
+    """Also when a plugin keeps the program running, its reader gets the end of stdout with the
+    end of the JSON. (Run by the interpreter itself: a launcher, such as the python.exe of a
+    virtual environment, keeps a copy of stdout until the program ends.)"""
+    folder, signal_file = tmp_path / "plugins", tmp_path / "go"
+    folder.mkdir()
+    (folder / "waits.py").write_text(WAITS.replace("SIGNAL", repr(str(signal_file))), encoding="utf-8")
+    environment = {**os.environ, "APPDATA": str(tmp_path / "appdata"), "PYTHONPATH": os.pathsep.join(filter(None, sys.path))}
+    environment.pop("TAFL_PLUGINS", None)
+    interpreter = getattr(sys, "_base_executable", sys.executable)
+    started = time.perf_counter()
+    child = subprocess.Popen(
+        [interpreter, "-m", "tafl", "--plugins", str(folder), "catalog", "--json"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=environment
+    )
+    try:
+        written = child.stdout.read()  # up to the end of stdout
+        seconds, running = time.perf_counter() - started, child.poll() is None
+    finally:
+        signal_file.write_text("go", encoding="utf-8")
+        child.wait(timeout=120)
+    assert json.loads(written)["format"] == "tafl-catalog" and child.returncode == 0
+    assert running and seconds < 15, seconds  # the plugin's thread waits 20 seconds for the signal
+
+
 def test_a_plugin_that_detaches_sys_dunder_stdout(tmp_path):
     """sys.__stdout__ is a stream of its own too while the plugins load: the real stdout, which
     the JSON goes to, stays whole."""
@@ -766,6 +858,19 @@ def test_without_descriptors_stdout_goes_to_stderr_all_the_same(plugins, monkeyp
     output = capsys.readouterr()
     assert json.loads(output.out)["format"] == "tafl-catalog"
     assert "printed while loading" in output.err and "Plugin 'b_fails' failed to load: RuntimeError: Fehler" in output.err
+
+
+def test_without_a_stdout_the_json_goes_nowhere(no_plugins, capsys, monkeypatch):
+    """A program started without stdout (sys.stdout is None): not to stderr either."""
+
+    def no_copy(descriptor):
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr(cli.os, "dup", no_copy)
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "__stdout__", None)
+    assert main(["catalog", "--json"]) == 0
+    assert capsys.readouterr().err == ""
 
 
 IN_A_CONSOLE = r'''
@@ -870,6 +975,22 @@ def test_a_reader_that_closes_the_pipe_early(tmp_path, failing_plugin):
         assert child.wait(timeout=120) == (1 if failing_plugin else 0), (arguments, errors)
         assert "Traceback" not in errors and "Exception ignored" not in errors, (arguments, errors)
         assert errors == ("Warning: Plugin 'quits' failed to load: RuntimeError: broken plugin\n" if failing_plugin else ""), errors
+
+
+def test_a_plugin_that_writes_at_the_end_after_the_reader_closed_the_pipe(tmp_path):
+    """Its text goes to stderr all the same, and the command ends as it would."""
+    folder = tmp_path / "plugins"
+    folder.mkdir()
+    (folder / "ends.py").write_text('import atexit\n\natexit.register(print, "a plugin at the end")\n', encoding="utf-8")
+    environment = {**os.environ, "APPDATA": str(tmp_path / "appdata")}
+    environment.pop("TAFL_PLUGINS", None)
+    child = subprocess.Popen(
+        [sys.executable, "-m", "tafl", "--plugins", str(folder), "catalog", "--json"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment
+    )
+    assert len(child.stdout.read(100)) == 100
+    child.stdout.close()
+    errors = child.stderr.read()
+    assert child.wait(timeout=120) == 0 and errors.replace(b"\r\n", b"\n") == b"a plugin at the end\n", errors
 
 
 def test_run_says_which_setting_isnt_known(no_plugins, tmp_path, capsys):

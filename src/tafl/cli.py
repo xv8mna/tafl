@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None, *, ctrl_c: threading.Event | None = None
     code: int | None = None
     try:
         with stopping_queries(stop), _ctrl_c(stop, ctrl_c, program=argv is None):
-            code = _main(args, console, stop)
+            code = _main(args, console, stop, program=argv is None)
     except (KeyboardInterrupt, Cancelled):
         if code is None:  # a Ctrl+C after the work is over doesn't change its result
             console.error("Stopped")
@@ -244,9 +244,10 @@ def _watch_for_ctrl_c(stop: threading.Event) -> Callable[[], None]:
     return end
 
 
-def _main(args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
+def _main(args: argparse.Namespace, console: Console, stop: threading.Event, *, program: bool = False) -> int:
+    """``program``: the command line is the program's own (main() without argv), which ends after it."""
     if args.command == "catalog":
-        return _catalog(args, console, stop)
+        return _catalog(args, console, stop, program=program)
     registry = _registry(args, console, stop)
     if args.command == "plugins":
         return _plugins(registry, console)
@@ -405,29 +406,45 @@ def _plugins(registry: Registry, console: Console) -> int:
     return 1 if registry.errors else 0
 
 
-def _catalog(args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
+def _catalog(args: argparse.Namespace, console: Console, stop: threading.Event, *, program: bool = False) -> int:
     """The catalog on stdout: readable, or as JSON for programs. A plugin that failed to load, and
     an action or connection type that can't be described, are named on stderr; in the JSON the
     plugin's entry has the error. With --json, stdout gets the JSON and nothing else: what
-    plugins write to stdout while they load goes to stderr."""
-    with _stdout_to_stderr() if args.json else contextlib.nullcontext():
-        registry = _registry(args, console, stop)
-        for name, error in registry.errors:
-            console.warn(f"Plugin '{name}' failed to load: {error.splitlines()[-1]}")
-        data, failures = catalog.describe(registry)
-        for name, text in failures:
-            console.warn(f"Plugin '{name}': {text}")
-    try:
-        if args.json:
-            _write_bytes(catalog.to_json(data))
-        else:
+    plugins write to stdout goes to stderr, while they load, while the JSON is written and, for
+    the ``program`` itself, until it ends (a plugin's thread may still print)."""
+    if not args.json:
+        registry, data, failures = _described(args, console, stop)
+        try:
             for line in catalog.lines(data):
                 console.print(line)
-    except OSError as e:  # the reader closed the pipe, e.g. it needed only the start: no traceback
-        if not _pipe_closed(e):
-            raise
+        except OSError as e:  # the reader closed the pipe, e.g. it needed only the start: no traceback
+            if not _pipe_closed(e):
+                raise
+            _discard_stdout()
+        return 1 if registry.errors or failures else 0
+    closed = False
+    with _stdout_to_stderr(keep=program) as write_stdout:
+        registry, data, failures = _described(args, console, stop)
+        try:
+            write_stdout(catalog.to_json(data))
+        except OSError as e:  # as above
+            if not _pipe_closed(e):
+                raise
+            closed = True
+    if closed and not program:  # in-process: stdout is the closed pipe again
         _discard_stdout()
     return 1 if registry.errors or failures else 0
+
+
+def _described(args: argparse.Namespace, console: Console, stop: threading.Event) -> tuple[Registry, dict, list[tuple[str, str]]]:
+    """The registry and its catalog; what failed is named on stderr."""
+    registry = _registry(args, console, stop)
+    for name, error in registry.errors:
+        console.warn(f"Plugin '{name}' failed to load: {error.splitlines()[-1]}")
+    data, failures = catalog.describe(registry)
+    for name, text in failures:
+        console.warn(f"Plugin '{name}': {text}")
+    return registry, data, failures
 
 
 def _pipe_closed(error: OSError) -> bool:
@@ -446,14 +463,21 @@ def _discard_stdout() -> None:
 
 
 @contextlib.contextmanager
-def _stdout_to_stderr() -> Iterator[None]:
+def _stdout_to_stderr(*, keep: bool = False) -> Iterator[Callable[[bytes], None]]:
     """While the block runs, what is written to stdout goes to stderr: print() and sys.stdout,
     sys.__stdout__, and file descriptor 1, also from C code (on Windows the standard output
     handle follows descriptor 1). sys.stdout and sys.__stdout__ get a stream of their own: what a
     plugin does to "its stdout" (detach, reconfigure, close) must not happen to sys.stderr, which
-    Tafl's messages need. Afterwards stdout is as before. Without the descriptors (a program
-    started without them), only sys.stdout and sys.__stdout__ go to stderr."""
-    streams = [stream for stream in (sys.stdout, sys.__stdout__) if stream is not None]
+    Tafl's messages need. The block gets a function that writes bytes to the real stdout.
+
+    Afterwards stdout is as before. With ``keep`` (the program, which ends after the block) all
+    this stays until the process ends, also after an error, as a plugin's thread may still print;
+    and the copy of the real stdout is closed, so no descriptor of this process is stdout any
+    more. (A launcher that started the program, such as the python.exe of a virtual environment,
+    can keep stdout open until the program ends.) Without the descriptors (a program started
+    without them), only sys.stdout and sys.__stdout__ go to stderr."""
+    stdout, dunder = sys.stdout, sys.__stdout__
+    streams = [stream for stream in (stdout, dunder) if stream is not None]
     _flush(streams)
     try:
         saved: int | None = os.dup(1)
@@ -465,26 +489,42 @@ def _stdout_to_stderr() -> Iterator[None]:
         except OSError:
             os.close(saved)
             saved = None
+    # The JSON goes to the saved descriptor, unless sys.stdout isn't descriptor 1 (e.g. captured)
+    real = saved if saved is not None and _descriptor(stdout) == 1 else None
     # On descriptor 1, which is stderr now: a plugin that closes "its" descriptor doesn't close 2
     own = _own_stream(1 if saved is not None else _descriptor(sys.stderr))
     target = own if own is not None else _ToStderr()
-    dunder = sys.__stdout__
+    sys.stdout = sys.__stdout__ = target  # also a console's own stream can't write where stderr goes
+
+    def write(data: bytes) -> None:
+        if real is not None:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(real, view) :]
+        elif stdout is not None:  # a program started without stdout: the data goes nowhere
+            _write_bytes(data, stdout)
+
     try:
-        with contextlib.redirect_stdout(target):
-            sys.__stdout__ = target  # also a console's own stream can't write where stderr goes
-            try:
-                yield
-            finally:
-                streams.append(sys.stdout)  # e.g. a plugin's own stream on the buffer of target
+        yield write
     finally:
-        _flush([*streams, target, sys.stderr])  # what is still held in them goes to stderr too
+        _flush([*streams, sys.stdout, target, sys.stderr])  # what is still held in them goes to stderr too
         _flush_c_streams()
-        sys.__stdout__ = dunder
-        with contextlib.suppress(OSError, ValueError):
-            target.close()  # not the descriptor (closefd=False)
-        if saved is not None:
-            os.dup2(saved, 1)
-            os.close(saved)
+        if keep:
+            # To the end, a stream without a buffer: a plugin may have detached or closed the one it
+            # had, and a thread of a plugin that writes when the program ends must hold no lock
+            # that Python needs then (it stops the program with a fatal error)
+            descriptor = 1 if saved is not None else _descriptor(sys.stderr)
+            encoding = getattr(target, "encoding", None) or getattr(sys.stderr, "encoding", None) or "utf-8"
+            sys.stdout = sys.__stdout__ = _Unbuffered(descriptor, encoding) if descriptor is not None else _ToStderr()
+            if saved is not None:
+                os.close(saved)
+        else:
+            sys.stdout, sys.__stdout__ = stdout, dunder
+            with contextlib.suppress(OSError, ValueError):
+                target.close()  # not the descriptor (closefd=False)
+            if saved is not None:
+                os.dup2(saved, 1)
+                os.close(saved)
 
 
 def _descriptor(stream: object) -> int | None:
@@ -504,6 +544,31 @@ def _own_stream(descriptor: int | None) -> TextIO | None:
         return open(descriptor, "w", encoding=encoding, errors="backslashreplace", closefd=False, buffering=1)
     except (OSError, ValueError, LookupError):
         return None
+
+
+class _Unbuffered(io.TextIOBase):
+    """Text straight to a descriptor, line ends as the system writes them, without a buffer and
+    so without a lock."""
+
+    def __init__(self, descriptor: int, encoding: str) -> None:
+        super().__init__()
+        self._descriptor, self._encoding = descriptor, encoding
+
+    @property
+    def encoding(self) -> str:  # type: ignore[override]
+        return self._encoding
+
+    def writable(self) -> bool:
+        return True
+
+    def fileno(self) -> int:
+        return self._descriptor
+
+    def write(self, text: str) -> int:
+        view = memoryview(text.replace("\n", os.linesep).encode(self._encoding, "backslashreplace"))
+        while view:
+            view = view[os.write(self._descriptor, view) :]
+        return len(text)
 
 
 class _ToStderr(io.TextIOBase):
@@ -534,14 +599,15 @@ def _flush_c_streams() -> None:
         library.fflush(None)
 
 
-def _write_bytes(data: bytes) -> None:
-    """Writes ``data`` to stdout as it is, past the text layer, which could change characters that
-    the console's or the pipe's encoding doesn't have."""
-    sys.stdout.flush()
-    buffer = getattr(sys.stdout, "buffer", None)
+def _write_bytes(data: bytes, stream: TextIO | None = None) -> None:
+    """Writes ``data`` to stdout (or ``stream``) as it is, past the text layer, which could change
+    characters that the console's or the pipe's encoding doesn't have."""
+    stream = sys.stdout if stream is None else stream
+    stream.flush()
+    buffer = getattr(stream, "buffer", None)
     if buffer is None:  # a stdout without bytes (e.g. replaced by a program that runs this one)
-        sys.stdout.write(data.decode("utf-8"))
-        sys.stdout.flush()
+        stream.write(data.decode("utf-8"))
+        stream.flush()
         return
     buffer.write(data)
     buffer.flush()

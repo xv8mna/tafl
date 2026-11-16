@@ -12,12 +12,18 @@ last word: some of what it checks, the catalog can't express (see
 | Command | Output |
 |---|---|
 | `tafl catalog` | a readable list: actions by category, with their settings |
-| `tafl catalog --json` | the catalog as JSON on stdout, and nothing else; messages go to stderr, also what plugins write to stdout while they load |
+| `tafl catalog --json` | the catalog as JSON on stdout, and nothing else (see below); messages go to stderr |
 | `tafl --plugins FOLDER catalog --json` | also the actions of the plugins in FOLDER |
 
 In the Windows download, write `tafl.exe`. The catalog lists what `tafl run` would load: the
 built-in plugins, the folders in `TAFL_PLUGINS`, `%APPDATA%\Tafl\plugins` and the folders given
 with `--plugins`.
+
+With `--json`, what plugins write to stdout goes to stderr, from the moment they start to load
+until the program ends (a thread of a plugin can still write after the JSON): with `print`,
+`sys.stdout`, `sys.__stdout__`, file descriptor 1, the standard output handle of Windows, C code
+that uses the C runtime of Python, and programs that a plugin starts. C code with a C runtime of
+its own is not covered.
 
 The JSON has only ASCII characters: other characters are written as `\uXXXX` escapes (for
 example `\u2192` for →). Every JSON reader turns them back. Without them, a Windows pipe
