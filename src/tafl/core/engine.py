@@ -840,18 +840,18 @@ class _Evaluation:
             ("warning", f"{{{name}}} is not a parameter of the project: it was left as it is") for name in unknown
         ]
 
-        # Tables this step uses are calculated first.
+        # Tables this step uses are calculated first. Their errors keep the warnings of the step.
         deps: dict[str, TableResult] = {}
         for ref in action.table_refs(params):
             found = self.project.used_table(ref)
             if found is None:
-                return _error(step, f"Table '{ref}' does not exist")
+                return _error(step, f"Table '{ref}' does not exist", messages=warnings)
             if (circle := self._circle(table.id, found.id)) is not None:
                 text = "Circular reference: " + " → ".join(map(self.engine.table_name, circle))
-                return _error(step, text, inherited=True)
+                return _error(step, text, messages=warnings, inherited=True)
             dependency = self.table(found.id)
             if not dependency.ok:
-                return _error(step, _dependency_error(found.name, dependency), inherited=True)
+                return _error(step, _dependency_error(found.name, dependency), messages=warnings, inherited=True)
             deps[ref] = dependency
 
         ctx = _StepContext(self, deps)

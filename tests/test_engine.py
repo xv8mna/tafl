@@ -200,6 +200,41 @@ def test_the_warning_on_an_export_that_doesnt_run_and_on_a_step_with_an_error(pr
     assert export.messages == [("warning", MISSPELLED), ("info", "Runs only when the project is run")]
 
 
+def test_the_warnings_of_a_step_stay_with_an_error_from_a_table_it_uses(project, registry):
+    """A table that doesn't exist, a circular reference and a used table with an error stop the
+    step before it runs: its warnings (a setting that isn't known, a {Name} that is no parameter)
+    are kept with the error."""
+    project.parameters = [Parameter("Day", "2026-10-01")]
+    warned = [
+        ("warning", "Setting 'sufix' is not known (did you mean 'suffix'?): it has no effect"),
+        ("warning", "{Dya} is not a parameter of the project: it was left as it is"),
+    ]
+
+    def merging(name: str, other: str) -> str:
+        table = project.add_table(name)
+        project.add_step(table, "csv.import", {"file": "orders.csv"})
+        match = [{"column": "Id", "other_column": "Id"}]
+        project.add_step(table, "table.merge", {"other": other, "match": match, "suffix": " {Dya}", "sufix": "x"})
+        return table.id
+
+    missing = merging("Missing", "t99")
+    first = project.add_table("First").id
+    second = merging("Second", first)
+    project.add_step(first, "csv.import", {"file": "orders.csv"})
+    project.add_step(first, "table.merge", {"other": second, "match": [{"column": "Id", "other_column": "Id"}]})
+    project.tables[0].steps[1].params["condition"] = "nonsense ("  # Orders has an error
+    using = merging("Using", "t1")
+    engine = Engine(project, registry)
+    for table_id, error in (
+        (missing, "Table 't99' does not exist"),
+        (second, "Circular reference: Second → First → Second"),
+        (using, "Table 'Orders' has an error: Formula error"),
+    ):
+        step = engine.evaluate(table_id).steps[1]
+        assert step.status == Status.ERROR and step.error.startswith(error), step.error
+        assert step.messages == warned, table_id
+
+
 def test_hidden_settings_and_tafls_own_marks_are_known(project, registry):
     """The import reads one file: Folder and File names are hidden, and _sheet is the mark of a
     data sheet (here of another file: it counts for nothing)."""
