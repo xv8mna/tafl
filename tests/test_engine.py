@@ -15,6 +15,7 @@ import pytest
 from tafl.api import ActionError, Cancelled, Mode, P, action, expressions
 from tafl.api.parameters import Failed
 from tafl.core import Engine, Parameter, Project, Registry, ResultCache, Status
+from tafl.core import parameters as core_parameters
 from tafl.core.cancel import CancelEvent
 from tafl.core.engine import Imported, _Evaluation
 from tafl.core.parameters import NOT_WORKED_OUT
@@ -198,6 +199,32 @@ def test_the_warning_on_an_export_that_doesnt_run_and_on_a_step_with_an_error(pr
     export = Engine(project, registry).evaluate("Orders").steps[3]
     assert export.status == Status.SKIPPED
     assert export.messages == [("warning", MISSPELLED), ("info", "Runs only when the project is run")]
+
+
+def test_the_warnings_of_a_step_stay_with_the_error_of_a_parameter(project, registry):
+    """A {Name} parameter with an error stops the step before it runs: the warnings found before
+    it (a setting that isn't known, a {Name} that is no parameter) stay with the error."""
+    project.parameters = [Parameter("Bad", "=1 +* 2")]
+    project.add_step("Orders", "calc.columns", {"columns": [{"name": "N {Dya}", "formula": "{Bad}"}], "colums": 1}, index=1)
+    step = Engine(project, registry).evaluate("Orders").steps[1]
+    assert step.status == Status.ERROR and step.error.startswith("The parameter {Bad} has an error")
+    assert step.messages == [
+        ("warning", "Setting 'colums' is not known (did you mean 'columns'?): it has no effect"),
+        ("warning", "{Dya} is not a parameter of the project: it was left as it is"),
+    ]
+
+
+def test_the_warnings_stay_when_the_settings_cant_be_read(project, registry, monkeypatch):
+    """Also an unexpected error while the parameters are filled in keeps them."""
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("a plugin's own way of filling in failed")
+
+    project.tables[0].steps[0].params["delimeter"] = ","
+    monkeypatch.setattr(core_parameters, "fill", broken)
+    step = Engine(project, registry).evaluate("Orders").steps[0]
+    assert step.error == "Could not read the step settings: a plugin's own way of filling in failed"
+    assert step.messages == [("warning", MISSPELLED)]
 
 
 def test_a_row_that_is_no_object_of_settings_gets_a_warning(project, registry):

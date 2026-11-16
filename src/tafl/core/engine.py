@@ -817,28 +817,26 @@ class _Evaluation:
             return _error(step, f"A table starts with an import or 'Start from another table'; '{action.name}' needs an input table")
         if index > 0 and action.kind == Kind.SOURCE:
             return _error(step, f"'{action.name}' can only be the first step of a table")
+        unknown_keys: list[str] = []  # the warnings found so far stay also with an error below
+        unknown: list[str] = []
         try:
             raw = action.upgrade(step.params, step.version)
             unknown_keys = P.unknown_settings(action.params, raw)  # e.g. a misspelled key: no effect, but said
             connector = self._connector(action, raw)
-            unknown = []
             if self.parameters:
                 spans = connector.sql_spans if connector is not None else None
                 unknown = parameters.unknown_names(action.params, raw, self.parameters, spans)
             raw = parameters.fill(action.params, raw, self.parameters, connector.fill_sql if connector is not None else fill_sql)
             params = action.resolve(raw)
-        except ActionError as e:
+        except ActionError as e:  # e.g. a {Name} parameter that has an error
             _stop_if(self.cancel)
-            return _error(step, str(e))
+            return _error(step, str(e), messages=_warnings(unknown_keys, unknown))
         except _BROKEN as e:  # e.g. a plugin's migrate function
             _stop_if(self.cancel)
             ended = not isinstance(e, Exception)  # sys.exit() or KeyboardInterrupt
             problem = f"{_owner(action)} tried to end the program ({_friendly(e)})" if ended else str(e)
-            return _error(step, f"Could not read the step settings: {problem}", traceback.format_exc())
-        warnings = [("warning", text) for text in unknown_keys]
-        warnings += [
-            ("warning", f"{{{name}}} is not a parameter of the project: it was left as it is") for name in unknown
-        ]
+            return _error(step, f"Could not read the step settings: {problem}", traceback.format_exc(), _warnings(unknown_keys, unknown))
+        warnings = _warnings(unknown_keys, unknown)
 
         # Tables this step uses are calculated first. Their errors keep the warnings of the step.
         deps: dict[str, TableResult] = {}
@@ -1089,6 +1087,12 @@ def _error(
         seconds=seconds,
         inherited=inherited,
     )
+
+
+def _warnings(unknown_keys: list[str], unknown_names: list[str]) -> list[tuple[str, str]]:
+    """The warnings about a step's settings: keys that no setting has, {Name}s that are no parameter."""
+    names = [f"{{{name}}} is not a parameter of the project: it was left as it is" for name in unknown_names]
+    return [("warning", text) for text in [*unknown_keys, *names]]
 
 
 def _unfilled(param: P.Param, value: Any) -> Any:
