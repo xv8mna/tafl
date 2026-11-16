@@ -788,11 +788,23 @@ class Rows(P.Param):
     kind: ClassVar[str] = "list"  # without fields
 
 
+@dataclass(frozen=True, kw_only=True)
+class Picked(P.Param):
+    kind: ClassVar[str] = "column"  # without source
+
+
+@dataclass(frozen=True, kw_only=True)
+class Named(P.Param):
+    kind: ClassVar[str] = "file"  # without mode and filter
+
+
 @action("demo.odd", "Odd \\udc80", params=[
     FakeChoice("pick", "Pick"),
     Bare("count", "Count"),
     Hollow("hollow", "Hollow"),
-    Rows("rows", "Rows"),
+    Rows("rows", "Rows", default=[{"a": 1}, {"b": [2]}]),
+    Picked("picked", "Picked"),
+    Named("named", "Named"),
     P.Float("ratio", "Ratio", default=float("nan"), min=float("-inf"), max=float("inf")),
     P.Int("level", "Level", min=0, max=float("nan")),
     P.Text("label", "L\\u00e4bel \\udc80", help="half \\ud800 of a character", default="x\\udfff"),
@@ -806,7 +818,9 @@ def odd(df, p, ctx):
 def test_values_of_plugins_that_json_cant_hold_and_known_kinds_of_their_own_classes(tmp_path):
     """A limit that is not finite is null (no limit) and not in the schema, a default that JSON
     can't hold is null, a lone surrogate (half of a character) is U+FFFD; a plugin's own class
-    with a known kind has the fields of that kind, empty where the class has none."""
+    with a known kind has the fields of that kind, empty where the class has none, but
+    column_source and file_mode as in Tafl's own classes; a row of a list without fields can be
+    any object, so its own default fits the schema (docs/catalog.md)."""
     (tmp_path / "odd.py").write_text(ODD_VALUES, encoding="utf-8")
     registry = Registry()
     registry.load_folder(tmp_path)
@@ -818,13 +832,17 @@ def test_values_of_plugins_that_json_cant_hold_and_known_kinds_of_their_own_clas
     assert settings["pick"]["options"] == [{"value": "a", "label": "A"}, {"value": "b", "label": "b"}]
     assert (settings["count"]["min"], settings["count"]["max"]) == (None, None)
     assert settings["hollow"]["options"] == [] and (settings["rows"]["fields"], settings["rows"]["min_items"]) == ([], 0)
+    assert settings["picked"]["column_source"] == "input"
+    assert (settings["named"]["file_mode"], settings["named"]["file_filter"]) == ("open", "")
     assert (settings["ratio"]["default"], settings["ratio"]["min"], settings["ratio"]["max"]) == (None, None, None)
     assert (settings["level"]["min"], settings["level"]["max"]) == (0, None)
     assert (settings["label"]["label"], settings["label"]["help"], settings["label"]["default"]) == ("Läbel �", "half � of a character", "x�")
     assert settings["half�"]["options"] == [{"value": "v�", "label": "w�"}]
     properties = odd["settings_schema"]["properties"]
     assert properties["pick"] == {"enum": ["a", "b"]} and properties["count"] == {"type": "integer"}
-    assert properties["hollow"] == {} and properties["rows"]["items"]["properties"] == {}
+    assert properties["hollow"] == {} and properties["rows"] == {"type": "array", "items": {"type": "object"}}
+    assert settings["rows"]["default"] == [{"a": 1}, {"b": [2]}] and problems(settings["rows"]["default"], properties["rows"]) == []
+    assert problems(["x"], properties["rows"])  # a row is an object all the same
     assert properties["ratio"] == {"type": "number"} and properties["level"] == {"type": "integer", "minimum": 0}
     assert properties["half�"] == {"enum": ["v�"]}
     assert "\\ud" not in catalog.to_json(data).decode("ascii").lower()  # no escape of a lone surrogate

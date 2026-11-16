@@ -214,7 +214,8 @@ def _kind(param: Param) -> str | None:
 
 def _setting(param: Param) -> dict[str, Any]:
     """The fields of every setting, then those of its kind: from the attributes of the setting's
-    class, or, where a plugin's own class doesn't have one, the empty value of that field."""
+    class, or, where a plugin's own class doesn't have one, the empty value of that field; but
+    column_source and file_mode, which can't be empty, have the default of Tafl's own classes."""
     setting = {
         "key": param.key,
         "kind": getattr(param, "kind", ""),
@@ -274,15 +275,7 @@ def _schema(param: Param) -> dict[str, Any]:
     """The schema of one setting's value; ``{}`` (any value) for a kind that the catalog doesn't know."""
     kind = _kind(param)
     if kind == "list":
-        row: dict[str, Any] = {
-            "type": "object",
-            "properties": {field.key: _schema(field) for field in _fields(param)},
-            "patternProperties": {"^_": {}},  # Tafl's own marks, as at the top level
-            "additionalProperties": False,
-        }
-        if required := [field.key for field in _fields(param) if _must_store(field)]:
-            row["required"] = required
-        schema: dict[str, Any] = {"type": "array", "items": row}
+        schema: dict[str, Any] = {"type": "array", "items": _row(param)}
         if getattr(param, "min_items", 0):
             schema["minItems"] = param.min_items
         return schema
@@ -310,6 +303,22 @@ def _schema(param: Param) -> dict[str, Any]:
     if kind in _TEXTS:
         return {"type": "string", "minLength": 1} if needs_value else {"type": "string"}
     return {}
+
+
+def _row(param: Param) -> dict[str, Any]:
+    """The schema of a row of a list: its fields, and Tafl's own marks. The rows of a plugin's own
+    class of list without fields are not known: any object."""
+    if getattr(param, "fields", None) is None:
+        return {"type": "object"}
+    row: dict[str, Any] = {
+        "type": "object",
+        "properties": {field.key: _schema(field) for field in _fields(param)},
+        "patternProperties": {"^_": {}},  # Tafl's own marks, as at the top level
+        "additionalProperties": False,
+    }
+    if required := [field.key for field in _fields(param) if _must_store(field)]:
+        row["required"] = required
+    return row
 
 
 def _must_store(param: Param) -> bool:

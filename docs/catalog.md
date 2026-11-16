@@ -127,8 +127,10 @@ can read them. A number that is not finite (NaN, infinity) is `null`: a `min` or
 not finite is `null` (no limit) and not in the schema. A text with half of a character (a lone
 surrogate) has U+FFFD in its place. A tuple is a list, and any other value is its text. A
 plugin's own class of setting whose `kind` is one of the kinds above has the fields of that
-kind; a field that its class doesn't have is empty (e.g. `options: []`), and a choice without
-options takes any value in the schema.
+kind. A field that its class doesn't have is empty (`[]`, `""`, `false`, `null` or `0`), except
+two that can't be empty: `column_source` is `"input"` and `file_mode` is `"open"`, the defaults
+of Tafl's own classes. A choice without options takes any value in the schema, and a row of a
+list without `fields` any object.
 
 **`visible_if`** is an object: setting key → list of values. The setting is shown, and checked,
 only when each of these settings has one of the listed values. Compare with the value the step
