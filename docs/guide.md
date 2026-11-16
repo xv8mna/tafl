@@ -2839,6 +2839,7 @@ export or command that didn't run), `·` not run because of an earlier error, `�
 | `… --set Name=value` | Gives a parameter another value for this run ([chapter 7](#7-parameters)). |
 | `tafl.exe show PROJECT --table NAME --step N --rows 20` | Prints the steps of a table and the first 20 rows after step N (without `--step`: the last step). It takes `--set` too. |
 | `tafl.exe plugins` | Lists the plugins and their actions ([chapter 13](#13-plugins)). |
+| `tafl.exe catalog` | Lists every action with its settings, and the connection types. `--json` writes them for programs (see below). |
 | `tafl.exe --help`, `tafl.exe run --help` | The commands, or the options and exit codes of one. |
 | `tafl.exe --version` | Prints the version. |
 
@@ -2849,6 +2850,12 @@ the Lookup step: handy on a server where you don't open the window.
 
 In PowerShell, write `.\tafl.exe`, and put `&` before a program path in quotes:
 `& "C:\Tools\Tafl\tafl.exe" run "C:\Reports\report.tafl"`.
+
+Programs that write or check project files, such as an editor or a script that makes projects,
+ask `tafl.exe catalog --json` what this Tafl can run: every action with its settings, the
+columns a step adds, the connection types and the formula functions, with the plugins it loads.
+It writes JSON in ASCII only, so that no pipe changes a character. [The catalog](catalog.md)
+describes the format.
 
 ### Exit codes
 
@@ -2861,7 +2868,8 @@ In PowerShell, write `.\tafl.exe`, and put `&` before a program path in quotes:
 | 130 | Stopped with Ctrl+C, also right after the start. The output shows what ran before the stop. |
 
 `tafl.exe show` has the same codes without 3: 0 also for a table that is turned off, 1 when the
-table has an error.
+table has an error. `tafl.exe plugins` and `tafl.exe catalog` end with 1 when a plugin failed to
+load.
 
 The exit code of the last command: `echo %ERRORLEVEL%` in a command prompt, `$LASTEXITCODE` in
 PowerShell.
@@ -3027,6 +3035,10 @@ category that Tafl doesn't have gets a submenu of its own.
   `raise SkipRest("No new orders")` ends the table at this step without an error, as in
   [chapter 11](#11-days-without-data-and-a-daily-inbox). Both come from `tafl.api`:
   `from tafl.api import ActionError, SkipRest`.
+- An action whose steps add columns with fixed names, as the imports add *File* and *Path*,
+  declares them with `adds_columns=[AddedColumn("File", "text", when={"source": "folder"})]`
+  (`AddedColumn` from `tafl.api`): programs read them from `tafl.exe catalog --json`
+  ([chapter 12](#the-command-line-program)).
 
 The README's section [Writing a plugin](../README.md#writing-a-plugin) has more,
 for example how exports write files safely and how to test an action.
@@ -3096,6 +3108,7 @@ On the command line, the failed step has a `✗` with the message below it, and 
 | "This step was saved by a newer version of 'Import CSV / text files' (v4); this app has v3." | Update Tafl: a newer version saved the project. |
 | "Opened report.tafl — 2 step(s) were updated to newer action versions; save to keep this" (status bar) | Not an error: steps saved by an older Tafl were brought up to date. Save to keep this. |
 | "Unknown action 'my.prefix'. Is the plugin that provides it installed?" | Install the plugin ([chapter 13](#13-plugins)). |
+| "Setting 'delimeter' is not known (did you mean 'delimiter'?): it has no effect" (a warning) | The project file has a setting that the action doesn't have, e.g. misspelled in a file written by hand or by a program. The step runs as if the setting weren't there, with its default. Correct the name in the file (here to `delimiter`). In a list: "Conditions, row 2: setting 'colum' is not known …". |
 | "“report.tafl” has changed since it was opened or saved here, for example in another window." (when you save) | **Save anyway** replaces the other changes. To keep both, click **Cancel** and use **File → Save as**. |
 | "Windows protected your PC" (when Tafl starts) | Click **More info**, then **Run anyway** ([chapter 1](#1-getting-started)). |
 | "The clipboard holds no text. Copy some data, then press Ctrl+V here." (in a data sheet) | The clipboard is empty, or it holds something else, such as a picture. Copy the data again. |

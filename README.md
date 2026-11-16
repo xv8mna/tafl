@@ -106,8 +106,13 @@ In the download's folder, write `tafl.exe` instead of `.venv\Scripts\tafl` (in P
   (e.g. which exports were written).
 - `show` prints the steps of a table and the data after one step (also with `--set`).
 - `plugins` lists all actions and shows plugins that failed to load.
-- `--help` lists the commands; `run --help` (and `show`, `plugins`) shows the options and exit
-  codes of one. `--version` prints the version.
+- `catalog` lists every action with its settings. `catalog --json` writes the catalog for
+  programs that write or check project files: every action and setting with its default, the
+  columns a step adds and a JSON Schema of its settings, the connection types and the formula
+  functions, in ASCII only. [docs/catalog.md](docs/catalog.md) describes the format. Like
+  `plugins`, it exits with 1 when a plugin failed to load.
+- `--help` lists the commands; `run --help` (and `show`, `plugins`, `catalog`) shows the options
+  and exit codes of one. `--version` prints the version.
 - The command line keeps no log of a run: what it prints is all there is. To keep it, send it to a
   file (the download's `README.txt` shows a batch file for the Task Scheduler). Only a run that
   stops without an error message also writes one line to `%LOCALAPPDATA%\Tafl\tafl.log`.
@@ -798,6 +803,13 @@ The settings form is built from `params`. Rules for plugins:
   (on the map, and as the kind in the Find panel) goes by the action: exports
   (`kind="export"`) and commands are **out**, other actions with such settings or `endpoints=`
   are **in**. So an action that writes files should be an export.
+- An action whose steps add columns with fixed names declares them with `adds_columns=`, a list
+  of `AddedColumn(name, type, when=None)` from `tafl.api`, in the order of the table: `type` is
+  a type name of Change type (`text`, `integer`, `number`, `date`, `datetime`, `boolean`), and
+  `when` names the settings that switch the column on, as `visible_if` does (None: always). An
+  import built with `source_params` declares its File and Path columns with
+  `adds_columns=source_columns()`. `tafl catalog --json` lists them for programs that write
+  projects; a `when` that names no setting of the action is refused when it is declared.
 - Test actions with `tafl.api.testing.StubContext` (see `tests/plugins`).
 
 Plugins are ordinary Python code that runs with your rights when Tafl starts: only add plugins

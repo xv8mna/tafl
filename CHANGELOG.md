@@ -1,5 +1,34 @@
 # Changes
 
+## 0.7.0 – unreleased
+
+This version describes itself for programs that write or check project files: `tafl catalog
+--json` lists every action with its settings, the connection types and the formula functions. A
+step with a setting that its action doesn't have, e.g. a misspelled name in a project file, says
+so now.
+
+- **Command line**: `tafl catalog` lists every action with its settings, by category, and the
+  connection types. `tafl catalog --json` writes the catalog as JSON: every action with its
+  settings (kind, label, default, whether it is required and when it is shown, the options of a
+  choice), the columns with fixed names that a step adds, a JSON Schema of a step's settings, the
+  connection types and the functions of formulas, with the plugins that are loaded. The JSON has
+  only ASCII characters, so that no console or pipe changes one; messages go to stderr. It exits
+  with 1 when a plugin failed to load, and the catalog is complete all the same.
+  [docs/catalog.md](https://github.com/xv8mna/tafl/blob/main/docs/catalog.md) describes the
+  format and its version rules.
+- **A setting that the action doesn't have** gets a warning on its step: "Setting 'delimeter' is
+  not known (did you mean 'delimiter'?): it has no effect", also in the rows of a list
+  ("Conditions, row 2: setting 'colum' is not known …", once for a name in several rows). Before,
+  such a name, e.g. misspelled in a project file written by hand or by a program, was kept and
+  its setting had the default, without a message. The step runs as before, and the exit codes
+  don't change. Names that start with `_` are Tafl's own marks and get no warning.
+- Plugins: an action declares the columns with fixed names that its steps add with
+  `adds_columns=[AddedColumn(name, type, when=...)]` (from `tafl.api`); an import built with
+  `source_params` uses `adds_columns=source_columns()`. The imports of CSV, Excel and Parquet
+  files declare File, Path and Sheet, and Files in a folder its seven columns. A type that is no
+  type name of Change type, or a `when` that names no setting of the action, is refused when the
+  action is declared. The plugin API stays at version 1.
+
 ## 0.6.5 – 2026-11-12
 
 This version keeps the digits of long numbers, or says which values lost some: the imports detect

@@ -431,6 +431,64 @@ def test_a_plugin_with_its_own_kind_of_setting(tmp_path, monkeypatch):
     assert plugin == {"name": "paint", "builtin": False, "path": str(tmp_path / "paint.py"), "actions": ["demo.paint"], "connection_types": [], "errors": []}
 
 
+# --- docs/catalog.md -----------------------------------------------------------------------------
+
+
+DOCS = ROOT / "docs" / "catalog.md"
+
+
+def shown_in(doc, real, where: str = "") -> list[str]:
+    """What the docs show and the real output doesn't have; "..." stands for what is left out:
+    a key, the items of a list, or the rest of a text."""
+    if isinstance(doc, dict):
+        if not isinstance(real, dict):
+            return [f"{where}: {real!r} is not an object"]
+        found = []
+        for key, value in doc.items():
+            if key != "...":
+                found += shown_in(value, real[key], f"{where}.{key}") if key in real else [f"{where}.{key}: not in the output"]
+        return found
+    if isinstance(doc, list):
+        if not isinstance(real, list) or ("..." not in doc and len(doc) != len(real)):
+            return [f"{where}: {real!r} has other items"]
+        position, found = 0, []
+        for item in (item for item in doc if item != "..."):  # in the same order
+            while position < len(real) and shown_in(item, real[position]):
+                position += 1
+            if position == len(real):
+                found.append(f"{where}: {item!r} is not in the output (in this order)")
+                break
+            position += 1
+        return found
+    if isinstance(doc, str) and "..." in doc and isinstance(real, str):
+        first, *rest = doc.split("...")
+        start = len(first) if real.startswith(first) else -1
+        for part in rest:
+            start = real.find(part, start) if start >= 0 else -1
+        return [] if start >= 0 else [f"{where}: {real[:80]!r}... is not {doc[:80]!r}"]
+    return [] if _same(doc, real) else [f"{where}: {doc!r} in the docs, {real!r} in the output"]
+
+
+def test_the_example_of_the_docs_is_the_real_output(built):
+    text = DOCS.read_text(encoding="utf-8")
+    step, example = (json.loads(block) for block in re.findall(r"```json\n(.*?)```", text, re.S))
+    assert shown_in(example, entry(built, example["id"])) == []
+    assert example["settings"][-1] == "..." and len(example["settings"]) == 5  # the check sees the shortened parts
+    action = entry(built, step["action"])
+    assert step["version"] == action["version"] and problems(step["params"], action["settings_schema"]) == []
+    assert shown_in({"a": [1, "..."], "b": "x..."}, {"a": [1, 2], "b": "xyz", "c": 3}) == []  # the check itself
+    assert shown_in({"a": [2, 1, "..."]}, {"a": [1, 2]}) and shown_in({"b": "y..."}, {"b": "xyz"})
+
+
+def test_the_docs_name_the_version_the_kinds_and_the_keywords(built):
+    text = DOCS.read_text(encoding="utf-8")
+    assert f'`format_version` is a text `"major.minor"`, now `"{catalog.FORMAT_VERSION}"`.' in text
+    kinds = text[text.index("Kinds, the value a step stores") : text.index("- `condition` (expression)")]
+    assert set(re.findall(r"^\| `(\w+)` \|", kinds, re.M)) - {"kind"} == set(catalog._KINDS)  # without the heading
+    listed = text[text.index("The schemas use only these keywords") :].split("\n\n")[0]
+    assert set(re.findall(r"`([$\w]+)`", listed)) == KEYWORDS
+
+
 def test_the_readable_list(built):
     text = "\n".join(catalog.lines(built))
     assert text.startswith(f"{len(built['actions'])} actions\n\nCalculate\n  calc.aggregate  Aggregate  (transform, version 1, plugin calculate)\n")
