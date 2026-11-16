@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
+import os
 import signal
 import socket
 import sys
@@ -141,7 +143,9 @@ def _parser() -> argparse.ArgumentParser:
         formatter_class=lines,
     )
     described.add_argument(
-        "--json", action="store_true", help="the catalog as JSON on stdout, in ASCII only (messages go to stderr)"
+        "--json",
+        action="store_true",
+        help="the catalog as JSON on stdout, in ASCII only; messages go to stderr, also what plugins print",
     )
     return parser
 
@@ -238,15 +242,11 @@ def _watch_for_ctrl_c(stop: threading.Event) -> Callable[[], None]:
 
 
 def _main(args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
-    registry = Registry.default(args.plugins)
-    if stop.is_set():  # Ctrl+C while a plugin was loading: that plugin has it as its error
-        raise Cancelled()
-    for warning in registry.warnings:
-        console.warn(warning)
+    if args.command == "catalog":
+        return _catalog(args, console, stop)
+    registry = _registry(args, console, stop)
     if args.command == "plugins":
         return _plugins(registry, console)
-    if args.command == "catalog":
-        return _catalog(registry, console, as_json=args.json)
     try:
         engine = Engine(_load(args.project), registry)
         engine.cancel = stop  # with it set, a KeyboardInterrupt is Ctrl+C, not a plugin's error
@@ -263,6 +263,16 @@ def _main(args: argparse.Namespace, console: Console, stop: threading.Event) -> 
     except OSError as e:
         console.error(f"{e.strerror or e}: {e.filename}" if e.filename else str(e))
         return 2
+
+
+def _registry(args: argparse.Namespace, console: Console, stop: threading.Event) -> Registry:
+    """The built-in plugins and those of the plugin folders; a folder that isn't there gets a warning."""
+    registry = Registry.default(args.plugins)
+    if stop.is_set():  # Ctrl+C while a plugin was loading: that plugin has it as its error
+        raise Cancelled()
+    for warning in registry.warnings:
+        console.warn(warning)
+    return registry
 
 
 def _load(name: str) -> Project:
@@ -392,18 +402,63 @@ def _plugins(registry: Registry, console: Console) -> int:
     return 1 if registry.errors else 0
 
 
-def _catalog(registry: Registry, console: Console, *, as_json: bool) -> int:
+def _catalog(args: argparse.Namespace, console: Console, stop: threading.Event) -> int:
     """The catalog on stdout: readable, or as JSON for programs. A plugin that failed to load is
-    named on stderr; in the JSON its entry has the error."""
-    for name, error in registry.errors:
-        console.warn(f"Plugin '{name}' failed to load: {error.splitlines()[-1]}")
-    data = catalog.build(registry)
-    if as_json:
+    named on stderr; in the JSON its entry has the error. With --json, stdout gets the JSON and
+    nothing else: what plugins write to stdout while they load goes to stderr."""
+    with _stdout_to_stderr() if args.json else contextlib.nullcontext():
+        registry = _registry(args, console, stop)
+        for name, error in registry.errors:
+            console.warn(f"Plugin '{name}' failed to load: {error.splitlines()[-1]}")
+        data = catalog.build(registry)
+    if args.json:
         _write_bytes(catalog.to_json(data))
     else:
         for line in catalog.lines(data):
             console.print(line)
     return 1 if registry.errors else 0
+
+
+@contextlib.contextmanager
+def _stdout_to_stderr() -> Iterator[None]:
+    """While the block runs, what is written to stdout goes to stderr: print() and sys.stdout,
+    sys.__stdout__, and file descriptor 1, also from C code (on Windows the standard output
+    handle follows descriptor 1). Afterwards stdout is as before. Without the descriptors (a
+    program started without them), only sys.stdout goes to stderr."""
+    streams = [stream for stream in (sys.stdout, sys.__stdout__) if stream is not None]
+    _flush(streams)
+    try:
+        saved: int | None = os.dup(1)
+    except OSError:
+        saved = None
+    if saved is not None:
+        try:
+            os.dup2(2, 1)
+        except OSError:
+            os.close(saved)
+            saved = None
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        _flush([*streams, sys.stdout, sys.stderr])  # what is still held in them goes to stderr too
+        _flush_c_streams()
+        if saved is not None:
+            os.dup2(saved, 1)
+            os.close(saved)
+
+
+def _flush(streams: Iterable[object]) -> None:
+    for stream in streams:
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            stream.flush()
+
+
+def _flush_c_streams() -> None:
+    """Writes out what C code holds for its streams (printf, puts), while descriptor 1 is stderr."""
+    with contextlib.suppress(Exception):
+        library = ctypes.CDLL("ucrtbase") if sys.platform == "win32" else ctypes.CDLL(None)
+        library.fflush(None)
 
 
 def _write_bytes(data: bytes) -> None:

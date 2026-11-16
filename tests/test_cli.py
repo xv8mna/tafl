@@ -640,6 +640,70 @@ def test_the_json_reaches_a_pipe_as_it_is(registry, tmp_path):
     assert json.loads(done.stdout) == catalog.build(registry)  # every character as it is
 
 
+NOISY = '''
+import ctypes
+import os
+import sys
+from dataclasses import dataclass
+
+from tafl.api import P, action
+
+print("print while loading → ü")
+sys.stdout.write("sys.stdout while loading\\n")
+sys.__stdout__.write("sys.__stdout__ while loading\\n")  # kept in its buffer for a while
+os.write(1, b"descriptor 1 while loading\\n")
+if sys.platform == "win32":
+    ctypes.CDLL("ucrtbase").puts(b"C code while loading")  # kept in the buffer of C
+
+
+@dataclass(frozen=True, kw_only=True)
+class Loud(P.Text):
+    def initial(self):
+        print("print while the catalog is built")
+        return super().initial()
+
+
+@action("demo.loud", "Loud", params=[Loud("text", "Text")])
+def loud(df, p, ctx):
+    return df
+'''
+WRITTEN = ["print while loading", "sys.stdout while loading", "sys.__stdout__ while loading", "descriptor 1 while loading", "print while the catalog is built"]
+
+
+def test_the_json_is_all_that_stdout_gets(registry, tmp_path):
+    """What a plugin writes to stdout while it loads, and while the catalog is built, goes to
+    stderr, in every way: print, sys.__stdout__, descriptor 1, C code. A program that reads the
+    JSON gets the JSON and nothing else; the readable list stays as it was."""
+    folder = tmp_path / "plugins"
+    folder.mkdir()
+    (folder / "noisy.py").write_text(NOISY, encoding="utf-8")
+    environment = {**os.environ, "APPDATA": str(tmp_path / "appdata"), "PYTHONIOENCODING": "cp1252"}
+    for name in ("TAFL_PLUGINS", "PYTHONUTF8"):
+        environment.pop(name, None)
+    command = [sys.executable, "-m", "tafl", "--plugins", str(folder), "catalog"]
+    done = subprocess.run([*command, "--json"], capture_output=True, env=environment, timeout=120)
+    assert done.returncode == 0 and done.stdout.isascii() and done.stdout.endswith(b"}\n")
+    data = json.loads(done.stdout)
+    assert [action["id"] for action in data["actions"]] == sorted([*registry.actions, "demo.loud"])
+    errors = done.stderr.decode("cp1252")
+    assert all(text in errors for text in WRITTEN), errors
+    assert ("C code while loading" in errors) == (sys.platform == "win32")
+    readable = subprocess.run(command, capture_output=True, env=environment, timeout=120)
+    assert readable.returncode == 0 and b"print while loading" in readable.stdout and b"demo.loud  Loud" in readable.stdout
+
+
+def test_stdout_is_as_before_once_the_catalog_is_written(plugins, capfd):
+    """In the same process: afterwards descriptor 1 and sys.stdout are stdout again."""
+    (plugins / "quits.py").unlink()
+    (plugins / "noisy.py").write_text(NOISY.replace("demo.loud", "demo.loud_here"), encoding="utf-8")
+    assert main(["--plugins", str(plugins), "catalog", "--json"]) == 0
+    print("after the catalog")
+    os.write(1, b"descriptor 1 after the catalog\n")
+    output = capfd.readouterr()
+    assert output.out.startswith("{\n") and output.out.endswith("}\nafter the catalog\ndescriptor 1 after the catalog\n")
+    assert all(text in output.err for text in WRITTEN), output.err
+
+
 def test_run_says_which_setting_isnt_known(no_plugins, tmp_path, capsys):
     """A key that no setting has: the run goes on as before (exit code 0), with the warning."""
     path = _one_table(tmp_path)

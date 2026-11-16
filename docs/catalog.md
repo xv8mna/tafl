@@ -12,7 +12,7 @@ last word: some of what it checks, the catalog can't express (see
 | Command | Output |
 |---|---|
 | `tafl catalog` | a readable list: actions by category, with their settings |
-| `tafl catalog --json` | the catalog as JSON on stdout; messages go to stderr |
+| `tafl catalog --json` | the catalog as JSON on stdout, and nothing else; messages go to stderr, also what plugins write to stdout while they load |
 | `tafl --plugins FOLDER catalog --json` | also the actions of the plugins in FOLDER |
 
 In the Windows download, write `tafl.exe`. The catalog lists what `tafl run` would load: the
