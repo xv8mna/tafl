@@ -1,0 +1,6771 @@
+{
+ "format": "tafl-catalog",
+ "format_version": "1.0",
+ "app": {
+  "name": "Tafl",
+  "plugin_api": 1
+ },
+ "project_file": {
+  "format": "tafl-project",
+  "format_version": 1
+ },
+ "plugins": [
+  {
+   "name": "calculate",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "calc.columns",
+    "calc.enumerate",
+    "calc.aggregate"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "checks",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "check.data"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "columns",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "columns.rename",
+    "columns.select",
+    "columns.change_type"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "combine",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "table.derive",
+    "table.merge",
+    "table.append"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "csv_files",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "csv.import",
+    "csv.export"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "databases",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "db.import",
+    "db.export",
+    "db.command"
+   ],
+   "connection_types": [
+    "sqlserver",
+    "sqlite"
+   ],
+   "errors": []
+  },
+  {
+   "name": "excel_files",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "excel.import",
+    "excel.export"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "files",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "files.list",
+    "files.copy",
+    "files.move",
+    "files.rename",
+    "files.delete",
+    "files.mkdir"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "flow",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "flow.skip_if_empty"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "parquet_files",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "parquet.import"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "reshape",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "reshape.pivot",
+    "reshape.unpivot"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "rows",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "rows.filter",
+    "rows.filter_formula",
+    "rows.sort",
+    "rows.dedupe",
+    "rows.fill"
+   ],
+   "connection_types": [],
+   "errors": []
+  },
+  {
+   "name": "text",
+   "builtin": true,
+   "path": null,
+   "actions": [
+    "text.replace",
+    "text.clean",
+    "text.split"
+   ],
+   "connection_types": [],
+   "errors": []
+  }
+ ],
+ "actions": [
+  {
+   "id": "calc.aggregate",
+   "name": "Aggregate",
+   "category": "Calculate",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "calculate",
+   "help": "Groups rows with equal values in the group columns and calculates one result row per group, like GROUP BY in SQL. Groups appear in the order they first occur. A sum of only empty values is empty, as in SQL (and in Pivot), also for a table without rows.",
+   "settings": [
+    {
+     "key": "group_by",
+     "kind": "columns",
+     "label": "Group by (empty = one total row)",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "calculations",
+     "kind": "list",
+     "label": "Calculate",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "function",
+       "kind": "choice",
+       "label": "Function",
+       "required": false,
+       "default": "sum",
+       "help": "",
+       "visible_if": null,
+       "options": [
+        {
+         "value": "sum",
+         "label": "Sum"
+        },
+        {
+         "value": "mean",
+         "label": "Average"
+        },
+        {
+         "value": "min",
+         "label": "Minimum"
+        },
+        {
+         "value": "max",
+         "label": "Maximum"
+        },
+        {
+         "value": "median",
+         "label": "Median"
+        },
+        {
+         "value": "count",
+         "label": "Count values (not empty)"
+        },
+        {
+         "value": "count_distinct",
+         "label": "Count distinct values"
+        },
+        {
+         "value": "count_rows",
+         "label": "Count rows"
+        },
+        {
+         "value": "first",
+         "label": "First value"
+        },
+        {
+         "value": "last",
+         "label": "Last value"
+        },
+        {
+         "value": "join",
+         "label": "Join texts"
+        }
+       ]
+      },
+      {
+       "key": "column",
+       "kind": "column",
+       "label": "Column",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": {
+        "function": [
+         "sum",
+         "mean",
+         "min",
+         "max",
+         "median",
+         "count",
+         "count_distinct",
+         "first",
+         "last",
+         "join"
+        ]
+       },
+       "column_source": "input"
+      },
+      {
+       "key": "name",
+       "kind": "text",
+       "label": "Result name (empty = automatic)",
+       "required": false,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "multiline": false,
+       "placeholder": ""
+      }
+     ],
+     "min_items": 1
+    },
+    {
+     "key": "separator",
+     "kind": "text",
+     "label": "Separator for 'Join texts'",
+     "required": false,
+     "default": ", ",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "group_by": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "calculations": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "function": {
+         "enum": [
+          "sum",
+          "mean",
+          "min",
+          "max",
+          "median",
+          "count",
+          "count_distinct",
+          "count_rows",
+          "first",
+          "last",
+          "join"
+         ]
+        },
+        "column": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false
+      },
+      "minItems": 1
+     },
+     "separator": {
+      "type": "string"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "calculations"
+    ]
+   }
+  },
+  {
+   "id": "calc.columns",
+   "name": "Calculate columns",
+   "category": "Calculate",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "calculate",
+   "help": "Adds columns calculated with SQL-style formulas. A column from an earlier step with the same name is replaced; the new columns of one step need different names. Each formula can use the columns calculated above it.\n\nExamples: [Price] * [Quantity] \u00b7 ROUND([Net] * 1.19, 2) \u00b7 UPPER(TRIM([Name])) \u00b7 [First name] || ' ' || [Last name] \u00b7 IIF([Amount] > 1000, 'big', 'small') \u00b7 CASE WHEN [Country] = 'DE' THEN 'Germany' ELSE 'Other' END \u00b7 YEAR([Date]) \u00b7 [Date] + 30 (days) \u00b7 SUM([Amount]) OVER (PARTITION BY [Customer])",
+   "settings": [
+    {
+     "key": "columns",
+     "kind": "list",
+     "label": "New columns",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "name",
+       "kind": "text",
+       "label": "Column name",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "multiline": false,
+       "placeholder": ""
+      },
+      {
+       "key": "formula",
+       "kind": "expression",
+       "label": "Formula",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "multiline": false,
+       "placeholder": "[Price] * [Quantity]",
+       "condition": false,
+       "creates": "name"
+      }
+     ],
+     "min_items": 1
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "columns": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "formula": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "name",
+        "formula"
+       ]
+      },
+      "minItems": 1
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "columns"
+    ]
+   }
+  },
+  {
+   "id": "calc.enumerate",
+   "name": "Number rows",
+   "category": "Calculate",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "calculate",
+   "help": "Adds a running number.\n\nNumber the rows: 1, 2, 3, \u2026 over the whole table, or restarting for each group (like ROW_NUMBER() OVER (PARTITION BY \u2026 ORDER BY \u2026) in SQL). Number the groups: every distinct combination of the group columns gets its own number (like DENSE_RANK()). The order of the rows in the table does not change.",
+   "settings": [
+    {
+     "key": "name",
+     "kind": "text",
+     "label": "New column",
+     "required": true,
+     "default": "No",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "mode",
+     "kind": "choice",
+     "label": "Numbering",
+     "required": false,
+     "default": "rows",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "rows",
+       "label": "Number the rows: 1, 2, 3, \u2026"
+      },
+      {
+       "value": "groups",
+       "label": "Number the groups: equal values get the same number"
+      }
+     ]
+    },
+    {
+     "key": "group_by",
+     "kind": "columns",
+     "label": "Groups (columns)",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "order_by",
+     "kind": "list",
+     "label": "In this order (empty = current row order)",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "column",
+       "kind": "column",
+       "label": "Column",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "column_source": "input"
+      },
+      {
+       "key": "order",
+       "kind": "choice",
+       "label": "Order",
+       "required": false,
+       "default": "asc",
+       "help": "",
+       "visible_if": null,
+       "options": [
+        {
+         "value": "asc",
+         "label": "Ascending"
+        },
+        {
+         "value": "desc",
+         "label": "Descending"
+        }
+       ]
+      }
+     ],
+     "min_items": 0
+    },
+    {
+     "key": "start",
+     "kind": "int",
+     "label": "Start at",
+     "required": false,
+     "default": 1,
+     "help": "",
+     "visible_if": null,
+     "min": null,
+     "max": null
+    },
+    {
+     "key": "step",
+     "kind": "int",
+     "label": "Step",
+     "required": false,
+     "default": 1,
+     "help": "",
+     "visible_if": null,
+     "min": null,
+     "max": null
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "mode": {
+      "enum": [
+       "rows",
+       "groups"
+      ]
+     },
+     "group_by": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "order_by": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "column": {
+         "type": "string"
+        },
+        "order": {
+         "enum": [
+          "asc",
+          "desc"
+         ]
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "column"
+       ]
+      }
+     },
+     "start": {
+      "type": "integer"
+     },
+     "step": {
+      "type": "integer"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "id": "check.data",
+   "name": "Check data",
+   "category": "Rows",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "checks",
+   "help": "Checks the data at this step: when a check fails, it stops the table or only warns. The data itself stays as it is.\n\nNumber of rows: at least, at most, exactly or between two numbers; at least 1 means that the table must not be empty. Stop the table: the step shows an error, like a step that fails, so the steps after it and the tables that use this table are not calculated and their exports don't run; a run of the project fails. Only warn: the step and Run results show a warning, and the data goes on. Put the step before the exports, so that bad input never overwrites a good file.",
+   "settings": [
+    {
+     "key": "checks",
+     "kind": "list",
+     "label": "Checks",
+     "required": false,
+     "default": [
+      {
+       "check": "rows",
+       "compare": "at_least",
+       "number": 1,
+       "up_to": 100
+      }
+     ],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "check",
+       "kind": "choice",
+       "label": "Check",
+       "required": false,
+       "default": "rows",
+       "help": "",
+       "visible_if": null,
+       "options": [
+        {
+         "value": "rows",
+         "label": "Number of rows"
+        }
+       ]
+      },
+      {
+       "key": "compare",
+       "kind": "choice",
+       "label": "Must be",
+       "required": false,
+       "default": "at_least",
+       "help": "",
+       "visible_if": {
+        "check": [
+         "rows"
+        ]
+       },
+       "options": [
+        {
+         "value": "at_least",
+         "label": "at least"
+        },
+        {
+         "value": "at_most",
+         "label": "at most"
+        },
+        {
+         "value": "exactly",
+         "label": "exactly"
+        },
+        {
+         "value": "between",
+         "label": "between"
+        }
+       ]
+      },
+      {
+       "key": "number",
+       "kind": "int",
+       "label": "Number",
+       "required": false,
+       "default": 1,
+       "help": "",
+       "visible_if": {
+        "check": [
+         "rows"
+        ]
+       },
+       "min": 0,
+       "max": null
+      },
+      {
+       "key": "up_to",
+       "kind": "int",
+       "label": "and",
+       "required": false,
+       "default": 100,
+       "help": "",
+       "visible_if": {
+        "check": [
+         "rows"
+        ],
+        "compare": [
+         "between"
+        ]
+       },
+       "min": 0,
+       "max": null
+      }
+     ],
+     "min_items": 0
+    },
+    {
+     "key": "on_fail",
+     "kind": "choice",
+     "label": "When a check fails",
+     "required": false,
+     "default": "stop",
+     "help": "Stop the table: the step shows an error, the steps after it and the tables that use this table are not calculated, and a run of the project fails. Only warn: the step shows a warning and the data goes on.",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "stop",
+       "label": "Stop the table"
+      },
+      {
+       "value": "warn",
+       "label": "Only warn"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "checks": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "check": {
+         "enum": [
+          "rows"
+         ]
+        },
+        "compare": {
+         "enum": [
+          "at_least",
+          "at_most",
+          "exactly",
+          "between"
+         ]
+        },
+        "number": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "up_to": {
+         "type": "integer",
+         "minimum": 0
+        }
+       },
+       "additionalProperties": false
+      }
+     },
+     "on_fail": {
+      "enum": [
+       "stop",
+       "warn"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "id": "columns.change_type",
+   "name": "Change type / format",
+   "category": "Columns",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "columns",
+   "help": "Converts columns to another type.\n\nFormat examples \u2014 dates: dd.mm.yyyy, yyyy-mm-dd, dd.mm.yyyy hh:mm, d. mmmm yyyy; numbers as text: 0.00, #,##0.00, 00000 (pads with zeros, e.g. postal codes), 0%, #,##0.00 \u20ac. Without a date format, common formats are detected; two-digit years are read like in Excel (25 = 2025, 75 = 1975). Month and day names (mmm, mmmm, ddd, dddd) are English. Numbers become dates as Excel day numbers (45658 = 01.01.2025); with a format of digits only, such as yyyymmdd, their digits are read with it (20260131 = 31.01.2026). Whole numbers keep all their digits (up to 9,223,372,036,854,775,807); decimal numbers keep about 15.",
+   "settings": [
+    {
+     "key": "columns",
+     "kind": "list",
+     "label": "Columns",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "column",
+       "kind": "column",
+       "label": "Column",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "column_source": "input"
+      },
+      {
+       "key": "type",
+       "kind": "choice",
+       "label": "New type",
+       "required": false,
+       "default": "text",
+       "help": "",
+       "visible_if": null,
+       "options": [
+        {
+         "value": "text",
+         "label": "Text"
+        },
+        {
+         "value": "integer",
+         "label": "Whole number"
+        },
+        {
+         "value": "number",
+         "label": "Decimal number"
+        },
+        {
+         "value": "date",
+         "label": "Date"
+        },
+        {
+         "value": "datetime",
+         "label": "Date and time"
+        },
+        {
+         "value": "boolean",
+         "label": "True / false"
+        }
+       ]
+      },
+      {
+       "key": "format",
+       "kind": "text",
+       "label": "Format",
+       "required": false,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "multiline": false,
+       "placeholder": "dd.mm.yyyy  |  #,##0.00  |  00000"
+      }
+     ],
+     "min_items": 1
+    },
+    {
+     "key": "decimal",
+     "kind": "choice",
+     "label": "Decimal separator in text",
+     "required": false,
+     "default": ",",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": ",",
+       "label": "Comma: 1.234,56"
+      },
+      {
+       "value": ".",
+       "label": "Point: 1,234.56"
+      }
+     ]
+    },
+    {
+     "key": "on_error",
+     "kind": "choice",
+     "label": "Values that can't be converted",
+     "required": false,
+     "default": "empty",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "empty",
+       "label": "become empty (with a warning)"
+      },
+      {
+       "value": "fail",
+       "label": "stop with an error"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "columns": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "column": {
+         "type": "string"
+        },
+        "type": {
+         "enum": [
+          "text",
+          "integer",
+          "number",
+          "date",
+          "datetime",
+          "boolean"
+         ]
+        },
+        "format": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "column"
+       ]
+      },
+      "minItems": 1
+     },
+     "decimal": {
+      "enum": [
+       ",",
+       "."
+      ]
+     },
+     "on_error": {
+      "enum": [
+       "empty",
+       "fail"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "columns"
+    ]
+   }
+  },
+  {
+   "id": "columns.rename",
+   "name": "Rename columns",
+   "category": "Columns",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "columns",
+   "help": "Gives columns new names.",
+   "settings": [
+    {
+     "key": "columns",
+     "kind": "list",
+     "label": "Rename",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "column",
+       "kind": "column",
+       "label": "Column",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "column_source": "input"
+      },
+      {
+       "key": "new_name",
+       "kind": "text",
+       "label": "New name",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "multiline": false,
+       "placeholder": ""
+      }
+     ],
+     "min_items": 1
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "columns": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "column": {
+         "type": "string"
+        },
+        "new_name": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "column",
+        "new_name"
+       ]
+      },
+      "minItems": 1
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "columns"
+    ]
+   }
+  },
+  {
+   "id": "columns.select",
+   "name": "Keep, remove or reorder columns",
+   "category": "Columns",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "columns",
+   "help": "Keeps only some columns (in the order listed), removes columns, or moves columns to the front while keeping all others behind them.",
+   "settings": [
+    {
+     "key": "mode",
+     "kind": "choice",
+     "label": "Mode",
+     "required": false,
+     "default": "keep",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "keep",
+       "label": "Keep only these columns, in this order"
+      },
+      {
+       "value": "remove",
+       "label": "Remove these columns"
+      },
+      {
+       "value": "front",
+       "label": "Move these columns to the front"
+      }
+     ]
+    },
+    {
+     "key": "columns",
+     "kind": "columns",
+     "label": "Columns",
+     "required": true,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "column_source": "input"
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "mode": {
+      "enum": [
+       "keep",
+       "remove",
+       "front"
+      ]
+     },
+     "columns": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "columns"
+    ]
+   }
+  },
+  {
+   "id": "csv.export",
+   "name": "Export to CSV / text file",
+   "category": "Export",
+   "kind": "export",
+   "side_effects": true,
+   "version": 2,
+   "plugin": "csv_files",
+   "help": "Writes the table to a delimited text file. An existing file is replaced when the new one is complete: if the export fails, the old file stays as it was.\n\nDecimal numbers are written with at most 15 significant digits, as Excel shows and saves them: 0.37 * 3 is 1,11 (not 1,1099999999999999). Whole numbers and exact decimals keep all their digits. Times keep their fractions of a second (08:30:00.500). Binary values are written as hex text (0x0102FF), time spans as text that is the same on every PC (1d 2h 3m, as Pivot and Split column write them); infinite and not-a-number values as empty, as in Excel. A table without columns gives an empty file. A CSV file can't hold lists or records: such columns stop the export.",
+   "settings": [
+    {
+     "key": "file",
+     "kind": "file",
+     "label": "File",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "file_mode": "save",
+     "file_filter": "CSV files (*.csv);;Text files (*.txt);;All files (*.*)"
+    },
+    {
+     "key": "skip_empty",
+     "kind": "bool",
+     "label": "Don't export an empty table",
+     "required": false,
+     "default": false,
+     "help": "When the table has no rows, the file is left as it is.",
+     "visible_if": null
+    },
+    {
+     "key": "delimiter",
+     "kind": "choice",
+     "label": "Delimiter",
+     "required": false,
+     "default": ";",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": ";",
+       "label": "Semicolon ;"
+      },
+      {
+       "value": ",",
+       "label": "Comma ,"
+      },
+      {
+       "value": "tab",
+       "label": "Tab"
+      },
+      {
+       "value": "|",
+       "label": "Pipe |"
+      }
+     ]
+    },
+    {
+     "key": "encoding",
+     "kind": "choice",
+     "label": "Encoding",
+     "required": false,
+     "default": "utf-8-sig",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "utf-8-sig",
+       "label": "UTF-8 with BOM (Excel opens it correctly)"
+      },
+      {
+       "value": "utf-8",
+       "label": "UTF-8"
+      },
+      {
+       "value": "cp1252",
+       "label": "Windows (ANSI)"
+      }
+     ]
+    },
+    {
+     "key": "decimal",
+     "kind": "choice",
+     "label": "Decimal separator",
+     "required": false,
+     "default": ",",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": ",",
+       "label": "Comma: 1234,56"
+      },
+      {
+       "value": ".",
+       "label": "Point: 1234.56"
+      }
+     ]
+    },
+    {
+     "key": "date_format",
+     "kind": "text",
+     "label": "Date format",
+     "required": false,
+     "default": "dd.mm.yyyy",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "datetime_format",
+     "kind": "text",
+     "label": "Date-time format",
+     "required": false,
+     "default": "dd.mm.yyyy hh:mm:ss",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "header",
+     "kind": "bool",
+     "label": "Write column names",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "quote_all",
+     "kind": "bool",
+     "label": "Put every value in quotes",
+     "required": false,
+     "default": false,
+     "help": "",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string"
+     },
+     "skip_empty": {
+      "type": "boolean"
+     },
+     "delimiter": {
+      "enum": [
+       ";",
+       ",",
+       "tab",
+       "|"
+      ]
+     },
+     "encoding": {
+      "enum": [
+       "utf-8-sig",
+       "utf-8",
+       "cp1252"
+      ]
+     },
+     "decimal": {
+      "enum": [
+       ",",
+       "."
+      ]
+     },
+     "date_format": {
+      "type": "string"
+     },
+     "datetime_format": {
+      "type": "string"
+     },
+     "header": {
+      "type": "boolean"
+     },
+     "quote_all": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "file"
+    ]
+   }
+  },
+  {
+   "id": "csv.import",
+   "name": "Import CSV / text files",
+   "category": "Import",
+   "kind": "source",
+   "side_effects": false,
+   "version": 3,
+   "plugin": "csv_files",
+   "help": "Reads a delimited text file (CSV, TXT, TSV), or all such files of a folder (and its subfolders) into one table: daily exports, for example.\n\nDelimiter, encoding and decimal separator are detected automatically unless chosen; a file whose first line has no delimiter has one column. Numbers and dates are recognized when every value of a column fits: also amounts like 1.234,50 \u20ac, -$3.00 or 123,45- and percentages like 12,5% (read as 0.125). Numbers keep all their digits: whole numbers of up to 19 digits are integers, longer ones and decimals that a decimal number would round (12345678901234,5678) exact decimals (up to 38 digits; longer ones stay text, with a warning). Columns with leading zeros (customer numbers, postal codes, 00,5) stay text, and so do digits with spaces between them (phone numbers, card numbers): spaces between thousands count only in amounts and percentages (1 234,50 \u20ac). A value like 1.000 can be one thousand or one: it follows the other numbers of its column (like 0.500 or 2,5, also in the other files of a folder), else those of its file, and without any it is one thousand in files with semicolons.\n\nIn a folder, each file is read with its own delimiter, encoding, decimal separator and date format. Files are matched by column names; a column missing in a file stays empty there. A column with other types in other files gets a type that holds every value, as in Append, or becomes text with a warning; one that is text in a file stays text, as the files have it.",
+   "settings": [
+    {
+     "key": "source",
+     "kind": "choice",
+     "label": "Read",
+     "required": false,
+     "default": "file",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "file",
+       "label": "One file"
+      },
+      {
+       "value": "folder",
+       "label": "All files in a folder"
+      }
+     ]
+    },
+    {
+     "key": "file",
+     "kind": "file",
+     "label": "File",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "source": [
+       "file"
+      ]
+     },
+     "file_mode": "open",
+     "file_filter": "Text files (*.csv *.txt *.tsv);;All files (*.*)"
+    },
+    {
+     "key": "folder",
+     "kind": "folder",
+     "label": "Folder",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "pattern",
+     "kind": "text",
+     "label": "File names",
+     "required": false,
+     "default": "*.csv;*.txt",
+     "help": "* stands for any text, e.g. orders_*.csv; several patterns with ;",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     },
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "subfolders",
+     "kind": "bool",
+     "label": "Include subfolders (all levels)",
+     "required": false,
+     "default": false,
+     "help": "",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "no_files",
+     "kind": "choice",
+     "label": "When there are no files",
+     "required": false,
+     "default": "error",
+     "help": "e.g. for a folder that is empty on some days: skipping leaves out the steps after this one. An empty table (with a warning) has only the columns with the file name and the path, as far as they are switched on below: a later step that names another column fails.",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     },
+     "options": [
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      },
+      {
+       "value": "empty",
+       "label": "Continue with an empty table"
+      },
+      {
+       "value": "skip",
+       "label": "Skip the rest of the table"
+      }
+     ]
+    },
+    {
+     "key": "file_column",
+     "kind": "bool",
+     "label": "Add a column with the file name",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "path_column",
+     "kind": "bool",
+     "label": "Add a column with the path below the folder",
+     "required": false,
+     "default": false,
+     "help": "e.g. 2025\\01\\orders.csv: a calculated column can take the year or month from it",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "delimiter",
+     "kind": "choice",
+     "label": "Delimiter",
+     "required": false,
+     "default": "auto",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "auto",
+       "label": "Detect automatically"
+      },
+      {
+       "value": ";",
+       "label": "Semicolon ;"
+      },
+      {
+       "value": ",",
+       "label": "Comma ,"
+      },
+      {
+       "value": "tab",
+       "label": "Tab"
+      },
+      {
+       "value": "|",
+       "label": "Pipe |"
+      }
+     ]
+    },
+    {
+     "key": "encoding",
+     "kind": "choice",
+     "label": "Encoding",
+     "required": false,
+     "default": "auto",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "auto",
+       "label": "Detect automatically"
+      },
+      {
+       "value": "utf-8",
+       "label": "UTF-8"
+      },
+      {
+       "value": "cp1252",
+       "label": "Windows (ANSI)"
+      },
+      {
+       "value": "latin-1",
+       "label": "Latin-1 (ISO-8859-1)"
+      },
+      {
+       "value": "utf-16",
+       "label": "UTF-16"
+      }
+     ]
+    },
+    {
+     "key": "header",
+     "kind": "bool",
+     "label": "First row has the column names",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "skip_lines",
+     "kind": "int",
+     "label": "Skip lines at the top",
+     "required": false,
+     "default": 0,
+     "help": "",
+     "visible_if": null,
+     "min": 0,
+     "max": null
+    },
+    {
+     "key": "detect_types",
+     "kind": "bool",
+     "label": "Detect numbers and dates",
+     "required": false,
+     "default": true,
+     "help": "Off: every column stays text.",
+     "visible_if": null
+    },
+    {
+     "key": "decimal",
+     "kind": "choice",
+     "label": "Decimal separator",
+     "required": false,
+     "default": "auto",
+     "help": "",
+     "visible_if": {
+      "detect_types": [
+       true
+      ]
+     },
+     "options": [
+      {
+       "value": "auto",
+       "label": "Detect automatically"
+      },
+      {
+       "value": ",",
+       "label": "Comma: 1.234,56"
+      },
+      {
+       "value": ".",
+       "label": "Point: 1,234.56"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [
+    {
+     "name": "File",
+     "type": "text",
+     "when": {
+      "source": [
+       "folder"
+      ],
+      "file_column": [
+       true
+      ]
+     }
+    },
+    {
+     "name": "Path",
+     "type": "text",
+     "when": {
+      "source": [
+       "folder"
+      ],
+      "path_column": [
+       true
+      ]
+     }
+    }
+   ],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "source": {
+      "enum": [
+       "file",
+       "folder"
+      ]
+     },
+     "file": {
+      "type": "string"
+     },
+     "folder": {
+      "type": "string"
+     },
+     "pattern": {
+      "type": "string"
+     },
+     "subfolders": {
+      "type": "boolean"
+     },
+     "no_files": {
+      "enum": [
+       "error",
+       "empty",
+       "skip"
+      ]
+     },
+     "file_column": {
+      "type": "boolean"
+     },
+     "path_column": {
+      "type": "boolean"
+     },
+     "delimiter": {
+      "enum": [
+       "auto",
+       ";",
+       ",",
+       "tab",
+       "|"
+      ]
+     },
+     "encoding": {
+      "enum": [
+       "auto",
+       "utf-8",
+       "cp1252",
+       "latin-1",
+       "utf-16"
+      ]
+     },
+     "header": {
+      "type": "boolean"
+     },
+     "skip_lines": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "detect_types": {
+      "type": "boolean"
+     },
+     "decimal": {
+      "enum": [
+       "auto",
+       ",",
+       "."
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "id": "db.command",
+   "name": "Run SQL command",
+   "category": "Export",
+   "kind": "command",
+   "side_effects": true,
+   "version": 1,
+   "plugin": "databases",
+   "help": "Runs SQL in a database, e.g. a stored procedure after an export, or DELETE / UPDATE statements. SQL Server: separate batches with GO lines, as in SSMS (GO 3 runs a batch three times). Runs only when the project is run, in one transaction: if it fails, its changes are rolled back. SQLite refuses BEGIN, COMMIT and ROLLBACK; on SQL Server, a BEGIN TRAN \u2026 COMMIT of the command's own works, and a COMMIT or ROLLBACK that ends the transaction of the step stops it with a message. Stop ends a statement that runs. The table passes through unchanged.",
+   "settings": [
+    {
+     "key": "connection",
+     "kind": "connection",
+     "label": "Connection",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "connection_types": []
+    },
+    {
+     "key": "sql",
+     "kind": "code",
+     "label": "SQL",
+     "required": true,
+     "default": "",
+     "help": "The database's own SQL (T-SQL for SQL Server)",
+     "visible_if": null,
+     "multiline": true,
+     "placeholder": "EXEC dbo.RefreshReport",
+     "language": "sql"
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "connection": {
+      "type": "string"
+     },
+     "sql": {
+      "type": "string"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "connection",
+     "sql"
+    ]
+   }
+  },
+  {
+   "id": "db.export",
+   "name": "Export to database",
+   "category": "Export",
+   "kind": "export",
+   "side_effects": true,
+   "version": 2,
+   "plugin": "databases",
+   "help": "Writes the table into a database table, in one transaction: if anything fails, the database stays as it was.\n\nAdd the rows, replace all of them, or replace just the rows with the same key values (e.g. the dates in the data: reloading a day replaces that day). Update rows by key columns, or update them and add the new ones. Columns are matched by name; a missing table is created with types that fit the data. Values are stored as their columns hold them, the same way in every mode (08:00:01.5 is 08:00:01 in a SQL Server datetime2(0) column, and the step says how many values were cut; spaces at the end of a text that don't fit are left out), and key values compare as their columns do (e.g. with their collation). On SQL Server, a text for a date or time column is read as Change type / format reads it without a format (31.12.2025 08:30, 2025-12-31): a text it can't read stops the export. Date-times with a time zone are written in that zone's local time, without the zone (08:30 in Berlin stays 08:30), as in the Excel export; into a SQL Server datetimeoffset column with the zone's offset (08:30 +02:00), and there a date-time without a zone gets the offset of this PC's time zone on its day. Binary values for a SQL Server column of text are hex text (0x0102FF), as the CSV export writes them. Runs only when the project is run.",
+   "settings": [
+    {
+     "key": "connection",
+     "kind": "connection",
+     "label": "Connection",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "connection_types": []
+    },
+    {
+     "key": "table",
+     "kind": "text",
+     "label": "Table",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": "dbo.Orders"
+    },
+    {
+     "key": "mode",
+     "kind": "choice",
+     "label": "What to do",
+     "required": false,
+     "default": "insert",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "insert",
+       "label": "Add the rows"
+      },
+      {
+       "value": "replace",
+       "label": "Replace all rows (delete them all, then add)"
+      },
+      {
+       "value": "replace_keys",
+       "label": "Replace the rows with the same key values (e.g. the same dates)"
+      },
+      {
+       "value": "replace_where",
+       "label": "Delete the rows where a condition is true, then add"
+      },
+      {
+       "value": "update",
+       "label": "Update the rows with the same key values"
+      },
+      {
+       "value": "upsert",
+       "label": "Update the rows with the same key values, add the others"
+      },
+      {
+       "value": "delete",
+       "label": "Delete the rows with the same key values"
+      }
+     ]
+    },
+    {
+     "key": "key_columns",
+     "kind": "columns",
+     "label": "Key columns",
+     "required": true,
+     "default": [],
+     "help": "The columns that identify a row, e.g. OrderNo, or Date to replace whole days",
+     "visible_if": {
+      "mode": [
+       "replace_keys",
+       "update",
+       "upsert",
+       "delete"
+      ]
+     },
+     "column_source": "input"
+    },
+    {
+     "key": "condition",
+     "kind": "code",
+     "label": "Delete the rows where",
+     "required": true,
+     "default": "",
+     "help": "A condition in the database's own SQL (T-SQL for SQL Server)",
+     "visible_if": {
+      "mode": [
+       "replace_where"
+      ]
+     },
+     "multiline": true,
+     "placeholder": "[Date] = CAST(GETDATE() AS date)",
+     "language": "sql"
+    },
+    {
+     "key": "create",
+     "kind": "bool",
+     "label": "Create the table if it doesn't exist",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": {
+      "mode": [
+       "insert",
+       "replace",
+       "replace_keys",
+       "replace_where",
+       "upsert"
+      ]
+     }
+    },
+    {
+     "key": "extra_columns",
+     "kind": "choice",
+     "label": "Columns the database table doesn't have",
+     "required": false,
+     "default": "error",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      },
+      {
+       "value": "skip",
+       "label": "Leave them out"
+      }
+     ]
+    },
+    {
+     "key": "skip_empty",
+     "kind": "bool",
+     "label": "Don't export an empty table",
+     "required": false,
+     "default": false,
+     "help": "When the table has no rows, nothing in the database changes (Replace all rows would delete them all)",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "connection": {
+      "type": "string"
+     },
+     "table": {
+      "type": "string"
+     },
+     "mode": {
+      "enum": [
+       "insert",
+       "replace",
+       "replace_keys",
+       "replace_where",
+       "update",
+       "upsert",
+       "delete"
+      ]
+     },
+     "key_columns": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "condition": {
+      "type": "string"
+     },
+     "create": {
+      "type": "boolean"
+     },
+     "extra_columns": {
+      "enum": [
+       "error",
+       "skip"
+      ]
+     },
+     "skip_empty": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "connection",
+     "table"
+    ]
+   }
+  },
+  {
+   "id": "db.import",
+   "name": "Import from database",
+   "category": "Import",
+   "kind": "source",
+   "side_effects": false,
+   "version": 3,
+   "plugin": "databases",
+   "help": "Reads a whole table or view, or the result of a SQL query written in the database's own SQL dialect (T-SQL for SQL Server). Imports also run while editing, e.g. when a project is opened, so they change nothing: a SQLite file is opened for reading only, and what a query changes in SQL Server is rolled back (a query that commits by itself keeps its changes). Numbers keep all their digits: a column with numbers of more digits than a decimal number keeps (about 15), or with whole numbers too big for a whole-number column, stays a column of exact decimals. A SQL Server datetimeoffset column becomes date-times in UTC, the moments it holds, or (as steps saved before this choice read it) text with its offset, 2026-10-01T08:30:00+02:00; SQL Server's driver reads date-times to the microsecond, and for a column with 7 digits of a second the step says that a 7th digit, if any, is cut. \"Detect numbers and dates in text columns\" finds them in text, with the decimal separator of each column as the CSV import does (also in amounts and percentages), or only numbers and dates with a chosen one; steps saved before it could be chosen use the point, as they did.",
+   "settings": [
+    {
+     "key": "connection",
+     "kind": "connection",
+     "label": "Connection",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "connection_types": []
+    },
+    {
+     "key": "mode",
+     "kind": "choice",
+     "label": "Read",
+     "required": false,
+     "default": "table",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "table",
+       "label": "A table or view"
+      },
+      {
+       "value": "query",
+       "label": "A SQL query"
+      }
+     ]
+    },
+    {
+     "key": "table",
+     "kind": "text",
+     "label": "Table",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "mode": [
+       "table"
+      ]
+     },
+     "multiline": false,
+     "placeholder": "dbo.Orders"
+    },
+    {
+     "key": "query",
+     "kind": "code",
+     "label": "SQL query",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "mode": [
+       "query"
+      ]
+     },
+     "multiline": true,
+     "placeholder": "",
+     "language": "sql"
+    },
+    {
+     "key": "detect_types",
+     "kind": "bool",
+     "label": "Detect numbers and dates in text columns",
+     "required": false,
+     "default": false,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "decimal",
+     "kind": "choice",
+     "label": "Decimal separator",
+     "required": false,
+     "default": "auto",
+     "help": "Detect automatically: each column's own, as the CSV import detects it, also in amounts (1.234,50 \u20ac) and percentages (12,5%). Point or Comma: numbers and dates with that separator, no amounts or percentages.",
+     "visible_if": {
+      "detect_types": [
+       true
+      ]
+     },
+     "options": [
+      {
+       "value": "auto",
+       "label": "Detect automatically"
+      },
+      {
+       "value": ".",
+       "label": "Point: 1,234.56"
+      },
+      {
+       "value": ",",
+       "label": "Comma: 1.234,56"
+      }
+     ]
+    },
+    {
+     "key": "datetimeoffset",
+     "kind": "choice",
+     "label": "SQL Server datetimeoffset columns",
+     "required": false,
+     "default": "utc",
+     "help": "Only for SQL Server. Date-times in UTC: the moments the column holds (2026-10-01 08:30 +02:00 is 06:30). Text with the offset: as written, 2026-10-01T08:30:00+02:00; steps saved before this choice read them so.",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "utc",
+       "label": "Date-times in UTC"
+      },
+      {
+       "value": "text",
+       "label": "Text with the offset"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "connection": {
+      "type": "string"
+     },
+     "mode": {
+      "enum": [
+       "table",
+       "query"
+      ]
+     },
+     "table": {
+      "type": "string"
+     },
+     "query": {
+      "type": "string"
+     },
+     "detect_types": {
+      "type": "boolean"
+     },
+     "decimal": {
+      "enum": [
+       "auto",
+       ".",
+       ","
+      ]
+     },
+     "datetimeoffset": {
+      "enum": [
+       "utc",
+       "text"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "connection"
+    ]
+   }
+  },
+  {
+   "id": "excel.export",
+   "name": "Export to Excel file",
+   "category": "Export",
+   "kind": "export",
+   "side_effects": true,
+   "version": 3,
+   "plugin": "excel_files",
+   "help": "Writes the table to an .xlsx file, as an Excel table with formats. An existing file is replaced, or only the sheet is: in a workbook with reports, charts and pivot tables built on the sheet, also in one with macros (.xlsm). The Excel table keeps its name; charts, named ranges and pivot tables that covered the old rows cover the new rows. The file is replaced when the new one is complete: if the export fails, the old file stays as it was.\n\nFormats use Excel's codes: #,##0.00 for numbers with thousands separators, 0% for percentages, dd.mm.yyyy for dates. Excel shows them in your regional style. Binary values are written as hex text (0x0102FF). A sheet holds up to 1,048,575 rows below its header and 32,767 characters in a cell. Column names must differ in more than upper and lower case: an Excel table can't tell Name and NAME apart, so the export stops.\n\nText stays text, exactly as it is: =1+1 is no formula, and a web address is no clickable link in the file.",
+   "settings": [
+    {
+     "key": "file",
+     "kind": "file",
+     "label": "File",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "file_mode": "save",
+     "file_filter": "Excel files (*.xlsx *.xlsm)"
+    },
+    {
+     "key": "sheet",
+     "kind": "text",
+     "label": "Sheet name",
+     "required": false,
+     "default": "Sheet1",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "existing",
+     "kind": "choice",
+     "label": "If the file exists",
+     "required": false,
+     "default": "file",
+     "help": "Replace the whole file: a new workbook with only this sheet. Replace only this sheet: everything else in the workbook stays as it is (the other sheets with their formulas, formatting, charts, pivot tables and macros) and shows the new data when Excel opens the file.",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "file",
+       "label": "Replace the whole file"
+      },
+      {
+       "value": "sheet",
+       "label": "Replace only this sheet, keep the other sheets"
+      }
+     ]
+    },
+    {
+     "key": "skip_empty",
+     "kind": "bool",
+     "label": "Don't export an empty table",
+     "required": false,
+     "default": false,
+     "help": "When the table has no rows, the file is left as it is.",
+     "visible_if": null
+    },
+    {
+     "key": "bold_header",
+     "kind": "bool",
+     "label": "Bold header row",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "freeze_header",
+     "kind": "bool",
+     "label": "Freeze the header row",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "autofilter",
+     "kind": "bool",
+     "label": "Filter buttons in the header",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "autofit",
+     "kind": "bool",
+     "label": "Fit column widths to the content",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "table_style",
+     "kind": "choice",
+     "label": "Table style",
+     "required": false,
+     "default": "none",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "none",
+       "label": "None"
+      },
+      {
+       "value": "Table Style Light 1",
+       "label": "Light grey"
+      },
+      {
+       "value": "Table Style Light 9",
+       "label": "Light blue"
+      },
+      {
+       "value": "Table Style Medium 2",
+       "label": "Medium blue"
+      },
+      {
+       "value": "Table Style Medium 4",
+       "label": "Medium green"
+      },
+      {
+       "value": "Table Style Medium 7",
+       "label": "Medium orange"
+      }
+     ]
+    },
+    {
+     "key": "date_format",
+     "kind": "text",
+     "label": "Date format",
+     "required": false,
+     "default": "dd.mm.yyyy",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "datetime_format",
+     "kind": "text",
+     "label": "Date-time format",
+     "required": false,
+     "default": "dd.mm.yyyy hh:mm:ss",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "integer_format",
+     "kind": "text",
+     "label": "Whole number format",
+     "required": false,
+     "default": "0",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "number_format",
+     "kind": "text",
+     "label": "Decimal number format",
+     "required": false,
+     "default": "#,##0.00",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "column_formats",
+     "kind": "list",
+     "label": "Formats for single columns",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "column",
+       "kind": "column",
+       "label": "Column",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "column_source": "input"
+      },
+      {
+       "key": "format",
+       "kind": "text",
+       "label": "Excel format",
+       "required": false,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "multiline": false,
+       "placeholder": "#,##0.00 \u20ac  |  0%  |  dd.mm.yyyy"
+      }
+     ],
+     "min_items": 0
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string"
+     },
+     "sheet": {
+      "type": "string"
+     },
+     "existing": {
+      "enum": [
+       "file",
+       "sheet"
+      ]
+     },
+     "skip_empty": {
+      "type": "boolean"
+     },
+     "bold_header": {
+      "type": "boolean"
+     },
+     "freeze_header": {
+      "type": "boolean"
+     },
+     "autofilter": {
+      "type": "boolean"
+     },
+     "autofit": {
+      "type": "boolean"
+     },
+     "table_style": {
+      "enum": [
+       "none",
+       "Table Style Light 1",
+       "Table Style Light 9",
+       "Table Style Medium 2",
+       "Table Style Medium 4",
+       "Table Style Medium 7"
+      ]
+     },
+     "date_format": {
+      "type": "string"
+     },
+     "datetime_format": {
+      "type": "string"
+     },
+     "integer_format": {
+      "type": "string"
+     },
+     "number_format": {
+      "type": "string"
+     },
+     "column_formats": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "column": {
+         "type": "string"
+        },
+        "format": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "column"
+       ]
+      }
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "file"
+    ]
+   }
+  },
+  {
+   "id": "excel.import",
+   "name": "Import Excel files",
+   "category": "Import",
+   "kind": "source",
+   "side_effects": false,
+   "version": 3,
+   "plugin": "excel_files",
+   "help": "Reads Excel files (xlsx, xlsm, xlsb, xls) or OpenDocument spreadsheets: one file or all files of a folder (and its subfolders), one sheet, all sheets or the sheets whose names match, into one table.\n\nRows above the header row are skipped. Excel stores every number as a decimal number; columns that only hold whole numbers become integers, cells with only a time become times. Sheets and files are matched by column names; a column missing in one stays empty there.\n\nMerged cells keep their value in the first cell only: 'Fill empty values' fills the others. Formulas give the results Excel saved with the file; a file written by another program may have none (the column stays empty): open it in Excel and save it.",
+   "settings": [
+    {
+     "key": "source",
+     "kind": "choice",
+     "label": "Read",
+     "required": false,
+     "default": "file",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "file",
+       "label": "One file"
+      },
+      {
+       "value": "folder",
+       "label": "All files in a folder"
+      }
+     ]
+    },
+    {
+     "key": "file",
+     "kind": "file",
+     "label": "File",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "source": [
+       "file"
+      ]
+     },
+     "file_mode": "open",
+     "file_filter": "Excel files (*.xlsx *.xlsm *.xlsb *.xls *.ods);;All files (*.*)"
+    },
+    {
+     "key": "folder",
+     "kind": "folder",
+     "label": "Folder",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "pattern",
+     "kind": "text",
+     "label": "File names",
+     "required": false,
+     "default": "*.xlsx;*.xlsm;*.xlsb;*.xls",
+     "help": "* stands for any text, e.g. orders_*.csv; several patterns with ;",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     },
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "subfolders",
+     "kind": "bool",
+     "label": "Include subfolders (all levels)",
+     "required": false,
+     "default": false,
+     "help": "",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "no_files",
+     "kind": "choice",
+     "label": "When there are no files",
+     "required": false,
+     "default": "error",
+     "help": "e.g. for a folder that is empty on some days: skipping leaves out the steps after this one. An empty table (with a warning) has only the columns with the file name and the path, as far as they are switched on below: a later step that names another column fails.",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     },
+     "options": [
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      },
+      {
+       "value": "empty",
+       "label": "Continue with an empty table"
+      },
+      {
+       "value": "skip",
+       "label": "Skip the rest of the table"
+      }
+     ]
+    },
+    {
+     "key": "file_column",
+     "kind": "bool",
+     "label": "Add a column with the file name",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "path_column",
+     "kind": "bool",
+     "label": "Add a column with the path below the folder",
+     "required": false,
+     "default": false,
+     "help": "e.g. 2025\\01\\orders.csv: a calculated column can take the year or month from it",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "sheets",
+     "kind": "choice",
+     "label": "Sheets",
+     "required": false,
+     "default": "one",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "one",
+       "label": "One sheet"
+      },
+      {
+       "value": "all",
+       "label": "All sheets"
+      },
+      {
+       "value": "matching",
+       "label": "Sheets whose name matches"
+      }
+     ]
+    },
+    {
+     "key": "sheet",
+     "kind": "text",
+     "label": "Sheet",
+     "required": false,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "sheets": [
+       "one"
+      ]
+     },
+     "multiline": false,
+     "placeholder": "empty = first sheet"
+    },
+    {
+     "key": "sheet_pattern",
+     "kind": "text",
+     "label": "Sheet names",
+     "required": false,
+     "default": "*",
+     "help": "* stands for any text, e.g. 2025* or Sales*; several patterns with ;",
+     "visible_if": {
+      "sheets": [
+       "matching"
+      ]
+     },
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "sheet_column",
+     "kind": "bool",
+     "label": "Add a column with the sheet name",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": {
+      "sheets": [
+       "all",
+       "matching"
+      ]
+     }
+    },
+    {
+     "key": "header_row",
+     "kind": "int",
+     "label": "Row with the column names",
+     "required": false,
+     "default": 1,
+     "help": "0 = the sheet has no header row",
+     "visible_if": null,
+     "min": 0,
+     "max": null
+    },
+    {
+     "key": "whole_numbers",
+     "kind": "bool",
+     "label": "Whole numbers as integers",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "dates_without_time",
+     "kind": "bool",
+     "label": "Date-times at midnight as dates",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [
+    {
+     "name": "File",
+     "type": "text",
+     "when": {
+      "source": [
+       "folder"
+      ],
+      "file_column": [
+       true
+      ]
+     }
+    },
+    {
+     "name": "Path",
+     "type": "text",
+     "when": {
+      "source": [
+       "folder"
+      ],
+      "path_column": [
+       true
+      ]
+     }
+    },
+    {
+     "name": "Sheet",
+     "type": "text",
+     "when": {
+      "sheets": [
+       "all",
+       "matching"
+      ],
+      "sheet_column": [
+       true
+      ]
+     }
+    }
+   ],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "source": {
+      "enum": [
+       "file",
+       "folder"
+      ]
+     },
+     "file": {
+      "type": "string"
+     },
+     "folder": {
+      "type": "string"
+     },
+     "pattern": {
+      "type": "string"
+     },
+     "subfolders": {
+      "type": "boolean"
+     },
+     "no_files": {
+      "enum": [
+       "error",
+       "empty",
+       "skip"
+      ]
+     },
+     "file_column": {
+      "type": "boolean"
+     },
+     "path_column": {
+      "type": "boolean"
+     },
+     "sheets": {
+      "enum": [
+       "one",
+       "all",
+       "matching"
+      ]
+     },
+     "sheet": {
+      "type": "string"
+     },
+     "sheet_pattern": {
+      "type": "string"
+     },
+     "sheet_column": {
+      "type": "boolean"
+     },
+     "header_row": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "whole_numbers": {
+      "type": "boolean"
+     },
+     "dates_without_time": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "id": "files.copy",
+   "name": "Copy files",
+   "category": "Files",
+   "kind": "command",
+   "side_effects": true,
+   "version": 2,
+   "plugin": "files",
+   "help": "Copies the files listed in a column of the table, or all files the table's import read, into a folder (it is created when needed). Runs only when the project is run; the table passes through unchanged.",
+   "settings": [
+    {
+     "key": "which",
+     "kind": "choice",
+     "label": "Which files",
+     "required": false,
+     "default": "column",
+     "help": "All files \u2026: every file that the first step, an import of all files in a folder, read, also files without rows (only a header row, or a filter left out their rows). A file that arrives after the import stays where it is",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "column",
+       "label": "Listed in a column"
+      },
+      {
+       "value": "imported",
+       "label": "All files this table's import read"
+      }
+     ]
+    },
+    {
+     "key": "column",
+     "kind": "column",
+     "label": "Column with the files",
+     "required": true,
+     "default": "",
+     "help": "Full paths, or paths below the folder chosen next",
+     "visible_if": {
+      "which": [
+       "column"
+      ]
+     },
+     "column_source": "input"
+    },
+    {
+     "key": "base",
+     "kind": "folder",
+     "label": "Paths in the column are below",
+     "required": false,
+     "default": "",
+     "help": "For paths like 2025\\01\\orders.csv (the Path column of a folder import); empty = the project's folder",
+     "visible_if": {
+      "which": [
+       "column"
+      ]
+     }
+    },
+    {
+     "key": "missing",
+     "kind": "choice",
+     "label": "If a file doesn't exist",
+     "required": false,
+     "default": "error",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      },
+      {
+       "value": "skip",
+       "label": "Skip it"
+      }
+     ]
+    },
+    {
+     "key": "target",
+     "kind": "folder",
+     "label": "To folder",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "subfolders",
+     "kind": "bool",
+     "label": "Keep the subfolders of the paths",
+     "required": false,
+     "default": false,
+     "help": "2025\\01\\orders.csv goes to <folder>\\2025\\01\\orders.csv instead of <folder>\\orders.csv",
+     "visible_if": null
+    },
+    {
+     "key": "existing",
+     "kind": "choice",
+     "label": "If a file of that name is there already",
+     "required": false,
+     "default": "number",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "number",
+       "label": "Keep both: name (2).csv"
+      },
+      {
+       "value": "replace",
+       "label": "Replace it"
+      },
+      {
+       "value": "skip",
+       "label": "Leave it, skip this file"
+      },
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "which": {
+      "enum": [
+       "column",
+       "imported"
+      ]
+     },
+     "column": {
+      "type": "string"
+     },
+     "base": {
+      "type": "string"
+     },
+     "missing": {
+      "enum": [
+       "error",
+       "skip"
+      ]
+     },
+     "target": {
+      "type": "string"
+     },
+     "subfolders": {
+      "type": "boolean"
+     },
+     "existing": {
+      "enum": [
+       "number",
+       "replace",
+       "skip",
+       "error"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "target"
+    ]
+   }
+  },
+  {
+   "id": "files.delete",
+   "name": "Delete files",
+   "category": "Files",
+   "kind": "command",
+   "side_effects": true,
+   "version": 2,
+   "plugin": "files",
+   "help": "Deletes the files listed in a column of the table, or all files the table's import read: to the Recycle Bin, or for good. Runs only when the project is run; the table passes through unchanged.",
+   "settings": [
+    {
+     "key": "which",
+     "kind": "choice",
+     "label": "Which files",
+     "required": false,
+     "default": "column",
+     "help": "All files \u2026: every file that the first step, an import of all files in a folder, read, also files without rows (only a header row, or a filter left out their rows). A file that arrives after the import stays where it is",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "column",
+       "label": "Listed in a column"
+      },
+      {
+       "value": "imported",
+       "label": "All files this table's import read"
+      }
+     ]
+    },
+    {
+     "key": "column",
+     "kind": "column",
+     "label": "Column with the files",
+     "required": true,
+     "default": "",
+     "help": "Full paths, or paths below the folder chosen next",
+     "visible_if": {
+      "which": [
+       "column"
+      ]
+     },
+     "column_source": "input"
+    },
+    {
+     "key": "base",
+     "kind": "folder",
+     "label": "Paths in the column are below",
+     "required": false,
+     "default": "",
+     "help": "For paths like 2025\\01\\orders.csv (the Path column of a folder import); empty = the project's folder",
+     "visible_if": {
+      "which": [
+       "column"
+      ]
+     }
+    },
+    {
+     "key": "missing",
+     "kind": "choice",
+     "label": "If a file doesn't exist",
+     "required": false,
+     "default": "error",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      },
+      {
+       "value": "skip",
+       "label": "Skip it"
+      }
+     ]
+    },
+    {
+     "key": "how",
+     "kind": "choice",
+     "label": "Delete",
+     "required": false,
+     "default": "recycle",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "recycle",
+       "label": "To the Recycle Bin (can be restored)"
+      },
+      {
+       "value": "permanent",
+       "label": "For good (can't be undone)"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "which": {
+      "enum": [
+       "column",
+       "imported"
+      ]
+     },
+     "column": {
+      "type": "string"
+     },
+     "base": {
+      "type": "string"
+     },
+     "missing": {
+      "enum": [
+       "error",
+       "skip"
+      ]
+     },
+     "how": {
+      "enum": [
+       "recycle",
+       "permanent"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "id": "files.list",
+   "name": "Files in a folder",
+   "category": "Import",
+   "kind": "source",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "files",
+   "help": "A table of the files in a folder (and its subfolders): name, path below the folder, subfolder, extension, size in bytes, when the file was last changed, and the full path. Handy for checking what arrived in a folder, and for the file commands (copy, move, ...).",
+   "settings": [
+    {
+     "key": "folder",
+     "kind": "folder",
+     "label": "Folder",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "pattern",
+     "kind": "text",
+     "label": "File names",
+     "required": false,
+     "default": "*",
+     "help": "* stands for any text, e.g. *.csv; several patterns with ;",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "subfolders",
+     "kind": "bool",
+     "label": "Include subfolders (all levels)",
+     "required": false,
+     "default": false,
+     "help": "",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [
+    {
+     "name": "File",
+     "type": "text",
+     "when": null
+    },
+    {
+     "name": "Path",
+     "type": "text",
+     "when": null
+    },
+    {
+     "name": "Folder",
+     "type": "text",
+     "when": null
+    },
+    {
+     "name": "Extension",
+     "type": "text",
+     "when": null
+    },
+    {
+     "name": "Size",
+     "type": "integer",
+     "when": null
+    },
+    {
+     "name": "Modified",
+     "type": "datetime",
+     "when": null
+    },
+    {
+     "name": "Full path",
+     "type": "text",
+     "when": null
+    }
+   ],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "folder": {
+      "type": "string"
+     },
+     "pattern": {
+      "type": "string"
+     },
+     "subfolders": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "folder"
+    ]
+   }
+  },
+  {
+   "id": "files.mkdir",
+   "name": "Create folder",
+   "category": "Files",
+   "kind": "command",
+   "side_effects": true,
+   "version": 1,
+   "plugin": "files",
+   "help": "Creates a folder (and the folders above it) if it doesn't exist yet. Runs only when the project is run; the table passes through unchanged.",
+   "settings": [
+    {
+     "key": "folder",
+     "kind": "folder",
+     "label": "Folder",
+     "required": true,
+     "default": "",
+     "help": "Created with all the folders above it; nothing happens if it exists",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "folder": {
+      "type": "string"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "folder"
+    ]
+   }
+  },
+  {
+   "id": "files.move",
+   "name": "Move files",
+   "category": "Files",
+   "kind": "command",
+   "side_effects": true,
+   "version": 2,
+   "plugin": "files",
+   "help": "Moves the files listed in a column of the table, or all files the table's import read, into a folder, e.g. imported daily exports into an archive folder. Runs only when the project is run; the table passes through unchanged.",
+   "settings": [
+    {
+     "key": "which",
+     "kind": "choice",
+     "label": "Which files",
+     "required": false,
+     "default": "column",
+     "help": "All files \u2026: every file that the first step, an import of all files in a folder, read, also files without rows (only a header row, or a filter left out their rows). A file that arrives after the import stays where it is",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "column",
+       "label": "Listed in a column"
+      },
+      {
+       "value": "imported",
+       "label": "All files this table's import read"
+      }
+     ]
+    },
+    {
+     "key": "column",
+     "kind": "column",
+     "label": "Column with the files",
+     "required": true,
+     "default": "",
+     "help": "Full paths, or paths below the folder chosen next",
+     "visible_if": {
+      "which": [
+       "column"
+      ]
+     },
+     "column_source": "input"
+    },
+    {
+     "key": "base",
+     "kind": "folder",
+     "label": "Paths in the column are below",
+     "required": false,
+     "default": "",
+     "help": "For paths like 2025\\01\\orders.csv (the Path column of a folder import); empty = the project's folder",
+     "visible_if": {
+      "which": [
+       "column"
+      ]
+     }
+    },
+    {
+     "key": "missing",
+     "kind": "choice",
+     "label": "If a file doesn't exist",
+     "required": false,
+     "default": "error",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      },
+      {
+       "value": "skip",
+       "label": "Skip it"
+      }
+     ]
+    },
+    {
+     "key": "target",
+     "kind": "folder",
+     "label": "To folder",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "subfolders",
+     "kind": "bool",
+     "label": "Keep the subfolders of the paths",
+     "required": false,
+     "default": false,
+     "help": "2025\\01\\orders.csv goes to <folder>\\2025\\01\\orders.csv instead of <folder>\\orders.csv",
+     "visible_if": null
+    },
+    {
+     "key": "existing",
+     "kind": "choice",
+     "label": "If a file of that name is there already",
+     "required": false,
+     "default": "number",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "number",
+       "label": "Keep both: name (2).csv"
+      },
+      {
+       "value": "replace",
+       "label": "Replace it"
+      },
+      {
+       "value": "skip",
+       "label": "Leave it, skip this file"
+      },
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "which": {
+      "enum": [
+       "column",
+       "imported"
+      ]
+     },
+     "column": {
+      "type": "string"
+     },
+     "base": {
+      "type": "string"
+     },
+     "missing": {
+      "enum": [
+       "error",
+       "skip"
+      ]
+     },
+     "target": {
+      "type": "string"
+     },
+     "subfolders": {
+      "type": "boolean"
+     },
+     "existing": {
+      "enum": [
+       "number",
+       "replace",
+       "skip",
+       "error"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "target"
+    ]
+   }
+  },
+  {
+   "id": "files.rename",
+   "name": "Rename files",
+   "category": "Files",
+   "kind": "command",
+   "side_effects": true,
+   "version": 1,
+   "plugin": "files",
+   "help": "Gives the files listed in a column the names in another column (calculate them with a formula, e.g. REPLACE([File], '.csv', '.done')). Runs only when the project is run.",
+   "settings": [
+    {
+     "key": "column",
+     "kind": "column",
+     "label": "Column with the files",
+     "required": true,
+     "default": "",
+     "help": "Full paths, or paths below the folder chosen next",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "base",
+     "kind": "folder",
+     "label": "Paths in the column are below",
+     "required": false,
+     "default": "",
+     "help": "For paths like 2025\\01\\orders.csv (the Path column of a folder import); empty = the project's folder",
+     "visible_if": null
+    },
+    {
+     "key": "missing",
+     "kind": "choice",
+     "label": "If a file doesn't exist",
+     "required": false,
+     "default": "error",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      },
+      {
+       "value": "skip",
+       "label": "Skip it"
+      }
+     ]
+    },
+    {
+     "key": "new_name",
+     "kind": "column",
+     "label": "Column with the new names",
+     "required": true,
+     "default": "",
+     "help": "Only the name, e.g. orders_done.csv: the file stays in its folder",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "existing",
+     "kind": "choice",
+     "label": "If a file of that name is there already",
+     "required": false,
+     "default": "number",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "number",
+       "label": "Keep both: name (2).csv"
+      },
+      {
+       "value": "replace",
+       "label": "Replace it"
+      },
+      {
+       "value": "skip",
+       "label": "Leave it, skip this file"
+      },
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "column": {
+      "type": "string"
+     },
+     "base": {
+      "type": "string"
+     },
+     "missing": {
+      "enum": [
+       "error",
+       "skip"
+      ]
+     },
+     "new_name": {
+      "type": "string"
+     },
+     "existing": {
+      "enum": [
+       "number",
+       "replace",
+       "skip",
+       "error"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "column",
+     "new_name"
+    ]
+   }
+  },
+  {
+   "id": "flow.skip_if_empty",
+   "name": "Skip the rest if a table is empty",
+   "category": "Rows",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "flow",
+   "help": "Ends the table here when the table has no rows: the steps after this one are skipped, e.g. the exports on a day without new data, and the table's result is the data at this step. This is not an error: a run of the project succeeds. When the table has rows, nothing changes.",
+   "settings": [
+    {
+     "key": "which",
+     "kind": "choice",
+     "label": "Which table",
+     "required": false,
+     "default": "this",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "this",
+       "label": "This table (the data at this step)"
+      },
+      {
+       "value": "other",
+       "label": "Another table"
+      }
+     ]
+    },
+    {
+     "key": "table",
+     "kind": "table",
+     "label": "Table",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "which": [
+       "other"
+      ]
+     }
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "which": {
+      "enum": [
+       "this",
+       "other"
+      ]
+     },
+     "table": {
+      "type": "string"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "id": "parquet.import",
+   "name": "Import Parquet files",
+   "category": "Import",
+   "kind": "source",
+   "side_effects": false,
+   "version": 2,
+   "plugin": "parquet_files",
+   "help": "Reads a Parquet file, or all Parquet files of a folder (and its subfolders) into one table. Parquet is the compact, column-based format of data lakes (written by Spark, Databricks, pandas, DuckDB, ...); column types are stored in the file, so nothing has to be detected. Decimal columns keep all their digits: those without decimal places become whole numbers when every value fits, the others stay exact decimals; numbers of more than 38 digits become text. Whole numbers of 128 bits follow the same rules. Files are matched by column names.",
+   "settings": [
+    {
+     "key": "source",
+     "kind": "choice",
+     "label": "Read",
+     "required": false,
+     "default": "file",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "file",
+       "label": "One file"
+      },
+      {
+       "value": "folder",
+       "label": "All files in a folder"
+      }
+     ]
+    },
+    {
+     "key": "file",
+     "kind": "file",
+     "label": "File",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "source": [
+       "file"
+      ]
+     },
+     "file_mode": "open",
+     "file_filter": "Parquet files (*.parquet *.pq);;All files (*.*)"
+    },
+    {
+     "key": "folder",
+     "kind": "folder",
+     "label": "Folder",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "pattern",
+     "kind": "text",
+     "label": "File names",
+     "required": false,
+     "default": "*.parquet;*.pq",
+     "help": "* stands for any text, e.g. orders_*.csv; several patterns with ;",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     },
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "subfolders",
+     "kind": "bool",
+     "label": "Include subfolders (all levels)",
+     "required": false,
+     "default": false,
+     "help": "",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "no_files",
+     "kind": "choice",
+     "label": "When there are no files",
+     "required": false,
+     "default": "error",
+     "help": "e.g. for a folder that is empty on some days: skipping leaves out the steps after this one. An empty table (with a warning) has only the columns with the file name and the path, as far as they are switched on below: a later step that names another column fails.",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     },
+     "options": [
+      {
+       "value": "error",
+       "label": "Stop with an error"
+      },
+      {
+       "value": "empty",
+       "label": "Continue with an empty table"
+      },
+      {
+       "value": "skip",
+       "label": "Skip the rest of the table"
+      }
+     ]
+    },
+    {
+     "key": "file_column",
+     "kind": "bool",
+     "label": "Add a column with the file name",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    },
+    {
+     "key": "path_column",
+     "kind": "bool",
+     "label": "Add a column with the path below the folder",
+     "required": false,
+     "default": false,
+     "help": "e.g. 2025\\01\\orders.csv: a calculated column can take the year or month from it",
+     "visible_if": {
+      "source": [
+       "folder"
+      ]
+     }
+    }
+   ],
+   "adds_columns": [
+    {
+     "name": "File",
+     "type": "text",
+     "when": {
+      "source": [
+       "folder"
+      ],
+      "file_column": [
+       true
+      ]
+     }
+    },
+    {
+     "name": "Path",
+     "type": "text",
+     "when": {
+      "source": [
+       "folder"
+      ],
+      "path_column": [
+       true
+      ]
+     }
+    }
+   ],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "source": {
+      "enum": [
+       "file",
+       "folder"
+      ]
+     },
+     "file": {
+      "type": "string"
+     },
+     "folder": {
+      "type": "string"
+     },
+     "pattern": {
+      "type": "string"
+     },
+     "subfolders": {
+      "type": "boolean"
+     },
+     "no_files": {
+      "enum": [
+       "error",
+       "empty",
+       "skip"
+      ]
+     },
+     "file_column": {
+      "type": "boolean"
+     },
+     "path_column": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "id": "reshape.pivot",
+   "name": "Pivot",
+   "category": "Columns",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "reshape",
+   "help": "Turns the values of one column into columns, like an Excel pivot table without totals: one row for each combination of the row keys, one column for each value, and in each cell the values of the rows that meet there, added up (or counted, averaged, \u2026).\n\nThe new columns are named after the values: text as it is, numbers as 1234 or 1.5, dates as 2025-12-31, true/false as true and false; empty values go into one column (empty). They are sorted, or come in the order they first appear; a name that exists already gets \" (2)\", or the next number that isn't the name of another value. Rows come in the order their keys first appear. A cell without rows stays empty, and so does a sum of only empty values. Count counts the values that are not empty; First and Last take the first and last value that is not empty (text with nothing but spaces counts here, as in Aggregate). At most 1,000 new columns, and at most 50,000,000 cells (rows \u00d7 new columns).",
+   "settings": [
+    {
+     "key": "rows",
+     "kind": "columns",
+     "label": "Row keys (empty = one total row)",
+     "required": false,
+     "default": [],
+     "help": "One row for each combination of their values, in the order they first appear.",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "column",
+     "kind": "column",
+     "label": "Column names from",
+     "required": true,
+     "default": "",
+     "help": "Each value of this column becomes a new column.",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "value",
+     "kind": "column",
+     "label": "Values from",
+     "required": true,
+     "default": "",
+     "help": "The values that fill the new columns.",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "function",
+     "kind": "choice",
+     "label": "Function",
+     "required": false,
+     "default": "sum",
+     "help": "How the values of the rows that meet in one cell are combined.",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "sum",
+       "label": "Sum"
+      },
+      {
+       "value": "count",
+       "label": "Count values (not empty)"
+      },
+      {
+       "value": "mean",
+       "label": "Average"
+      },
+      {
+       "value": "min",
+       "label": "Minimum"
+      },
+      {
+       "value": "max",
+       "label": "Maximum"
+      },
+      {
+       "value": "first",
+       "label": "First value"
+      },
+      {
+       "value": "last",
+       "label": "Last value"
+      }
+     ]
+    },
+    {
+     "key": "order",
+     "kind": "choice",
+     "label": "Order of the new columns",
+     "required": false,
+     "default": "sorted",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "sorted",
+       "label": "Sorted (A\u2192Z, 1\u21929)"
+      },
+      {
+       "value": "first",
+       "label": "As they first appear"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "rows": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "column": {
+      "type": "string"
+     },
+     "value": {
+      "type": "string"
+     },
+     "function": {
+      "enum": [
+       "sum",
+       "count",
+       "mean",
+       "min",
+       "max",
+       "first",
+       "last"
+      ]
+     },
+     "order": {
+      "enum": [
+       "sorted",
+       "first"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "column",
+     "value"
+    ]
+   }
+  },
+  {
+   "id": "reshape.unpivot",
+   "name": "Unpivot",
+   "category": "Columns",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "reshape",
+   "help": "Turns columns into rows, the opposite of Pivot: each row becomes one row for each chosen column, with the column's name in a new name column and its value in a new value column; the other columns are repeated. Example: Customer, Jan, Feb, Mar becomes Customer, Month, Amount with three rows per customer.\n\nThe rows keep their order, and the values of a row come in the order of the columns. Columns of one type keep it. Whole and decimal numbers become decimal numbers, whole numbers and exact decimals exact decimals, dates and date-times date-times, when every value stays as it is (whole numbers beyond 9,223,372,036,854,775,807 become exact decimals). Any other mix, also decimal numbers with exact decimals, becomes text (numbers as 1.5, exact decimals as 2.00, dates as 2025-12-31), and the step says so. A column whose values are all empty doesn't count, whatever its type. At most 250,000,000 cells in the result (rows \u00d7 columns).",
+   "settings": [
+    {
+     "key": "mode",
+     "kind": "choice",
+     "label": "Turn into rows",
+     "required": false,
+     "default": "these",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "these",
+       "label": "These columns"
+      },
+      {
+       "value": "others",
+       "label": "All columns except these"
+      }
+     ]
+    },
+    {
+     "key": "columns",
+     "kind": "columns",
+     "label": "Columns",
+     "required": true,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "name",
+     "kind": "text",
+     "label": "New column for the names",
+     "required": true,
+     "default": "Column",
+     "help": "Holds the name of the column each value comes from.",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "value",
+     "kind": "text",
+     "label": "New column for the values",
+     "required": true,
+     "default": "Value",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "drop_empty",
+     "kind": "bool",
+     "label": "Leave out empty values",
+     "required": false,
+     "default": false,
+     "help": "Off: each row gives one row for every column, also for an empty cell.",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "mode": {
+      "enum": [
+       "these",
+       "others"
+      ]
+     },
+     "columns": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "name": {
+      "type": "string"
+     },
+     "value": {
+      "type": "string"
+     },
+     "drop_empty": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "columns"
+    ]
+   }
+  },
+  {
+   "id": "rows.dedupe",
+   "name": "Remove duplicates",
+   "category": "Rows",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "rows",
+   "help": "Removes rows that are equal in the compared columns. The row order is kept.",
+   "settings": [
+    {
+     "key": "columns",
+     "kind": "columns",
+     "label": "Compare these columns (empty = all)",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "keep",
+     "kind": "choice",
+     "label": "Of rows that are equal, keep",
+     "required": false,
+     "default": "first",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "first",
+       "label": "the first"
+      },
+      {
+       "value": "last",
+       "label": "the last"
+      },
+      {
+       "value": "none",
+       "label": "none (remove all of them)"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "columns": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "keep": {
+      "enum": [
+       "first",
+       "last",
+       "none"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "id": "rows.fill",
+   "name": "Fill empty values",
+   "category": "Rows",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "rows",
+   "help": "Fills empty cells: with the value above (typical for Excel lists where a group name is only written once), the value below, or a fixed value. Empty text counts as empty.",
+   "settings": [
+    {
+     "key": "columns",
+     "kind": "columns",
+     "label": "Columns",
+     "required": true,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "method",
+     "kind": "choice",
+     "label": "Fill with",
+     "required": false,
+     "default": "down",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "down",
+       "label": "the value above (fill down)"
+      },
+      {
+       "value": "up",
+       "label": "the value below (fill up)"
+      },
+      {
+       "value": "value",
+       "label": "a fixed value"
+      }
+     ]
+    },
+    {
+     "key": "value",
+     "kind": "text",
+     "label": "Value",
+     "required": false,
+     "default": "",
+     "help": "",
+     "visible_if": {
+      "method": [
+       "value"
+      ]
+     },
+     "multiline": false,
+     "placeholder": ""
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "columns": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "method": {
+      "enum": [
+       "down",
+       "up",
+       "value"
+      ]
+     },
+     "value": {
+      "type": "string"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "columns"
+    ]
+   }
+  },
+  {
+   "id": "rows.filter",
+   "name": "Filter rows",
+   "category": "Rows",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "rows",
+   "help": "Keeps (or removes) the rows that match the conditions.\n\nValues are compared with the column's type: numbers as numbers (1,5 or 1.5), dates as dates (31.12.2025, 2025-12-31 or \"today\"), times as times (08:30 or 08:30:15). Empty cells never equal a value, but they count as \"does not equal\" and \"does not contain\".",
+   "settings": [
+    {
+     "key": "conditions",
+     "kind": "list",
+     "label": "Conditions",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "column",
+       "kind": "column",
+       "label": "Column",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "column_source": "input"
+      },
+      {
+       "key": "operator",
+       "kind": "choice",
+       "label": "Operator",
+       "required": false,
+       "default": "=",
+       "help": "",
+       "visible_if": null,
+       "options": [
+        {
+         "value": "=",
+         "label": "equals"
+        },
+        {
+         "value": "!=",
+         "label": "does not equal"
+        },
+        {
+         "value": ">",
+         "label": "is greater than"
+        },
+        {
+         "value": ">=",
+         "label": "is greater than or equal to"
+        },
+        {
+         "value": "<",
+         "label": "is less than"
+        },
+        {
+         "value": "<=",
+         "label": "is less than or equal to"
+        },
+        {
+         "value": "contains",
+         "label": "contains"
+        },
+        {
+         "value": "not_contains",
+         "label": "does not contain"
+        },
+        {
+         "value": "starts",
+         "label": "starts with"
+        },
+        {
+         "value": "ends",
+         "label": "ends with"
+        },
+        {
+         "value": "in",
+         "label": "is one of (separate with ;)"
+        },
+        {
+         "value": "not_in",
+         "label": "is none of (separate with ;)"
+        },
+        {
+         "value": "empty",
+         "label": "is empty"
+        },
+        {
+         "value": "not_empty",
+         "label": "is not empty"
+        }
+       ]
+      },
+      {
+       "key": "value",
+       "kind": "text",
+       "label": "Value",
+       "required": false,
+       "default": "",
+       "help": "",
+       "visible_if": {
+        "operator": [
+         "=",
+         "!=",
+         ">",
+         ">=",
+         "<",
+         "<=",
+         "contains",
+         "not_contains",
+         "starts",
+         "ends",
+         "in",
+         "not_in"
+        ]
+       },
+       "multiline": false,
+       "placeholder": ""
+      }
+     ],
+     "min_items": 1
+    },
+    {
+     "key": "match",
+     "kind": "choice",
+     "label": "Rows must match",
+     "required": false,
+     "default": "all",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "all",
+       "label": "all conditions (AND)"
+      },
+      {
+       "value": "any",
+       "label": "any condition (OR)"
+      }
+     ]
+    },
+    {
+     "key": "keep",
+     "kind": "choice",
+     "label": "Then",
+     "required": false,
+     "default": "keep",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "keep",
+       "label": "Keep matching rows"
+      },
+      {
+       "value": "remove",
+       "label": "Remove matching rows"
+      }
+     ]
+    },
+    {
+     "key": "case_sensitive",
+     "kind": "bool",
+     "label": "Upper/lower case matters",
+     "required": false,
+     "default": false,
+     "help": "",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "conditions": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "column": {
+         "type": "string"
+        },
+        "operator": {
+         "enum": [
+          "=",
+          "!=",
+          ">",
+          ">=",
+          "<",
+          "<=",
+          "contains",
+          "not_contains",
+          "starts",
+          "ends",
+          "in",
+          "not_in",
+          "empty",
+          "not_empty"
+         ]
+        },
+        "value": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "column"
+       ]
+      },
+      "minItems": 1
+     },
+     "match": {
+      "enum": [
+       "all",
+       "any"
+      ]
+     },
+     "keep": {
+      "enum": [
+       "keep",
+       "remove"
+      ]
+     },
+     "case_sensitive": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "conditions"
+    ]
+   }
+  },
+  {
+   "id": "rows.filter_formula",
+   "name": "Filter rows by formula",
+   "category": "Rows",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "rows",
+   "help": "Keeps (or removes) the rows for which a SQL-style condition is true, e.g. [Amount] > 100 AND [Country] IN ('DE', 'AT') or [Date] >= DATE '2025-01-01'.",
+   "settings": [
+    {
+     "key": "condition",
+     "kind": "expression",
+     "label": "Condition",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": "[Amount] > 100 AND [Country] = 'DE'",
+     "condition": true,
+     "creates": null
+    },
+    {
+     "key": "keep",
+     "kind": "choice",
+     "label": "Then",
+     "required": false,
+     "default": "keep",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "keep",
+       "label": "Keep matching rows"
+      },
+      {
+       "value": "remove",
+       "label": "Remove matching rows"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "condition": {
+      "type": "string"
+     },
+     "keep": {
+      "enum": [
+       "keep",
+       "remove"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "condition"
+    ]
+   }
+  },
+  {
+   "id": "rows.sort",
+   "name": "Sort",
+   "category": "Rows",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "rows",
+   "help": "Sorts the rows. Text is sorted like in Excel: upper and lower case count the same, letters with accents sort with their base letter (\u00e4 with a), \u00df like ss. Rows with equal values keep their order.",
+   "settings": [
+    {
+     "key": "by",
+     "kind": "list",
+     "label": "Sort by",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "column",
+       "kind": "column",
+       "label": "Column",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "column_source": "input"
+      },
+      {
+       "key": "order",
+       "kind": "choice",
+       "label": "Order",
+       "required": false,
+       "default": "asc",
+       "help": "",
+       "visible_if": null,
+       "options": [
+        {
+         "value": "asc",
+         "label": "Ascending (A\u2192Z, 1\u21929)"
+        },
+        {
+         "value": "desc",
+         "label": "Descending (Z\u2192A, 9\u21921)"
+        }
+       ]
+      }
+     ],
+     "min_items": 1
+    },
+    {
+     "key": "empty_last",
+     "kind": "bool",
+     "label": "Empty values last",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "by": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "column": {
+         "type": "string"
+        },
+        "order": {
+         "enum": [
+          "asc",
+          "desc"
+         ]
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "column"
+       ]
+      },
+      "minItems": 1
+     },
+     "empty_last": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "by"
+    ]
+   }
+  },
+  {
+   "id": "table.append",
+   "name": "Append other tables",
+   "category": "Combine",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "combine",
+   "help": "Adds the rows of other tables below the rows of this table. Columns are matched by name. A column with different types in the tables gets the type that Unpivot gives its value column: whole and decimal numbers become decimal numbers, whole numbers and exact decimals exact decimals, dates and date-times date-times, when every value stays as it is. Any other mix becomes text, and the step says so. A table in which the column has only empty values doesn't count. Lists and records can't be in one column with values of another type.",
+   "settings": [
+    {
+     "key": "tables",
+     "kind": "tables",
+     "label": "Tables to append below this one",
+     "required": true,
+     "default": [],
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "columns",
+     "kind": "choice",
+     "label": "Columns",
+     "required": false,
+     "default": "all",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "all",
+       "label": "All columns of all tables (missing values stay empty)"
+      },
+      {
+       "value": "this",
+       "label": "Only the columns of this table"
+      }
+     ]
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "tables": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "columns": {
+      "enum": [
+       "all",
+       "this"
+      ]
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "tables"
+    ]
+   }
+  },
+  {
+   "id": "table.derive",
+   "name": "Start from another table",
+   "category": "Import",
+   "kind": "source",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "combine",
+   "help": "Starts this table with the result of another table, so you can branch off and transform it differently without touching the original.",
+   "settings": [
+    {
+     "key": "table",
+     "kind": "table",
+     "label": "Table",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "table": {
+      "type": "string"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "table"
+    ]
+   }
+  },
+  {
+   "id": "table.merge",
+   "name": "Merge with another table",
+   "category": "Combine",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 2,
+   "plugin": "combine",
+   "help": "Combines this table with another table by matching key columns.\n\nLookup (the default, like a lookup in a spreadsheet) adds columns from the first matching row, so the row count never changes. Left, inner and full join work like in SQL: every matching row is used, so a row repeats when the other table has several matches. Keep rows with or without a match filters this table without adding columns. The step tells how many rows matched and shows a few keys of the rows without a match. Empty keys never match. Whole numbers and exact decimals are compared with all their digits, also when their types differ. Keys of different types (a number and a text) are compared as text, the same on every PC (the decimal number 17.0 finds the text 17); the key columns keep their type, except in a full join whose other table has keys that don't fit it (2.5 for whole numbers): then they get a type that fits both. Lists and records match only keys of their own type.",
+   "settings": [
+    {
+     "key": "other",
+     "kind": "table",
+     "label": "Other table",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "match",
+     "kind": "list",
+     "label": "Match rows where",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "column",
+       "kind": "column",
+       "label": "Column in this table",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "column_source": "input"
+      },
+      {
+       "key": "other_column",
+       "kind": "column",
+       "label": "equals column in the other table",
+       "required": true,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "column_source": "other"
+      }
+     ],
+     "min_items": 1
+    },
+    {
+     "key": "how",
+     "kind": "choice",
+     "label": "Merge type",
+     "required": false,
+     "default": "lookup",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "lookup",
+       "label": "Lookup (first match, row count stays)"
+      },
+      {
+       "value": "left",
+       "label": "Left join (all rows of this table)"
+      },
+      {
+       "value": "inner",
+       "label": "Inner join (only rows with a match)"
+      },
+      {
+       "value": "full",
+       "label": "Full join (all rows of both tables)"
+      },
+      {
+       "value": "matching",
+       "label": "Keep rows with a match"
+      },
+      {
+       "value": "non_matching",
+       "label": "Keep rows without a match"
+      }
+     ]
+    },
+    {
+     "key": "columns",
+     "kind": "columns",
+     "label": "Columns to add (empty = all)",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": {
+      "how": [
+       "lookup",
+       "left",
+       "inner",
+       "full"
+      ]
+     },
+     "column_source": "other"
+    },
+    {
+     "key": "multiple",
+     "kind": "choice",
+     "label": "If several rows of the other table match",
+     "required": false,
+     "default": "all",
+     "help": "",
+     "visible_if": {
+      "how": [
+       "left",
+       "inner",
+       "full"
+      ]
+     },
+     "options": [
+      {
+       "value": "all",
+       "label": "Use all of them, rows repeat (like SQL)"
+      },
+      {
+       "value": "first",
+       "label": "Use only the first one"
+      }
+     ]
+    },
+    {
+     "key": "suffix",
+     "kind": "text",
+     "label": "Suffix for column names that exist already",
+     "required": false,
+     "default": " (2)",
+     "help": "",
+     "visible_if": {
+      "how": [
+       "lookup",
+       "left",
+       "inner",
+       "full"
+      ]
+     },
+     "multiline": false,
+     "placeholder": ""
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "other": {
+      "type": "string"
+     },
+     "match": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "column": {
+         "type": "string"
+        },
+        "other_column": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "column",
+        "other_column"
+       ]
+      },
+      "minItems": 1
+     },
+     "how": {
+      "enum": [
+       "lookup",
+       "left",
+       "inner",
+       "full",
+       "matching",
+       "non_matching"
+      ]
+     },
+     "columns": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "multiple": {
+      "enum": [
+       "all",
+       "first"
+      ]
+     },
+     "suffix": {
+      "type": "string"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "other",
+     "match"
+    ]
+   }
+  },
+  {
+   "id": "text.clean",
+   "name": "Clean text",
+   "category": "Text",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "text",
+   "help": "Tidies up text: removes surrounding or repeated spaces and line breaks, changes upper/lower case, pads values to a fixed length (e.g. postal codes 1234 \u2192 01234). Selected columns that are not text are turned into text, the same on every PC: 17 (not 17.0), 2025-12-31 08:30:00.",
+   "settings": [
+    {
+     "key": "columns",
+     "kind": "columns",
+     "label": "Columns (empty = all text columns)",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "trim",
+     "kind": "choice",
+     "label": "Remove spaces",
+     "required": false,
+     "default": "both",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "both",
+       "label": "at start and end"
+      },
+      {
+       "value": "start",
+       "label": "at the start"
+      },
+      {
+       "value": "end",
+       "label": "at the end"
+      },
+      {
+       "value": "none",
+       "label": "nowhere"
+      }
+     ]
+    },
+    {
+     "key": "collapse_spaces",
+     "kind": "bool",
+     "label": "Replace repeated spaces with one",
+     "required": false,
+     "default": false,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "line_breaks",
+     "kind": "bool",
+     "label": "Replace line breaks with a space",
+     "required": false,
+     "default": false,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "case",
+     "kind": "choice",
+     "label": "Upper/lower case",
+     "required": false,
+     "default": "keep",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "keep",
+       "label": "keep"
+      },
+      {
+       "value": "upper",
+       "label": "UPPER CASE"
+      },
+      {
+       "value": "lower",
+       "label": "lower case"
+      },
+      {
+       "value": "title",
+       "label": "Title Case"
+      }
+     ]
+    },
+    {
+     "key": "pad_length",
+     "kind": "int",
+     "label": "Pad to length (0 = off)",
+     "required": false,
+     "default": 0,
+     "help": "Adds characters at the start, e.g. 1234 \u2192 01234",
+     "visible_if": null,
+     "min": 0,
+     "max": null
+    },
+    {
+     "key": "pad_char",
+     "kind": "text",
+     "label": "Padding character",
+     "required": false,
+     "default": "0",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "empty_to_null",
+     "kind": "bool",
+     "label": "Make empty text an empty value",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "columns": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "trim": {
+      "enum": [
+       "both",
+       "start",
+       "end",
+       "none"
+      ]
+     },
+     "collapse_spaces": {
+      "type": "boolean"
+     },
+     "line_breaks": {
+      "type": "boolean"
+     },
+     "case": {
+      "enum": [
+       "keep",
+       "upper",
+       "lower",
+       "title"
+      ]
+     },
+     "pad_length": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "pad_char": {
+      "type": "string"
+     },
+     "empty_to_null": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "id": "text.replace",
+   "name": "Replace",
+   "category": "Text",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "text",
+   "help": "Replaces values.\n\nWhole cell value: cells equal to \"Find\" get the new value; an empty \"Find\" matches empty cells, an empty \"Replace with\" makes cells empty. Text inside: every occurrence is replaced. Regular expression: \"Replace with\" can use $1, $2, ... for groups ($1_$2 is group 1, _ and group 2), ${name} for a named group and $$ for a $ sign; a backslash is a normal character (\\1 is the text \\1, with a warning that group 1 is written $1).",
+   "settings": [
+    {
+     "key": "columns",
+     "kind": "columns",
+     "label": "In columns",
+     "required": true,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "match",
+     "kind": "choice",
+     "label": "Find",
+     "required": false,
+     "default": "whole",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "whole",
+       "label": "Whole cell value"
+      },
+      {
+       "value": "contains",
+       "label": "Text inside the value"
+      },
+      {
+       "value": "regex",
+       "label": "Regular expression"
+      }
+     ]
+    },
+    {
+     "key": "replacements",
+     "kind": "list",
+     "label": "Replace",
+     "required": false,
+     "default": [],
+     "help": "",
+     "visible_if": null,
+     "fields": [
+      {
+       "key": "find",
+       "kind": "text",
+       "label": "Find",
+       "required": false,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "multiline": false,
+       "placeholder": ""
+      },
+      {
+       "key": "replace",
+       "kind": "text",
+       "label": "Replace with",
+       "required": false,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "multiline": false,
+       "placeholder": ""
+      }
+     ],
+     "min_items": 1
+    },
+    {
+     "key": "case_sensitive",
+     "kind": "bool",
+     "label": "Upper/lower case matters",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "columns": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "match": {
+      "enum": [
+       "whole",
+       "contains",
+       "regex"
+      ]
+     },
+     "replacements": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "find": {
+         "type": "string"
+        },
+        "replace": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false
+      },
+      "minItems": 1
+     },
+     "case_sensitive": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "columns",
+     "replacements"
+    ]
+   }
+  },
+  {
+   "id": "text.split",
+   "name": "Split column",
+   "category": "Text",
+   "kind": "transform",
+   "side_effects": false,
+   "version": 1,
+   "plugin": "text",
+   "help": "Splits the text of a column at a separator, into columns or into rows.\n\nInto columns: \"M\u00fcller, Hans\" becomes M\u00fcller and Hans in two new columns, which take the place of the column. There are as many parts as new columns: the last one gets the rest of the text (\"M\u00fcller, Hans, Dr.\" gives M\u00fcller and Hans, Dr.), and missing parts stay empty. Into rows: \"A;B;C\" becomes three rows, with the other columns repeated; empty parts are left out, and a row without any part stays, with an empty value.\n\nThe parts are text; a part with nothing but spaces is empty. With Space, several spaces in a row are one separator. A column that is not text is turned into text first: 2.5 and 2 (not 2.0), exact decimals with their decimal places (2.00), 2026-02-27, 2026-02-27 08:30:00 (fractions of a second only when there are some).",
+   "settings": [
+    {
+     "key": "column",
+     "kind": "column",
+     "label": "Column",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "column_source": "input"
+    },
+    {
+     "key": "into",
+     "kind": "choice",
+     "label": "Into",
+     "required": false,
+     "default": "columns",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": "columns",
+       "label": "Columns: one new column per part"
+      },
+      {
+       "value": "rows",
+       "label": "Rows: one row per part"
+      }
+     ]
+    },
+    {
+     "key": "separator",
+     "kind": "choice",
+     "label": "Separator",
+     "required": false,
+     "default": ",",
+     "help": "",
+     "visible_if": null,
+     "options": [
+      {
+       "value": ",",
+       "label": "Comma ,"
+      },
+      {
+       "value": ";",
+       "label": "Semicolon ;"
+      },
+      {
+       "value": "space",
+       "label": "Space"
+      },
+      {
+       "value": "tab",
+       "label": "Tab"
+      },
+      {
+       "value": "line",
+       "label": "Line break"
+      },
+      {
+       "value": "other",
+       "label": "Other text"
+      }
+     ]
+    },
+    {
+     "key": "other",
+     "kind": "text",
+     "label": "Separator text",
+     "required": true,
+     "default": "",
+     "help": "Any text, e.g. / or - (as it is, not a pattern).",
+     "visible_if": {
+      "separator": [
+       "other"
+      ]
+     },
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "trim",
+     "kind": "bool",
+     "label": "Remove spaces around the parts",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    },
+    {
+     "key": "parts",
+     "kind": "list",
+     "label": "New columns (one per part)",
+     "required": false,
+     "default": [
+      {
+       "name": ""
+      },
+      {
+       "name": ""
+      }
+     ],
+     "help": "The last one gets the rest of the text. Without a name: Name 1, Name 2, \u2026 after the column.",
+     "visible_if": {
+      "into": [
+       "columns"
+      ]
+     },
+     "fields": [
+      {
+       "key": "name",
+       "kind": "text",
+       "label": "Name",
+       "required": false,
+       "default": "",
+       "help": "",
+       "visible_if": null,
+       "multiline": false,
+       "placeholder": "automatic"
+      }
+     ],
+     "min_items": 2
+    },
+    {
+     "key": "keep",
+     "kind": "bool",
+     "label": "Keep the original column",
+     "required": false,
+     "default": false,
+     "help": "",
+     "visible_if": {
+      "into": [
+       "columns"
+      ]
+     }
+    }
+   ],
+   "adds_columns": [],
+   "settings_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "column": {
+      "type": "string"
+     },
+     "into": {
+      "enum": [
+       "columns",
+       "rows"
+      ]
+     },
+     "separator": {
+      "enum": [
+       ",",
+       ";",
+       "space",
+       "tab",
+       "line",
+       "other"
+      ]
+     },
+     "other": {
+      "type": "string"
+     },
+     "trim": {
+      "type": "boolean"
+     },
+     "parts": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false
+      },
+      "minItems": 2
+     },
+     "keep": {
+      "type": "boolean"
+     }
+    },
+    "patternProperties": {
+     "^_": {}
+    },
+    "additionalProperties": false,
+    "required": [
+     "column"
+    ]
+   }
+  }
+ ],
+ "connection_types": [
+  {
+   "id": "sqlite",
+   "name": "SQLite",
+   "plugin": "databases",
+   "settings": [
+    {
+     "key": "file",
+     "kind": "file",
+     "label": "Database file",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "file_mode": "open",
+     "file_filter": "SQLite databases (*.db *.sqlite *.sqlite3 *.db3);;All files (*.*)"
+    }
+   ]
+  },
+  {
+   "id": "sqlserver",
+   "name": "Microsoft SQL Server",
+   "plugin": "databases",
+   "settings": [
+    {
+     "key": "server",
+     "kind": "text",
+     "label": "Server",
+     "required": true,
+     "default": ".\\SQLEXPRESS",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "database",
+     "kind": "text",
+     "label": "Database",
+     "required": true,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": ""
+    },
+    {
+     "key": "driver",
+     "kind": "text",
+     "label": "ODBC driver",
+     "required": false,
+     "default": "",
+     "help": "",
+     "visible_if": null,
+     "multiline": false,
+     "placeholder": "empty = the newest suitable one"
+    },
+    {
+     "key": "trust_certificate",
+     "kind": "bool",
+     "label": "Trust the server certificate",
+     "required": false,
+     "default": true,
+     "help": "",
+     "visible_if": null
+    }
+   ]
+  }
+ ],
+ "functions": [
+  {
+   "name": "IIF",
+   "category": "Conditions",
+   "syntax": "IIF(condition, if_true, if_false)",
+   "summary": "One of two values, depending on a condition (as in SQL Server)",
+   "note": "",
+   "example": "IIF([Amount] > 1000, 'big', 'small')",
+   "aliases": [],
+   "instead_of": [
+    "IF"
+   ],
+   "curated": true
+  },
+  {
+   "name": "CASE",
+   "category": "Conditions",
+   "syntax": "CASE WHEN condition THEN value [WHEN ...] ELSE value END",
+   "summary": "The value of the first condition that is true",
+   "note": "Without ELSE, the result is empty when no condition is true.",
+   "example": "CASE WHEN [Amount] > 1000 THEN 'big' WHEN [Amount] > 100 THEN 'medium' ELSE 'small' END",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "ISNULL",
+   "category": "Conditions",
+   "syntax": "ISNULL(value, fallback)",
+   "summary": "The value, or the fallback when it is empty (as in SQL Server)",
+   "note": "",
+   "example": "ISNULL([Phone], '-')",
+   "aliases": [
+    "IFNULL"
+   ],
+   "instead_of": [
+    "NVL"
+   ],
+   "curated": true
+  },
+  {
+   "name": "COALESCE",
+   "category": "Conditions",
+   "syntax": "COALESCE(value, other, ...)",
+   "summary": "The first value that is not empty",
+   "note": "",
+   "example": "COALESCE([Phone], [Mobile], '-')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "NULLIF",
+   "category": "Conditions",
+   "syntax": "NULLIF(value, other)",
+   "summary": "Empty when the value equals the other, otherwise the value",
+   "note": "Useful against division by zero: without it, dividing by 0 gives \u221e (infinity).",
+   "example": "[Net] / NULLIF([Amount], 0)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "GREATEST",
+   "category": "Conditions",
+   "syntax": "GREATEST(value, other, ...)",
+   "summary": "The largest of the values (empty values are skipped)",
+   "note": "",
+   "example": "GREATEST([Amount], 100)",
+   "aliases": [],
+   "instead_of": [
+    "MAX"
+   ],
+   "curated": true
+  },
+  {
+   "name": "LEAST",
+   "category": "Conditions",
+   "syntax": "LEAST(value, other, ...)",
+   "summary": "The smallest of the values (empty values are skipped)",
+   "note": "",
+   "example": "LEAST([Amount], 100)",
+   "aliases": [],
+   "instead_of": [
+    "MIN"
+   ],
+   "curated": true
+  },
+  {
+   "name": "= <> < > <= >=",
+   "category": "Operators",
+   "syntax": "a = b, a <> b, a < b, ...",
+   "summary": "Compare: equal, not equal (also !=), less than, greater than and so on",
+   "note": "Texts are compared case-sensitively: 'DE' = 'de' is false (unlike SQL Server's usual setting). Compare LOWER([Country]) = 'de', or use ILIKE.",
+   "example": "[Country] <> 'DE'",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "AND",
+   "category": "Operators",
+   "syntax": "condition AND condition",
+   "summary": "True when both conditions are true",
+   "note": "",
+   "example": "[Amount] > 100 AND [Country] = 'DE'",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "OR",
+   "category": "Operators",
+   "syntax": "condition OR condition",
+   "summary": "True when at least one of the conditions is true",
+   "note": "",
+   "example": "[Country] = 'DE' OR [Country] = 'AT'",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "NOT",
+   "category": "Operators",
+   "syntax": "NOT condition",
+   "summary": "True when the condition is false",
+   "note": "",
+   "example": "NOT [Country] = 'DE'",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "IS NULL",
+   "category": "Operators",
+   "syntax": "value IS NULL",
+   "summary": "True when the value is empty",
+   "note": "",
+   "example": "[Phone] IS NULL",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "IS NOT NULL",
+   "category": "Operators",
+   "syntax": "value IS NOT NULL",
+   "summary": "True when the value is not empty",
+   "note": "",
+   "example": "[Phone] IS NOT NULL",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "IN",
+   "category": "Operators",
+   "syntax": "value IN (a, b, ...)",
+   "summary": "True when the value is one of the listed values (NOT IN: none of them)",
+   "note": "",
+   "example": "[Country] IN ('DE', 'AT', 'CH')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "BETWEEN",
+   "category": "Operators",
+   "syntax": "value BETWEEN low AND high",
+   "summary": "True when low <= value <= high",
+   "note": "",
+   "example": "[Amount] BETWEEN 100 AND 500",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LIKE",
+   "category": "Operators",
+   "syntax": "text LIKE pattern",
+   "summary": "True when the text fits the pattern: % any text, _ one character (case-sensitive)",
+   "note": "",
+   "example": "[Code] LIKE 'A-%'",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "ILIKE",
+   "category": "Operators",
+   "syntax": "text ILIKE pattern",
+   "summary": "Like LIKE, but upper and lower case don't matter",
+   "note": "",
+   "example": "[Name] ILIKE 'a%'",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "||",
+   "category": "Operators",
+   "syntax": "text || text",
+   "summary": "Joins texts (+ only adds numbers)",
+   "note": "When one of the values is empty, the result is empty; CONCAT skips empty values.",
+   "example": "[First] || ' ' || [Last]",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "+ - * /",
+   "category": "Operators",
+   "syntax": "a + b, a - b, a * b, a / b",
+   "summary": "Add, subtract, multiply, divide",
+   "note": "",
+   "example": "[Price] * [Amount]",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "//",
+   "category": "Operators",
+   "syntax": "a // b",
+   "summary": "Whole-number division of whole numbers: 7 // 2 = 3",
+   "note": "It rounds toward zero: -7 // 2 = -3. For decimal numbers // divides normally (7.5 // 2 = 3.75): use FLOOR(a / b) or TRUNC(a / b) there.",
+   "example": "[Amount] // 7",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "%",
+   "category": "Operators",
+   "syntax": "a % b",
+   "summary": "The remainder of a division: 7 % 2 = 1",
+   "note": "",
+   "example": "[Amount] % 7",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "UPPER",
+   "category": "Text",
+   "syntax": "UPPER(text)",
+   "summary": "The text in uppercase (\u00df becomes SS)",
+   "note": "A capital first letter only (like PROPER for one word): UPPER(LEFT([Name], 1)) || LOWER(SUBSTRING([Name], 2)).",
+   "example": "UPPER([Name])",
+   "aliases": [
+    "UCASE"
+   ],
+   "instead_of": [
+    "PROPER",
+    "INITCAP"
+   ],
+   "curated": true
+  },
+  {
+   "name": "LOWER",
+   "category": "Text",
+   "syntax": "LOWER(text)",
+   "summary": "The text in lowercase",
+   "note": "",
+   "example": "LOWER([Name])",
+   "aliases": [
+    "LCASE"
+   ],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "TRIM",
+   "category": "Text",
+   "syntax": "TRIM(text [, characters])",
+   "summary": "Removes spaces (or the given characters) from both ends",
+   "note": "",
+   "example": "TRIM([Name])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LTRIM",
+   "category": "Text",
+   "syntax": "LTRIM(text [, characters])",
+   "summary": "Removes spaces (or the given characters) from the start",
+   "note": "",
+   "example": "LTRIM([Code], '0')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "RTRIM",
+   "category": "Text",
+   "syntax": "RTRIM(text [, characters])",
+   "summary": "Removes spaces (or the given characters) from the end",
+   "note": "",
+   "example": "RTRIM([Name])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LEN",
+   "category": "Text",
+   "syntax": "LEN(text)",
+   "summary": "The number of characters; spaces at the end don't count (as in SQL Server)",
+   "note": "",
+   "example": "LEN([Name])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LENGTH",
+   "category": "Text",
+   "syntax": "LENGTH(text)",
+   "summary": "The number of characters, all spaces counted",
+   "note": "",
+   "example": "LENGTH([Name])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LEFT",
+   "category": "Text",
+   "syntax": "LEFT(text, count)",
+   "summary": "The first count characters",
+   "note": "",
+   "example": "LEFT([Zip], 2)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "RIGHT",
+   "category": "Text",
+   "syntax": "RIGHT(text, count)",
+   "summary": "The last count characters",
+   "note": "",
+   "example": "RIGHT([Code], 3)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "SUBSTRING",
+   "category": "Text",
+   "syntax": "SUBSTRING(text, start [, length])",
+   "summary": "Part of the text; start 1 is the first character",
+   "note": "",
+   "example": "SUBSTRING([Code], 2, 3)",
+   "aliases": [
+    "SUBSTR"
+   ],
+   "instead_of": [
+    "MID"
+   ],
+   "curated": true
+  },
+  {
+   "name": "REPLACE",
+   "category": "Text",
+   "syntax": "REPLACE(text, find, replacement)",
+   "summary": "Replaces every occurrence of find (case-sensitive)",
+   "note": "",
+   "example": "REPLACE([Phone], ' ', '')",
+   "aliases": [],
+   "instead_of": [
+    "SUBSTITUTE"
+   ],
+   "curated": true
+  },
+  {
+   "name": "CONCAT",
+   "category": "Text",
+   "syntax": "CONCAT(value, value, ...)",
+   "summary": "Joins the values; empty values are skipped",
+   "note": "",
+   "example": "CONCAT([First], ' ', [Last])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "CONCAT_WS",
+   "category": "Text",
+   "syntax": "CONCAT_WS(separator, value, value, ...)",
+   "summary": "Joins the values with a separator; empty values are skipped",
+   "note": "",
+   "example": "CONCAT_WS(', ', [Street], [City])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "CHARINDEX",
+   "category": "Text",
+   "syntax": "CHARINDEX(find, text)",
+   "summary": "Where find is in the text (1 = first character), 0 if it isn't; case-sensitive",
+   "note": "Unlike SQL Server's usual setting, upper and lower case matter: CHARINDEX(LOWER('B'), LOWER([Code])) ignores them.",
+   "example": "CHARINDEX('-', [Code])",
+   "aliases": [],
+   "instead_of": [
+    "FIND",
+    "SEARCH"
+   ],
+   "curated": true
+  },
+  {
+   "name": "INSTR",
+   "category": "Text",
+   "syntax": "INSTR(text, find)",
+   "summary": "Where find is in the text (1 = first character), 0 if it isn't; case-sensitive",
+   "note": "",
+   "example": "INSTR([Code], '-')",
+   "aliases": [
+    "STRPOS",
+    "POSITION"
+   ],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "CONTAINS",
+   "category": "Text",
+   "syntax": "CONTAINS(text, find)",
+   "summary": "True when the text contains find (case-sensitive)",
+   "note": "",
+   "example": "CONTAINS([First], 'nn')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "STARTS_WITH",
+   "category": "Text",
+   "syntax": "STARTS_WITH(text, start)",
+   "summary": "True when the text starts with the given text (case-sensitive)",
+   "note": "",
+   "example": "STARTS_WITH([Code], 'A')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "ENDS_WITH",
+   "category": "Text",
+   "syntax": "ENDS_WITH(text, end)",
+   "summary": "True when the text ends with the given text (case-sensitive)",
+   "note": "",
+   "example": "ENDS_WITH([File], '.csv')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LPAD",
+   "category": "Text",
+   "syntax": "LPAD(text, length, character)",
+   "summary": "Fills up on the left to the length, e.g. with leading zeros",
+   "note": "A longer text is cut to the length: LPAD('1234567', 3, '0') gives '123'. Numbers need CAST(... AS VARCHAR) first.",
+   "example": "LPAD(CAST([Amount] AS VARCHAR), 6, '0')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "RPAD",
+   "category": "Text",
+   "syntax": "RPAD(text, length, character)",
+   "summary": "Fills up on the right to the length",
+   "note": "A longer text is cut to the length.",
+   "example": "RPAD([Code], 8, '_')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "SPLIT_PART",
+   "category": "Text",
+   "syntax": "SPLIT_PART(text, separator, number)",
+   "summary": "The n-th part of the text, split at the separator; -1 is the last part",
+   "note": "A part that doesn't exist gives an empty text ('').",
+   "example": "SPLIT_PART([Path], '\\', -1)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "REPEAT",
+   "category": "Text",
+   "syntax": "REPEAT(text, count)",
+   "summary": "The text repeated count times",
+   "note": "",
+   "example": "REPEAT('*', 3)",
+   "aliases": [],
+   "instead_of": [
+    "REPLICATE",
+    "REPT"
+   ],
+   "curated": true
+  },
+  {
+   "name": "REVERSE",
+   "category": "Text",
+   "syntax": "REVERSE(text)",
+   "summary": "The characters in reverse order",
+   "note": "",
+   "example": "REVERSE([Code])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "TRANSLATE",
+   "category": "Text",
+   "syntax": "TRANSLATE(text, from, to)",
+   "summary": "Replaces single characters: the n-th of from by the n-th of to",
+   "note": "",
+   "example": "TRANSLATE([Name], '\u00e4\u00f6\u00fc', 'aou')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "STRIP_ACCENTS",
+   "category": "Text",
+   "syntax": "STRIP_ACCENTS(text)",
+   "summary": "Removes accents and umlaut dots: 'M\u00fcller \u00c5ngstr\u00f6m' gives 'Muller Angstrom'",
+   "note": "",
+   "example": "STRIP_ACCENTS([Name])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "REGEXP_MATCHES",
+   "category": "Text",
+   "syntax": "REGEXP_MATCHES(text, pattern)",
+   "summary": "True when the regular expression matches somewhere in the text",
+   "note": "",
+   "example": "REGEXP_MATCHES([Code], '^[A-Z]-\\d+$')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "REGEXP_EXTRACT",
+   "category": "Text",
+   "syntax": "REGEXP_EXTRACT(text, pattern [, group])",
+   "summary": "The part that matches the regular expression (or one group), '' if none",
+   "note": "",
+   "example": "REGEXP_EXTRACT([File], '\\d{4}-\\d{2}-\\d{2}')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "REGEXP_REPLACE",
+   "category": "Text",
+   "syntax": "REGEXP_REPLACE(text, pattern, replacement [, 'g'])",
+   "summary": "Replaces the first match ('g': every match)",
+   "note": "",
+   "example": "REGEXP_REPLACE([Phone], '[^0-9]', '', 'g')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "FORMAT",
+   "category": "Text",
+   "syntax": "FORMAT(template, value, ...)",
+   "summary": "Fills the {} in the template: {:.2f} two decimals, {:,} thousands separators",
+   "note": "{:.2f} needs a decimal number: for whole numbers write [Amount] * 1.0. When a value is empty, the result is empty.",
+   "example": "FORMAT('{} ({:.1f})', [First], [Price])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "CHR",
+   "category": "Text",
+   "syntax": "CHR(code)",
+   "summary": "The character with this code; CHR(10) is a line break",
+   "note": "",
+   "example": "[First] || CHR(10) || [Country]",
+   "aliases": [],
+   "instead_of": [
+    "CHAR"
+   ],
+   "curated": true
+  },
+  {
+   "name": "LEVENSHTEIN",
+   "category": "Text",
+   "syntax": "LEVENSHTEIN(text, other)",
+   "summary": "How many characters must change to turn one text into the other",
+   "note": "Useful to find similar spellings.",
+   "example": "LEVENSHTEIN([First], 'Ana')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "JARO_WINKLER_SIMILARITY",
+   "category": "Text",
+   "syntax": "JARO_WINKLER_SIMILARITY(text, other)",
+   "summary": "How similar two texts are, from 0 (not at all) to 1 (equal)",
+   "note": "",
+   "example": "JARO_WINKLER_SIMILARITY([First], 'Ana')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "MD5",
+   "category": "Text",
+   "syntax": "MD5(text)",
+   "summary": "A 32-character code calculated from the text, e.g. as a key",
+   "note": "",
+   "example": "MD5([Code])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "GEN_RANDOM_UUID",
+   "category": "Text",
+   "syntax": "GEN_RANDOM_UUID()",
+   "summary": "A new random ID (UUID) for every row",
+   "note": "",
+   "example": "CAST(GEN_RANDOM_UUID() AS VARCHAR)",
+   "aliases": [],
+   "instead_of": [
+    "NEWID"
+   ],
+   "curated": true
+  },
+  {
+   "name": "ROUND",
+   "category": "Numbers",
+   "syntax": "ROUND(number [, decimals])",
+   "summary": "Rounds to the given number of decimals (halves away from zero)",
+   "note": "Decimal numbers are stored in binary, so a few halves such as 1.005 round down. For exact results round a DECIMAL: ROUND(CAST([Price] AS DECIMAL(18,3)), 2).",
+   "example": "ROUND([Price] * 1.19, 2)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "CEIL",
+   "category": "Numbers",
+   "syntax": "CEIL(number)",
+   "summary": "Rounds up to a whole number",
+   "note": "The result stays a decimal number (3.0); CAST(CEIL([Price]) AS BIGINT) gives an integer.",
+   "example": "CEIL([Price])",
+   "aliases": [
+    "CEILING"
+   ],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "FLOOR",
+   "category": "Numbers",
+   "syntax": "FLOOR(number)",
+   "summary": "Rounds down to a whole number",
+   "note": "The result stays a decimal number (3.0); CAST(FLOOR([Price]) AS BIGINT) gives an integer.",
+   "example": "FLOOR([Price])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "TRUNC",
+   "category": "Numbers",
+   "syntax": "TRUNC(number [, decimals])",
+   "summary": "Cuts off the decimals (or keeps the given number of them)",
+   "note": "The result stays a decimal number (3.0); CAST(TRUNC([Price]) AS BIGINT) gives an integer.",
+   "example": "TRUNC([Price])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "ABS",
+   "category": "Numbers",
+   "syntax": "ABS(number)",
+   "summary": "The number without its sign",
+   "note": "",
+   "example": "ABS([Amount] - 100)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "SIGN",
+   "category": "Numbers",
+   "syntax": "SIGN(number)",
+   "summary": "The sign of the number: -1, 0 or 1",
+   "note": "",
+   "example": "SIGN([Amount] - 100)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "MOD",
+   "category": "Numbers",
+   "syntax": "MOD(number, divisor)",
+   "summary": "The remainder of a division (the same as number % divisor)",
+   "note": "",
+   "example": "MOD([Amount], 7)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "POWER",
+   "category": "Numbers",
+   "syntax": "POWER(number, exponent)",
+   "summary": "The number to the power of the exponent (also number ** exponent)",
+   "note": "",
+   "example": "POWER(1.05, 10)",
+   "aliases": [
+    "POW"
+   ],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "SQRT",
+   "category": "Numbers",
+   "syntax": "SQRT(number)",
+   "summary": "The square root",
+   "note": "",
+   "example": "SQRT([Amount])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "EXP",
+   "category": "Numbers",
+   "syntax": "EXP(number)",
+   "summary": "e to the power of the number",
+   "note": "",
+   "example": "EXP(1)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LN",
+   "category": "Numbers",
+   "syntax": "LN(number)",
+   "summary": "The natural logarithm",
+   "note": "",
+   "example": "LN([Amount])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LOG",
+   "category": "Numbers",
+   "syntax": "LOG(number) or LOG(base, number)",
+   "summary": "The logarithm to base 10 (or to the given base)",
+   "note": "",
+   "example": "LOG(2, 1024)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "RANDOM",
+   "category": "Numbers",
+   "syntax": "RANDOM()",
+   "summary": "A random number between 0 and 1, new for every row and calculation",
+   "note": "",
+   "example": "RANDOM()",
+   "aliases": [],
+   "instead_of": [
+    "RAND"
+   ],
+   "curated": true
+  },
+  {
+   "name": "PI",
+   "category": "Numbers",
+   "syntax": "PI()",
+   "summary": "The number \u03c0 (3.14159\u2026)",
+   "note": "",
+   "example": "ROUND(PI(), 4)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "GETDATE",
+   "category": "Dates",
+   "syntax": "GETDATE()",
+   "summary": "The current date and time (as in SQL Server)",
+   "note": "",
+   "example": "GETDATE()",
+   "aliases": [],
+   "instead_of": [
+    "NOW"
+   ],
+   "curated": true
+  },
+  {
+   "name": "TODAY",
+   "category": "Dates",
+   "syntax": "TODAY()",
+   "summary": "The current date (also CURRENT_DATE)",
+   "note": "For a date column, TODAY() - [Date] gives the days since the date; for date-times use DATE_DIFF('day', [Time], GETDATE()).",
+   "example": "TODAY()",
+   "aliases": [
+    "CURRENT_DATE"
+   ],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "YEAR",
+   "category": "Dates",
+   "syntax": "YEAR(date)",
+   "summary": "The year",
+   "note": "",
+   "example": "YEAR([Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "QUARTER",
+   "category": "Dates",
+   "syntax": "QUARTER(date)",
+   "summary": "The quarter, 1 to 4",
+   "note": "",
+   "example": "QUARTER([Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "MONTH",
+   "category": "Dates",
+   "syntax": "MONTH(date)",
+   "summary": "The month, 1 to 12",
+   "note": "",
+   "example": "MONTH([Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "WEEK",
+   "category": "Dates",
+   "syntax": "WEEK(date)",
+   "summary": "The ISO week number, 1 to 53",
+   "note": "Days around New Year can belong to week 1 of the next year or week 53 of the previous one: use ISOYEAR([Date]) with it (YEARWEEK([Date]) gives 202501).",
+   "example": "WEEK([Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "ISOYEAR",
+   "category": "Dates",
+   "syntax": "ISOYEAR(date)",
+   "summary": "The year that the ISO week belongs to (for 30 Dec 2024: 2025)",
+   "note": "",
+   "example": "ISOYEAR([Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "DAY",
+   "category": "Dates",
+   "syntax": "DAY(date)",
+   "summary": "The day of the month, 1 to 31",
+   "note": "",
+   "example": "DAY([Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "DAYOFYEAR",
+   "category": "Dates",
+   "syntax": "DAYOFYEAR(date)",
+   "summary": "The day of the year, 1 to 366",
+   "note": "",
+   "example": "DAYOFYEAR([Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "ISODOW",
+   "category": "Dates",
+   "syntax": "ISODOW(date)",
+   "summary": "The weekday: 1 = Monday ... 7 = Sunday",
+   "note": "",
+   "example": "ISODOW([Date])",
+   "aliases": [],
+   "instead_of": [
+    "WEEKDAY"
+   ],
+   "curated": true
+  },
+  {
+   "name": "DAYNAME",
+   "category": "Dates",
+   "syntax": "DAYNAME(date)",
+   "summary": "The English name of the weekday",
+   "note": "",
+   "example": "DAYNAME([Date])",
+   "aliases": [],
+   "instead_of": [
+    "DATENAME"
+   ],
+   "curated": true
+  },
+  {
+   "name": "MONTHNAME",
+   "category": "Dates",
+   "syntax": "MONTHNAME(date)",
+   "summary": "The English name of the month",
+   "note": "",
+   "example": "MONTHNAME([Date])",
+   "aliases": [],
+   "instead_of": [
+    "DATENAME"
+   ],
+   "curated": true
+  },
+  {
+   "name": "HOUR",
+   "category": "Dates",
+   "syntax": "HOUR(date_time)",
+   "summary": "The hour, 0 to 23",
+   "note": "",
+   "example": "HOUR(GETDATE())",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "MINUTE",
+   "category": "Dates",
+   "syntax": "MINUTE(date_time)",
+   "summary": "The minute, 0 to 59",
+   "note": "",
+   "example": "MINUTE(GETDATE())",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "SECOND",
+   "category": "Dates",
+   "syntax": "SECOND(date_time)",
+   "summary": "The second, 0 to 59",
+   "note": "",
+   "example": "SECOND(GETDATE())",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "DATE_TRUNC",
+   "category": "Dates",
+   "syntax": "DATE_TRUNC('part', date)",
+   "summary": "The start of the year, quarter, month, week or day",
+   "note": "The result is a date-time; add ::DATE for a date.",
+   "example": "DATE_TRUNC('month', [Date])",
+   "aliases": [
+    "DATETRUNC"
+   ],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "DATE_PART",
+   "category": "Dates",
+   "syntax": "DATE_PART('part', date)",
+   "summary": "One part of a date, e.g. year, month, day, week, isodow, doy or hour",
+   "note": "The part is written in quotes, as the first argument.",
+   "example": "DATE_PART('doy', [Date])",
+   "aliases": [
+    "DATEPART"
+   ],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "DATE_DIFF",
+   "category": "Dates",
+   "syntax": "DATE_DIFF('part', start, end)",
+   "summary": "How many day, month, year (...) boundaries lie between two dates",
+   "note": "It counts the boundaries crossed, as DATEDIFF in SQL Server: 31 January to 1 February is 1 month, 31 December to 1 January is 1 year. For complete months or years, e.g. an age, use DATE_SUB. The part is written in quotes: 'day', 'month', 'year', 'hour', 'minute'.",
+   "example": "DATE_DIFF('day', [Date], DATE '2025-12-31')",
+   "aliases": [
+    "DATEDIFF"
+   ],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "DATE_SUB",
+   "category": "Dates",
+   "syntax": "DATE_SUB('part', start, end)",
+   "summary": "How many complete days, months or years (...) lie between two dates",
+   "note": "31 January to 1 February is 0 months. DATE_SUB('year', [Birthday], TODAY()) gives the age.",
+   "example": "DATE_SUB('year', [Date], TODAY())",
+   "aliases": [
+    "DATESUB"
+   ],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "+ INTERVAL",
+   "category": "Dates",
+   "syntax": "date + INTERVAL n DAY|MONTH|YEAR",
+   "summary": "The date plus days, months or years",
+   "note": "The result is a date-time; add ::DATE for a date. With a column write INTERVAL ([Months]) MONTH, or [Date] + TO_MONTHS([Months]). [Date] + 30 adds 30 days and stays a date.",
+   "example": "[Date] + INTERVAL 1 MONTH",
+   "aliases": [],
+   "instead_of": [
+    "DATEADD",
+    "EDATE"
+   ],
+   "curated": true
+  },
+  {
+   "name": "LAST_DAY",
+   "category": "Dates",
+   "syntax": "LAST_DAY(date)",
+   "summary": "The last day of the month",
+   "note": "",
+   "example": "LAST_DAY([Date])",
+   "aliases": [],
+   "instead_of": [
+    "EOMONTH"
+   ],
+   "curated": true
+  },
+  {
+   "name": "MAKE_DATE",
+   "category": "Dates",
+   "syntax": "MAKE_DATE(year, month, day)",
+   "summary": "A date from its parts",
+   "note": "",
+   "example": "MAKE_DATE(YEAR([Date]), 1, 1)",
+   "aliases": [],
+   "instead_of": [
+    "DATEFROMPARTS"
+   ],
+   "curated": true
+  },
+  {
+   "name": "STRFTIME",
+   "category": "Dates",
+   "syntax": "STRFTIME(date, format)",
+   "summary": "The date as text, e.g. %d.%m.%Y, %Y-%m, %B (month name) or %H:%M",
+   "note": "",
+   "example": "STRFTIME([Date], '%d.%m.%Y')",
+   "aliases": [],
+   "instead_of": [
+    "TEXT"
+   ],
+   "curated": true
+  },
+  {
+   "name": "STRPTIME",
+   "category": "Dates",
+   "syntax": "STRPTIME(text, format)",
+   "summary": "Reads a date-time from text in the given format; an error if it doesn't fit",
+   "note": "The result is a date-time; add ::DATE for a date.",
+   "example": "STRPTIME('31.12.2025', '%d.%m.%Y')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "TRY_STRPTIME",
+   "category": "Dates",
+   "syntax": "TRY_STRPTIME(text, format)",
+   "summary": "Like STRPTIME, but empty when the text doesn't fit",
+   "note": "The result is a date-time; add ::DATE for a date.",
+   "example": "TRY_STRPTIME('31.12.2025', '%d.%m.%Y')",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "CAST",
+   "category": "Conversion",
+   "syntax": "CAST(value AS type)",
+   "summary": "Converts to VARCHAR (text), BIGINT (whole number), DOUBLE (decimal number), DECIMAL(18,2), DATE, TIMESTAMP (date-time) or BOOLEAN (true/false)",
+   "note": "BIGINT rounds to the nearest whole number (halves to the even one): use TRUNC or FLOOR first to cut off. Text must be written 2025-12-31 and 1.5: use STRPTIME for other date formats and REPLACE([Text], ',', '.') for a decimal comma.",
+   "example": "CAST([Zip] AS BIGINT)",
+   "aliases": [],
+   "instead_of": [
+    "CONVERT"
+   ],
+   "curated": true
+  },
+  {
+   "name": "TRY_CAST",
+   "category": "Conversion",
+   "syntax": "TRY_CAST(value AS type)",
+   "summary": "Like CAST, but empty instead of an error when it can't be converted",
+   "note": "TRY_CAST([Value] AS DOUBLE) IS NOT NULL tells whether a text is a number.",
+   "example": "TRY_CAST([Code] AS BIGINT)",
+   "aliases": [],
+   "instead_of": [
+    "TRY_CONVERT",
+    "ISNUMERIC",
+    "ISDATE"
+   ],
+   "curated": true
+  },
+  {
+   "name": "::",
+   "category": "Conversion",
+   "syntax": "value::type",
+   "summary": "The short form of CAST",
+   "note": "",
+   "example": "[Amount]::VARCHAR",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "DATE '...'",
+   "category": "Conversion",
+   "syntax": "DATE 'yyyy-mm-dd'",
+   "summary": "A fixed date (also TIMESTAMP '2025-12-31 23:59')",
+   "note": "",
+   "example": "[Date] >= DATE '2025-01-01'",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "SUM ... OVER",
+   "category": "Groups and order",
+   "syntax": "SUM(value) OVER (PARTITION BY column)",
+   "summary": "The total of the row's group on every row (OVER (): the whole table)",
+   "note": "AVG, MIN, MAX and COUNT work the same way.",
+   "example": "[Amount] / SUM([Amount]) OVER (PARTITION BY [Customer])",
+   "aliases": [],
+   "instead_of": [
+    "SUMIF"
+   ],
+   "curated": true
+  },
+  {
+   "name": "COUNT(*) ... OVER",
+   "category": "Groups and order",
+   "syntax": "COUNT(*) OVER (PARTITION BY column)",
+   "summary": "The number of rows in the row's group",
+   "note": "",
+   "example": "COUNT(*) OVER (PARTITION BY [Customer])",
+   "aliases": [],
+   "instead_of": [
+    "COUNTIF"
+   ],
+   "curated": true
+  },
+  {
+   "name": "Running total",
+   "category": "Groups and order",
+   "syntax": "SUM(value) OVER (ORDER BY column)",
+   "summary": "The running total in the given order (per group with PARTITION BY)",
+   "note": "Rows with the same value in the ORDER BY column get the same total; add a second column to ORDER BY, or ROWS UNBOUNDED PRECEDING, to add them one by one.",
+   "example": "SUM([Amount]) OVER (PARTITION BY [Customer] ORDER BY [Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "Moving average",
+   "category": "Groups and order",
+   "syntax": "AVG(value) OVER (ORDER BY column ROWS BETWEEN n PRECEDING AND CURRENT ROW)",
+   "summary": "The average of the row and the n rows before it, in the given order (with SUM: the moving sum)",
+   "note": "The first rows have fewer rows before them: theirs is the average of the rows there are. Empty values don't count. For each customer apart, write PARTITION BY [Customer] before ORDER BY.",
+   "example": "AVG([Amount]) OVER (ORDER BY [Date] ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "STDDEV_SAMP ... OVER",
+   "category": "Groups and order",
+   "syntax": "STDDEV_SAMP(value) OVER (...)",
+   "summary": "The standard deviation of the values: of the whole column with OVER (), of the last rows with ROWS BETWEEN",
+   "note": "Of the row and the 2 rows before it: STDDEV_SAMP([Amount]) OVER (ORDER BY [Date] ROWS BETWEEN 2 PRECEDING AND CURRENT ROW). It is the standard deviation of a sample, as Excel's STDEV.S; STDDEV_POP is the one of a whole population (STDEV.P). Empty values don't count; with fewer than 2 values the result is empty.",
+   "example": "STDDEV_SAMP([Amount]) OVER ()",
+   "aliases": [
+    "STDDEV"
+   ],
+   "instead_of": [
+    "STDEV",
+    "STDEV.S"
+   ],
+   "curated": true
+  },
+  {
+   "name": "Change in %",
+   "category": "Groups and order",
+   "syntax": "100.0 * (value - LAG(value) OVER (ORDER BY ...)) / NULLIF(LAG(value) OVER (ORDER BY ...), 0)",
+   "summary": "The change from the row before, in percent: 25 for 80 after 64",
+   "note": "The first row has no row before it: its change is empty, and so is the change of an empty value and of the value after one. After a 0 the change is empty too (NULLIF): dividing by 0 would give \u221e. For each customer apart, write PARTITION BY [Customer] in both OVER (...). Without 100.0 * the change is a fraction (0.25), for the Excel format 0%.",
+   "example": "100.0 * ([Amount] - LAG([Amount]) OVER (ORDER BY [Date])) / NULLIF(LAG([Amount]) OVER (ORDER BY [Date]), 0)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "ROW_NUMBER",
+   "category": "Groups and order",
+   "syntax": "ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)",
+   "summary": "Numbers the rows 1, 2, 3 ... within each group",
+   "note": "",
+   "example": "ROW_NUMBER() OVER (PARTITION BY [Customer] ORDER BY [Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "RANK",
+   "category": "Groups and order",
+   "syntax": "RANK() OVER (ORDER BY ...)",
+   "summary": "The rank; equal values share a rank, then numbers are skipped",
+   "note": "",
+   "example": "RANK() OVER (ORDER BY [Amount] DESC)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "DENSE_RANK",
+   "category": "Groups and order",
+   "syntax": "DENSE_RANK() OVER (ORDER BY ...)",
+   "summary": "The rank without gaps after equal values",
+   "note": "",
+   "example": "DENSE_RANK() OVER (ORDER BY [Amount] DESC)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LAG",
+   "category": "Groups and order",
+   "syntax": "LAG(value [, rows]) OVER (ORDER BY ...)",
+   "summary": "The value of the previous row (or rows back)",
+   "note": "",
+   "example": "[Amount] - LAG([Amount]) OVER (PARTITION BY [Customer] ORDER BY [Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LEAD",
+   "category": "Groups and order",
+   "syntax": "LEAD(value [, rows]) OVER (ORDER BY ...)",
+   "summary": "The value of the next row (or rows ahead)",
+   "note": "",
+   "example": "LEAD([Date]) OVER (PARTITION BY [Customer] ORDER BY [Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "FIRST_VALUE",
+   "category": "Groups and order",
+   "syntax": "FIRST_VALUE(value) OVER (PARTITION BY ... ORDER BY ...)",
+   "summary": "The first value in the row's group",
+   "note": "",
+   "example": "FIRST_VALUE([Amount]) OVER (PARTITION BY [Customer] ORDER BY [Date])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "LAST_VALUE",
+   "category": "Groups and order",
+   "syntax": "LAST_VALUE(value) OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN ...)",
+   "summary": "The last value in the row's group",
+   "note": "Without ROWS BETWEEN ..., the window ends at the current row (and rows with the same order value).",
+   "example": "LAST_VALUE([Amount]) OVER (PARTITION BY [Customer] ORDER BY [Date] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "NTILE",
+   "category": "Groups and order",
+   "syntax": "NTILE(n) OVER (ORDER BY ...)",
+   "summary": "Splits the rows into n groups of nearly equal size: 1 ... n",
+   "note": "",
+   "example": "NTILE(4) OVER (ORDER BY [Amount])",
+   "aliases": [],
+   "instead_of": [],
+   "curated": true
+  },
+  {
+   "name": "STRING_AGG ... OVER",
+   "category": "Groups and order",
+   "syntax": "STRING_AGG(text, separator) OVER (PARTITION BY ...)",
+   "summary": "All texts of the row's group, joined",
+   "note": "",
+   "example": "STRING_AGG([Code], ', ') OVER (PARTITION BY [Customer])",
+   "aliases": [],
+   "instead_of": [
+    "TEXTJOIN"
+   ],
+   "curated": true
+  }
+ ]
+}

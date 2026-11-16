@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QPushB
 
 from tafl.api import Kind, files
 from tafl.core import Status
+from tafl.core.catalog import help_text
 from tafl.core.index import NOTE
 
 from .forms import FormContext, ParamForm, flash
@@ -129,7 +130,7 @@ class SettingsPanel(QWidget):
         self.title.setText(action.name)
         details = [action.category, _KIND_TEXT[action.kind]]
         self.subtitle.setText("  ·  ".join(d for d in details if d))
-        self.description.setText(_reflow(action.description))
+        self.description.setText(help_text(action.description))  # as the catalog has it
         self.enabled.blockSignals(True)
         self.enabled.setChecked(step.enabled)
         self.enabled.setVisible(True)
@@ -349,12 +350,6 @@ class SettingsPanel(QWidget):
 def _settings(values: dict) -> dict:
     """What the form shows: not the mark of a data sheet, which changes when the file is saved."""
     return {key: value for key, value in values.items() if key != files.SHEET_KEY}
-
-
-def _reflow(text: str) -> str:
-    """Docstrings wrap at ~100 characters; join their lines so the label can wrap by itself."""
-    paragraphs = [" ".join(line.strip() for line in p.splitlines()) for p in text.split("\n\n")]
-    return "\n\n".join(p for p in paragraphs if p)
 
 
 def _box(name: str, parent: QWidget) -> MessageBox:

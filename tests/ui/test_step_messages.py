@@ -1,7 +1,7 @@
 """What a step reported (its info messages) shows in the settings panel while editing, e.g. how
 many rows a merge matched; the texts about the step's status come first."""
 
-from tafl.core import Status, StepResult
+from tafl.core import Status, StepResult, catalog
 
 
 def select(window, session, settle, demo, table: str, number: int):
@@ -18,6 +18,16 @@ def test_an_import_shows_what_it_found(window, session, settle, demo):
     assert not panel.info.isHidden()
     assert panel.info.text() == "Encoding utf-8, delimiter semicolon, decimal comma"
     assert panel.error.isHidden() and panel.warning.isHidden()
+
+
+def test_the_help_below_the_settings_is_that_of_the_catalog(window, session, settle, demo):
+    """tafl catalog --json gives programs an action's help as the panel shows it: the lines of
+    each paragraph of the docstring joined."""
+    panel = select(window, session, settle, demo, "Orders", 1)
+    described = {action["id"]: action["help"] for action in catalog.build(session.registry, [])["actions"]}
+    assert panel.description.text() == described["csv.import"]
+    assert "\n" in session.registry.actions["csv.import"].description.split("\n\n")[0]
+    assert "\n" not in panel.description.text().split("\n\n")[0]
 
 
 def test_a_merge_shows_how_many_rows_matched(window, session, settle, demo):
