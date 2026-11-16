@@ -20,7 +20,7 @@ built-in plugins, the folders in `TAFL_PLUGINS`, `%APPDATA%\Tafl\plugins` and th
 with `--plugins`.
 
 The JSON has only ASCII characters: other characters are written as `\uXXXX` escapes (for
-example `→` for an arrow). Every JSON reader turns them back. Without them, a Windows pipe
+example `\u2192` for →). Every JSON reader turns them back. Without them, a Windows pipe
 could change such characters into `?` without a message.
 
 Exit codes: 0 done; 1 a plugin failed to load, or an action or connection type of a plugin can't
@@ -102,8 +102,8 @@ Kinds, the value a step stores, and the fields that only this kind has:
 | `columns` | a list of column names | `column_source` |
 | `file` | a path; a relative path starts at the project's folder | `file_mode` (`"open"`: must exist, `"save"`), `file_filter` |
 | `folder` | a path | |
-| `table` | the **id** of another table of the project (not its name) | |
-| `tables` | a list of table ids | |
+| `table` | the **id** of another table of the project; write the id (Tafl also finds a table by its name, unless the name looks like an id: `t` and digits) | |
+| `tables` | a list of table ids (or names, as for `table`) | |
 | `connection` | the **name** of a connection of the project | `connection_types`: the allowed type ids (empty: any) |
 | `list` | a list of rows; each row is an object with the `fields` | `fields` (settings, in the same form), `min_items` (the rows it needs at least) |
 
@@ -211,7 +211,9 @@ functions of DuckDB depend on the DuckDB version that the Tafl program includes.
   object: the step gets a row with the defaults there.
 - Optional: `"enabled": false` turns a step off; `"note"` is a text.
 - A step's `id` can be left out: Tafl gives the step one when it opens the file. A table has an
-  `id` and a `name`; settings of the kinds table and tables store the id. Ids are unique in
+  `id` and a `name`; settings of the kinds table and tables store the id. Tafl also finds a table
+  by its name there, in upper or lower case, when the name doesn't look like an id (`t` and
+  digits, e.g. `t3`); programs that write projects should store the id. Ids are unique in
   the whole project (groups, tables and steps): when two share one, the first keeps it and Tafl
   gives the other a new id, so a setting then names the first one.
 

@@ -720,6 +720,8 @@ def test_the_example_of_the_docs_is_the_real_output(built):
 def test_the_docs_name_the_version_the_kinds_and_the_keywords(built):
     text = DOCS.read_text(encoding="utf-8")
     assert f'`format_version` is a text `"major.minor"`, now `"{catalog.FORMAT_VERSION}"`.' in text
+    escape = chr(92) + "u2192"  # the six characters of the escape, not the arrow (an editor may write that)
+    assert f"example `{escape}` for \N{RIGHTWARDS ARROW})" in text and json.loads(f'"{escape}"') == "\N{RIGHTWARDS ARROW}"
     kinds = text[text.index("Kinds, the value a step stores") : text.index("- `condition` (expression)")]
     assert set(re.findall(r"^\| `(\w+)` \|", kinds, re.M)) - {"kind"} == set(catalog._KINDS)  # without the heading
     listed = text[text.index("The schemas use only these keywords") :].split("\n\n")[0]
