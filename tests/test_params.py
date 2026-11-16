@@ -1,6 +1,8 @@
+import re
+
 import pytest
 
-from tafl.api import P, ValidationContext, action
+from tafl.api import AddedColumn, P, ValidationContext, action
 from tafl.api.params import check, is_visible, resolve, table_refs
 
 SPEC = [
@@ -97,3 +99,33 @@ def test_reserved_and_duplicate_parameter_names_are_rejected():
 
 def test_labels_default_from_keys():
     assert P.Text("new_name").label == "New name"
+
+
+SOURCE = [P.Choice("source", "Read", ["file", "folder"]), P.Bool("file_column", "Add a column with the file name")]
+
+
+def test_added_columns_are_declared_with_the_action():
+    file_column = AddedColumn("File", "text", when={"source": "folder", "file_column": True})
+    declared = action("x.y", "X", params=SOURCE, adds_columns=[file_column, AddedColumn("Size", "integer")])(lambda df, p, ctx: df)
+    assert declared.adds_columns == (file_column, AddedColumn("Size", "integer", when=None))
+    assert action("x.z", "Z")(lambda df, p, ctx: df).adds_columns == ()
+    assert AddedColumn.TYPES == ("text", "integer", "number", "date", "datetime", "boolean")
+
+
+@pytest.mark.parametrize(
+    ("column", "message"),
+    [
+        (AddedColumn("File", "string"), "added column 'File' has the type 'string'; types: text, integer, number"),
+        (AddedColumn("File", "text", when={"file_columns": True}), "'file_columns', which is not a setting of the action"),
+        (AddedColumn("File", "text", when={"column": "x"}), "'column', which is not a setting"),  # a field of a list isn't one
+        (AddedColumn("", "text"), "needs a name"),
+        (AddedColumn("File", "text", when=["source"]), "added column 'File': 'when' must be settings and values"),
+        (("File", "text"), "adds_columns takes AddedColumn entries"),
+    ],
+)
+def test_added_columns_that_would_describe_the_table_wrongly_are_refused(column, message):
+    """As for parameter names: when the action is declared. A setting that is renamed can't leave
+    a declaration that names it behind."""
+    params = [*SOURCE, P.List("rows", "Rows", fields=[P.Column("column", "Column")])]
+    with pytest.raises(ValueError, match=re.escape(message)):
+        action("x.y", "X", params=params, adds_columns=[column])

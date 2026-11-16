@@ -35,7 +35,7 @@ from tafl import APP_NAME
 
 from . import detection, dtypes, endpoints, expressions, files, parameters, xlsx
 from . import params as P
-from .action import Action, Kind, action, file_fingerprint
+from .action import Action, AddedColumn, Kind, action, file_fingerprint
 from .context import Context, Mode
 from .database import (
     Connector,
@@ -53,6 +53,7 @@ from .errors import ActionError, Cancelled, SkipRest, TaflError
 from .files import (
     combine,
     find_files,
+    source_columns,
     source_endpoints,
     source_files,
     source_params,
@@ -69,6 +70,7 @@ __all__ = [
     "API_VERSION",
     "Action",
     "ActionError",
+    "AddedColumn",
     "Cancelled",
     "Connector",
     "Context",
@@ -96,6 +98,7 @@ __all__ = [
     "frame_from_cursor",
     "make_series",
     "parameters",
+    "source_columns",
     "source_endpoints",
     "source_files",
     "source_params",

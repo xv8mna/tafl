@@ -14,6 +14,7 @@ from tafl.api import (
     combine,
     dtypes,
     files,
+    source_columns,
     source_endpoints,
     source_files,
     source_params,
@@ -42,6 +43,7 @@ def _migrate_import(params: dict, from_version: int) -> dict:
     summary=lambda p: f"Import {source_summary(p)}",
     fingerprint=sources_fingerprint,
     endpoints=source_endpoints,
+    adds_columns=source_columns(),
 )
 def import_parquet(df, p, ctx):
     """Reads a Parquet file, or all Parquet files of a folder (and its subfolders) into one

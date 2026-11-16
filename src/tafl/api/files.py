@@ -3,11 +3,12 @@ writing, copying, moving and deleting files safely, for exports and commands.
 
 An import action puts ``source_params(...)`` first in its parameters, reads each file of
 ``source_files(p, ctx)`` and returns ``combine(...)``; ``fingerprint=sources_fingerprint``
-makes the app notice new, changed and deleted files, and ``endpoints=source_endpoints`` tells
-it the file or folder that the step reads::
+makes the app notice new, changed and deleted files, ``endpoints=source_endpoints`` tells
+it the file or folder that the step reads, and ``adds_columns=source_columns()`` declares the
+columns with the file name and the path that ``combine`` adds::
 
     @action("my.import", "Import my files", kind="source",
-            params=[*source_params("My files (*.my)", "*.my")],
+            params=[*source_params("My files (*.my)", "*.my")], adds_columns=source_columns(),
             fingerprint=sources_fingerprint, endpoints=source_endpoints)
     def import_my(df, p, ctx):
         files, folder = source_files(p, ctx)
@@ -54,6 +55,7 @@ import polars as pl
 
 from . import dtypes
 from . import params as P
+from .action import AddedColumn
 from .context import Context
 from .endpoints import FOLDER, IN, Endpoint, file_endpoint
 from .errors import ActionError, SkipRest
@@ -98,6 +100,18 @@ def source_params(filter: str, patterns: str) -> list[P.Param]:
             visible_if=_IN_FOLDER,
             help=r"e.g. 2025\01\orders.csv: a calculated column can take the year or month from it",
         ),
+    ]
+
+
+def source_columns() -> list[AddedColumn]:
+    """``adds_columns`` for an import with ``source_params``: for a folder, the columns with the
+    file name and the path below the folder, as far as they are switched on. ``combine`` puts them
+    before the data, in this order (with ``sheet_column`` a Sheet column follows, which the action
+    declares itself). When the data has a column with such a name, the added one is called
+    "File (source)" (or "Path (source)") instead."""
+    return [
+        AddedColumn("File", "text", when={**_IN_FOLDER, "file_column": True}),
+        AddedColumn("Path", "text", when={**_IN_FOLDER, "path_column": True}),
     ]
 
 

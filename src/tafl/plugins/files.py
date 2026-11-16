@@ -13,7 +13,7 @@ from pathlib import Path
 
 import polars as pl
 
-from tafl.api import ActionError, Cancelled, Endpoint, P, action, col, endpoints, files, find_files
+from tafl.api import ActionError, AddedColumn, Cancelled, Endpoint, P, action, col, endpoints, files, find_files
 
 
 def _folder_endpoints(p, direction: str, key: str, *, name: str = "", mode: str = "", how: str = "") -> list[Endpoint]:
@@ -57,6 +57,15 @@ def _listing_fingerprint(p, ctx):
     endpoints=lambda p: _folder_endpoints(
         p, endpoints.IN, "folder", name=p.pattern.strip() or "*", mode=_subfolders(p), how="subfolders"
     ),
+    adds_columns=[
+        AddedColumn("File", "text"),
+        AddedColumn("Path", "text"),
+        AddedColumn("Folder", "text"),
+        AddedColumn("Extension", "text"),
+        AddedColumn("Size", "integer"),
+        AddedColumn("Modified", "datetime"),
+        AddedColumn("Full path", "text"),
+    ],
 )
 def list_files(df, p, ctx):
     """A table of the files in a folder (and its subfolders): name, path below the folder,

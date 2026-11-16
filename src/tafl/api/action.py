@@ -6,7 +6,7 @@ import inspect
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import polars as pl
 
@@ -32,6 +32,21 @@ class Kind(StrEnum):
     COMMAND = "command"  # other side effects (files, SQL commands); the table passes through
 
 
+@dataclass(frozen=True)
+class AddedColumn:
+    """A column with a fixed name that a step adds to its table (an import: makes), for programs
+    that write or check project files (``tafl catalog``). ``type`` is one of ``TYPES``, the type
+    names of Change type. ``when`` names the settings that switch the column on, in the form of a
+    parameter's ``visible_if`` (e.g. ``{"source": "folder", "file_column": True}``); None: always.
+    Columns whose names come from settings or from the data are not declared."""
+
+    name: str
+    type: str
+    when: Mapping[str, Any] | None = None
+
+    TYPES: ClassVar[tuple[str, ...]] = ("text", "integer", "number", "date", "datetime", "boolean")
+
+
 @dataclass(frozen=True, eq=False)
 class Action:
     id: str
@@ -48,6 +63,7 @@ class Action:
     checks: Callable[[Params, ValidationContext], list[str]] | None = None
     endpoints: Callable[[Params], Iterable[Endpoint]] | None = None
     plugin: str = ""  # set by the registry
+    adds_columns: tuple[AddedColumn, ...] = ()
 
     @property
     def side_effects(self) -> bool:
@@ -129,6 +145,7 @@ def action(
     fingerprint: Callable[[Params, Context], Any] | None = None,
     checks: Callable[[Params, ValidationContext], list[str]] | None = None,
     endpoints: Callable[[Params], Iterable[Endpoint]] | None = None,
+    adds_columns: Iterable[AddedColumn] = (),
 ) -> Callable[[RunFunction], Action]:
     """Declare an action by decorating its run function: ``(table, params, ctx) -> table``.
 
@@ -145,11 +162,15 @@ def action(
     * ``endpoints``: a function ``(params) -> [Endpoint]``: the files, folders, database tables and
       SQL that the step reads, writes or changes (see ``tafl.api.endpoints``). Without it they come
       from the action's file, folder and connection settings.
+    * ``adds_columns``: the columns with fixed names that a step adds (``AddedColumn``), in the
+      order of the table, e.g. ``source_columns()`` for an import with ``source_params``.
 
     The function's docstring becomes the help text shown in the app.
     """
     params = tuple(params)
     _check_param_names(id, params)
+    adds_columns = tuple(adds_columns)
+    _check_added_columns(id, params, adds_columns)
 
     def wrap(run: RunFunction) -> Action:
         return Action(
@@ -166,6 +187,7 @@ def action(
             fingerprint=fingerprint,
             checks=checks,
             endpoints=endpoints,
+            adds_columns=adds_columns,
         )
 
     return wrap
@@ -196,6 +218,25 @@ def _check_param_names(action_id: str, params: tuple[Param, ...]) -> None:
         seen.add(param.key)
         if isinstance(param, List):
             _check_param_names(f"{action_id}.{param.key}", tuple(param.fields))
+
+
+def _check_added_columns(action_id: str, params: tuple[Param, ...], columns: tuple[AddedColumn, ...]) -> None:
+    """Refuses a declaration that would describe the table wrongly: a type that is no type name,
+    and a ``when`` that names no setting of the action (e.g. one that was renamed)."""
+    keys = {param.key for param in params}
+    for column in columns:
+        if not isinstance(column, AddedColumn):
+            raise ValueError(f"Action '{action_id}': adds_columns takes AddedColumn entries, not {column!r}")
+        if not isinstance(column.name, str) or not column.name.strip():
+            raise ValueError(f"Action '{action_id}': an added column needs a name, not {column.name!r}")
+        named = f"Action '{action_id}': added column '{column.name}'"
+        if column.type not in AddedColumn.TYPES:
+            raise ValueError(f"{named} has the type {column.type!r}; types: {', '.join(AddedColumn.TYPES)}")
+        if column.when is not None and not isinstance(column.when, Mapping):
+            raise ValueError(f"{named}: 'when' must be settings and values")
+        for key in column.when or {}:
+            if key not in keys:
+                raise ValueError(f"{named} is switched on by '{key}', which is not a setting of the action")
 
 
 class _Lenient(dict):

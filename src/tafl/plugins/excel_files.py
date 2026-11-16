@@ -15,6 +15,7 @@ import xlsxwriter
 
 from tafl.api import (
     ActionError,
+    AddedColumn,
     Endpoint,
     P,
     action,
@@ -24,6 +25,7 @@ from tafl.api import (
     endpoints,
     file_endpoint,
     files,
+    source_columns,
     source_endpoints,
     source_files,
     source_params,
@@ -117,6 +119,10 @@ def _import_endpoints(p) -> list[Endpoint]:
     summary=lambda p: f"Import {source_summary(p)}" + _sheets_summary(p),
     fingerprint=sources_fingerprint,
     endpoints=_import_endpoints,
+    adds_columns=[
+        *source_columns(),
+        AddedColumn("Sheet", "text", when={"sheets": _SEVERAL_SHEETS, "sheet_column": True}),  # combine's sheet_column below
+    ],
 )
 def import_excel(df, p, ctx):
     """Reads Excel files (xlsx, xlsm, xlsb, xls) or OpenDocument spreadsheets: one file or all
