@@ -229,6 +229,7 @@ def _schema(param: Param) -> dict[str, Any]:
         row: dict[str, Any] = {
             "type": "object",
             "properties": {field.key: _schema(field) for field in param.fields},
+            "patternProperties": {"^_": {}},  # Tafl's own marks, as at the top level
             "additionalProperties": False,
         }
         if required := [field.key for field in param.fields if _must_store(field)]:

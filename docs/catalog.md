@@ -144,8 +144,8 @@ each value, the values of choices, `min` and `max`, the rows of lists, and the s
 step must always store (`required`): those that are required, always shown and empty by
 default, and the lists that need more rows than they have by default. Unknown keys are not
 allowed, so a misspelled key is found before Tafl runs the step: Tafl itself would run it with a
-warning, and the setting would have its default. Keys that start with `_` are allowed at the top
-level: Tafl uses them for its own marks.
+warning, and the setting would have its default. Keys that start with `_` are allowed, also in
+the rows of lists: Tafl uses them for its own marks, and gives no warning about them.
 
 The schema does not contain `visible_if`. Some settings are required only when another setting
 has a certain value, e.g. File when Read is "One file". `required` and `visible_if` in the

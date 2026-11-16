@@ -338,6 +338,9 @@
          "type": "string"
         }
        },
+       "patternProperties": {
+        "^_": {}
+       },
        "additionalProperties": false
       },
       "minItems": 1
@@ -418,6 +421,9 @@
         "formula": {
          "type": "string"
         }
+       },
+       "patternProperties": {
+        "^_": {}
        },
        "additionalProperties": false,
        "required": [
@@ -585,6 +591,9 @@
           "desc"
          ]
         }
+       },
+       "patternProperties": {
+        "^_": {}
        },
        "additionalProperties": false,
        "required": [
@@ -765,6 +774,9 @@
          "minimum": 0
         }
        },
+       "patternProperties": {
+        "^_": {}
+       },
        "additionalProperties": false
       }
      },
@@ -925,6 +937,9 @@
          "type": "string"
         }
        },
+       "patternProperties": {
+        "^_": {}
+       },
        "additionalProperties": false,
        "required": [
         "column"
@@ -1014,6 +1029,9 @@
         "new_name": {
          "type": "string"
         }
+       },
+       "patternProperties": {
+        "^_": {}
        },
        "additionalProperties": false,
        "required": [
@@ -2363,6 +2381,9 @@
         "format": {
          "type": "string"
         }
+       },
+       "patternProperties": {
+        "^_": {}
        },
        "additionalProperties": false,
        "required": [
@@ -4341,6 +4362,9 @@
          "type": "string"
         }
        },
+       "patternProperties": {
+        "^_": {}
+       },
        "additionalProperties": false,
        "required": [
         "column"
@@ -4520,6 +4544,9 @@
           "desc"
          ]
         }
+       },
+       "patternProperties": {
+        "^_": {}
        },
        "additionalProperties": false,
        "required": [
@@ -4811,6 +4838,9 @@
         "other_column": {
          "type": "string"
         }
+       },
+       "patternProperties": {
+        "^_": {}
        },
        "additionalProperties": false,
        "required": [
@@ -5147,6 +5177,9 @@
          "type": "string"
         }
        },
+       "patternProperties": {
+        "^_": {}
+       },
        "additionalProperties": false
       },
       "minItems": 1
@@ -5349,6 +5382,9 @@
         "name": {
          "type": "string"
         }
+       },
+       "patternProperties": {
+        "^_": {}
        },
        "additionalProperties": false
       },

@@ -249,6 +249,11 @@ def test_the_schemas_use_only_the_keywords_that_the_validator_knows(built):
         assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema" and schema["type"] == "object"
         assert schema["additionalProperties"] is False and schema["patternProperties"] == {"^_": {}}
         assert list(schema["properties"]) == [setting["key"] for setting in action["settings"]]
+        for setting in action["settings"]:
+            if setting["kind"] == "list":  # the rows: the same rule for unknown keys and Tafl's marks
+                row = schema["properties"][setting["key"]]["items"]
+                assert row["additionalProperties"] is False and row["patternProperties"] == {"^_": {}}, (action["id"], setting["key"])
+                assert list(row["properties"]) == [field["key"] for field in setting["fields"]]
 
 
 def test_a_misspelled_key_doesnt_fit_the_schema(built):
@@ -264,6 +269,7 @@ def test_a_misspelled_key_doesnt_fit_the_schema(built):
     ]
     rows = entry(built, "rows.filter")["settings_schema"]
     assert problems({"conditions": [{"column": "A", "operator": "=", "value": "1"}]}, rows) == []
+    assert problems({"conditions": [{"column": "A", "_mark": {"x": 1}}], "_mark": 2}, rows) == []  # in rows too, as the warning
     assert problems({"conditions": [{"colum": "A"}]}, rows) == ["params.conditions[0]: column is missing", "params.conditions[0]: unknown key 'colum'"]
     assert problems({"conditions": []}, rows) == ["params.conditions: fewer than 1 items"]
     assert problems({}, rows) == ["params: conditions is missing"]
