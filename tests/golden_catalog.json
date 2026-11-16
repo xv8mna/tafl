@@ -416,10 +416,12 @@
        "type": "object",
        "properties": {
         "name": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         },
         "formula": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         }
        },
        "patternProperties": {
@@ -563,7 +565,8 @@
     "type": "object",
     "properties": {
      "name": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "mode": {
       "enum": [
@@ -583,7 +586,8 @@
        "type": "object",
        "properties": {
         "column": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         },
         "order": {
          "enum": [
@@ -921,7 +925,8 @@
        "type": "object",
        "properties": {
         "column": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         },
         "type": {
          "enum": [
@@ -1024,10 +1029,12 @@
        "type": "object",
        "properties": {
         "column": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         },
         "new_name": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         }
        },
        "patternProperties": {
@@ -1111,7 +1118,8 @@
       "type": "array",
       "items": {
        "type": "string"
-      }
+      },
+      "minItems": 1
      }
     },
     "patternProperties": {
@@ -1269,7 +1277,8 @@
     "type": "object",
     "properties": {
      "file": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "skip_empty": {
       "type": "boolean"
@@ -1716,10 +1725,12 @@
     "type": "object",
     "properties": {
      "connection": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "sql": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      }
     },
     "patternProperties": {
@@ -1887,10 +1898,12 @@
     "type": "object",
     "properties": {
      "connection": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "table": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "mode": {
       "enum": [
@@ -2067,7 +2080,8 @@
     "type": "object",
     "properties": {
      "connection": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "mode": {
       "enum": [
@@ -2322,7 +2336,8 @@
     "type": "object",
     "properties": {
      "file": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "sheet": {
       "type": "string"
@@ -2376,7 +2391,8 @@
        "type": "object",
        "properties": {
         "column": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         },
         "format": {
          "type": "string"
@@ -2888,7 +2904,8 @@
       ]
      },
      "target": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "subfolders": {
       "type": "boolean"
@@ -3124,7 +3141,8 @@
     "type": "object",
     "properties": {
      "folder": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "pattern": {
       "type": "string"
@@ -3168,7 +3186,8 @@
     "type": "object",
     "properties": {
      "folder": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      }
     },
     "patternProperties": {
@@ -3325,7 +3344,8 @@
       ]
      },
      "target": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "subfolders": {
       "type": "boolean"
@@ -3440,7 +3460,8 @@
     "type": "object",
     "properties": {
      "column": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "base": {
       "type": "string"
@@ -3452,7 +3473,8 @@
       ]
      },
      "new_name": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "existing": {
       "enum": [
@@ -3855,10 +3877,12 @@
       }
      },
      "column": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "value": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "function": {
       "enum": [
@@ -3974,13 +3998,16 @@
       "type": "array",
       "items": {
        "type": "string"
-      }
+      },
+      "minItems": 1
      },
      "name": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "value": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "drop_empty": {
       "type": "boolean"
@@ -4132,7 +4159,8 @@
       "type": "array",
       "items": {
        "type": "string"
-      }
+      },
+      "minItems": 1
      },
      "method": {
       "enum": [
@@ -4338,7 +4366,8 @@
        "type": "object",
        "properties": {
         "column": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         },
         "operator": {
          "enum": [
@@ -4446,7 +4475,8 @@
     "type": "object",
     "properties": {
      "condition": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "keep": {
       "enum": [
@@ -4536,7 +4566,8 @@
        "type": "object",
        "properties": {
         "column": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         },
         "order": {
          "enum": [
@@ -4616,7 +4647,8 @@
       "type": "array",
       "items": {
        "type": "string"
-      }
+      },
+      "minItems": 1
      },
      "columns": {
       "enum": [
@@ -4660,7 +4692,8 @@
     "type": "object",
     "properties": {
      "table": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      }
     },
     "patternProperties": {
@@ -4825,7 +4858,8 @@
     "type": "object",
     "properties": {
      "other": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "match": {
       "type": "array",
@@ -4833,10 +4867,12 @@
        "type": "object",
        "properties": {
         "column": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         },
         "other_column": {
-         "type": "string"
+         "type": "string",
+         "minLength": 1
         }
        },
        "patternProperties": {
@@ -5156,7 +5192,8 @@
       "type": "array",
       "items": {
        "type": "string"
-      }
+      },
+      "minItems": 1
      },
      "match": {
       "enum": [
@@ -5350,7 +5387,8 @@
     "type": "object",
     "properties": {
      "column": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
      },
      "into": {
       "enum": [

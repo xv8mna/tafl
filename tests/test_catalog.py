@@ -2,8 +2,11 @@
 --json``): complete, plain JSON in ASCII, unchanged unless planned (a golden file), and its
 schemas fit the steps of the stored projects and the steps a program makes from it."""
 
+import collections
+import copy
 import importlib.util
 import json
+import math
 import os
 import re
 import textwrap
@@ -21,7 +24,7 @@ from tafl.core.functions import CURATED, all_functions
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = Path(__file__).resolve().parent / "golden_catalog.json"
 UPDATE = "TAFL_UPDATE_GOLDEN"
-KEYWORDS = {"$schema", "type", "properties", "patternProperties", "additionalProperties", "required", "enum", "items", "minItems", "minimum", "maximum"}
+KEYWORDS = {"$schema", "type", "properties", "patternProperties", "additionalProperties", "required", "enum", "items", "minItems", "minLength", "minimum", "maximum"}
 
 
 @pytest.fixture(scope="module")
@@ -41,28 +44,48 @@ def _same(value, other) -> bool:
     return isinstance(value, bool) == isinstance(other, bool) and value == other
 
 
-_TYPES = {
+def _number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _json_type(value) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if _number(value):
+        return "number"
+    return {str: "string", list: "array", dict: "object"}.get(type(value), type(value).__name__)
+
+
+_TYPES = {  # as JSON Schema 2020-12 has them: an integer is a number without a fraction, also 2.0
     "string": lambda v: isinstance(v, str),
     "boolean": lambda v: isinstance(v, bool),
-    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
-    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "integer": lambda v: _number(v) and (isinstance(v, int) or (math.isfinite(v) and v.is_integer())),
+    "number": _number,
     "array": lambda v: isinstance(v, list),
     "object": lambda v: isinstance(v, dict),
 }
 
 
 def problems(value, schema: dict, where: str = "params") -> list[str]:
-    """What doesn't fit ``schema``; only the keywords in KEYWORDS."""
+    """What doesn't fit ``schema``; only the keywords in KEYWORDS, each for the values of its type."""
     found = []
     if "enum" in schema and not any(_same(value, allowed) for allowed in schema["enum"]):
-        found.append(f"{where}: {value!r} is not one of {schema['enum']}")
+        types = {_json_type(allowed) for allowed in schema["enum"]}
+        if len(types) == 1 and _json_type(value) not in types:  # e.g. null for a choice of texts
+            found.append(f"{where}: {value!r} is not {types.pop()}")
+        else:
+            found.append(f"{where}: {value!r} is not one of {schema['enum']}")
     kind = schema.get("type")
     if kind is not None and not _TYPES[kind](value):
         return [*found, f"{where}: {value!r} is not {kind}"]
-    if "minimum" in schema and value < schema["minimum"]:
+    if _number(value) and "minimum" in schema and value < schema["minimum"]:
         found.append(f"{where}: {value!r} is below {schema['minimum']}")
-    if "maximum" in schema and value > schema["maximum"]:
+    if _number(value) and "maximum" in schema and value > schema["maximum"]:
         found.append(f"{where}: {value!r} is above {schema['maximum']}")
+    if isinstance(value, str) and len(value) < schema.get("minLength", 0):
+        found.append(f"{where}: shorter than {schema['minLength']} character")
     if isinstance(value, list):
         if len(value) < schema.get("minItems", 0):
             found.append(f"{where}: fewer than {schema['minItems']} items")
@@ -303,6 +326,23 @@ def test_a_misspelled_key_doesnt_fit_the_schema(built):
     assert problems({}, entry(built, "csv.import")["settings_schema"]) == []  # File is required only for one file
 
 
+def test_an_empty_value_of_a_required_setting(built):
+    """Required and always shown: it can't be empty (minLength, minItems), also in rows, as Tafl's
+    check says "required". Required only after a choice: an empty value fits, as the setting may be
+    hidden and keeps it then."""
+    export = entry(built, "csv.export")["settings_schema"]
+    assert problems({"file": ""}, export) == ["params.file: shorter than 1 character"]
+    assert problems({"file": " "}, export) == []
+    assert problems({"columns": []}, entry(built, "columns.select")["settings_schema"]) == ["params.columns: fewer than 1 items"]
+    rows = entry(built, "rows.filter")["settings_schema"]
+    assert problems({"conditions": [{"column": ""}]}, rows) == ["params.conditions[0].column: shorter than 1 character"]
+    imports = entry(built, "csv.import")["settings_schema"]
+    assert problems({"source": "folder", "folder": "d", "file": ""}, imports) == []  # File is hidden
+    assert problems({"source": "folder", "folder": ""}, imports) == []  # the schema can't say it: Tafl does
+    aggregate = entry(built, "calc.aggregate")["settings_schema"]["properties"]["calculations"]["items"]
+    assert "minLength" not in aggregate["properties"]["column"]  # after a choice of the function
+
+
 def project_steps(path: Path) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
     return [step for table in data["tables"] for step in table["steps"]]
@@ -376,6 +416,170 @@ def test_the_schema_requires_what_the_check_requires(registry, built):
     assert entry(built, "rows.filter")["settings_schema"]["required"] == ["conditions"]
     assert entry(built, "calc.columns")["settings_schema"]["required"] == ["columns"]
     assert "required" not in entry(built, "csv.import")["settings_schema"]  # File only for one file
+
+
+# --- the schema against Tafl's own check: an oracle -------------------------------------------------
+
+ORACLE_FILL = {"text": "x", "code": "SELECT 1", "expression": "[A] > 1", "column": "A", "columns": ["A"], "file": "a.csv", "folder": "f", "table": "t1", "tables": ["t1"], "connection": "c"}
+TEXT_KINDS = ("text", "code", "expression", "column", "file", "folder", "table", "connection")
+# The actions' own checks of combinations of settings, which the schema can't express (docs/catalog.md),
+# exactly as the steps below meet them
+OWN_CHECKS = {
+    ("check.data", "Checks: add at least 1 row"),
+    ("reshape.pivot", "Row keys: “A” gives the column names, so it can't be a row key too"),
+    ("reshape.unpivot", "New column for the names: required"),
+    ("reshape.unpivot", "New column for the values: required"),
+}
+REQUIRED = re.compile(r"^(?:(?P<list>.+?), row \d+ – )?(?P<label>.+?): required$")
+OTHER_TYPE = re.compile(r": .* is not (string|boolean|integer|number|array|object)$")
+
+
+def oracle_shown(setting: dict, values: dict, settings: list[dict]) -> bool:
+    defaults = {s["key"]: s["default"] for s in settings}
+    return all(
+        any(_same(values[key] if key in values else defaults.get(key), value) for value in allowed)
+        for key, allowed in (setting["visible_if"] or {}).items()
+    )
+
+
+def oracle_base(settings: list[dict], values: dict | None = None) -> dict:
+    """A valid step from the catalog alone: the defaults, a value in each required setting that is
+    shown and empty, rows for the lists."""
+    values = dict(values or {})
+    for setting in settings:
+        values.setdefault(setting["key"], copy.deepcopy(setting["default"]))
+    for _ in range(3):  # a visible_if may depend on a setting filled before
+        for setting in settings:
+            key = setting["key"]
+            if setting["kind"] == "list":
+                rows = [row if isinstance(row, dict) else {} for row in values[key]] if isinstance(values[key], list) else []
+                rows += [{} for _ in range(max(setting["min_items"], 1) - len(rows))]
+                values[key] = [oracle_base(setting["fields"], row) for row in rows]
+            elif setting["required"] and values[key] in ("", None, []) and oracle_shown(setting, values, settings):
+                values[key] = copy.deepcopy(ORACLE_FILL[setting["kind"]])
+    return values
+
+
+def candidates(setting: dict) -> list:
+    """Values of each kind, right and wrong."""
+    kind = setting["kind"]
+    found = [None, "", [], {}, True, 0, 1, 1.5, -1, "x", ["x"], [1], "5", 10**20]
+    if kind == "choice":
+        found += [o["value"] for o in setting["options"]] + [o["label"] for o in setting["options"]]
+        found += [o["value"].upper() for o in setting["options"] if isinstance(o["value"], str)]
+    if kind in ("int", "float"):
+        found += [v for edge in (setting["min"], setting["max"]) if edge is not None for v in (edge, edge - 1, edge + 1, float(edge), str(edge))]
+        found += [2.0, "1,5", 3]
+    if kind == "bool":
+        found += [False, "false", "true", "no", 0.0]
+    if kind in ("columns", "tables"):
+        found += [["A", "B"], ["A", 2], "A", [["A"]], [""], ["  "]]
+    if kind in TEXT_KINDS:
+        found += ["  ", "a.csv", "{Year}", "%TEMP%"]
+    if kind == "list":
+        found += [[{}], [{"zz": 1}], ["x"], [None], [[]], [{"_mark": 1}]]
+    return found
+
+
+def oracle_steps(entry: dict):
+    """A valid step, then one change at a time: a value of each kind, a missing key, unknown keys,
+    rows; and each value of the settings that others depend on."""
+    settings = entry["settings"]
+    valid = oracle_base(settings)
+    yield valid
+    deciders = {key for s in settings for key in (s["visible_if"] or {})}
+    for s in settings:
+        if s["key"] in deciders and s["kind"] in ("choice", "bool"):
+            for value in [o["value"] for o in s["options"]] if s["kind"] == "choice" else [True, False]:
+                yield oracle_base(settings, {s["key"]: value})
+                yield {**copy.deepcopy(valid), s["key"]: value}
+    for s in settings:
+        for value in candidates(s):
+            yield {**copy.deepcopy(valid), s["key"]: copy.deepcopy(value)}
+        yield {key: value for key, value in copy.deepcopy(valid).items() if key != s["key"]}
+        for field in s.get("fields", []):
+            for value in [*candidates(field), "missing"]:
+                step = copy.deepcopy(valid)
+                if value == "missing":
+                    step[s["key"]][0].pop(field["key"], None)
+                else:
+                    step[s["key"]][0][field["key"]] = copy.deepcopy(value)
+                yield step
+        if s["kind"] == "list":
+            for extra in ({"zz": 1}, {"_mark": 1}, {"Column": "A"}):
+                step = copy.deepcopy(valid)
+                step[s["key"]][0].update(extra)
+                yield step
+    for extra in ({"zz": 1}, {"_mark": {"a": 1}}, {"_": 1}, {"": 1}):
+        yield {**copy.deepcopy(valid), **extra}
+
+
+def test_the_schema_and_tafls_check_differ_only_as_the_docs_say(registry, built):
+    """An oracle: each step goes through the schema and through Tafl's own check. Where only Tafl
+    refuses, it is a setting that is required after a choice, or one of the actions' own checks
+    of combinations (exactly those of OWN_CHECKS). Where only the schema refuses, it is an unknown
+    key (Tafl warns), a value of another JSON type (Tafl converts it), or the value of a hidden
+    setting (Tafl doesn't check it). Nothing else differs."""
+    counted, seen = oracle(registry, built)
+    assert seen == OWN_CHECKS
+    assert counted["steps"] > 4000 and min(counted.values()) > 10, counted
+
+
+def oracle(registry, built) -> tuple[collections.Counter, set]:
+    """The steps of each class, and the own checks met; fails at a difference of no class."""
+    counted, seen = collections.Counter(), set()
+    for entry in built["actions"]:
+        action = registry.actions[entry["id"]]
+        after_a_choice = {(prefix, s["label"]) for prefix, s in _all_settings(entry["settings"]) if s["required"] and s["visible_if"]}
+        for step in oracle_steps(entry):
+            counted["steps"] += 1
+            schema_problems = problems(step, entry["settings_schema"])
+            params = action.resolve(step)
+            found, own = action.check(params, ValidationContext()), action.own_problems(params, ValidationContext())
+            if not schema_problems:
+                for problem in found:
+                    match = REQUIRED.match(problem)
+                    if problem in own:
+                        seen.add((entry["id"], problem))
+                    elif match and (match["list"] or "", match["label"]) in after_a_choice:
+                        counted["required after a choice"] += 1
+                    else:
+                        pytest.fail(f"the schema takes what Tafl refuses: {entry['id']} {json.dumps(step)[:300]}: {problem}")
+            elif not found:
+                for problem in schema_problems:
+                    if "unknown key" in problem:
+                        counted["unknown keys"] += 1
+                    elif OTHER_TYPE.search(problem):
+                        counted["values of another type"] += 1
+                    elif hidden(action, params, problem):
+                        counted["hidden settings"] += 1
+                    else:
+                        pytest.fail(f"the schema refuses what Tafl takes: {entry['id']} {json.dumps(step)[:300]}: {problem}")
+    return counted, seen
+
+
+PLACE = re.compile(r"^params\.(?P<key>[^.\[:]+)(?:\[(?P<row>\d+)\]\.(?P<field>[^.\[:]+))?:")
+
+
+def hidden(action, params, problem: str) -> bool:
+    """Whether the problem is in a setting that the step doesn't show (Tafl doesn't check it)."""
+    place = PLACE.match(problem)
+    setting = next((p for p in action.params if place and p.key == place["key"]), None)
+    if setting is None:
+        return False
+    if not P.is_visible(setting, params):
+        return True
+    if place["field"] is None:
+        return False
+    field = next(f for f in setting.fields if f.key == place["field"])
+    return not P.is_visible(field, params[setting.key][int(place["row"])])
+
+
+def _all_settings(settings: list[dict], prefix: str = ""):
+    """(the label of the list or "", setting) for every setting, also the fields of lists."""
+    for setting in settings:
+        yield prefix, setting
+        yield from _all_settings(setting.get("fields", []), setting["label"])
 
 
 def test_the_16_settings_that_are_required_only_after_a_choice(built):

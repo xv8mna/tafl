@@ -142,7 +142,9 @@ with exactly its seven columns, in the order listed. Columns whose names come fr
 A JSON Schema (draft 2020-12) of a step's `"params"` object, made from the settings: the type of
 each value, the values of choices, `min` and `max`, the rows of lists, and the settings that a
 step must always store (`required`): those that are required, always shown and empty by
-default, and the lists that need more rows than they have by default. Unknown keys are not
+default, and the lists that need more rows than they have by default. A setting that is required
+and always shown can't be empty: a text needs at least one character (`minLength`), a list of
+columns or tables at least one item (`minItems`), also in the rows of lists. Unknown keys are not
 allowed, so a misspelled key is found before Tafl runs the step: Tafl itself would run it with a
 warning, and the setting would have its default. Keys that start with `_` are allowed, also in
 the rows of lists: Tafl uses them for its own marks, and gives no warning about them.
@@ -153,8 +155,19 @@ settings say this, and Tafl's own check reports what is missing. The schema has 
 `if`/`then`/`else`, because some programs that make output fit a schema skip these without a
 message.
 
+Where the schema and Tafl's own check of a step differ:
+
+- A setting that is required only after a choice: the schema takes it empty or missing, Tafl
+  reports it.
+- An unknown key: the schema refuses it, Tafl runs the step with a warning.
+- A value of another JSON type, e.g. `"5"` for a whole number or `null`: the schema refuses it,
+  Tafl converts some such values (`null` gives the default) and reports the others.
+- The value of a setting that the step doesn't show: the schema checks it as any other, Tafl
+  doesn't check it.
+
 The schemas use only these keywords: `$schema`, `type`, `properties`, `patternProperties`,
-`additionalProperties`, `required`, `enum`, `items`, `minItems`, `minimum` and `maximum`.
+`additionalProperties`, `required`, `enum`, `items`, `minItems`, `minLength`, `minimum` and
+`maximum`.
 
 ## Connection types
 

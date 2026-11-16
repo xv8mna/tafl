@@ -257,10 +257,16 @@ def _schema(param: Param) -> dict[str, Any]:
         if param.max is not None:
             schema["maximum"] = param.max
         return schema
+    # Tafl's check says "required" for an empty value of a setting that is required and shown:
+    # always for one without visible_if (after a choice, the settings say when)
+    needs_value = bool(param.required) and not param.visible_if
     if kind in ("columns", "tables"):
-        return {"type": "array", "items": {"type": "string"}}
+        schema = {"type": "array", "items": {"type": "string"}}
+        if needs_value:
+            schema["minItems"] = 1
+        return schema
     if kind in _TEXTS:
-        return {"type": "string"}
+        return {"type": "string", "minLength": 1} if needs_value else {"type": "string"}
     return {}
 
 
