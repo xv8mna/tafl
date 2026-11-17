@@ -1647,6 +1647,14 @@ Watch out:
   'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November',
   'Dezember'), MONTH([Date]))`. An empty date gives an empty name. Write `LIST_VALUE(…)`, not
   `['Montag', …]`: square brackets name a column.
+- A date-time typed in a formula, such as `[Ordered] = '2026-01-01 08:30'`, is read in this PC's
+  time zone, not in the column's. In a column with another time zone it is another moment than
+  the grid shows: on a PC in Berlin it finds 07:30 in a column in UTC, not 08:30. A time that a
+  clock change skips or repeats in this PC's zone gets no message: on a PC in Berlin,
+  `'2026-03-29 02:30'` is read as 03:30, and `'2026-10-25 02:30'` as the second of the two
+  times. To be exact, write the offset: `[Ordered] = '2026-01-01 08:30:00+00:00'` is 08:30 in
+  UTC, and `'2026-10-25 02:30:00+02:00'` the first 02:30 in Berlin. A column without a time zone
+  compares the date and time as they are.
 
 ### Common formulas
 
