@@ -428,8 +428,8 @@ REGEX = [
     (r"(a|b)(\$)", ["$2$1", "${2}"]),
     (r"é", ["e", "ée"]),
 ]
-# Well below the sizes at which one expression overflowed the stack on Windows (of those tried): 450
-# rows (Text inside, Regular expression) and 1,200 (Whole cell value) with Python 3.14, 700 and 1,000
+# Well below the sizes at which one expression overflowed the stack on Windows: 450 rows (Text
+# inside, Regular expression) with Python 3.12 and 3.14; 1,200 (Whole cell value) with 3.14, 750
 # with 3.12
 SIZES = {
     "contains": [99, 100, 101, 201, 250],

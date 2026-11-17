@@ -187,7 +187,8 @@ Where the schema and Tafl's own check of a step differ:
   Tafl converts some such values (`null` gives the default) and reports the others. A setting of
   the kind `bool` takes the texts `"true"`, `"yes"`, `"1"` and `"false"`, `"no"`, `"0"` (in any
   case, with spaces around them) and the numbers 1 and 0; `null` and `""` give the default; any
-  other value stops the step: "First row has the column names: "maybe" is not true or false".
+  other value stops the step when the step shows the setting: "First row has the column names:
+  "maybe" is not true or false".
 - The value of a setting that the step doesn't show: the schema checks it as any other, Tafl
   doesn't check it.
 - Names that only the project and the data can confirm: a column (kinds `column` and `columns`)

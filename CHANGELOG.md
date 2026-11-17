@@ -21,9 +21,12 @@ with a message that says what to change.
   or an object stops the step now, with a message such as "First row has the column names:
   "maybe" is not true or false"; before, it was on (an empty list or object was off). `true` and
   `false`, which the app writes, the texts "true", "yes" and "1", and the numbers 1 and 0 work as
-  before. In the settings of a connection, the step that uses the connection stops
-  with "Connection 'Sales': Trust the server certificate: "maybe" is not true or false"; before,
-  `"trust_certificate": "false"` trusted the server certificate.
+  before. In the settings of a connection, the step that uses the connection stops with
+  "Connection 'Sales': Trust the server certificate: "maybe" is not true or false", and **Test
+  connection** shows the message and doesn't connect; before, both connected, and
+  `"trust_certificate": "false"` trusted the server certificate. An empty text there gives the
+  default now, which is on: the server certificate is trusted, as with a new connection. Before,
+  an empty text didn't trust it.
 
 ### Wrong results that are now right
 
@@ -34,13 +37,15 @@ with a message that says what to change.
 ### Steps that work now
 
 - **Replace** with many rows no longer closes the window. From about 450 rows (*Text inside the
-  value*, *Regular expression*) or 1,200 rows (*Whole cell value*, fewer in several columns), the
-  calculation overflowed, and the window closed without a message: changes that weren't saved
-  were lost. The rows now go in groups, with the same results as before: 4,000 rows take 0.1 s
-  (*Text inside the value*) to 1.4 s (*Regular expression*) on a few cells of text, and a table of
-  100,000 rows with 1,000 rows of Replace takes about 5 s. Many columns are quicker than before
-  too: 300 columns of 1,000 rows with 100 rows of Replace take 0.8 s instead of 3.9 s, and 25 MB
-  of memory instead of 1.4 GB.
+  value*, *Regular expression*) or 1,200 rows (*Whole cell value*; 750 with Python 3.12, and fewer
+  in several columns), the calculation overflowed, and the window closed without a message:
+  changes that weren't saved were lost. The rows now go in groups, with the same results as
+  before: 4,000 rows take 0.1 s (*Text inside the value*) to 1.4 s (*Regular expression*) on a few
+  cells of text, and a table of 100,000 rows with 1,000 rows of Replace takes about 5 s. Many
+  columns are quicker than before too: 300 columns of 1,000 rows with 100 rows of Replace take
+  about 1 s instead of 3.4 to 3.9 s, and less than 100 MB of memory instead of 1.4 GB or more.
+  **Stop** ends a long Replace before its next group of rows; before, it waited for the end of
+  the step.
 
 ### Plain messages
 
