@@ -40,6 +40,7 @@ def replace(df, p, ctx):
     _ and group 2), ${name} for a named group and $$ for a $ sign; a backslash is a normal
     character (\\1 is the text \\1, with a warning that group 1 is written $1).
     """
+    columns = list(dict.fromkeys(p.columns))  # a column named twice (in a project file) is changed once
     pairs = [(r.find, r.replace) for r in p.replacements]
     if p.match != "whole" and any(find == "" for find, _ in pairs):
         raise ActionError("'Find' can't be empty here")
@@ -54,23 +55,23 @@ def replace(df, p, ctx):
     typed = {}  # Whole cell value: the values of the pairs in the type of a column, None when one doesn't fit
     if p.match == "whole":
         kinds = {}  # read once for each type of column: 4,000 number columns took 22 s
-        for name in p.columns:
+        for name in columns:
             if (dtype := schema[name]) != pl.String:
                 if dtype not in kinds:
                     kinds[dtype] = _typed_pairs(pairs, dtype)
                     if kinds[dtype] is not None and isinstance(dtype, pl.Datetime) and dtype.time_zone:
                         _check_clock(name, dtype.time_zone, pairs, kinds[dtype])
                 typed[name] = kinds[dtype]
-    df = _with_texts(df, [name for name in p.columns if typed.get(name) is None], schema, "Replace")
+    df = _with_texts(df, [name for name in columns if typed.get(name) is None], schema, "Replace")
     if p.match == "whole":
-        for name in p.columns:
+        for name in columns:
             if schema[name] != pl.String and typed[name] is None and (warning := _made_text(name, schema[name], pairs)):
                 ctx.warn(warning)
-        return _replace_whole_values(df, p.columns, schema, typed, pairs, p.case_sensitive, ctx)
+        return _replace_whole_values(df, columns, schema, typed, pairs, p.case_sensitive, ctx)
     for start in range(0, len(pairs), _ROWS_AT_ONCE):  # each group on the result of the rows before it
         ctx.check_cancelled()  # a Stop doesn't wait for the end: many rows can take a minute
         updates = []
-        for name in p.columns:
+        for name in columns:
             text = col(name)
             for find, new in pairs[start : start + _ROWS_AT_ONCE]:
                 if p.match == "contains" and p.case_sensitive:

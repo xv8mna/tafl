@@ -589,3 +589,18 @@ def test_replace_of_a_whole_number_compares_as_before_in_a_narrow_column(act, fi
     df = pl.DataFrame({"n": pl.Series([1, 2, 200], dtype=pl.UInt8)})
     out = replace(act, df, ["n"], [(find, "5")], match="whole")
     assert out.schema == df.schema and out["n"].to_list() == ([1, 5, 200] if find == "2" else [1, 2, 200])
+
+
+@pytest.mark.parametrize(
+    ("match", "pairs"),
+    [("whole", [("a", "ab")]), ("contains", [("a", "ab")]), ("regex", [("^(a)", "${1}b")])],  # twice would give "abb"
+)
+def test_replace_changes_a_column_named_twice_once(act, match, pairs):
+    """A column twice in "In columns" (only a project file written by hand or by a program can
+    have it) is changed once. Before, the step stopped with a message about a regular expression."""
+    df = pl.DataFrame({"A": ["a", "b"], "B": ["a", "b"]})
+    out = replace(act, df, ["A", "B", "A"], pairs, match=match)
+    assert out.columns == ["A", "B"] and out["A"].to_list() == out["B"].to_list() == ["ab", "b"]
+    ctx = StubContext()
+    out = replace(act, pl.DataFrame({"N": [1, 2]}), ["N", "N"], [("1", "x")], ctx, match="whole")
+    assert out["N"].to_list() == ["x", "2"] and len(ctx.warnings) == 1  # 'N' was converted to text …, once
