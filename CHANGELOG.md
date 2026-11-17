@@ -27,6 +27,24 @@ with a message that says what to change.
   `"trust_certificate": "false"` trusted the server certificate. An empty text there gives the
   default now, which is on: the server certificate is trusted, as with a new connection. Before,
   an empty text didn't trust it.
+- **Steps and tables that are turned off**, and **collapsed groups** of the map: the project
+  file's `"enabled"` of a step or table and `"collapsed"` of a group are read by the same rule as
+  a setting that is on or off. A step or table stored with `"enabled": "false"` ("no" and "0" the
+  same, in any case) is turned off now; before, it was on and was calculated. `null` or an empty
+  text is on now, the default; before, the step or table was off. Any other value, such as
+  "maybe", "on", 2, a list or an object, runs nothing with a guess: the project opens, and the
+  step stops with "Step is on: "maybe" is not true or false", or a table stops at its first step
+  with "Table is on: …"; the steps after it don't run, and the tables that use it have an error.
+  Before, such a step or table was on (off with an empty list or object). The value stays in the
+  file when the project is saved, until the step or table is turned on or off in the app; then it
+  is saved as always (`"enabled": false` when it is off). A group stored with
+  `"collapsed": "false"`, or with any value that isn't on by this rule, is open now; before,
+  every value but `false`, 0, `null`, an empty text and an empty list or object collapsed it.
+  `true` and `false`, which the app writes, work as before.
+- **Replace** (*Whole cell value*) in a column of date-times with a time zone: a new value at a
+  time that a clock change repeats in that zone, such as 2026-10-25 02:30 in Europe/Berlin, stops
+  the step with a message now (see **Steps that work now**). Before, it became the first of the
+  two moments, 02:30+02:00, without a message.
 
 ### Wrong results that are now right
 
@@ -46,6 +64,17 @@ with a message that says what to change.
   about 1 s instead of 3.4 to 3.9 s, and less than 100 MB of memory instead of 1.4 GB or more.
   **Stop** ends a long Replace before its next group of rows; before, it waited for the end of
   the step.
+- **Replace** (*Whole cell value*) finds a date-time in a column with a time zone, such as a
+  column in UTC of a Parquet file or a SQL Server datetimeoffset read as UTC: a typed date-time is
+  the local time of the column's time zone, as the grid shows it, as in **Filter rows**. Before, a
+  date-time in **Find** stopped the step with a technical message. A **Find** or **Replace with**
+  at a time that a clock change skips or repeats in that zone stops the step with "Find:
+  '2026-03-29 02:30' doesn't happen in the time zone of column 'Ordered' (Europe/Berlin): a clock
+  change skips it" or "… happens twice …: a clock change repeats it", as in **Filter rows**;
+  before, a new value that the clock skips stopped with a technical message too.
+- **Replace** with a column twice in **In columns**, which only a project file written by hand or
+  by a program can have, changes the column once. Before, the step stopped with a technical
+  message about an invalid regular expression, in every mode.
 
 ### Plain messages
 

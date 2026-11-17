@@ -244,7 +244,10 @@ functions of DuckDB depend on the DuckDB version that the Tafl program includes.
 - `params`: the settings that differ from the defaults (or all of them). A key that no setting
   has gets a warning on the step and has no effect. So does a row of a list that is not an
   object: the step gets a row with the defaults there.
-- Optional: `"enabled": false` turns a step off; `"note"` is a text.
+- Optional: `"enabled": false` turns a step off; `"note"` is a text. `"enabled"` of a step or a
+  table is read as a setting of the kind `bool`: `"false"`, `"no"` and `"0"` turn it off too,
+  `null` and `""` leave it on, and any other value stops the step with "Step is on: "maybe" is
+  not true or false" (a table stops at its first step with "Table is on: …").
 - A step's `id` can be left out: Tafl gives the step one when it opens the file. A table has an
   `id` and a `name`; settings of the kinds table and tables store the id. Tafl also finds a table
   by its name there, in upper or lower case, when the name doesn't look like an id (`t` and
