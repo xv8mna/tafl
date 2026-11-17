@@ -62,8 +62,9 @@ def replace(df, p, ctx):
         for name in p.columns:
             if schema[name] != pl.String and typed[name] is None and (warning := _made_text(name, schema[name], pairs)):
                 ctx.warn(warning)
-        return _replace_whole_values(df, p.columns, schema, typed, pairs, p.case_sensitive)
+        return _replace_whole_values(df, p.columns, schema, typed, pairs, p.case_sensitive, ctx)
     for start in range(0, len(pairs), _ROWS_AT_ONCE):  # each group on the result of the rows before it
+        ctx.check_cancelled()  # a Stop doesn't wait for the end: many rows can take a minute
         updates = []
         for name in p.columns:
             text = col(name)
@@ -202,7 +203,7 @@ def _made_text(name: str, dtype: pl.DataType, pairs) -> str | None:
 
 
 def _replace_whole_values(
-    df: pl.DataFrame, columns: list[str], schema: pl.Schema, typed: dict, pairs, case_sensitive: bool
+    df: pl.DataFrame, columns: list[str], schema: pl.Schema, typed: dict, pairs, case_sensitive: bool, ctx
 ) -> pl.DataFrame:
     """Whole cell values: a cell gets the value of the first row whose Find it is. In groups of
     rows (see ``_ROWS_AT_ONCE``), from the last group to the first: each group compares the column
@@ -221,8 +222,10 @@ def _replace_whole_values(
         taken.add(held[name])
     otherwise = {name: col(name) for name in names}
     for start in reversed(starts[1:]):
+        ctx.check_cancelled()  # a Stop doesn't wait for the end of all groups
         df = _changed(df, [group(name, start, otherwise[name]).alias(held[name]) for name in names])
         otherwise = {name: col(held[name]) for name in names}
+    ctx.check_cancelled()
     df = _changed(df, [group(name, 0, otherwise[name]).alias(name) for name in columns])
     return df.drop(selector(held.values())) if len(starts) > 1 else df
 

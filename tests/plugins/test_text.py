@@ -1,12 +1,14 @@
 import datetime as dt
 import subprocess
 import sys
+import threading
 from decimal import Decimal
 
 import polars as pl
 import pytest
 
-from tafl.api import ActionError
+import tafl.plugins.text as text_plugin
+from tafl.api import ActionError, Cancelled, Context
 from tafl.api.testing import StubContext
 
 
@@ -507,3 +509,22 @@ def test_replace_of_whole_values_in_groups_keeps_the_columns_named_like_its_own(
     out = replace(act, df, ["A"], [(f"k{i}", f"v{i}") for i in range(12)], match="whole")  # 12 rows: two groups
     assert out.columns == df.columns and out["A"].to_list() == ["v1", "v11", "x"]
     assert out.drop("A").equals(df.drop("A"))
+
+
+@pytest.mark.parametrize(("match", "count"), [("contains", 100), ("regex", 100), ("whole", 100), ("whole", 15)])
+def test_a_stop_takes_effect_at_the_next_group_of_rows(act, monkeypatch, match, count):
+    """Many rows of Replace can take a minute (100,000 rows of a regular expression): a Stop
+    doesn't wait for the end of the step, but stops before the next group of rows."""
+    cancel, groups = threading.Event(), []
+    changed = text_plugin._changed
+
+    def first_group_and_stop(df, updates):
+        groups.append(len(updates))
+        cancel.set()  # Stop while the first group is calculated
+        return changed(df, updates)
+
+    monkeypatch.setattr(text_plugin, "_changed", first_group_and_stop)
+    rows = [{"find": f"k{i}", "replace": "x"} for i in range(count)]  # 15: two groups
+    with pytest.raises(Cancelled):
+        act("text.replace", pl.DataFrame({"T": ["k1"]}), {"columns": ["T"], "match": match, "replacements": rows}, Context(cancel=cancel))
+    assert groups == [1]  # the next group didn't start
