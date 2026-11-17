@@ -518,6 +518,39 @@ def test_a_connection_type_with_its_own_open_doesnt_connect_with_another_value(s
     assert connector.opened == ["open"]
 
 
+class _CountedConnects(_SqliteFile):
+    """A connection type with a setting that is on or off, whose ``connect`` notes each call; it
+    opens with ``Connector.open``."""
+
+    params = (P.File("file", "File"), P.Bool("trust", "Trust the server certificate", default=True))
+
+    def __init__(self):
+        self.connects = []
+
+    def connect(self, settings, ctx, *, create=False):
+        self.connects.append(settings.trust)
+        return super().connect(settings, ctx, create=create)
+
+
+@pytest.mark.parametrize("stored", ["maybe", 2])
+def test_a_setting_with_another_value_stops_before_connect_is_called(stored, project, registry, monkeypatch, tmp_path):
+    """No connection opens and closes again: ``Connector.open`` checks the settings before it
+    calls ``connect``, also when a plugin calls it itself, and so does a step."""
+    connector = _CountedConnects()
+    settings = {"file": str(tmp_path / "data.db"), "trust": stored}
+    with pytest.raises(ActionError) as error:
+        connector.open(settings, Context())
+    assert str(error.value) == f"Trust the server certificate: {json.dumps(stored)} is not true or false"
+    assert connector.connects == []
+    monkeypatch.setitem(registry.connectors, "plugin", connector)
+    project.add_connection("counted", "plugin", **settings)
+    result = import_table(project, registry, connection="counted", table="orders")
+    assert result.first_error == f"Connection 'counted': {error.value}" and connector.connects == []
+    project.connections[-1].settings["trust"] = "no"
+    assert import_table(project, registry, connection="counted", table="orders").df["id"].to_list() == [1, 2]
+    assert connector.connects == [False]
+
+
 def test_a_connector_that_knows_nothing_of_read_only_still_gets_create():
     asked = []
 

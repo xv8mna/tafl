@@ -212,6 +212,26 @@ def test_the_test_of_a_type_with_its_own_open_doesnt_connect_with_another_value(
     assert connector.opened == ["open"]
 
 
+class CountedConnects(Trusting):
+    """``connect`` notes each call: a test that doesn't connect calls it never."""
+
+    def __init__(self):
+        self.connects = []
+
+    def connect(self, settings, ctx, *, create=False):
+        self.connects.append(settings.trust)
+        return super().connect(settings, ctx, create=create)
+
+
+@pytest.mark.parametrize("stored", ["maybe", 2])
+def test_the_test_of_a_setting_with_another_value_never_calls_connect(stored, session, qtbot, monkeypatch, tmp_path):
+    connector = CountedConnects()
+    shown = result_of_the_test(connector, session, qtbot, monkeypatch, tmp_path, trust=stored)
+    assert shown == f"Trust the server certificate: {json.dumps(stored)} is not true or false" and connector.connects == []
+    assert result_of_the_test(connector, session, qtbot, monkeypatch, tmp_path, trust="no") == "Connected — 1 table or view"
+    assert connector.connects == [False]
+
+
 @pytest.mark.parametrize("stored", [True, False, "false", "no", ""])
 def test_the_test_of_a_setting_that_is_on_or_off_connects(stored, session, qtbot, monkeypatch, tmp_path):
     """Also with a hidden setting that holds another value: it isn't checked."""
