@@ -1075,27 +1075,14 @@ class _StepContext(Context):
         if connector is None:
             raise ActionError(f"Unknown connection type '{definition.type}'. Is its plugin installed?")
         settings = self._evaluation.connection_settings(definition.settings, connector)
-        if problems := _neither_true_nor_false(connector.params, settings):
+        # Also open() stops with them, but without the name: here it says which connection
+        if problems := connector.setting_problems(settings):
             raise ActionError("\n".join(f"Connection '{definition.name}': {problem}" for problem in problems))
         return open_database(connector, settings, self, create=create, read_only=read_only)
 
     def check_memory(self) -> None:
         if (short := self._evaluation.short_of_memory(started=True)) is not None:
             raise ActionError(short)
-
-
-def _neither_true_nor_false(params: Iterable[P.Param], settings: Mapping[str, Any]) -> list[str]:
-    """The problems of the settings of a connection that are on or off and hold another value,
-    e.g. the text "maybe" in a project file: the connection doesn't open with a guess. (Its other
-    settings are the connection type's own business.)"""
-    params = list(params)
-    values = P.resolve(params, settings)
-    return [
-        problem
-        for param in params
-        if isinstance(param, P.Bool) and P.is_visible(param, values)
-        for problem in param.check(values[param.key], ValidationContext(), values)
-    ]
 
 
 def _error(

@@ -1,6 +1,7 @@
 """The test of a connection belongs to that connection: its result never shows under another
 one selected meanwhile, whose Test button stays usable. It says how many tables it found."""
 
+import json
 import sqlite3
 from contextlib import closing
 
@@ -38,13 +39,14 @@ class RequiredCreate(SqliteFile):
         return super().connect(settings, ctx, create=create)
 
 
-def result_of_the_test(connector, session, qtbot, monkeypatch, tmp_path) -> str:
+def result_of_the_test(connector, session, qtbot, monkeypatch, tmp_path, **settings) -> str:
     """What the Test button says about ``connector``, on a database with one table."""
     database = tmp_path / "a.db"
-    with closing(sqlite3.connect(database)) as db:
-        db.execute("CREATE TABLE a (x INTEGER)")
+    if not database.exists():
+        with closing(sqlite3.connect(database)) as db:
+            db.execute("CREATE TABLE a (x INTEGER)")
     monkeypatch.setitem(session.registry.connectors, "plugin", connector)
-    session.project.connections = [Connection("a", "plugin", {"file": str(database)})]
+    session.project.connections = [Connection("a", "plugin", {"file": str(database), **settings})]
     dialog = ConnectionsDialog(session)
     qtbot.addWidget(dialog)
     dialog.show()
@@ -168,3 +170,28 @@ def test_the_test_shows_a_message_of_the_connector_as_it_is(session, qtbot, monk
             return f"The driver says: {error}"
 
     assert result_of_the_test(Refuses(), session, qtbot, monkeypatch, tmp_path) == "Ask the admin for the list of tables"
+
+
+class Trusting(SqliteFile):
+    """A connection type with a setting that is on or off, as SQL Server's, and one that a choice hides."""
+
+    params = (
+        P.File("file", "File"),
+        P.Bool("trust", "Trust the server certificate", default=True),
+        P.Choice("mode", "Mode", ["a", "b"]),
+        P.Bool("extra", "Extra", visible_if={"mode": "b"}),
+    )
+
+
+@pytest.mark.parametrize("stored", ["maybe", 2])
+def test_the_test_of_a_setting_that_is_on_or_off_with_another_value_doesnt_connect(stored, session, qtbot, monkeypatch, tmp_path):
+    """As the steps that use the connection: "maybe" is no guess for true."""
+    shown = result_of_the_test(Trusting(), session, qtbot, monkeypatch, tmp_path, trust=stored)
+    assert shown == f"Trust the server certificate: {json.dumps(stored)} is not true or false"
+
+
+@pytest.mark.parametrize("stored", [True, False, "false", "no", ""])
+def test_the_test_of_a_setting_that_is_on_or_off_connects(stored, session, qtbot, monkeypatch, tmp_path):
+    """Also with a hidden setting that holds another value: it isn't checked."""
+    shown = result_of_the_test(Trusting(), session, qtbot, monkeypatch, tmp_path, trust=stored, extra="maybe")
+    assert shown == "Connected — 1 table or view"

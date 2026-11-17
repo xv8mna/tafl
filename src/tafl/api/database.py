@@ -14,7 +14,7 @@ import polars as pl
 from .errors import NO_MEMORY, ActionError, Cancelled, TaflError
 from .names import col
 from .parameters import fill_sql, sql_literal, sql_spans
-from .params import Param, Params, resolve
+from .params import Bool, Param, Params, ValidationContext, is_visible, resolve
 
 if TYPE_CHECKING:
     from .context import Context
@@ -220,7 +220,21 @@ class Connector:
         columns the driver can't read."""
         return f"SELECT * FROM {self.qualified(table)}"
 
+    def setting_problems(self, settings: Mapping[str, Any]) -> list[str]:
+        """Why a connection with these stored settings doesn't open: a setting that is on or off,
+        shown, and holds another value (e.g. "maybe" in a project file; ``Bool`` reads the
+        stored values). ``open`` stops with them, also for a test of the connection."""
+        params = resolve(self.params, settings)
+        return [
+            problem
+            for param in self.params
+            if isinstance(param, Bool) and is_visible(param, params)
+            for problem in param.check(params[param.key], ValidationContext(), params)
+        ]
+
     def open(self, settings: Mapping[str, Any], ctx: Context, *, create: bool = False, read_only: bool = False) -> Database:
+        if problems := self.setting_problems(settings):  # no connection with a guess
+            raise ActionError("\n".join(problems))
         params = resolve(self.params, settings)
         try:
             raw = self.connect_read_only(params, ctx) if read_only else self.connect(params, ctx, create=create)
