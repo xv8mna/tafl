@@ -247,7 +247,8 @@ def test_a_setting_that_is_on_or_off_with_another_value_stops_the_step(project, 
 
 def test_a_connection_setting_that_is_on_or_off(project, tmp_path):
     """A connection's setting that is on or off reads "no" as false, and another value stops the
-    step that uses the connection, with the connection's name: no connection with a guess."""
+    step that uses the connection, with the connection's name: no connection with a guess. A
+    setting that the connection doesn't show isn't checked, as a step's own hidden settings."""
     with contextlib.closing(sqlite3.connect(tmp_path / "shop.db")) as connection:
         connection.execute("CREATE TABLE Orders (Id INTEGER)")
         connection.execute("INSERT INTO Orders VALUES (7)")
@@ -256,16 +257,25 @@ def test_a_connection_setting_that_is_on_or_off(project, tmp_path):
     registry.load_builtin()
     module = types.ModuleType("strict")
     sqlite = type(registry.connectors["sqlite"])
-    module.strict = connector("demo.strict", "Strict SQLite", params=[P.File("file", "Database file"), P.Bool("strict", "Strict")])(sqlite)
+    params = [
+        P.File("file", "Database file"),
+        P.Bool("strict", "Strict"),
+        P.Choice("mode", "Mode", ["a", "b"]),
+        P.Bool("cached", "Cached", visible_if={"mode": "b"}),
+    ]
+    module.strict = connector("demo.strict", "Strict SQLite", params=params)(sqlite)
     registry.add_module(module)
-    project.connections = [Connection("Sales", "demo.strict", {"file": "shop.db", "strict": "no"})]
+    project.connections = [Connection("Sales", "demo.strict", {"file": "shop.db", "strict": "no", "cached": "maybe"})]
     table = project.add_table("Shop")
     project.add_step(table, "db.import", {"connection": "Sales", "table": "Orders"})
     step = Engine(project, registry).evaluate(table.id).steps[0]
-    assert step.status == Status.OK and step.df["Id"].to_list() == [7]
+    assert step.status == Status.OK and step.df["Id"].to_list() == [7]  # "cached" is hidden
     project.connections[0].settings["strict"] = "maybe"
     step = Engine(project, registry).evaluate(table.id).steps[0]
     assert step.status == Status.ERROR and step.error == "Connection 'Sales': Strict: \"maybe\" is not true or false"
+    project.connections[0].settings |= {"strict": "no", "mode": "b"}  # "cached" is shown now
+    step = Engine(project, registry).evaluate(table.id).steps[0]
+    assert step.status == Status.ERROR and step.error == "Connection 'Sales': Cached: \"maybe\" is not true or false"
 
 
 def test_a_connection_with_a_setting_that_isnt_known(project, registry, tmp_path):
