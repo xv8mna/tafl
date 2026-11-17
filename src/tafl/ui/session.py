@@ -941,13 +941,12 @@ class Session(QObject):
         return "folder" in step.params and self._lists(step, action, path)
 
     def _lists(self, step: Step, action: Action, path: Path) -> bool:
-        try:
-            params = parameters.fill(action.params, step.params, self.parameter_values())
+        try:  # the settings as the import reads them: with the defaults, and "no" is off
+            params = action.resolve(parameters.fill(action.params, step.params, self.parameter_values()))
             folder = Context(project_dir=self.project.directory).resolve_path(params["folder"])
-            subfolders = action.resolve(params).get("subfolders") is True  # as the import reads it: "no" is off
         except ActionError:
             return False
-        return files.in_folder(path, Path(os.path.normpath(folder)), params.get("pattern", "*"), subfolders)
+        return files.in_folder(path, Path(os.path.normpath(folder)), params.get("pattern", "*"), params.get("subfolders") is True)
 
     def _remember_stamp(self, path: Path, stamp: str | None) -> None:
         stamps = self._sheet_stamps

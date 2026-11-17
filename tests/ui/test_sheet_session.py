@@ -14,7 +14,7 @@ import shiboken6
 from PySide6.QtCore import QPointF, QSettings
 from PySide6.QtWidgets import QMenu, QPushButton
 
-from tafl.api import files
+from tafl.api import Context, files
 from tafl.core import Parameter, Project
 from tafl.core import sheet as sheet_module
 from tafl.ui import main_window as main_window_module
@@ -1229,6 +1229,30 @@ def test_include_subfolders_stored_as_a_text_is_read_as_the_import_reads_it(sess
     assert session.project.table(table.id).steps[0].params["subfolders"] == stored  # stored as it is
     assert session.reads_file(tmp_path / "in" / "a.csv")
     assert session.reads_file(tmp_path / "in" / "sub" / "b.csv") is reads
+
+
+def test_a_folder_import_stored_without_a_pattern_counts_the_files_of_its_default_pattern(session, registry, tmp_path):
+    """A project file without "pattern" (written by hand or by a program): the import reads the
+    files of its default pattern (*.csv;*.txt for CSV files), and the window counts only those as
+    read, not every file of the folder."""
+    (tmp_path / "in").mkdir()
+    names = ["a.csv", "b.xlsx", "c.txt"]
+    for name in names:
+        (tmp_path / "in" / name).write_text("x\n1\n", encoding="utf-8")
+    table = session.add_table(registry.actions["csv.import"], name="folder")
+    session.set_params(table.steps[0].id, {"source": "folder", "folder": str(tmp_path / "in")})
+    path = session.save_project(tmp_path / "p.tafl")
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    for step in (step for table in stored["tables"] for step in table["steps"]):
+        step["params"].pop("pattern", None)
+    path.write_text(json.dumps(stored), encoding="utf-8")
+    session.open_project(path, trusted=True)
+    params = next(t for t in session.project.tables if t.name == "folder").steps[0].params
+    assert "pattern" not in params
+    ctx = Context(project_dir=tmp_path)
+    registry.actions["csv.import"](None, params, ctx)
+    assert [file.name for file in ctx.imported_files] == ["a.csv", "c.txt"]  # what the import reads
+    assert [session.reads_file(tmp_path / "in" / name) for name in names] == [True, False, True]
 
 
 def test_the_list_of_the_files_in_a_folder_counts_as_reading_the_file(session, add, registry, tmp_path):
