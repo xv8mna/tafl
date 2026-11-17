@@ -498,3 +498,12 @@ def test_replace_in_groups_of_rows_gives_what_one_expression_gave():
     In a process of its own."""
     done = subprocess.run([sys.executable, "-c", _ONE_EXPRESSION], capture_output=True, text=True, timeout=300)
     assert done.returncode == 0 and done.stdout.startswith("ok "), f"exit code {done.returncode:#x}: {done.stdout[-300:]} {done.stderr[-2000:]}"
+
+
+def test_replace_of_whole_values_in_groups_keeps_the_columns_named_like_its_own(act):
+    """The rows of later groups hold their result in a column of their own, whose name the table
+    doesn't have: the columns "A (replaced)" and "A (replaced) 2" stay as they are."""
+    df = pl.DataFrame({"A": ["k1", "k11", "x"], "A (replaced)": ["r1", "r2", "r3"], "A (replaced) 2": ["s1", "s2", "s3"], "B": [1, 2, 3]})
+    out = replace(act, df, ["A"], [(f"k{i}", f"v{i}") for i in range(12)], match="whole")  # 12 rows: two groups
+    assert out.columns == df.columns and out["A"].to_list() == ["v1", "v11", "x"]
+    assert out.drop("A").equals(df.drop("A"))
