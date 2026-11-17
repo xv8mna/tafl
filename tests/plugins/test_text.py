@@ -472,7 +472,7 @@ def run(df, params):
 
 
 checked, grouping = 0, text_plugin._ROWS_AT_ONCE
-assert grouping <= 100, grouping  # the cases of more rows have several groups
+assert grouping < 99, grouping  # every case has several groups
 for mode, sizes in SIZES.items():
     for case_sensitive in (True,) if mode == "numbers" else (True, False):
         for size in sizes:

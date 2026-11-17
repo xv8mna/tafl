@@ -81,9 +81,10 @@ def replace(df, p, ctx):
 
 
 # The rows of Replace that one expression of Polars holds: it nests a call for each row, and a few
-# thousand of them overflow the stack of the calculation, which ends the program. Longer lists go in
-# groups of rows.
-_ROWS_AT_ONCE = 100
+# hundred of them overflow the stack of the calculation, which ends the program. Longer lists go in
+# groups of rows. The time and memory of an expression grow faster than its rows: 300 columns
+# with 100 rows took 3.6 s and 1.4 GB in one group, 0.8 s and 40 MB in groups of 10.
+_ROWS_AT_ONCE = 10
 
 
 def _changed(df: pl.DataFrame, updates: list[pl.Expr]) -> pl.DataFrame:
