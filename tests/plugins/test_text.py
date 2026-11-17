@@ -349,3 +349,149 @@ def test_replace_and_clean_text_of_a_wide_table_of_numbers():
     process of its own, so that a stack overflow shows as a failed test."""
     done = subprocess.run([sys.executable, "-c", _WIDE], capture_output=True, text=True, timeout=300)
     assert done.returncode == 0, f"exit code {done.returncode:#x}: {done.stderr[-500:]}"
+
+
+_MANY_ROWS = r"""
+import polars as pl
+from PySide6.QtCore import QCoreApplication, QRunnable, QThreadPool
+
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+replace = registry.actions["text.replace"]
+# Row 3,999 finds what row 1 made: the rows apply one after the other, across the groups
+inside = [{"find": f"<k{i}>", "replace": f"[{i}]"} for i in range(3999)] + [{"find": "[1]", "replace": "one"}]
+pattern = [{"find": f"<k({i})>", "replace": "[$1]"} for i in range(3999)] + [{"find": r"\[1\]", "replace": "one"}]
+whole = [{"find": f"k{i}", "replace": f"v{i}"} for i in range(4000)] + [{"find": "k1", "replace": "later"}]
+texts = pl.DataFrame({"T": ["<k1>", "a <k3998> b", "<K2><k0>", None]})
+values = pl.DataFrame({"T": ["k1", "K2", "x", "k3999", None]})
+cases = [
+    ("contains", True, inside, texts, ["one", "a [3998] b", "<K2>[0]", None]),
+    ("contains", False, inside, texts, ["one", "a [3998] b", "[2][0]", None]),
+    ("regex", True, pattern, texts, ["one", "a [3998] b", "<K2>[0]", None]),
+    ("regex", False, pattern, texts, ["one", "a [3998] b", "[2][0]", None]),
+    ("whole", True, whole, values, ["v1", "K2", "x", "v3999", None]),  # the first row that finds a value counts
+    ("whole", False, whole, values, ["v1", "v2", "x", "v3999", None]),
+]
+found = []
+
+
+class Job(QRunnable):  # as the window calculates a step: in a thread of a pool, with its smaller stack
+    def run(self):
+        for match, case_sensitive, rows, df, expected in cases:
+            print(match, case_sensitive, flush=True)
+            params = {"columns": ["T"], "match": match, "case_sensitive": case_sensitive, "replacements": rows}
+            found.append((replace(df, params)["T"].to_list(), expected))
+
+
+app = QCoreApplication([])
+pool = QThreadPool()
+pool.start(Job())
+pool.waitForDone()
+assert len(found) == len(cases) and all(got == expected for got, expected in found), found
+print("ok")
+"""
+
+
+def test_replace_with_thousands_of_rows_in_each_mode():
+    """4,000 rows of Replace in a thread of a pool, as the window calculates a step: before, one
+    expression for all rows overflowed the stack from about 450 rows (Text inside, Regular
+    expression) or 1,200 (Whole cell value), and the program ended. In a process of its own."""
+    done = subprocess.run([sys.executable, "-c", _MANY_ROWS], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0 and done.stdout.endswith("ok\n"), f"exit code {done.returncode:#x}: {done.stdout[-300:]} {done.stderr[-500:]}"
+
+
+_ONE_EXPRESSION = r"""
+import json
+import random
+
+import polars as pl
+
+import tafl.plugins.text as text_plugin
+from tafl.api import ActionError
+from tafl.api.testing import StubContext
+from tafl.core import Registry
+
+registry = Registry()
+registry.load_builtin()
+replace = registry.actions["text.replace"]
+rng = random.Random(17)
+ALPHABET = "aAbB$1 -é"
+REGEX = [
+    (r"(a)(b)", ["$2$1", "${1}x", "$$", "[$1]"]),
+    (r"(?P<x>a)b", ["${x}", "$x-", "$$x"]),
+    (r"a+", ["A", "$$", "", "aa"]),
+    (r"[ab]$", ["!", "$$1"]),
+    (r"(a|b)(\$)", ["$2$1", "${2}"]),
+    (r"é", ["e", "ée"]),
+]
+SIZES = {  # below the sizes at which one expression overflowed the stack
+    "contains": [99, 100, 101, 201, 300, 400],
+    "regex": [99, 100, 101, 201, 300, 400],
+    "whole": [99, 100, 101, 201, 1000],
+    "numbers": [101],  # each row is read as numbers: slow
+}
+
+
+def word(low=0, high=6):
+    return "".join(rng.choice(ALPHABET) for _ in range(rng.randint(low, high)))
+
+
+def case(mode, case_sensitive, size):
+    if mode == "numbers":
+        df = pl.DataFrame({"I": [rng.choice([None, *range(25), 1000]) for _ in range(40)], "F": [rng.choice([None, 0.5, 2.5, 1.0, 1000.0]) for _ in range(40)]})
+        texts = ["", " ", "1", "2", "7", "1.000", "2,5", "0,5", "24", "abc"]
+        rows = [{"find": rng.choice(texts), "replace": rng.choice(["", "9", "5", "1.000", "x"])} for _ in range(size)]
+        return df, {"columns": ["I", "F"], "match": "whole", "replacements": rows}
+    df = pl.DataFrame({name: [None if rng.random() < 0.1 else word(0, 8) for _ in range(40)] for name in ("s", "t")}, schema={"s": pl.String, "t": pl.String})
+    values = [value for value in df["s"] if value is not None]
+    rows = []
+    for _ in range(size):  # what replaces is never longer than what it finds: no text grows row by row
+        if mode == "regex" and rng.random() < 0.6:
+            find, replacements = rng.choice(REGEX)
+            rows.append({"find": find, "replace": rng.choice(replacements)})
+        elif mode == "whole":  # the same value found by rows of different groups: the first one counts
+            find = rng.choice(values) if rng.random() < 0.5 else ("" if rng.random() < 0.1 else word(0, 4))
+            rows.append({"find": find, "replace": "" if rng.random() < 0.15 else word()})
+        else:
+            find = word(1, 3)
+            rows.append({"find": find, "replace": word(0, len(find)).replace("$", "$$" if mode == "regex" else "$")})
+    if mode != "whole":  # row 1 makes text that the last row finds; "Replace with" has a $ sign
+        rows[0], rows[-1] = {"find": "aB", "replace": "b$"}, {"find": "b$" if mode == "contains" else r"b\$", "replace": "1"}
+    return df, {"columns": ["s", "t"], "match": mode, "case_sensitive": case_sensitive, "replacements": rows}
+
+
+def run(df, params):
+    ctx = StubContext()
+    try:
+        out = replace(df, params, ctx)
+        return {"schema": str(out.schema), "rows": out.rows(), "warnings": ctx.warnings}
+    except ActionError as e:
+        return {"error": str(e)}
+
+
+checked, grouping = 0, text_plugin._ROWS_AT_ONCE
+assert grouping <= 100, grouping  # the cases of more rows have several groups
+for mode, sizes in SIZES.items():
+    for case_sensitive in (True,) if mode == "numbers" else (True, False):
+        for size in sizes:
+            df, params = case(mode, case_sensitive, size)
+            grouped = run(df, params)
+            text_plugin._ROWS_AT_ONCE = 10**9  # all rows in one expression, as before
+            expected = run(df, params)
+            text_plugin._ROWS_AT_ONCE = grouping
+            assert grouped == expected, json.dumps([mode, case_sensitive, size, grouped, expected], default=str)[:2000]
+            assert "error" not in grouped, grouped
+            checked += 1
+print(f"ok {checked}")
+"""
+
+
+def test_replace_in_groups_of_rows_gives_what_one_expression_gave():
+    """An oracle: random rows (seeded) in each mode, also case-insensitive, give the same values,
+    types, warnings and errors in groups of rows as with all rows in one expression, as Replace
+    worked before. The cases stay below the sizes at which one expression overflowed the stack.
+    In a process of its own."""
+    done = subprocess.run([sys.executable, "-c", _ONE_EXPRESSION], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0 and done.stdout.startswith("ok "), f"exit code {done.returncode:#x}: {done.stdout[-300:]} {done.stderr[-2000:]}"

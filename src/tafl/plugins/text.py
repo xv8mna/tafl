@@ -6,7 +6,7 @@ import re
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, col, dtypes
+from tafl.api import ActionError, P, action, col, dtypes, selector
 
 
 @action(
@@ -58,15 +58,16 @@ def replace(df, p, ctx):
             if (dtype := schema[name]) != pl.String:
                 typed[name] = kinds[dtype] if dtype in kinds else kinds.setdefault(dtype, _typed_pairs(pairs, dtype))
     df = _with_texts(df, [name for name in p.columns if typed.get(name) is None], schema, "Replace")
-    updates = []
-    for name in p.columns:
-        if p.match == "whole":
+    if p.match == "whole":
+        for name in p.columns:
             if schema[name] != pl.String and typed[name] is None and (warning := _made_text(name, schema[name], pairs)):
                 ctx.warn(warning)
-            updates.append(_replace_whole(name, schema[name], typed.get(name), pairs, p.case_sensitive))
-        else:
+        return _replace_whole_values(df, p.columns, schema, typed, pairs, p.case_sensitive)
+    for start in range(0, len(pairs), _ROWS_AT_ONCE):  # each group on the result of the rows before it
+        updates = []
+        for name in p.columns:
             text = col(name)
-            for find, new in pairs:
+            for find, new in pairs[start : start + _ROWS_AT_ONCE]:
                 if p.match == "contains" and p.case_sensitive:
                     text = text.str.replace_all(find, new, literal=True)
                 else:
@@ -75,6 +76,17 @@ def replace(df, p, ctx):
                     flags = "" if p.case_sensitive else "(?i)"
                     text = text.str.replace_all(flags + pattern, replacement)
             updates.append(text.alias(name))
+        df = _changed(df, updates)
+    return df
+
+
+# The rows of Replace that one expression of Polars holds: it nests a call for each row, and a few
+# thousand of them overflow the stack of the calculation, which ends the program. Longer lists go in
+# groups of rows.
+_ROWS_AT_ONCE = 100
+
+
+def _changed(df: pl.DataFrame, updates: list[pl.Expr]) -> pl.DataFrame:
     try:
         return df.with_columns(updates)
     except pl.exceptions.ComputeError as e:
@@ -188,14 +200,53 @@ def _made_text(name: str, dtype: pl.DataType, pairs) -> str | None:
     return f"'{name}' was converted to text"
 
 
-def _replace_whole(name: str, dtype: pl.DataType, typed, pairs, case_sensitive: bool) -> pl.Expr:
-    """``typed``: the values of the ``pairs`` in the column's type ``dtype``, or None when the
-    column is text (it was made text, if need be)."""
+def _replace_whole_values(
+    df: pl.DataFrame, columns: list[str], schema: pl.Schema, typed: dict, pairs, case_sensitive: bool
+) -> pl.DataFrame:
+    """Whole cell values: a cell gets the value of the first row whose Find it is. In groups of
+    rows (see ``_ROWS_AT_ONCE``), from the last group to the first: each group compares the column
+    as it was, and a cell that none of its rows finds gets the result of the groups after it,
+    which a column of its own holds in between."""
+
+    def group(name: str, start: int, otherwise: pl.Expr) -> pl.Expr:
+        rows = range(start, min(start + _ROWS_AT_ONCE, len(pairs)))
+        return _replace_whole(name, schema[name], typed.get(name), pairs, case_sensitive, rows, otherwise)
+
+    starts = list(range(0, len(pairs), _ROWS_AT_ONCE)) or [0]
+    names = list(dict.fromkeys(columns))
+    held, taken = {}, set(df.columns)
+    for name in names:
+        held[name] = _free_name(f"{name} (replaced)", taken)
+        taken.add(held[name])
+    otherwise = {name: col(name) for name in names}
+    for start in reversed(starts[1:]):
+        df = _changed(df, [group(name, start, otherwise[name]).alias(held[name]) for name in names])
+        otherwise = {name: col(held[name]) for name in names}
+    df = _changed(df, [group(name, 0, otherwise[name]).alias(name) for name in columns])
+    return df.drop(selector(held.values())) if len(starts) > 1 else df
+
+
+def _free_name(name: str, taken: set[str]) -> str:
+    """``name``, or with a number after it when the table has a column of that name."""
+    candidate, number = name, 1
+    while candidate in taken:
+        number += 1
+        candidate = f"{name} {number}"
+    return candidate
+
+
+def _replace_whole(
+    name: str, dtype: pl.DataType, typed, pairs, case_sensitive: bool, rows: range, otherwise: pl.Expr
+) -> pl.Expr:
+    """The ``rows`` of ``pairs`` for the column ``name``; a cell that none of them finds gets
+    ``otherwise``. ``typed``: the values of the ``pairs`` in the column's type ``dtype``, or None
+    when the column is text (it was made text, if need be)."""
     column = col(name)
     if typed is None:
         dtype = pl.String
     branches = None
-    for index, (find, new) in enumerate(pairs):
+    for index in rows:
+        find, new = pairs[index]
         if dtype == pl.String:
             if find == "":
                 condition = column.is_null() | (column.str.strip_chars() == "")
@@ -209,7 +260,7 @@ def _replace_whole(name: str, dtype: pl.DataType, typed, pairs, case_sensitive: 
             condition = column.is_null() if find_value is None else column == find_value
             value = pl.lit(new_value, dtype=dtype)
         branches = pl.when(condition).then(value) if branches is None else branches.when(condition).then(value)
-    return branches.otherwise(column).alias(name)
+    return branches.otherwise(otherwise)
 
 
 def _typed_pairs(pairs, dtype: pl.DataType):
