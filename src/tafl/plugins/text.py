@@ -46,10 +46,10 @@ def replace(df, p, ctx):
     if p.match != "whole" and any(find == "" for find, _ in pairs):
         raise ActionError("'Find' can't be empty here")
     if p.match == "regex":
-        for find, _ in pairs:
+        for find, _ in _each(pairs, ctx):
             _check_regex(find)
-        written = [(find, _replacement(find, new)) for find, new in pairs]
-        if warning := next(filter(None, (_backslash_group(find, new) for find, new in pairs)), None):
+        written = [(find, _replacement(find, new)) for find, new in _each(pairs, ctx)]
+        if warning := next(filter(None, (_backslash_group(find, new) for find, new in _each(pairs, ctx))), None):
             ctx.warn(warning)  # once for the step
         pairs = written
     schema = df.schema  # made once: for a wide table that takes a while
@@ -59,14 +59,14 @@ def replace(df, p, ctx):
         for name in columns:
             if (dtype := schema[name]) != pl.String:
                 if dtype not in kinds:
-                    kinds[dtype] = _typed_pairs(pairs, dtype)
+                    kinds[dtype] = _typed_pairs(_each(pairs, ctx), dtype)
                     if kinds[dtype] is not None and isinstance(dtype, pl.Datetime) and dtype.time_zone:
                         _check_clock(name, dtype.time_zone, pairs, kinds[dtype])
                 typed[name] = kinds[dtype]
     df = _with_texts(df, [name for name in columns if typed.get(name) is None], schema, "Replace")
     if p.match == "whole":
         for name in columns:
-            if schema[name] != pl.String and typed[name] is None and (warning := _made_text(name, schema[name], pairs)):
+            if schema[name] != pl.String and typed[name] is None and (warning := _made_text(name, schema[name], _each(pairs, ctx))):
                 ctx.warn(warning)
         return _replace_whole_values(df, columns, schema, typed, pairs, p.case_sensitive, ctx)
     for start in range(0, len(pairs), _ROWS_AT_ONCE):  # each group on the result of the rows before it
@@ -92,6 +92,15 @@ def replace(df, p, ctx):
 # groups of rows. The time and memory of an expression grow faster than its rows: 300 columns
 # with 100 rows took 3.6 s and 1.4 GB in one group, 0.8 s and less than 100 MB in groups of 10.
 _ROWS_AT_ONCE = 10
+
+
+def _each(pairs, ctx):
+    """The rows of Replace, with a check for Stop before each: reading them before the first group,
+    as values of a column's type (about 8 ms a row for numbers) or as regular expressions, can take
+    half a minute for thousands of rows, and a Stop doesn't wait for it."""
+    for pair in pairs:
+        ctx.check_cancelled()
+        yield pair
 
 
 def _changed(df: pl.DataFrame, updates: list[pl.Expr]) -> pl.DataFrame:

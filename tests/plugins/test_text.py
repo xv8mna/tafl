@@ -534,7 +534,43 @@ def test_a_stop_takes_effect_at_the_next_group_of_rows(act, monkeypatch, match, 
     assert groups == [1]  # the next group didn't start
 
 
-ZONED = pl.Series([dt.datetime(2026, 1, 1, 7, 30), dt.datetime(2026, 7, 1, 7, 30), None]).dt.replace_time_zone("UTC")
+NUMBERS = [(str(i), str(i + 1)) for i in range(50)]
+
+
+@pytest.mark.parametrize(
+    ("reading", "values", "match", "pairs"),
+    [
+        ("_typed_pairs", [1, 2], "whole", NUMBERS),  # numbers: about 8 ms a row
+        ("_typed_pairs", [dt.datetime(2026, 1, 1)], "whole", [(f"2026-01-01 08:{i:02}", "2027-01-01") for i in range(50)]),
+        ("_made_text", [1, 2], "whole", [*NUMBERS[:-1], ("x", "1")]),  # which row made the column text
+        ("_check_regex", ["k1"], "regex", [(f"^k{i}$", "v") for i in range(50)]),
+        ("_replacement", ["k1"], "regex", [(f"^k{i}$", "v") for i in range(50)]),
+        ("_backslash_group", ["k1"], "regex", [(f"^k{i}$", "v") for i in range(50)]),
+    ],
+)
+def test_a_stop_takes_effect_while_replace_reads_its_rows(act, monkeypatch, reading, values, match, pairs):
+    """Before its first group, Replace reads all rows: as values of the column's type, or as
+    regular expressions. Thousands of them take half a minute (3,000 rows of numbers took 21 s):
+    a Stop during this doesn't wait for the rest of the rows."""
+    cancel, calls = threading.Event(), []
+    read = getattr(text_plugin, reading)
+
+    def stop_while_reading(*args):
+        calls.append("called")
+        cancel.set()  # Stop while the rows are read
+        result = read(*args)
+        calls.append("returned")
+        return result
+
+    monkeypatch.setattr(text_plugin, reading, stop_while_reading)
+    rows = [{"find": find, "replace": new} for find, new in pairs]
+    with pytest.raises(Cancelled):
+        act("text.replace", pl.DataFrame({"T": values}), {"columns": ["T"], "match": match, "replacements": rows}, Context(cancel=cancel))
+    once_for_all_rows = reading in ("_typed_pairs", "_made_text")  # else once for each row
+    assert calls == (["called"] if once_for_all_rows else ["called", "returned"])  # the next row wasn't read
+
+
+ZONED =pl.Series([dt.datetime(2026, 1, 1, 7, 30), dt.datetime(2026, 7, 1, 7, 30), None]).dt.replace_time_zone("UTC")
 
 
 @pytest.mark.parametrize("unit", ["ms", "us", "ns"])

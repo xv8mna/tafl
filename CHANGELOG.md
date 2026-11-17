@@ -71,8 +71,9 @@ with a message that says what to change.
   cells of text, and a table of 100,000 rows with 1,000 rows of Replace takes about 5 s. Many
   columns are quicker than before too: 300 columns of 1,000 rows with 100 rows of Replace take
   about 1 s instead of 3.4 to 3.9 s, and less than 100 MB of memory instead of 1.4 GB or more.
-  **Stop** ends a long Replace before its next group of rows; before, it waited for the end of
-  the step.
+  **Stop** ends a long Replace before its next group of rows, and before its next row while it
+  reads the rows as numbers, dates or regular expressions (3,000 rows of numbers take about
+  20 s); before, it waited for the end of the step.
 - **Replace** (*Whole cell value*) finds a date-time in a column with a time zone, such as a
   column in UTC of a Parquet file or a SQL Server datetimeoffset read as UTC: a typed date-time is
   the local time of the column's time zone, as the grid shows it, and a date-time parameter alone,
