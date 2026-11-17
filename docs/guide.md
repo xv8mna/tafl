@@ -1365,7 +1365,8 @@ unlike in **Filter rows**.
 A column that is not text becomes text, as **Pivot** and **Split column** write values (`17`, not
 `17.0`), unless *Whole cell value* finds and writes values of its type. A typed number is read as
 in **Filter rows**: `1.000` is one thousand, `1,5` and `1.5` are one and a half. A typed date-time
-in a column with a time zone is the local time of that zone, as the grid shows it.
+in a column with a time zone is the local time of that zone, as the grid shows it; a date-time
+parameter alone, such as `{Now}`, is the moment that it holds, as in **Filter rows**.
 
 ![Replace: empty names become (unknown customer)](guide/replace-settings.png)
 
@@ -2020,8 +2021,9 @@ the sheet `2026-03`. The step list keeps showing `{Month}`; the run's message ha
 Windows file names can't contain `:`, so take a time without colons, as `=STRFTIME(NOW(),
 '%Y-%m-%d %H-%M')` above. A value in **Filter rows** works too: Date **is greater than or equal
 to** `{Day}`. A date-time parameter alone in such a value, such as `{Now}` with the formula
-`=NOW()`, is that moment of this PC's clock, as in formulas, also in a column with a time zone. A
-parameter inside other text, such as `{Day} 08:30`, is read like a typed value.
+`=NOW()`, is that moment of this PC's clock, as in formulas, also in a column with a time zone; so
+it is in **Fill empty values** and in **Replace** (*Whole cell value*). A parameter inside other
+text, such as `{Day} 08:30`, is read like a typed value.
 
 ![A parameter in a file name: output/orders {Month}.xlsx](guide/parameter-in-file-name.png)
 

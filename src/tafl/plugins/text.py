@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 import polars as pl
 
-from tafl.api import ActionError, P, action, col, dtypes, selector
+from tafl.api import ActionError, P, action, col, dtypes, expressions, parameters, selector
 
 
 @action(
@@ -235,12 +236,22 @@ def _replace_whole_values(
     return df.drop(selector(held.values())) if len(starts) > 1 else df
 
 
+class _Moment(NamedTuple):
+    """A date-time parameter alone (such as {Now}) in Find or Replace with, in a column with a time
+    zone: the moment that it holds, in microseconds since 1970-01-01 00:00 in UTC, as Filter rows
+    and Fill empty values read it (a time of this PC's clock, see ``expressions.moment``)."""
+
+    micros: int
+
+
 def _check_clock(name: str, zone: str, pairs, typed) -> None:
-    """Whole cell values in the column ``name`` with the time zone ``zone``: a date-time in Find or
-    Replace with (``typed``, the ``pairs`` in the column's type) is the local time of that zone, as
-    the grid shows its values. A time that a clock change skips or repeats there is not one moment:
-    it stops the step, as in Filter rows. All rows at once: a step can have thousands of them."""
-    values = pl.Series([value for pair in typed for value in pair], dtype=pl.Datetime("us"))
+    """Whole cell values in the column ``name`` with the time zone ``zone``: a date-time typed in
+    Find or Replace with (``typed``, the ``pairs`` in the column's type) is the local time of that
+    zone, as the grid shows its values. A time that a clock change skips or repeats there is not one
+    moment: it stops the step, as in Filter rows. A date-time parameter is one moment (``_Moment``):
+    it isn't checked. All rows at once: a step can have thousands of them."""
+    typed_texts = [None if isinstance(value, _Moment) else value for pair in typed for value in pair]
+    values = pl.Series(typed_texts, dtype=pl.Datetime("us"))
     moments = values.dt.replace_time_zone(zone, ambiguous="null", non_existent="null")
     unclear = (moments.is_null() & values.is_not_null()).arg_true()
     if unclear.is_empty():
@@ -286,17 +297,23 @@ def _replace_whole(
             find_value, new_value = typed[index]
             if find_value is None:
                 condition = column.is_null()
+            elif isinstance(find_value, _Moment):  # a date-time parameter: the moment it holds
+                condition = column == pl.lit(find_value.micros, dtype=pl.Datetime("us", dtype.time_zone))
             elif isinstance(dtype, pl.Datetime) and dtype.time_zone:  # the local time of the zone, as the grid shows it
                 condition = column == pl.lit(find_value, dtype=pl.Datetime("us", dtype.time_zone))
             else:
                 condition = column == find_value
-            value = pl.lit(new_value, dtype=dtype)
+            if isinstance(new_value, _Moment):
+                value = pl.lit(new_value.micros, dtype=pl.Datetime("us", dtype.time_zone)).cast(dtype)
+            else:
+                value = pl.lit(new_value, dtype=dtype)
         branches = pl.when(condition).then(value) if branches is None else branches.when(condition).then(value)
     return branches.otherwise(otherwise)
 
 
 def _typed_pairs(pairs, dtype: pl.DataType):
-    """Find/replace values converted to the column type, or None if one doesn't fit."""
+    """Find/replace values converted to the column type, or None if one doesn't fit. In a column
+    with a time zone, a date-time parameter alone is the moment that it holds (a ``_Moment``)."""
     if not (dtype.is_numeric() or dtype in (pl.Date, pl.Datetime, pl.Boolean)):
         return None
     result = []
@@ -318,6 +335,8 @@ def _typed_pairs(pairs, dtype: pl.DataType):
                     value = dtypes.parse_integers(series, decimal)[0] if value.is_integer() else None
             elif dtype == pl.Date:
                 value = dtypes.parse_dates(series)[0]
+            elif dtype == pl.Datetime and dtype.time_zone and isinstance(text, parameters.DateTimeText):
+                value = _Moment(expressions.moment(text.value).to_physical()[0])  # one moment, as in Filter rows
             elif dtype == pl.Datetime:
                 value = dtypes.parse_datetimes(series)[0]
             else:

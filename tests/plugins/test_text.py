@@ -8,8 +8,10 @@ import polars as pl
 import pytest
 
 import tafl.plugins.text as text_plugin
-from tafl.api import ActionError, Cancelled, Context
+from tafl.api import ActionError, Cancelled, Context, expressions
+from tafl.api.parameters import DateTimeText
 from tafl.api.testing import StubContext
+from tafl.core import Engine, Parameter, Project
 
 
 def replace(act, df, columns, pairs, ctx=None, **options):
@@ -324,6 +326,7 @@ _WIDE = """
 import time
 import polars as pl
 from tafl.api.testing import StubContext
+from tafl.core import Engine, Parameter, Project
 from tafl.core import Registry
 
 registry = Registry()
@@ -413,6 +416,7 @@ import polars as pl
 import tafl.plugins.text as text_plugin
 from tafl.api import ActionError
 from tafl.api.testing import StubContext
+from tafl.core import Engine, Parameter, Project
 from tafl.core import Registry
 
 registry = Registry()
@@ -589,6 +593,80 @@ def test_replace_of_a_whole_number_compares_as_before_in_a_narrow_column(act, fi
     df = pl.DataFrame({"n": pl.Series([1, 2, 200], dtype=pl.UInt8)})
     out = replace(act, df, ["n"], [(find, "5")], match="whole")
     assert out.schema == df.schema and out["n"].to_list() == ([1, 5, 200] if find == "2" else [1, 2, 200])
+
+
+def replaced_rows(out: pl.DataFrame) -> list[int]:
+    """The numbers N of the rows whose D Replace made 2000-01-01."""
+    return [n for n, d in zip(out["N"], out["D"], strict=True) if d is not None and d.year == 2000]
+
+
+@pytest.mark.parametrize(
+    "local",  # on this PC's clock: winter, summer with microseconds, and the times of Berlin's clock changes
+    [dt.datetime(2026, 1, 1, 8, 30), dt.datetime(2026, 7, 1, 10, 0, 0, 123_457), dt.datetime(2026, 10, 25, 2, 30), dt.datetime(2026, 3, 29, 2, 30)],
+)
+@pytest.mark.parametrize("unit", ["us", "ns"])
+@pytest.mark.parametrize("zone", ["UTC", "Europe/Berlin", "America/New_York"])
+def test_replace_of_a_whole_date_time_with_a_date_time_parameter_alone_is_its_moment(act, zone, unit, local):
+    """A date-time parameter alone in Find or Replace with, such as {Now}, is the moment that it
+    holds (a time of this PC's clock), as Filter rows and Fill empty values read it, without a
+    check of the clock change: it is one moment. The same digits typed are the local time of the
+    column's zone, as the grid shows it. Before, a Find stopped with a technical message, and
+    Replace with wrote the digits as the local time of the column's zone: in a column whose zone
+    isn't this PC's, another moment."""
+    value = DateTimeText(local.isoformat(sep=" "), local)  # the setting "{Now}", filled in
+    moment = expressions.moment(local).dt.convert_time_zone(zone).dt.cast_time_unit(unit)
+    as_shown = pl.Series([local]).dt.replace_time_zone(zone, ambiguous="earliest", non_existent="null").dt.cast_time_unit(unit)
+    other = pl.Series([dt.datetime(2020, 1, 1)]).dt.replace_time_zone(zone).dt.cast_time_unit(unit)
+    df = pl.DataFrame({"D": pl.concat([moment, as_shown, other, pl.Series([None], dtype=moment.dtype)]), "N": [1, 2, 3, 4]})
+    kept = act("rows.filter", df, {"conditions": [{"column": "D", "operator": "=", "value": value}]})["N"].to_list()
+    assert replaced_rows(replace(act, df, ["D"], [(value, "2000-01-01")], match="whole")) == kept and 1 in kept
+    filled = act("rows.fill", df, {"columns": ["D"], "method": "value", "value": value})
+    assert replace(act, df, ["D"], [("", value)], match="whole").equals(filled)
+    typed = [(str(value), "2000-01-01")]
+    if zone == "Europe/Berlin" and local.month in (3, 10):
+        with pytest.raises(ActionError, match="a clock change"):
+            replace(act, df, ["D"], typed, match="whole")
+    else:
+        shown = [n for n, d in zip(df["N"], df["D"], strict=True) if d is not None and d == as_shown[0]]
+        assert replaced_rows(replace(act, df, ["D"], typed, match="whole")) == shown and 2 in shown
+
+
+@pytest.mark.parametrize("value", ["=TIMESTAMP '2026-01-01 08:30:00'", "2026-01-01 08:30"])
+def test_a_date_time_parameter_of_a_project_in_replace_is_the_moment_that_filter_rows_finds(registry, tmp_path, value):
+    """Through the engine: {Cut} alone in a row of Replace is filled in as a date-time parameter
+    (a formula or a fixed value), as in Filter rows and Fill empty values."""
+    moment = expressions.moment(dt.datetime(2026, 1, 1, 8, 30))  # 08:30 of this PC's clock, in UTC
+    digits = pl.Series([dt.datetime(2026, 1, 1, 8, 30)]).dt.replace_time_zone("UTC")  # 08:30 in UTC
+    utc = pl.concat([moment, digits, pl.Series([None], dtype=moment.dtype)])
+    pl.DataFrame({"D": utc, "N": [1, 2, 3]}).write_parquet(tmp_path / "times.parquet")
+    project = Project(name="Cut", parameters=[Parameter("Cut", value)])
+    project.path = tmp_path / "cut.tafl"
+    steps = {
+        "Filter": ("rows.filter", {"conditions": [{"column": "D", "operator": "=", "value": "{Cut}"}]}),
+        "Find": ("text.replace", {"columns": ["D"], "match": "whole", "replacements": [{"find": "{Cut}", "replace": "2000-01-01"}]}),
+        "Fill": ("rows.fill", {"columns": ["D"], "method": "value", "value": "{Cut}"}),
+        "New": ("text.replace", {"columns": ["D"], "match": "whole", "replacements": [{"find": "", "replace": "{Cut}"}]}),
+    }
+    for name, (action_id, params) in steps.items():
+        table = project.add_table(name)
+        project.add_step(table, "parquet.import", {"file": "times.parquet"})
+        project.add_step(table, action_id, params)
+    engine = Engine(project, registry)
+    results = {name: engine.evaluate(name).df for name in steps}
+    kept = results["Filter"]["N"].to_list()  # the moment, and 08:30 in UTC too on a PC in UTC
+    assert replaced_rows(results["Find"]) == kept and 1 in kept
+    assert results["New"].equals(results["Fill"]) and results["New"]["D"][2] == moment[0]
+
+
+def test_replace_with_a_date_time_parameter_in_a_column_without_a_time_zone_reads_its_digits(act):
+    """Without a time zone, a date-time parameter alone is its date and time, as before and as in
+    Filter rows."""
+    local = dt.datetime(2026, 7, 1, 10, 0, 0, 123_457)
+    value = DateTimeText(local.isoformat(sep=" "), local)
+    df = pl.DataFrame({"D": [local, dt.datetime(2020, 1, 1), None], "N": [1, 2, 3]})
+    assert replaced_rows(replace(act, df, ["D"], [(value, "2000-01-01")], match="whole")) == [1]
+    assert act("rows.filter", df, {"conditions": [{"column": "D", "operator": "=", "value": value}]})["N"].to_list() == [1]
+    assert replace(act, df, ["D"], [("", value)], match="whole")["D"].to_list() == [local, dt.datetime(2020, 1, 1), local]
 
 
 @pytest.mark.parametrize(

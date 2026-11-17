@@ -41,10 +41,19 @@ with a message that says what to change.
   `"collapsed": "false"`, or with any value that isn't on by this rule, is open now; before,
   every value but `false`, 0, `null`, an empty text and an empty list or object collapsed it.
   `true` and `false`, which the app writes, work as before.
-- **Replace** (*Whole cell value*) in a column of date-times with a time zone: a new value at a
-  time that a clock change repeats in that zone, such as 2026-10-25 02:30 in Europe/Berlin, stops
-  the step with a message now (see **Steps that work now**). Before, it became the first of the
-  two moments, 02:30+02:00, without a message.
+- **Replace** (*Whole cell value*) in a column of date-times with a time zone: a new value typed
+  at a time that a clock change repeats in that zone, such as 2026-10-25 02:30 in Europe/Berlin,
+  stops the step with a message now (see **Steps that work now**). Before, it became the first of
+  the two moments, 02:30+02:00, without a message.
+- **Replace** (*Whole cell value*) in a column of date-times with a time zone: a date-time
+  parameter alone in **Replace with**, such as `{Now}` with `=NOW()` or a fixed date-time, is the
+  moment that the parameter holds now, a time of this PC's clock, as in **Filter rows** and
+  **Fill empty values**. Before, its date and time were read as the local time of the column's
+  zone: in a column whose zone isn't this PC's, it wrote another moment, e.g. 08:30 UTC for 08:30
+  on a PC in Berlin, which is 07:30 UTC. In this PC's own zone, a time that a clock change
+  repeats became the first of the two moments, and one that it skips stopped the step with a
+  technical message; now the parameter is read as in **Filter rows**: the second of the two
+  moments, and a skipped time moved on by the change.
 
 ### Wrong results that are now right
 
@@ -66,9 +75,10 @@ with a message that says what to change.
   the step.
 - **Replace** (*Whole cell value*) finds a date-time in a column with a time zone, such as a
   column in UTC of a Parquet file or a SQL Server datetimeoffset read as UTC: a typed date-time is
-  the local time of the column's time zone, as the grid shows it, as in **Filter rows**. Before, a
-  date-time in **Find** stopped the step with a technical message. A **Find** or **Replace with**
-  at a time that a clock change skips or repeats in that zone stops the step with "Find:
+  the local time of the column's time zone, as the grid shows it, and a date-time parameter alone,
+  such as `{Now}`, is the moment that it holds, both as in **Filter rows**. Before, a date-time in
+  **Find** stopped the step with a technical message. A typed **Find** or **Replace with** at a
+  time that a clock change skips or repeats in that zone stops the step with "Find:
   '2026-03-29 02:30' doesn't happen in the time zone of column 'Ordered' (Europe/Berlin): a clock
   change skips it" or "… happens twice …: a clock change repeats it", as in **Filter rows**;
   before, a new value that the clock skips stopped with a technical message too.
