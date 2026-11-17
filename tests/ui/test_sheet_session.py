@@ -1217,6 +1217,20 @@ def test_a_folder_import_with_subfolders_reads_a_file_below_it(session, add, reg
     assert session.reads_file(path)
 
 
+@pytest.mark.parametrize(("stored", "reads"), [("false", False), ("no", False), ("maybe", False), (True, True), ("yes", True)])
+def test_include_subfolders_stored_as_a_text_is_read_as_the_import_reads_it(session, registry, tmp_path, stored, reads):
+    """E.g. "false" or "no" in a project file: the import doesn't read a file below the folder, and
+    so the window doesn't count it as read either ("maybe" stops the import)."""
+    (tmp_path / "in" / "sub").mkdir(parents=True)
+    for name in ("a.csv", "sub/b.csv"):
+        (tmp_path / "in" / name).write_text("x\n1\n", encoding="utf-8")
+    table = session.add_table(registry.actions["csv.import"], name="folder")
+    session.set_params(table.steps[0].id, {"source": "folder", "folder": str(tmp_path / "in"), "pattern": "*.csv", "subfolders": stored})
+    assert session.project.table(table.id).steps[0].params["subfolders"] == stored  # stored as it is
+    assert session.reads_file(tmp_path / "in" / "a.csv")
+    assert session.reads_file(tmp_path / "in" / "sub" / "b.csv") is reads
+
+
 def test_the_list_of_the_files_in_a_folder_counts_as_reading_the_file(session, add, registry, tmp_path):
     path = add("one.csv")
     session.delete_table(session.table.id)
