@@ -528,3 +528,64 @@ def test_a_stop_takes_effect_at_the_next_group_of_rows(act, monkeypatch, match, 
     with pytest.raises(Cancelled):
         act("text.replace", pl.DataFrame({"T": ["k1"]}), {"columns": ["T"], "match": match, "replacements": rows}, Context(cancel=cancel))
     assert groups == [1]  # the next group didn't start
+
+
+ZONED = pl.Series([dt.datetime(2026, 1, 1, 7, 30), dt.datetime(2026, 7, 1, 7, 30), None]).dt.replace_time_zone("UTC")
+
+
+@pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+@pytest.mark.parametrize(
+    ("zone", "shown", "other"),
+    [
+        ("Europe/Berlin", ["2026-01-01 08:30", "01.07.2026 09:30"], "2026-01-01 07:30"),  # other: the time in UTC
+        ("UTC", ["2026-01-01 07:30", "01.07.2026 07:30"], "2026-01-01 08:30"),  # other: the time in Berlin
+        ("America/New_York", ["2026-01-01 02:30", "2026-07-01 03:30"], "2026-01-01 07:30"),
+    ],
+)
+def test_replace_of_a_whole_date_time_in_a_column_with_a_time_zone_finds_the_time_as_shown(act, zone, shown, other, unit):
+    """A date-time in Find and Replace with is the local time of the column's time zone, as the grid
+    shows its values, as in Filter rows. Before, Find stopped the step with a technical message."""
+    df = pl.DataFrame({"D": ZONED.dt.convert_time_zone(zone).dt.cast_time_unit(unit), "N": [1, 2, 3]})
+    out = replace(act, df, ["D"], [(shown[0], "2026-02-01 10:00"), (shown[1], "31.12.2026"), ("", "2026-12-24 18:00")], match="whole")
+    assert out.schema == df.schema  # the same type, time zone and unit
+    local = out["D"].dt.replace_time_zone(None).to_list()
+    assert local == [dt.datetime(2026, 2, 1, 10), dt.datetime(2026, 12, 31), dt.datetime(2026, 12, 24, 18)]
+    assert replace(act, df, ["D"], [(other, "2026-02-01 10:00")], match="whole").equals(df)  # another time: no change
+    assert replace(act, df, ["D"], [("2300-01-01 10:00", "2026-02-01")], match="whole").equals(df)  # beyond nanoseconds: none
+    assert replace(act, df, ["D"], [(shown[0], "")], match="whole")["D"].to_list() == [None, *df["D"].to_list()[1:]]
+
+
+@pytest.mark.parametrize(
+    ("pairs", "problem"),
+    [
+        ([("2026-03-29 02:30", "2027-01-01")], "Find: '2026-03-29 02:30' doesn't happen in the time zone of column 'D' (Europe/Berlin): a clock change skips it"),
+        ([("2026-10-25 02:30", "2027-01-01")], "Find: '2026-10-25 02:30' happens twice in the time zone of column 'D' (Europe/Berlin): a clock change repeats it"),
+        ([("", "29.03.2026 02:30")], "Replace with: '29.03.2026 02:30' doesn't happen in the time zone of column 'D' (Europe/Berlin): a clock change skips it"),
+        ([("", " 2026-10-25 02:59:59 ")], "Replace with: '2026-10-25 02:59:59' happens twice in the time zone of column 'D' (Europe/Berlin): a clock change repeats it"),
+        ([("2026-01-01 08:30", "2026-01-02")] * 12 + [("2026-01-02", "2026-03-29 02:00")], "Replace with: '2026-03-29 02:00' doesn't happen"),
+    ],
+)
+def test_replace_of_a_whole_date_time_at_a_clock_change_stops_with_a_message(act, pairs, problem):
+    """A time that a clock change skips (spring) or repeats (autumn) in the column's time zone is
+    not one moment: the step stops with a message, as in Filter rows. Before, a Find stopped with a
+    technical message, a new value that the clock skips too, and one that it repeats became the
+    first of the two times without a message. In a column in UTC, the same times are just times."""
+    df = pl.DataFrame({"D": ZONED.dt.convert_time_zone("Europe/Berlin"), "U": ZONED})
+    with pytest.raises(ActionError) as error:
+        replace(act, df, ["U", "D"], pairs, match="whole")
+    assert str(error.value).startswith(problem)
+    times = {"2026-03-29 02:30", "2026-10-25 02:30", "2026-03-29 02:00", "2026-10-25 02:59:59"}
+    assert replace(act, df, ["U"], [(t, "2026-10-25 02:30") for t in times], match="whole")["U"].equals(ZONED)  # no such time in U
+    assert replace(act, df, ["D"], [("2026-03-29 03:00", "2026-10-25 03:00")], match="whole").equals(df)  # after the clock changes
+    ctx = StubContext()  # a Replace with that is no date-time: the column becomes text, and Find is a text
+    assert replace(act, df, ["D"], [("2026-03-29 02:30", "x")], ctx, match="whole")["D"].dtype == pl.String
+    assert ctx.warnings == ["'D' was converted to text because 'x' isn't a date-time"]
+
+
+@pytest.mark.parametrize("find", ["300", "-1", "2"])
+def test_replace_of_a_whole_number_compares_as_before_in_a_narrow_column(act, find):
+    """Only a column with a time zone compares in its own type: a Find of 300 or -1 doesn't stop
+    the step in a column of small whole numbers (0 to 255), it finds nothing, as before."""
+    df = pl.DataFrame({"n": pl.Series([1, 2, 200], dtype=pl.UInt8)})
+    out = replace(act, df, ["n"], [(find, "5")], match="whole")
+    assert out.schema == df.schema and out["n"].to_list() == ([1, 5, 200] if find == "2" else [1, 2, 200])

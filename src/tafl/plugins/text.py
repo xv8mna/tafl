@@ -56,7 +56,11 @@ def replace(df, p, ctx):
         kinds = {}  # read once for each type of column: 4,000 number columns took 22 s
         for name in p.columns:
             if (dtype := schema[name]) != pl.String:
-                typed[name] = kinds[dtype] if dtype in kinds else kinds.setdefault(dtype, _typed_pairs(pairs, dtype))
+                if dtype not in kinds:
+                    kinds[dtype] = _typed_pairs(pairs, dtype)
+                    if kinds[dtype] is not None and isinstance(dtype, pl.Datetime) and dtype.time_zone:
+                        _check_clock(name, dtype.time_zone, pairs, kinds[dtype])
+                typed[name] = kinds[dtype]
     df = _with_texts(df, [name for name in p.columns if typed.get(name) is None], schema, "Replace")
     if p.match == "whole":
         for name in p.columns:
@@ -230,6 +234,24 @@ def _replace_whole_values(
     return df.drop(selector(held.values())) if len(starts) > 1 else df
 
 
+def _check_clock(name: str, zone: str, pairs, typed) -> None:
+    """Whole cell values in the column ``name`` with the time zone ``zone``: a date-time in Find or
+    Replace with (``typed``, the ``pairs`` in the column's type) is the local time of that zone, as
+    the grid shows its values. A time that a clock change skips or repeats there is not one moment:
+    it stops the step, as in Filter rows. All rows at once: a step can have thousands of them."""
+    values = pl.Series([value for pair in typed for value in pair], dtype=pl.Datetime("us"))
+    moments = values.dt.replace_time_zone(zone, ambiguous="null", non_existent="null")
+    unclear = (moments.is_null() & values.is_not_null()).arg_true()
+    if unclear.is_empty():
+        return
+    index = unclear[0]
+    label, text = ("Find", "Replace with")[index % 2], pairs[index // 2][index % 2].strip()
+    where = f"in the time zone of column '{name}' ({zone})"
+    if values[index : index + 1].dt.replace_time_zone(zone, ambiguous="earliest", non_existent="null").null_count():
+        raise ActionError(f"{label}: '{text}' doesn't happen {where}: a clock change skips it")
+    raise ActionError(f"{label}: '{text}' happens twice {where}: a clock change repeats it")
+
+
 def _free_name(name: str, taken: set[str]) -> str:
     """``name``, or with a number after it when the table has a column of that name."""
     candidate, number = name, 1
@@ -261,7 +283,12 @@ def _replace_whole(
             value = pl.lit(new if new != "" else None, dtype=pl.String)
         else:
             find_value, new_value = typed[index]
-            condition = column.is_null() if find_value is None else column == find_value
+            if find_value is None:
+                condition = column.is_null()
+            elif isinstance(dtype, pl.Datetime) and dtype.time_zone:  # the local time of the zone, as the grid shows it
+                condition = column == pl.lit(find_value, dtype=pl.Datetime("us", dtype.time_zone))
+            else:
+                condition = column == find_value
             value = pl.lit(new_value, dtype=dtype)
         branches = pl.when(condition).then(value) if branches is None else branches.when(condition).then(value)
     return branches.otherwise(otherwise)
