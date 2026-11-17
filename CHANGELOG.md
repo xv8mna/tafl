@@ -5,7 +5,58 @@
 This version describes itself for programs that write or check project files: `tafl catalog
 --json` lists every action with its settings, the connection types and the formula functions. A
 step with a setting that its action doesn't have, e.g. a misspelled name in a project file, says
-so now.
+so now, and **Replace** with thousands of rows works. Some results of stored projects change:
+**Results that change** lists them first.
+
+### Results that change
+
+Where a project of 0.6.5 meets one of these changes, it gives other results now, or a step stops
+with a message that says what to change.
+
+- **A setting that is on or off** (a check box in the step's settings), stored in a project file
+  as a text or a number, e.g. by a program that writes every value as a text: the texts "false",
+  "no" and "0" (in any case, with spaces around them) are off now. Before, they were on, so
+  `"header": "false"` made the first row of data the column names. An empty text gives the
+  setting's default now; before, it was off. Any other text, a number other than 1 and 0, a list
+  or an object stops the step now, with a message such as "First row has the column names:
+  "maybe" is not true or false"; before, it was on (an empty list or object was off). `true` and
+  `false`, which the app writes, the texts "true", "yes" and "1", and the numbers 1 and 0 work as
+  before. In the settings of a connection, the step that uses the connection stops
+  with "Connection 'Sales': Trust the server certificate: "maybe" is not true or false"; before,
+  `"trust_certificate": "false"` trusted the server certificate.
+
+### Wrong results that are now right
+
+- **Import Excel files** of a folder without files, with *Skip the rest of the table* and all or
+  matching sheets: the empty table has the Sheet column too, as with *Continue with an empty
+  table*. Before, it had only the columns with the file name and the path.
+
+### Steps that work now
+
+- **Replace** with many rows no longer closes the window. From about 450 rows (*Text inside the
+  value*, *Regular expression*) or 1,200 rows (*Whole cell value*, fewer in several columns), the
+  calculation overflowed, and the window closed without a message: changes that weren't saved
+  were lost. The rows now go in groups, with the same results as before: 4,000 rows take 0.1 s
+  (*Text inside the value*) to 1.4 s (*Regular expression*) on a few cells of text, and a table of
+  100,000 rows with 1,000 rows of Replace takes about 5 s. Many columns are quicker than before
+  too: 300 columns of 1,000 rows with 100 rows of Replace take 0.8 s instead of 3.9 s, and 25 MB
+  of memory instead of 1.4 GB.
+
+### Plain messages
+
+- **A setting that the action doesn't have** gets a warning on its step: "Setting 'delimeter' is
+  not known (did you mean 'delimiter'?): it has no effect", also in the rows of a list
+  ("Conditions, row 2: setting 'colum' is not known …", once for a name in several rows), and in
+  the settings of a connection, on each step that uses it ("Connection 'Sales': setting 'sever'
+  is not known (did you mean 'server'?): it has no effect"). Before,
+  such a name, e.g. misspelled in a project file written by hand or by a program, was kept and
+  its setting had the default, without a message. The step runs as before, and the exit codes
+  don't change. Names that start with `_` are Tafl's own marks and get no warning. A row of a
+  list that is no set of settings, e.g. the text "at most 2 rows" in the checks of Check data,
+  gets a warning too: "Checks, row 1: "at most 2 rows" is not a row of settings: a row with the
+  defaults is used". Before, the row had the defaults without a message.
+
+### Command line
 
 - **Command line**: `tafl catalog` lists every action with its settings, by category, and the
   connection types. `tafl catalog --json` writes the catalog as JSON: every action with its
@@ -18,17 +69,9 @@ so now.
   complete all the same.
   [docs/catalog.md](https://github.com/xv8mna/tafl/blob/main/docs/catalog.md) describes the
   format and its version rules.
-- **A setting that the action doesn't have** gets a warning on its step: "Setting 'delimeter' is
-  not known (did you mean 'delimiter'?): it has no effect", also in the rows of a list
-  ("Conditions, row 2: setting 'colum' is not known …", once for a name in several rows), and in
-  the settings of a connection, on each step that uses it ("Connection 'Sales': setting 'sever'
-  is not known (did you mean 'server'?): it has no effect"). Before,
-  such a name, e.g. misspelled in a project file written by hand or by a program, was kept and
-  its setting had the default, without a message. The step runs as before, and the exit codes
-  don't change. Names that start with `_` are Tafl's own marks and get no warning. A row of a
-  list that is no set of settings, e.g. the text "at most 2 rows" in the checks of Check data,
-  gets a warning too: "Checks, row 1: "at most 2 rows" is not a row of settings: a row with the
-  defaults is used". Before, the row had the defaults without a message.
+
+### Tools and plugins
+
 - Plugins: an action declares the columns with fixed names that its steps add with
   `adds_columns=[AddedColumn(name, type, when=...)]` (from `tafl.api`); an import built with
   `source_params` uses `adds_columns=source_columns()`. The imports of CSV, Excel and Parquet
@@ -36,9 +79,9 @@ so now.
   type name of Change type, or a `when` that names no setting of the action or a value that the
   setting can't have (no option of a choice, not true or false for a Bool), is refused when the
   action is declared. The plugin API stays at version 1.
-- **Import Excel files** of a folder without files, with *Skip the rest of the table* and all or
-  matching sheets: the empty table has the Sheet column too, as with *Continue with an empty
-  table*. Before, it had only the columns with the file name and the path.
+- Plugins: a `P.Bool` setting reads a stored value as **Results that change** says, also in the
+  actions and connection types of plugins, and its check reports any other value ("… is not true
+  or false"). The plugin API stays at version 1.
 
 ## 0.6.5 – 2026-11-12
 
