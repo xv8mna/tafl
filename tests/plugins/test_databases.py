@@ -481,6 +481,43 @@ def test_an_import_gives_read_only_to_a_connector_that_overrides_connect_read_on
     assert opened == [True, "connect_read_only"]
 
 
+class _OwnOpenWithoutCheck(_SqliteFile):
+    """A connection type of a plugin whose own ``open`` connects without ``Connector.open``, with
+    a setting that is on or off; it notes each connection that it opens."""
+
+    params = (P.File("file", "File"), P.Bool("trust", "Trust the server certificate", default=True))
+
+    def __init__(self):
+        self.opened = []
+
+    def open(self, settings, ctx, *, create=False):
+        self.opened.append("open")
+        return api_database.Database(self, sqlite3.connect(ctx.resolve_path(settings["file"])))
+
+
+@pytest.mark.parametrize("stored", ["maybe", 2])
+def test_a_connection_type_with_its_own_open_doesnt_connect_with_another_value(stored, project, registry, monkeypatch, tmp_path):
+    """A setting that is on or off and holds another value stops every way to the connection
+    before the type's own ``open``, by the rule of ``setting_problems``: ``open_database``, the
+    connections of a plugin's tests, and a step, which says once which connection it is."""
+    connector = _OwnOpenWithoutCheck()
+    settings = {"file": str(tmp_path / "data.db"), "trust": stored}
+    problem = f"Trust the server certificate: {json.dumps(stored)} is not true or false"
+    with pytest.raises(ActionError) as error:
+        api_database.open_database(connector, settings, Context())
+    assert str(error.value) == problem
+    with pytest.raises(ActionError) as error:
+        StubContext(connections={"db": (connector, settings)}).database("db", read_only=True)
+    assert str(error.value) == problem
+    monkeypatch.setitem(registry.connectors, "plugin", connector)
+    project.add_connection("own", "plugin", **settings)
+    assert import_table(project, registry, connection="own", table="orders").first_error == f"Connection 'own': {problem}"
+    assert connector.opened == []
+    project.connections[-1].settings["trust"] = "no"
+    assert import_table(project, registry, connection="own", table="orders").df["id"].to_list() == [1, 2]
+    assert connector.opened == ["open"]
+
+
 def test_a_connector_that_knows_nothing_of_read_only_still_gets_create():
     asked = []
 

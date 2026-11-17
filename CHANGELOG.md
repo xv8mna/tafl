@@ -126,6 +126,11 @@ with a message that says what to change.
 - Plugins: a `P.Bool` setting reads a stored value as **Results that change** says, also in the
   actions and connection types of plugins, and its check reports any other value ("… is not true
   or false"). The plugin API stays at version 1.
+- Plugin API, addition (it stays at version 1): `Connector.setting_problems(settings)` gives the
+  problems of a connection's stored settings, such as "Trust the server certificate: "maybe" is
+  not true or false". A connection doesn't open while it finds one: not for a step, not for
+  **Test connection** and not in a plugin's tests (`StubContext`), also for a connection type with
+  its own `open`.
 
 ## 0.6.5 – 2026-11-12
 

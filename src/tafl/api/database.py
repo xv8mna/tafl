@@ -223,7 +223,8 @@ class Connector:
     def setting_problems(self, settings: Mapping[str, Any]) -> list[str]:
         """Why a connection with these stored settings doesn't open: a setting that is on or off,
         shown, and holds another value (e.g. "maybe" in a project file; ``Bool`` reads the
-        stored values). ``open`` stops with them, also for a test of the connection."""
+        stored values). ``open`` and ``open_database`` stop with them before anything connects,
+        also for a test of the connection."""
         params = resolve(self.params, settings)
         return [
             problem
@@ -250,7 +251,14 @@ def open_database(
 ) -> Database:
     """``connector.open``. A connector may override ``open`` without the keyword ``read_only``, so
     that keyword goes only to one that overrides ``connect_read_only``: others have no use for it.
-    A fake in a plugin's tests need not be a ``Connector`` at all."""
+    A fake in a plugin's tests need not be a ``Connector`` at all.
+
+    The problems of the settings (``Connector.setting_problems``) stop it before anything
+    connects, also for a connector whose own ``open`` doesn't call ``Connector.open``: no
+    connection opens with a guess, in a step, in a test of the connection or in a plugin's tests.
+    (A step says first which connection it is.)"""
+    if (problems_of := getattr(connector, "setting_problems", None)) is not None and (problems := problems_of(settings)):
+        raise ActionError("\n".join(problems))
     default = Connector.connect_read_only
     if read_only and getattr(type(connector), "connect_read_only", default) is not default:
         return connector.open(settings, ctx, create=create, read_only=True)

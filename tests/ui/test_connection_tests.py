@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 
-from tafl.api import ActionError, Connector, P
+from tafl.api import ActionError, Connector, Database, P
 from tafl.core import Connection
 from tafl.ui.connections_dialog import ConnectionsDialog
 
@@ -188,6 +188,28 @@ def test_the_test_of_a_setting_that_is_on_or_off_with_another_value_doesnt_conne
     """As the steps that use the connection: "maybe" is no guess for true."""
     shown = result_of_the_test(Trusting(), session, qtbot, monkeypatch, tmp_path, trust=stored)
     assert shown == f"Trust the server certificate: {json.dumps(stored)} is not true or false"
+
+
+class OwnOpenWithoutCheck(Trusting):
+    """``open`` of its own, which connects without ``Connector.open``; it notes each connection."""
+
+    def __init__(self):
+        self.opened = []
+
+    def open(self, settings, ctx, *, create=False):
+        self.opened.append("open")
+        return Database(self, sqlite3.connect(settings["file"]))
+
+
+@pytest.mark.parametrize("stored", ["maybe", 2])
+def test_the_test_of_a_type_with_its_own_open_doesnt_connect_with_another_value(stored, session, qtbot, monkeypatch, tmp_path):
+    """Also a connection type whose own ``open`` doesn't call ``Connector.open``: the test checks
+    the settings before it, as the steps that use the connection do."""
+    connector = OwnOpenWithoutCheck()
+    shown = result_of_the_test(connector, session, qtbot, monkeypatch, tmp_path, trust=stored)
+    assert shown == f"Trust the server certificate: {json.dumps(stored)} is not true or false" and connector.opened == []
+    assert result_of_the_test(connector, session, qtbot, monkeypatch, tmp_path, trust="no") == "Connected — 1 table or view"
+    assert connector.opened == ["open"]
 
 
 @pytest.mark.parametrize("stored", [True, False, "false", "no", ""])
