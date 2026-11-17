@@ -1206,3 +1206,18 @@ def test_the_listed_values_are_those_the_run_used(tmp_path, capsys):
     assert main(["show", str(path), "--table", "Orders"]) == 0
     output = capsys.readouterr().out
     assert output.index("Parameters") < output.index("Orders") < output.index(" row × ")
+
+
+@pytest.mark.parametrize("command", ["run", "show"])
+@pytest.mark.parametrize("kind", ["step", "table"])
+def test_a_step_or_table_stored_neither_on_nor_off_stops_with_the_value(no_plugins, tmp_path, capsys, command, kind):
+    """E.g. "enabled": "maybe" in a project file written by a program: no guess, exit code 1."""
+    path = _one_table(tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    (data["tables"][0] if kind == "table" else data["tables"][0]["steps"][0]).update(enabled="maybe")
+    path.write_text(json.dumps(data), encoding="utf-8")
+    arguments = [command, str(path)] + (["--table", "Orders"] if command == "show" else [])
+    assert main(arguments) == 1
+    label = "Table is on" if kind == "table" else "Step is on"
+    assert f'{label}: "maybe" is not true or false' in capsys.readouterr().out
+    assert not (tmp_path / "out.csv").exists()

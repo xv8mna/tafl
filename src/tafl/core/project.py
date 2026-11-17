@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from tafl import APP_NAME
-from tafl.api import Action
+from tafl.api import Action, P, ValidationContext
 
 FORMAT = "tafl-project"
 FORMAT_VERSION = 1
@@ -29,6 +29,25 @@ class ProjectError(Exception):
     """The project file is invalid, or a table/connection does not exist."""
 
 
+# Whether a step or table is on, and whether a group is collapsed: read as the value of a setting
+# that is on or off ("false", "no" and "0" are off; nothing or "" is the default)
+_STEP_ON = P.Bool("enabled", "Step is on", default=True)
+_TABLE_ON = P.Bool("enabled", "Table is on", default=True)
+_COLLAPSED = P.Bool("collapsed", "Collapsed", default=False)
+
+
+def _read_on(flag: P.Bool, stored: Any) -> tuple[bool, Any]:
+    """The stored value as true or false, and None; or, for a value that is neither (e.g. "maybe"),
+    the default and that value, which is kept: the step or table stops with ``_problem``."""
+    value = flag.normalize(stored)
+    return (value, None) if isinstance(value, bool) else (flag.default, stored)
+
+
+def _problem(flag: P.Bool, stored: Any) -> str | None:
+    """'Step is on: "maybe" is not true or false', or None for a stored value that was true or false."""
+    return None if stored is None else flag.check(stored, ValidationContext(), {})[0]
+
+
 @dataclass
 class Step:
     action: str
@@ -37,10 +56,19 @@ class Step:
     version: int = 1  # version of the action that wrote ``params`` (see Action.migrate)
     enabled: bool = True
     note: str = ""
+    # "enabled" as a project file stored it when it is neither true nor false (e.g. "maybe"): kept
+    # until the step is switched on or off, and the step stops with ``enabled_problem``
+    stored_enabled: Any = None
+
+    @property
+    def enabled_problem(self) -> str | None:
+        return _problem(_STEP_ON, self.stored_enabled)
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"id": self.id, "action": self.action, "version": self.version}
-        if not self.enabled:
+        if self.stored_enabled is not None:
+            data["enabled"] = self.stored_enabled
+        elif not self.enabled:
             data["enabled"] = False
         if self.note:
             data["note"] = self.note
@@ -49,13 +77,15 @@ class Step:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Step:
+        enabled, stored = _read_on(_STEP_ON, data.get("enabled"))
         return cls(
             action=str(data["action"]),
             params=dict(data.get("params") or {}),
             id=str(data.get("id") or ""),
             version=int(data.get("version", 1)),
-            enabled=bool(data.get("enabled", True)),
+            enabled=enabled,
             note=str(data.get("note") or ""),
+            stored_enabled=stored,
         )
 
 
@@ -69,10 +99,17 @@ class Table:
     group: str = ""  # id of the group the table belongs to ("" = none)
     enabled: bool = True  # a table that is off is not calculated, and tables using it are skipped
     filters: list[dict[str, Any]] = field(default_factory=list)  # instant filters of the data grid (ui.filters)
+    stored_enabled: Any = None  # as Step.stored_enabled: the table's calculation stops with enabled_problem
+
+    @property
+    def enabled_problem(self) -> str | None:
+        return _problem(_TABLE_ON, self.stored_enabled)
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"id": self.id, "name": self.name}
-        if not self.enabled:
+        if self.stored_enabled is not None:
+            data["enabled"] = self.stored_enabled
+        elif not self.enabled:
             data["enabled"] = False
         if self.note:
             data["note"] = self.note
@@ -87,6 +124,7 @@ class Table:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Table:
+        enabled, stored = _read_on(_TABLE_ON, data.get("enabled"))
         return cls(
             name=str(data["name"]),
             id=str(data.get("id") or ""),
@@ -94,8 +132,9 @@ class Table:
             note=str(data.get("note") or ""),
             position=_position_from_json(data.get("position")),
             group=str(data.get("group") or ""),
-            enabled=bool(data.get("enabled", True)),
+            enabled=enabled,
             filters=[dict(f) for f in data.get("filters") or [] if isinstance(f, dict) and f.get("column")],
+            stored_enabled=stored,
         )
 
 
@@ -124,7 +163,7 @@ class Group:
             name=str(data.get("name") or "Group"),
             id=str(data.get("id") or ""),
             color=str(data.get("color") or "blue"),
-            collapsed=bool(data.get("collapsed", False)),
+            collapsed=_read_on(_COLLAPSED, data.get("collapsed"))[0],  # another value: the default (it is only the view)
             position=_position_from_json(data.get("position")),
         )
 

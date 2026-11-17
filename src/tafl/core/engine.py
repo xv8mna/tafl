@@ -603,6 +603,15 @@ class _Evaluation:
             return TableResult(table_id, error="Circular reference: " + " → ".join(map(self.engine.table_name, cycle)))
         table = self.project.table(table_id)
         result = TableResult(table.id)
+        if (odd := table.enabled_problem) is not None:
+            # Neither on nor off in the project file: no guess. The first step shows it, as an error
+            result.error = odd
+            if table.steps:
+                result.steps = [_error(table.steps[0], odd)]
+                result.steps += [StepResult(s.id, Status.BLOCKED, error="An earlier step has an error") for s in table.steps[1:]]
+            if full:
+                self.results[table_id] = result
+            return result
         result.skipped = self._skip_reason(table)
         if result.skipped is not None:
             if full:
@@ -806,6 +815,8 @@ class _Evaluation:
     ) -> StepResult:
         """``imported``: the files the first step of the table read from a folder."""
         _stop_if(self.cancel)
+        if (odd := step.enabled_problem) is not None:  # neither on nor off in the project file: no guess
+            return _error(step, odd)
         action = self.registry.actions.get(step.action)
         if action is None:
             return _error(step, f"Unknown action '{step.action}'. Is the plugin that provides it installed?")

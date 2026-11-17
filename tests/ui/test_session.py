@@ -1,3 +1,4 @@
+import json
 import re
 import tempfile
 from pathlib import Path
@@ -308,3 +309,51 @@ def test_a_circle_that_uses_a_table_that_is_off_shows_skipped_whichever_table_is
         assert [session.table_status(t.id) for t in (a, b)] == ["skipped", "skipped"]
     assert session.results[a.id].skipped == "uses “B”, which is skipped"
     assert session.results[b.id].skipped == "uses “C”, which is turned off"
+
+
+def _with_odd_values(tmp_path) -> Path:
+    """Orders (its filter step stored "enabled": "maybe") and Summary, which is off, as files store them."""
+    (tmp_path / "orders.csv").write_text("Id;N\n1;5\n2;50\n", encoding="utf-8")
+    steps = [
+        {"id": "s1", "action": "csv.import", "version": 3, "params": {"file": "orders.csv", "delimiter": ";"}},
+        {"id": "s2", "action": "rows.filter_formula", "version": 1, "params": {"condition": "[N] > 6"}, "enabled": "maybe"},
+    ]
+    tables = [
+        {"id": "t1", "name": "Orders", "enabled": "maybe", "steps": steps},
+        {"id": "t2", "name": "Summary", "enabled": False, "steps": [{"id": "s3", "action": "table.derive", "version": 1, "params": {"table": "t1"}}]},
+    ]
+    path = tmp_path / "odd.tafl"
+    path.write_text(json.dumps({"format": "tafl-project", "format_version": 1, "name": "odd", "tables": tables}), encoding="utf-8")
+    return path
+
+
+def test_turning_on_a_table_stored_neither_on_nor_off_calculates_it_again(qtbot, settle, session, tmp_path):
+    """Turn on for a selection of it and a table that is off: both are on, with a real true, and
+    the table that had stopped with its message is calculated again."""
+    session.open_project(_with_odd_values(tmp_path), trusted=True)
+    session.find_step("s2")[1].stored_enabled = None  # the table's own value only
+    third = session.add_table(session.registry.actions["csv.import"], name="Third")
+    session.set_params(third.steps[0].id, {"file": str(tmp_path / "orders.csv"), "delimiter": ";"})
+    session.select_table("t1")
+    settle(session)
+    assert session.result.first_error == 'Table is on: "maybe" is not true or false'
+    session.select_table(third.id)  # a table that doesn't use it: it is calculated again as one that changed
+    settle(session)
+    session.set_table_enabled(["t1", "t2"], True)
+    settle(session)
+    assert [(t.enabled, t.stored_enabled) for t in session.project.tables[:2]] == [(True, None), (True, None)]
+    assert session.results["t1"].ok and session.results["t1"].df.height == 1
+
+
+def test_a_copy_of_a_step_stored_neither_on_nor_off_stops_too(qtbot, settle, session, tmp_path):
+    """No guess in the copy either: it keeps the stored value, as a copy of a step that is off is off."""
+    session.open_project(_with_odd_values(tmp_path), trusted=True)
+    session.set_table_enabled(["t1"], True)
+    copy_ = session.duplicate_step("s2")
+    session.set_enabled("s2", True)  # the original switched on: a real true, and it runs
+    settle(session)
+    assert copy_.stored_enabled == "maybe" and session.step_result(session.find_step("s2")[1]).status == Status.OK
+    assert session.step_result(copy_).error == 'Step is on: "maybe" is not true or false'
+    session.set_enabled(copy_.id, True)
+    settle(session)
+    assert (copy_.enabled, copy_.stored_enabled) == (True, None) and session.result.ok

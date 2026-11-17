@@ -733,7 +733,7 @@ class Session(QObject):
         copy_.filters = copy.deepcopy(original.filters)
         for step in original.steps:
             new = self.project.add_step(copy_, step.action, copy.deepcopy(step.params), version=step.version)
-            new.enabled, new.note = step.enabled, step.note
+            new.enabled, new.note, new.stored_enabled = step.enabled, step.note, step.stored_enabled
         self.table_id, self.step_id = copy_.id, None
         self._edited(structure=True)
         self.selection_changed.emit()
@@ -794,11 +794,11 @@ class Session(QObject):
         """Turn tables on or off. A table that is off is not calculated or run, and tables that
         use it are skipped."""
         tables = [self.project.table(t) for t in table_ids]
-        if all(t.enabled == enabled for t in tables):
+        if all(t.enabled == enabled and t.stored_enabled is None for t in tables):
             return
         self._checkpoint()
         for table in tables:
-            table.enabled = enabled
+            table.enabled, table.stored_enabled = enabled, None  # true or false, also for "maybe" in the file
         self._edited(structure=True)
 
     def set_groups_collapsed(
@@ -1150,9 +1150,9 @@ class Session(QObject):
 
     def set_enabled(self, step_id: str, enabled: bool) -> None:
         _, step = self.find_step(step_id)
-        if step.enabled != enabled:
+        if step.enabled != enabled or step.stored_enabled is not None:
             self._checkpoint()
-            step.enabled = enabled
+            step.enabled, step.stored_enabled = enabled, None  # true or false, also for "maybe" in the file
             self._edited(step_id=step_id)
 
     def set_note(self, step_id: str, note: str) -> None:
@@ -1188,7 +1188,7 @@ class Session(QObject):
         new = self.project.add_step(
             table, step.action, copy.deepcopy(step.params), version=step.version, index=table.steps.index(step) + 1
         )
-        new.enabled, new.note = step.enabled, step.note
+        new.enabled, new.note, new.stored_enabled = step.enabled, step.note, step.stored_enabled
         self.step_id = new.id
         self._edited(structure=True)
         self.selection_changed.emit()
@@ -1339,7 +1339,10 @@ class Session(QObject):
         then = self.project if same_tables else self._as_before(before)  # the tables and names before
         selected = self.table_id
         if selected in changed and selected in before and before[selected][:2] == after[selected][:2]:
-            steps = [Step(action=a, params=p, id=i, version=v, enabled=e) for i, a, v, e, p in before[selected][2]]
+            steps = [
+                Step(action=a, params=p, id=i, version=v, enabled=on, stored_enabled=stored)
+                for i, a, v, (on, stored), p in before[selected][2]
+            ]
             if self._dependencies(steps, then) == self._dependencies(self.project.table(selected).steps, self.project):
                 changed.discard(selected)  # only its steps changed, not the tables they use
         if not changed:
@@ -1364,10 +1367,10 @@ class Session(QObject):
         with its steps now, a deleted one without steps (what it used doesn't matter here)."""
         now = {table.id: table for table in self.project.tables}
         tables = []
-        for id_, (name, enabled, _steps) in before.items():
+        for id_, (name, (enabled, stored), _steps) in before.items():
             table = now.get(id_)
             if table is None:
-                table = Table(name=name, id=id_, enabled=enabled)
+                table = Table(name=name, id=id_, enabled=enabled, stored_enabled=stored)
             elif table.name != name:
                 table = dataclasses.replace(table, name=name)
             tables.append(table)
@@ -1502,8 +1505,10 @@ def waiting_text(waiting: tuple[str, int, list[str]], *, capital: bool = False) 
 
 
 def _calculated(table: Table) -> tuple:
-    """What a calculation of the table reads: not its place on the map, group, filters or notes."""
-    return table.name, table.enabled, [(s.id, s.action, s.version, s.enabled, s.params) for s in table.steps]
+    """What a calculation of the table reads: not its place on the map, group, filters or notes.
+    On or off is (enabled, stored_enabled): a value in the file that is neither stops the step."""
+    steps = [(s.id, s.action, s.version, (s.enabled, s.stored_enabled), s.params) for s in table.steps]
+    return table.name, (table.enabled, table.stored_enabled), steps
 
 
 def _reached(direct: dict[str, set[str]], table_ids: Iterable[str]) -> set[str]:

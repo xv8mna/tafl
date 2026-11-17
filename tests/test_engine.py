@@ -1,5 +1,6 @@
 import contextlib
 import importlib.util
+import json
 import os
 import shutil
 import sqlite3
@@ -227,6 +228,57 @@ def test_the_warnings_stay_when_the_settings_cant_be_read(project, registry, mon
     step = Engine(project, registry).evaluate("Orders").steps[0]
     assert step.error == "Could not read the step settings: a plugin's own way of filling in failed"
     assert step.messages == [("warning", MISSPELLED)]
+
+
+def _reloaded(project: Project, change) -> Project:
+    """The project saved, its file changed by ``change`` (the data as JSON), and opened again."""
+    project.save(project.path)
+    data = json.loads(project.path.read_text(encoding="utf-8"))
+    change(data)
+    project.path.write_text(json.dumps(data), encoding="utf-8")
+    return Project.load(project.path)
+
+
+@pytest.mark.parametrize("mode", [Mode.PREVIEW, Mode.RUN])
+@pytest.mark.parametrize("stored", ["maybe", 2, []])
+def test_a_step_stored_neither_on_nor_off_stops_and_names_the_value(project, registry, tmp_path, mode, stored):
+    """E.g. "enabled": "maybe" in a project file: no guess. The step stops with the value, the
+    steps after it don't run, and the export doesn't write; a table that uses it has an error."""
+    user = project.add_table("Uses")
+    project.add_step(user, "table.derive", {"table": "Orders"})
+    project = _reloaded(project, lambda data: data["tables"][0]["steps"][1].update(enabled=stored))
+    engine = Engine(project, registry)
+    result = engine.evaluate("Orders", mode=mode)
+    assert statuses(result) == [Status.OK, Status.ERROR, Status.BLOCKED, Status.BLOCKED]
+    assert result.steps[1].error == f"Step is on: {json.dumps(stored)} is not true or false"
+    assert not (tmp_path / "out" / "orders.csv").exists()
+    assert engine.evaluate("Uses", mode=mode).first_error.endswith(f"Step is on: {json.dumps(stored)} is not true or false")
+
+
+@pytest.mark.parametrize("mode", [Mode.PREVIEW, Mode.RUN])
+def test_a_table_stored_neither_on_nor_off_stops_and_names_the_value(project, registry, tmp_path, mode):
+    """Its first step shows the problem, as an error; none of its steps runs, its export doesn't
+    write, and a table that uses it has an error (it is not skipped as if it were off)."""
+    user = project.add_table("Uses")
+    project.add_step(user, "table.derive", {"table": "Orders"})
+    project = _reloaded(project, lambda data: data["tables"][0].update(enabled="maybe"))
+    engine = Engine(project, registry)
+    result = engine.evaluate("Orders", mode=mode)
+    message = 'Table is on: "maybe" is not true or false'
+    assert result.error == message and result.first_error == message and result.skipped is None
+    assert statuses(result) == [Status.ERROR, Status.BLOCKED, Status.BLOCKED, Status.BLOCKED] and result.steps[0].error == message
+    assert not (tmp_path / "out" / "orders.csv").exists()
+    used = engine.evaluate("Uses", mode=mode)
+    assert used.skipped is None and message in used.first_error
+
+
+@pytest.mark.parametrize(("stored", "off"), [("false", True), ("No", True), ("0", True), ("", False), (None, False), ("yes", False)])
+def test_a_step_or_table_stored_as_a_text_is_on_or_off_by_the_rule_of_settings(project, registry, stored, off):
+    """"false" is off now (before, it was on); "" and null are on (before, they were off)."""
+    step = _reloaded(project, lambda data: data["tables"][0]["steps"][1].update(enabled=stored))
+    assert statuses(Engine(step, registry).evaluate("Orders"))[1] == (Status.DISABLED if off else Status.OK)
+    table = _reloaded(project, lambda data: data["tables"][0].update(enabled=stored))
+    assert (Engine(table, registry).evaluate("Orders").skipped == "turned off") is off
 
 
 @pytest.mark.parametrize(("stored", "rows"), [("false", 4), ("No", 4), ("0", 4), ("true", 3), ("", 3), (0, 4)])

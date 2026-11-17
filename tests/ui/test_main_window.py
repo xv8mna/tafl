@@ -1,10 +1,11 @@
+import json
 import sys
 import threading
 from pathlib import Path
 
 import pytest
 from PySide6.QtCore import qVersion
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from tafl import GUIDE_URL
 from tafl.core import Engine
@@ -157,3 +158,67 @@ def test_user_guide_opens_the_page_of_the_download_or_the_guide_on_github(window
     (tmp_path / "Guide.html").unlink()  # removed from the folder: the guide on GitHub
     window.guide_action.trigger()
     assert opened.pop().toString() == GUIDE_URL
+
+
+def _odd_project(tmp_path) -> Path:
+    """Orders: its filter step stored "enabled": "maybe"; Summary (in a collapsed group, stored
+    as "maybe" too) stored "enabled": 2. As a program may write a project file."""
+    (tmp_path / "orders.csv").write_text("Id;N\n1;5\n2;50\n", encoding="utf-8")
+    steps = [
+        {"id": "s1", "action": "csv.import", "version": 3, "params": {"file": "orders.csv", "delimiter": ";"}},
+        {"id": "s2", "action": "rows.filter_formula", "version": 1, "params": {"condition": "[N] > 6"}, "enabled": "maybe"},
+    ]
+    tables = [
+        {"id": "t1", "name": "Orders", "steps": steps},
+        {"id": "t2", "name": "Summary", "enabled": 2, "group": "g1", "steps": [{"id": "s3", "action": "table.derive", "version": 1, "params": {"table": "t1"}}]},
+    ]
+    groups = [{"id": "g1", "name": "Group", "color": "blue", "collapsed": "maybe"}]
+    path = tmp_path / "odd.tafl"
+    path.write_text(json.dumps({"format": "tafl-project", "format_version": 1, "name": "odd", "groups": groups, "tables": tables}), encoding="utf-8")
+    return path
+
+
+def test_steps_and_tables_stored_neither_on_nor_off_in_the_window(window, session, settle, tmp_path):
+    """The panels, the map and the Find panel show them without a crash; the step stops with its
+    message; switching it off writes a real false with an undo step, and undo brings the stored
+    value back, which a save keeps as it is."""
+    session.open_project(_odd_project(tmp_path), trusted=True)
+    window.resize(1500, 900)
+    window.show()
+    session.select_table("t1")
+    session.select_step("s2")
+    settle(session)
+    window.tables_panel.rebuild()
+    window.steps_panel.update_items()
+    window.settings_panel.refresh()
+    assert window.settings_panel.enabled.isChecked()  # not off: it stops with an error
+    assert session.step_result(session.step).error == 'Step is on: "maybe" is not true or false'
+    window.show_map(True)
+    window.map_view.rebuild()
+    QApplication.processEvents()
+    window.show_map(False)
+    window.open_find()
+    window.find_panel.set_text("Orders")
+    window.find_panel.refresh()
+    QApplication.processEvents()
+    window.find_dock.hide()
+    session.select_table("t2")
+    settle(session)
+    assert session.result.first_error == "Table is on: 2 is not true or false" and session.project.groups[0].collapsed is False
+
+    session.select_table("t1")
+    session.select_step("s2")
+    window.settings_panel.refresh()
+    window.settings_panel.enabled.setChecked(False)  # Step is on: off
+    step = session.find_step("s2")[1]
+    assert (step.enabled, step.stored_enabled) == (False, None)
+    session.undo()
+    assert session.find_step("s2")[1].stored_enabled == "maybe"
+    session.set_table_enabled(["t2"], False)
+    assert (session.project.table("t2").enabled, session.project.table("t2").stored_enabled) == (False, None)
+    session.undo()
+    session.save_project(tmp_path / "again.tafl")
+    saved = json.loads((tmp_path / "again.tafl").read_text(encoding="utf-8"))
+    assert saved["tables"][0]["steps"][1]["enabled"] == "maybe" and saved["tables"][1]["enabled"] == 2
+    session.redo()
+    assert session.project.table("t2").enabled is False

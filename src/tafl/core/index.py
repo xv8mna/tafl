@@ -212,7 +212,7 @@ def step_signature(step: Step, table: Table, params: Mapping[str, Any] | None = 
             params = action.resolve(action.upgrade(params, step.version))
         except _BROKEN:  # settings that can't be read: as they are
             pass
-    data = [step.action, step.version, params, step.enabled, step.note, table.enabled]
+    data = [step.action, step.version, params, step.enabled, step.note, table.enabled, step.stored_enabled, table.stored_enabled]
     return json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
 
 

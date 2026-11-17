@@ -428,3 +428,51 @@ def test_the_digest_is_of_the_bytes_of_the_file(tmp_path):
     path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())  # the same project in other bytes
     other = Project.load(path)
     assert other == project and other.digest == hashlib.sha256(path.read_bytes()).hexdigest() != project.digest
+
+
+_ON_OFF = {
+    "step": lambda value: {"tables": [{"name": "T", "steps": [{"action": "csv.import", "enabled": value}]}]},
+    "table": lambda value: {"tables": [{"name": "T", "enabled": value, "steps": [{"action": "csv.import"}]}]},
+}
+_READ = [(True, True), (False, False), ("true", True), (" No ", False), ("FALSE", False), ("1", True), ("0", False)]
+_READ += [(1, True), (0, False), (1.0, True), (0.0, False), (None, True), ("", True)]
+
+
+def _loaded(tmp_path, data: dict) -> Project:
+    path = tmp_path / "p.tafl"
+    path.write_text(json.dumps({"format": "tafl-project", "format_version": 1, "name": "p", **data}), encoding="utf-8")
+    return Project.load(path)
+
+
+@pytest.mark.parametrize("kind", ["step", "table"])
+@pytest.mark.parametrize(("stored", "on"), _READ)
+def test_on_or_off_of_a_step_or_table_is_read_as_a_setting_that_is_on_or_off(tmp_path, kind, stored, on):
+    """"enabled": "false" is off (before, any text was on), nothing or "" is on; saving writes true or false."""
+    project = _loaded(tmp_path, _ON_OFF[kind](stored))
+    item = project.tables[0] if kind == "table" else project.tables[0].steps[0]
+    assert item.enabled is on and item.stored_enabled is None and item.enabled_problem is None
+    project.save(tmp_path / "again.tafl")
+    saved = json.loads((tmp_path / "again.tafl").read_text(encoding="utf-8"))["tables"][0]
+    assert (saved if kind == "table" else saved["steps"][0]).get("enabled", True) is on
+
+
+@pytest.mark.parametrize("kind", ["step", "table"])
+@pytest.mark.parametrize("stored", ["maybe", " ", "on", 2, -1, 0.5, [], {}, ["x"]])
+def test_on_or_off_with_another_value_is_kept_and_named(tmp_path, kind, stored):
+    """The project opens; the value is kept as it is, also when the project is saved, and the step
+    or table says it: nothing runs with a guess. In memory it is a real true or false."""
+    project = _loaded(tmp_path, _ON_OFF[kind](stored))
+    item = project.tables[0] if kind == "table" else project.tables[0].steps[0]
+    label = "Table is on" if kind == "table" else "Step is on"
+    assert item.enabled is True and item.stored_enabled == stored
+    assert item.enabled_problem == f"{label}: {json.dumps(stored)} is not true or false"
+    project.save(tmp_path / "again.tafl")
+    saved = json.loads((tmp_path / "again.tafl").read_text(encoding="utf-8"))["tables"][0]
+    assert (saved if kind == "table" else saved["steps"][0])["enabled"] == stored
+
+
+@pytest.mark.parametrize(("stored", "collapsed"), [(True, True), ("true", True), ("false", False), ("no", False), (1, True), ("maybe", False), (2, False), ([], False), ("", False)])
+def test_collapsed_of_a_group_is_read_as_a_setting_that_is_on_or_off(tmp_path, stored, collapsed):
+    """Another value is the default, not collapsed: it only changes the view."""
+    project = _loaded(tmp_path, {"groups": [{"id": "g1", "name": "G", "collapsed": stored}], "tables": []})
+    assert project.groups[0].collapsed is collapsed
