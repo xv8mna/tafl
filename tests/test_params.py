@@ -1,3 +1,4 @@
+import json
 import re
 import time
 
@@ -69,6 +70,35 @@ def test_int_validation():
     assert check(spec, resolve(spec, {"n": 0}), vc) == ["N: must be at least 1"]
     assert check(spec, resolve(spec, {"n": "x"}), vc) == ["N: must be a whole number"]
     assert check(spec, resolve(spec, {"n": float("inf")}), vc) == ["N: must be a whole number"]  # 1e999 in a file
+
+
+def test_a_setting_that_is_on_or_off_reads_texts_and_numbers_for_true_and_false():
+    """As Int and Float read texts: "false", "no" and "0" are false (before, any text counted as
+    true), also in the rows of a list; nothing or an empty text is the default."""
+    spec = [P.Bool("header", "First row has the column names", default=True), P.List("rows", "Rows", fields=[P.Bool("flag", "Flag")])]
+    vc = ValidationContext()
+    read = [(True, True), (False, False), ("true", True), (" Yes ", True), ("1", True), ("FALSE", False), ("no", False)]
+    read += [(" 0", False), (1, True), (0, False), (1.0, True), (0.0, False)]  # a list: 1 == 1.0 == True as keys
+    for stored, value in read:
+        params = resolve(spec, {"header": stored, "rows": [{"flag": stored}]})
+        assert (params.header, params.rows[0].flag) == (value, value) and isinstance(params.header, bool), stored
+        assert check(spec, params, vc) == [], stored
+    for stored in (None, ""):
+        params = resolve(spec, {"header": stored, "rows": [{"flag": stored}]})
+        assert (params.header, params.rows[0].flag) == (True, False) and check(spec, params, vc) == []  # the defaults
+
+
+@pytest.mark.parametrize("stored", ["maybe", " ", "on", "2", 2, -1, 1.5, [], {}, ["x"]])
+def test_a_setting_that_is_on_or_off_with_another_value_stops_the_step(stored):
+    """The value stays as it is, and the check says so: no guess."""
+    spec = [P.Bool("header", "First row has the column names", default=True), P.List("rows", "Rows", fields=[P.Bool("flag", "Flag")])]
+    params = resolve(spec, {"header": stored, "rows": [{"flag": stored}]})
+    assert params.header == stored and params.rows[0].flag == stored
+    shown = json.dumps(stored)
+    assert check(spec, params, ValidationContext()) == [
+        f"First row has the column names: {shown} is not true or false",
+        f"Rows, row 1 – Flag: {shown} is not true or false",
+    ]
 
 
 def test_values_of_the_wrong_kind_are_reported_and_used_nowhere():

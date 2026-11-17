@@ -185,9 +185,27 @@ class Float(Param):
 class Bool(Param):
     default: Any = False
     kind: ClassVar[str] = "bool"
+    expected: ClassVar[str] = "true or false"
 
     def normalize(self, value: Any) -> Any:
-        return self.initial() if value is None else bool(value)
+        """true or false; also the texts true, yes, 1 and false, no, 0 (in any case, with spaces
+        around them) and the numbers 1 and 0. Nothing or an empty text is the default. Any other
+        value stays as it is, and ``check`` reports it."""
+        if value is None or value == "":
+            return self.initial()
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return _TRUE_OR_FALSE.get(value.strip().lower(), value)
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return value == 1
+        return value
+
+    def accepts(self, value: Any) -> bool:
+        return isinstance(value, bool)
+
+
+_TRUE_OR_FALSE = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
 
 
 @dataclass(frozen=True)

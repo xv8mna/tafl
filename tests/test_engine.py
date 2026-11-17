@@ -14,7 +14,7 @@ import duckdb
 import polars as pl
 import pytest
 
-from tafl.api import ActionError, Cancelled, Mode, P, action, expressions
+from tafl.api import ActionError, Cancelled, Mode, P, action, connector, expressions
 from tafl.api.parameters import Failed
 from tafl.core import Connection, Engine, Parameter, Project, Registry, ResultCache, Status
 from tafl.core import parameters as core_parameters
@@ -227,6 +227,45 @@ def test_the_warnings_stay_when_the_settings_cant_be_read(project, registry, mon
     step = Engine(project, registry).evaluate("Orders").steps[0]
     assert step.error == "Could not read the step settings: a plugin's own way of filling in failed"
     assert step.messages == [("warning", MISSPELLED)]
+
+
+@pytest.mark.parametrize(("stored", "rows"), [("false", 4), ("No", 4), ("0", 4), ("true", 3), ("", 3), (0, 4)])
+def test_a_setting_that_is_on_or_off_stored_as_a_text(project, registry, stored, rows):
+    """E.g. written by a program that writes every value as a text: "false" is false (before, the
+    first row of data became the column names), and an empty text is the default (on)."""
+    project.tables[0].steps[0].params["header"] = stored
+    step = Engine(project, registry).evaluate("Orders").steps[0]
+    assert step.status == Status.OK and step.df.height == rows
+    assert step.df.columns[0] == ("Id" if rows == 3 else "Column 1")
+
+
+def test_a_setting_that_is_on_or_off_with_another_value_stops_the_step(project, registry):
+    project.tables[0].steps[0].params["header"] = "maybe"
+    step = Engine(project, registry).evaluate("Orders").steps[0]
+    assert step.status == Status.ERROR and step.error == 'First row has the column names: "maybe" is not true or false'
+
+
+def test_a_connection_setting_that_is_on_or_off(project, tmp_path):
+    """A connection's setting that is on or off reads "no" as false, and another value stops the
+    step that uses the connection, with the connection's name: no connection with a guess."""
+    with contextlib.closing(sqlite3.connect(tmp_path / "shop.db")) as connection:
+        connection.execute("CREATE TABLE Orders (Id INTEGER)")
+        connection.execute("INSERT INTO Orders VALUES (7)")
+        connection.commit()
+    registry = Registry()
+    registry.load_builtin()
+    module = types.ModuleType("strict")
+    sqlite = type(registry.connectors["sqlite"])
+    module.strict = connector("demo.strict", "Strict SQLite", params=[P.File("file", "Database file"), P.Bool("strict", "Strict")])(sqlite)
+    registry.add_module(module)
+    project.connections = [Connection("Sales", "demo.strict", {"file": "shop.db", "strict": "no"})]
+    table = project.add_table("Shop")
+    project.add_step(table, "db.import", {"connection": "Sales", "table": "Orders"})
+    step = Engine(project, registry).evaluate(table.id).steps[0]
+    assert step.status == Status.OK and step.df["Id"].to_list() == [7]
+    project.connections[0].settings["strict"] = "maybe"
+    step = Engine(project, registry).evaluate(table.id).steps[0]
+    assert step.status == Status.ERROR and step.error == "Connection 'Sales': Strict: \"maybe\" is not true or false"
 
 
 def test_a_connection_with_a_setting_that_isnt_known(project, registry, tmp_path):

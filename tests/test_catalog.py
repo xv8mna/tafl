@@ -549,27 +549,64 @@ def oracle(registry, built) -> tuple[collections.Counter, set]:
                 for problem in schema_problems:
                     if "unknown key" in problem:
                         counted["unknown keys"] += 1
-                    elif OTHER_TYPE.search(problem):
-                        counted["values of another type"] += 1
                     elif hidden(action, params, problem):
                         counted["hidden settings"] += 1
+                    elif OTHER_TYPE.search(problem):
+                        converted(entry, step, params, problem)
+                        counted["values of another type"] += 1
                     else:
                         pytest.fail(f"the schema refuses what Tafl takes: {entry['id']} {json.dumps(step)[:300]}: {problem}")
     return counted, seen
 
 
+def converted(entry: dict, step: dict, params, problem: str) -> None:
+    """A value of another type that Tafl takes: it converts it to one that fits the schema, and a
+    setting that is on or off reads it as docs/catalog.md says (never "false" as true)."""
+    shown = f"{entry['id']} {json.dumps(step)[:300]}: {problem}"
+    if row_place := ROW_PLACE.match(problem):  # a row that is no object: a row with the defaults
+        value = params[row_place["key"]][int(row_place["row"])]
+        schema = entry["settings_schema"]["properties"][row_place["key"]]["items"]
+        assert problems(json.loads(json.dumps(value)), schema) == [], f"Tafl takes it without converting it: {shown} → {value!r}"
+        return
+    place = PLACE.match(problem)
+    setting = next(s for s in entry["settings"] if s["key"] == place["key"])
+    schema, stored, value = entry["settings_schema"]["properties"][place["key"]], step.get(place["key"]), params[place["key"]]
+    if place["field"] is not None:
+        setting = next(f for f in setting["fields"] if f["key"] == place["field"])
+        row = int(place["row"])
+        schema, stored, value = schema["items"]["properties"][place["field"]], stored[row].get(place["field"]), value[row][place["field"]]
+    assert problems(json.loads(json.dumps(value)), schema) == [], f"Tafl takes it without converting it: {shown} → {value!r}"
+    if setting["kind"] == "bool":
+        assert value == as_bool(stored, setting["default"]) and isinstance(value, bool), f"read as {value!r}: {shown}"
+
+
+def as_bool(stored, default):
+    """A stored value of a setting that is on or off, as docs/catalog.md says Tafl reads it; None
+    for a value that it refuses."""
+    if stored is None or stored == "":
+        return default
+    if isinstance(stored, bool):
+        return stored
+    if isinstance(stored, str) and stored.strip().lower() in ("true", "yes", "1", "false", "no", "0"):
+        return stored.strip().lower() in ("true", "yes", "1")
+    if isinstance(stored, int | float) and stored in (0, 1):
+        return stored == 1
+    return None
+
+
 PLACE = re.compile(r"^params\.(?P<key>[^.\[:]+)(?:\[(?P<row>\d+)\]\.(?P<field>[^.\[:]+))?:")
+ROW_PLACE = re.compile(r"^params\.(?P<key>[^.\[:]+)\[(?P<row>\d+)\]:")
 
 
 def hidden(action, params, problem: str) -> bool:
     """Whether the problem is in a setting that the step doesn't show (Tafl doesn't check it)."""
-    place = PLACE.match(problem)
+    place = PLACE.match(problem) or ROW_PLACE.match(problem)
     setting = next((p for p in action.params if place and p.key == place["key"]), None)
     if setting is None:
         return False
     if not P.is_visible(setting, params):
         return True
-    if place["field"] is None:
+    if place.groupdict().get("field") is None:  # the setting, or an item of a list of columns
         return False
     field = next(f for f in setting.fields if f.key == place["field"])
     return not P.is_visible(field, params[setting.key][int(place["row"])])
