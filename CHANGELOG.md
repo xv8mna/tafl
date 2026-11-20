@@ -1,6 +1,6 @@
 # Changes
 
-## 0.7.0 – unreleased
+## 0.7.0 – 2026-11-20
 
 This version describes itself for programs that write or check project files: `tafl catalog
 --json` lists every action with its settings, the connection types and the formula functions. A
