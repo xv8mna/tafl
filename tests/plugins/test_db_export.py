@@ -693,6 +693,54 @@ def test_sqlserver_a_key_column_named_twice_counts_once(registry, mode):
                 db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")
 
 
+SEVENTH_DIGIT = (
+    "CREATE TABLE {table} (At datetime2(7), N int)",
+    "INSERT INTO {table} VALUES ('2026-01-01 08:00:00.0000001', 1), ('2026-01-01 08:00:00.0000002', 2)",
+)
+CASE_INSENSITIVE = (
+    "CREATE TABLE {table} (Shop nvarchar(10) COLLATE Latin1_General_CI_AS, N int)",
+    "INSERT INTO {table} VALUES ('x', 0)",
+)
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+@pytest.mark.parametrize("mode", ["update", "upsert", "replace_keys", "delete"])
+def test_sqlserver_checks_of_a_key_column_named_twice_say_what_they_say_of_the_key_once(registry, mode):
+    """The checks that read the keys as SQL Server compares them, with a key column named twice:
+    rows of a datetime2(7) column that differ only in the 7th digit (each mode), and "a" and "A" in
+    a case-insensitive column (update, upsert). The message is that of the key once, and the table
+    doesn't change."""
+    ctx, name = _sqlserver()
+    made = []
+
+    def stopped(df, key_columns, setup):
+        """The message of the export into a new table made by ``setup``, and its rows before and after."""
+        table = f"{name}_{len(made)}"
+        made.append(table)
+        with ctx.database("server") as db:
+            for sql in setup:
+                db.execute(sql.format(table=table))
+            before = db.read(f"SELECT * FROM {table} ORDER BY N").rows()
+        params = {"connection": "server", "table": table, "mode": mode, "key_columns": key_columns}
+        with pytest.raises(ActionError) as error:
+            registry.actions["db.export"](df, params, ctx)
+        with ctx.database("server") as db:
+            after = db.read(f"SELECT * FROM {table} ORDER BY N").rows()
+        return str(error.value).replace(table, "<table>"), before == after
+
+    cases = [(pl.DataFrame({"At": [dt.datetime(2026, 1, 1, 8)], "N": [9]}), "At", SEVENTH_DIGIT)]
+    if mode in ("update", "upsert"):
+        cases.append((pl.DataFrame({"Shop": ["a", "A"], "N": [1, 2]}), "Shop", CASE_INSENSITIVE))
+    try:
+        for df, key, setup in cases:
+            twice, once = stopped(df, [key, key], setup), stopped(df, [key], setup)
+            assert twice == once and once[1]  # the same message, and the table as it was
+    finally:
+        with ctx.database("server") as db:
+            for table in made:
+                db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")
+
+
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
 def test_sqlserver_keyed_modes_store_values_as_add_does(registry):
     """The keyed modes send the rows into a #temporary table first, whose columns the ODBC driver

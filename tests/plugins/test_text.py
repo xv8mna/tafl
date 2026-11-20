@@ -580,7 +580,30 @@ def test_a_stop_takes_effect_while_replace_reads_its_rows(act, monkeypatch, read
     assert calls == (["called"] if once_for_all_rows else ["called", "returned"])  # the next row wasn't read
 
 
-ZONED =pl.Series([dt.datetime(2026, 1, 1, 7, 30), dt.datetime(2026, 7, 1, 7, 30), None]).dt.replace_time_zone("UTC")
+def test_a_stop_takes_effect_while_replace_reads_the_rows_for_a_second_type_of_column(act, monkeypatch):
+    """Columns of two types in "In columns" read the rows once for each type, here for a date
+    column, then for a number column: a Stop while the rows are read for the second type doesn't
+    wait for the rest of them either."""
+    cancel, calls = threading.Event(), []
+    read = text_plugin._typed_pairs
+
+    def stop_in_the_second_reading(pairs, dtype):
+        calls.append(f"read for {dtype}")
+        if sum(call.startswith("read") for call in calls) == 2:
+            cancel.set()  # Stop while the rows are read for the second type
+        result = read(pairs, dtype)
+        calls.append("returned")
+        return result
+
+    monkeypatch.setattr(text_plugin, "_typed_pairs", stop_in_the_second_reading)
+    rows = [{"find": find, "replace": new} for find, new in NUMBERS]
+    df = pl.DataFrame({"D": [dt.date(2026, 1, 1)], "N": [1]})
+    with pytest.raises(Cancelled):
+        act("text.replace", df, {"columns": ["D", "N"], "match": "whole", "replacements": rows}, Context(cancel=cancel))
+    assert calls == ["read for Date", "returned", "read for Int64"]  # the second reading stopped at its next row
+
+
+ZONED = pl.Series([dt.datetime(2026, 1, 1, 7, 30), dt.datetime(2026, 7, 1, 7, 30), None]).dt.replace_time_zone("UTC")
 
 
 @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
