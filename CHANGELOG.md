@@ -83,9 +83,15 @@ with a message that says what to change.
   '2026-03-29 02:30' doesn't happen in the time zone of column 'Ordered' (Europe/Berlin): a clock
   change skips it" or "… happens twice …: a clock change repeats it", as in **Filter rows**;
   before, a new value that the clock skips stopped with a technical message too.
-- **Replace** with a column twice in **In columns**, which only a project file written by hand or
-  by a program can have, changes the column once. Before, the step stopped with a technical
-  message about an invalid regular expression, in every mode.
+- **A column named twice** in a setting that lists columns, which only a project file written by
+  hand or by a program can have, counts once now, with the result of the name once:
+  **In columns** of **Replace**, **Columns** of **Clean text**, **Fill empty values** and
+  **Keep, remove or reorder columns** (at the name's first place), and **Key columns** of
+  **Export to database**. Before, these steps stopped with a technical message: **Replace** in
+  every mode, with one about an invalid regular expression; **Keep, remove or reorder columns**
+  when it kept the columns or moved them to the front; **Export to database** when it updated
+  rows by the key columns (and added the others), and on SQL Server also when it replaced or
+  deleted the rows with the same key values. Such a failed export changed nothing in the table.
 
 ### Plain messages
 
