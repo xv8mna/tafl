@@ -39,9 +39,10 @@ def needed(entry):
     name = path.rsplit("/", 1)[-1]
     return not (
         # Windows' own C runtime: Windows 10 and 11 have it, and a copy that another program put
-        # on the build machine's PATH must not come along
+        # on the build machine's PATH must not come along. "ucrtbase" without ".dll" is the name
+        # that PyInstaller gives it for the ctypes.CDLL("ucrtbase") of the command line.
         name.startswith("api-ms-win-")
-        or name == "ucrtbase.dll"
+        or name in ("ucrtbase.dll", "ucrtbase")
         or name.endswith(UNUSED_SUFFIXES)
         or path.startswith(UNUSED_FOLDERS)
         or name in UNUSED_FILES
