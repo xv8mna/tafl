@@ -223,7 +223,7 @@ def fill(df, p, ctx):
     schema = df.schema  # once: Polars makes it anew for every call, with all columns (seconds for thousands)
     typed: dict[tuple[Any, ...], Any] = {}  # the fixed value read once for each type of column (see _typed)
     updates = []
-    for name in p.columns:
+    for name in dict.fromkeys(p.columns):  # a column named twice (in a project file) is filled once
         dtype = schema[name]
         column = col(name)
         if dtype == pl.String:

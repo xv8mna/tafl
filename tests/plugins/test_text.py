@@ -173,6 +173,16 @@ def test_clean_text(act):
     assert padded["zip"].to_list() == ["01067", "80331", None]
 
 
+def test_clean_text_of_a_column_named_twice_cleans_it_once(act):
+    """Only a project file written by hand or by a program can name a column twice: the result is
+    that of the name once. Before, the step stopped with a technical message."""
+    df = pl.DataFrame({"s": ["  müller  gmbh ", "a\nb", "   "], "zip": [1067, 80331, None]})
+    params = {"collapse_spaces": True, "line_breaks": True, "case": "title", "pad_length": 12, "pad_char": "."}
+    twice = act("text.clean", df, {"columns": ["s", "zip", "s"], **params})
+    assert twice.equals(act("text.clean", df, {"columns": ["s", "zip"], **params}))
+    assert twice["s"].to_list() == [".Müller Gmbh", ".........A B", "............"]
+
+
 def test_invalid_regular_expressions_say_why(act):
     df = pl.DataFrame({"s": ["abc"]})
     with pytest.raises(ActionError, match=r"^Invalid regular expression '\(abc': unclosed group$"):

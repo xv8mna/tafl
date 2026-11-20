@@ -122,6 +122,29 @@ def test_mistakes_are_explained(db):
     assert len(db.rows()) == 6
 
 
+KEY_CHANGES = pl.DataFrame({"OrderNo": [1, 4], "Net": [99.0, 4.0], "Day": [dt.date(2025, 1, 3)] * 2})
+
+
+@pytest.mark.parametrize("mode", ["update", "upsert", "replace_keys", "delete"])
+def test_a_key_column_named_twice_counts_once(db, mode):
+    """Only a project file written by hand or by a program can name a key column twice: the table
+    gets the rows of the key once. Before, update and upsert stopped with a technical message."""
+    said = []
+    for table, key_columns in (("orders", ["OrderNo", "OrderNo"]), ("once", ["OrderNo"])):
+        db.export(DATA, table=table)
+        db.export(KEY_CHANGES, table=table, mode=mode, key_columns=key_columns)
+        said.append(db.context.messages[-1][1].removeprefix(f"{table}: "))  # e.g. "updated 1 row, added 1 row"
+    assert db.rows() == db.rows("SELECT * FROM once ORDER BY OrderNo") and said[0] == said[1]
+
+
+def test_a_key_column_named_twice_with_a_repeated_key_value_changes_nothing(db):
+    db.export(DATA)
+    with pytest.raises(ActionError) as error:
+        db.export(DATA, mode="upsert", key_columns=["Day", "Day"])
+    assert str(error.value).startswith("The key columns don't identify the rows: 1 key value occurs more than once (e.g. Day = 2025-01-01)")
+    assert len(db.rows()) == 3
+
+
 def test_the_example_of_a_repeated_key_is_the_same_every_time(db):
     """The first key value in the order of the rows that occurs more than once (before, a random one)."""
     db.export(DATA)
@@ -637,6 +660,37 @@ def _sqlserver():
     connector = Registry.default().connectors["sqlserver"]
     settings = {"server": os.environ["TAFL_TEST_SQLSERVER"], "database": "tempdb"}
     return StubContext(mode="run", connections={"server": (connector, settings)}), f"dbo.tafl_test_{uuid.uuid4().hex[:8]}"
+
+
+@pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")
+@pytest.mark.parametrize("mode", ["update", "upsert", "replace_keys", "delete"])
+def test_sqlserver_a_key_column_named_twice_counts_once(registry, mode):
+    """As in SQLite (also through the checks of the keys as SQL Server compares them): the rows of
+    the key once; another check that stops the step changes nothing."""
+    ctx, twice = _sqlserver()
+    once = f"{twice}_once"
+
+    def export(df, table, **params):
+        registry.actions["db.export"](df, {"connection": "server", "table": table} | params, ctx)
+
+    def rows(table):
+        with ctx.database("server") as db:
+            return db.read(f"SELECT * FROM {table} ORDER BY OrderNo").rows()
+
+    try:
+        said = []
+        for table, key_columns in ((twice, ["OrderNo", "OrderNo"]), (once, ["OrderNo"])):
+            export(DATA, table)
+            export(KEY_CHANGES, table, mode=mode, key_columns=key_columns)
+            said.append(ctx.messages[-1][1].removeprefix(f"{table}: "))
+        assert rows(twice) == rows(once) and said[0] == said[1]
+        with pytest.raises(ActionError, match=r"^The key columns don't identify the rows: 1 key value occurs more than once \(e\.g\. Day = 2025-01-01\)"):
+            export(DATA, twice, mode="upsert", key_columns=["Day", "Day"])
+        assert rows(twice) == rows(once)
+    finally:
+        with ctx.database("server") as db:
+            for table in (twice, once):
+                db.execute(f"IF OBJECT_ID('{table}') IS NOT NULL DROP TABLE {table}")
 
 
 @pytest.mark.skipif(not os.environ.get("TAFL_TEST_SQLSERVER"), reason="set TAFL_TEST_SQLSERVER (e.g. .\\SQLEXPRESS)")

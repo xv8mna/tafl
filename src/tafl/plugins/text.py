@@ -385,7 +385,7 @@ def clean(df, p, ctx):
     case, pads values to a fixed length (e.g. postal codes 1234 → 01234). Selected columns that
     are not text are turned into text, the same on every PC: 17 (not 17.0), 2025-12-31 08:30:00."""
     schema = df.schema  # made once: for a wide table that takes a while
-    names = p.columns or [name for name, dtype in schema.items() if dtype == pl.String]
+    names = list(dict.fromkeys(p.columns)) or [name for name, dtype in schema.items() if dtype == pl.String]  # a name twice: once
     df = _with_texts(df, names, schema, "Clean text")
     updates = []
     for name in names:

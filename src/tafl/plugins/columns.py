@@ -61,11 +61,13 @@ def rename(df, p, ctx):
 def select(df, p, ctx):
     """Keeps only some columns (in the order listed), removes columns, or moves columns to
     the front while keeping all others behind them."""
+    names = list(dict.fromkeys(p.columns))  # a column named twice (in a project file): at its first place
     if p.mode == "keep":
-        return df.select(cols(p.columns))
+        return df.select(cols(names))
     if p.mode == "remove":  # one selector: Polars nests a list of columns here, and thousands overflow its stack
-        return df.drop(selector(p.columns))
-    return df.select(cols([*p.columns, *(c for c in df.columns if c not in p.columns)]))
+        return df.drop(selector(names))
+    chosen = set(names)
+    return df.select(cols([*names, *(c for c in df.columns if c not in chosen)]))
 
 
 @action(

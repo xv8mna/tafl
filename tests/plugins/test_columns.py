@@ -26,6 +26,25 @@ def test_select_columns(act, people, mode, expected):
     assert act("columns.select", people, {"mode": mode, "columns": ["Age", "Name"]}).columns == expected
 
 
+@pytest.mark.parametrize(
+    ("mode", "columns", "expected"),
+    [
+        ("keep", ["Age", "Age"], ["Age"]),
+        ("keep", ["Age", "Name", "Age"], ["Age", "Name"]),
+        ("front", ["Score", "Name", "Score"], ["Score", "Name", "City", "Age"]),
+        ("front", ["Name", "Score", "Name"], ["Name", "Score", "City", "Age"]),  # Name at its first place
+        ("remove", ["Age", "Name", "Age"], ["City", "Score"]),
+    ],
+)
+def test_a_column_named_twice_is_used_once_at_its_first_place(act, people, mode, columns, expected):
+    """Only a project file written by hand or by a program can name a column twice: the result is
+    that of the name once, at its first place. Before, keep and move to the front stopped with a
+    technical message."""
+    out = act("columns.select", people, {"mode": mode, "columns": columns})
+    assert out.columns == expected
+    assert out.equals(act("columns.select", people, {"mode": mode, "columns": list(dict.fromkeys(columns))}))
+
+
 def test_removing_missing_and_repeated_columns(act, people):
     with pytest.raises(pl.exceptions.ColumnNotFoundError, match='"Region" not found'):
         act("columns.select", people, {"mode": "remove", "columns": ["Age", "Region"]})

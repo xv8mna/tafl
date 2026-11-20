@@ -1849,6 +1849,7 @@ def export_database(df, p, ctx):
     if p.skip_empty and df.height == 0:
         ctx.log("Not exported: the table is empty")
         return df
+    key_columns = list(dict.fromkeys(p.key_columns))  # a column named twice (in a project file): once
     if df.width == 0:
         raise ActionError("Nothing to export: the table has no columns")
     created = False
@@ -1866,7 +1867,7 @@ def export_database(df, p, ctx):
             created, existing = True, list(df.columns)
         names = _target_names(df.columns, existing, p)
         types = db.connector.column_types(db.raw, p.table)
-        keys = _key_names(p, names) if p.mode in _KEYED else []
+        keys = _key_names(p, key_columns, names) if p.mode in _KEYED else []
         data = df.select(cols(names))
         if p.mode == "delete":  # it writes nothing: only the key values count
             data = data.select(cols(c for c, n in names.items() if n in keys))
@@ -1886,7 +1887,7 @@ def export_database(df, p, ctx):
         cut = _cut_seconds(data, fitted, read, names, p.table) if db.connector.id == "sqlserver" else []
         data = db.connector.fit_frame(data, fitted)
         if p.mode in ("update", "upsert"):
-            _check_unique(data, p.key_columns)  # as stored: 08:00:01.2 and .7 are one second in datetime2(0)
+            _check_unique(data, key_columns)  # as stored: 08:00:01.2 and .7 are one second in datetime2(0)
         fitted_data = data
         data = db.connector.prepare_frame(data)
 
@@ -1902,7 +1903,7 @@ def export_database(df, p, ctx):
             staged = data.select(cols(c for c, n in names.items() if n in keys)).unique()
             stage = _stage(db, staged, names, keys, db.connector.stage_types(db.raw, p.table), ctx)
             if db.connector.id == "sqlserver":  # a key that meets rows that differ only in the 7th digit would delete them all
-                _check_seventh_digits(db, table, stage, None, staged, names, p.key_columns, types, p.table)
+                _check_seventh_digits(db, table, stage, None, staged, names, key_columns, types, p.table)
             deleted = db.execute(db.connector.delete_sql(table, stage, keys, **by_type))
         elif p.mode in ("update", "upsert"):
             sqlserver = db.connector.id == "sqlserver"
@@ -1911,8 +1912,8 @@ def export_database(df, p, ctx):
             row = _unused("tafl_row", names.values()) if sqlserver and data.width < _MOST_COLUMNS else None
             stage = _stage(db, data, names, keys, db.connector.stage_types(db.raw, p.table), ctx, row)
             if sqlserver:  # as SQL Server compares them: abc and ABC are one key in a CI column
-                _check_unique_as_compared(db, stage, row, fitted_data, [names[k] for k in p.key_columns], p.key_columns)
-                _check_seventh_digits(db, table, stage, row, fitted_data, names, p.key_columns, types, p.table)
+                _check_unique_as_compared(db, stage, row, fitted_data, [names[k] for k in key_columns], key_columns)
+                _check_seventh_digits(db, table, stage, row, fitted_data, names, key_columns, types, p.table)
             others = [n for n in names.values() if n not in keys]
             if others:
                 updated = db.execute(db.connector.update_sql(table, stage, others, keys, **by_type))
@@ -2492,13 +2493,13 @@ def _target_names(columns: list[str], existing: list[str], p) -> dict[str, str]:
     return names
 
 
-def _key_names(p, names: dict[str, str]) -> list[str]:
-    if not p.key_columns:
+def _key_names(p, key_columns: list[str], names: dict[str, str]) -> list[str]:
+    if not key_columns:
         raise ActionError("Choose the key columns: the columns that identify a row")
-    missing = [k for k in p.key_columns if k not in names]
+    missing = [k for k in key_columns if k not in names]
     if missing:
         raise ActionError(f"The key column {', '.join(missing)} is not in the table {p.table}")
-    return [names[k] for k in p.key_columns]
+    return [names[k] for k in key_columns]
 
 
 def _check_unique(df: pl.DataFrame, keys: list[str]) -> None:

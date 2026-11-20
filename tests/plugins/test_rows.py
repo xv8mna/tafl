@@ -163,6 +163,17 @@ def test_fill_empty_values(act):
     assert act("rows.fill", df, {"columns": ["n"], "method": "value", "value": "0"})["n"].to_list() == [1, 0, 3, 0, 5]
 
 
+@pytest.mark.parametrize("method", ["down", "up", "value"])
+def test_fill_empty_values_of_a_column_named_twice_fills_it_once(act, method):
+    """Only a project file written by hand or by a program can name a column twice: the result is
+    that of the name once. Before, the step stopped with a technical message."""
+    df = pl.DataFrame({"Group": ["A", None, "  ", "B", None], "n": [1, None, 3, None, 5]})
+    params = {"method": method, "value": "0"}
+    twice = act("rows.fill", df, {"columns": ["n", "Group", "n"], **params})
+    assert twice.equals(act("rows.fill", df, {"columns": ["n", "Group"], **params}))
+    assert twice["n"].null_count() == 0
+
+
 def test_sort_text_like_excel(act):
     df = pl.DataFrame({"Name": ["Zebra", "apfel", "Äpfel", "Apfel", "Özdemir", "zebra", "Peter", None, "Straße", "Strasse"]})
     ascending = act("rows.sort", df, {"by": [{"column": "Name"}]})
